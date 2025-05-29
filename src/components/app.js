@@ -1,5 +1,7 @@
 import resetCssString from '#assets/styles/reset.css'
 import globalCssString from '#assets/styles/global.css'
+import { f } from 'f'
+import '#zones/screen/index.js'
 
 document.head.insertAdjacentHTML('beforeend', `<style>${resetCssString}${globalCssString}</style>`)
 
@@ -8,4 +10,8 @@ if (window.IS_DEVELOPMENT) {
   new EventSource('/esbuild').addEventListener('change', () => location.reload())
 }
 
-console.log('hello world')
+f(function aApp () {
+  return this.h`
+    <a-screen />
+  `
+})

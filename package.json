@@ -28,6 +28,7 @@
     "#services/*": "./src/services/*",
     "#hooks/*": "./src/components/hooks/*",
     "#shared/*": "./src/components/shared/*",
-    "#views/*": "./src/components/views/*"
+    "#views/*": "./src/components/views/*",
+    "#zones/*": "./src/components/zones/*"
   }
 }

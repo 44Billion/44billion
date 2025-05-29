@@ -47,6 +47,7 @@ const ctx = await esbuild.context({
   // https://caniuse.com/?search=top%20level%20await
   target: ['edge89', 'firefox89', 'chrome89', 'safari15'],
   minify: !isDev,
+  keepNames: false, // set it to true if the code relies on (function a(){}).name === 'a'
   write: !isDev // serve from memory if isDev
 })
 
