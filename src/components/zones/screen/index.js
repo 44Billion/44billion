@@ -171,6 +171,11 @@ f(function appWindow () {
             height: 100%;
           }
           /**/
+          iframe {
+            border: none;
+            height: 100vh;
+            width: 100vw;
+          }
         }
         app-window:nth-child(1) > &.open {
           display: block;
@@ -194,7 +199,7 @@ f(function appWindow () {
         }
       }
     </style>
-    An app window ${appId$()}
+    <iframe src=${`//${appId$()}.${window.IS_PRODUCTION ? '44billion.net' : 'localhost:10000'}`} />
     </div>
   `
 })
@@ -362,8 +367,7 @@ f(function toolbarAppLauncher () {
     if (e.shouldStopPropagation) return
 
     switch (app$().visibility) {
-      case 'closed':
-      case 'minimized': {
+      case 'closed': {
         // open
         storage[`session_appByKey_${app$().key}_visibility$`]('open')
         storage[`session_workspaceByKey_${app$().workspaceKey}_openAppKeys$`](v => {
@@ -372,15 +376,24 @@ f(function toolbarAppLauncher () {
         })
         break
       }
+      case 'minimized': {
+        // maximize
+        const appKey = app$().key
+        storage[`session_appByKey_${appKey}_visibility$`]('open')
+        storage[`session_workspaceByKey_${app$().workspaceKey}_openAppKeys$`](v => {
+          const i = v.indexOf(appKey)
+          if (i !== -1) {
+            v.splice(i, 1) // remove
+            v.unshift(appKey) // place at beginning
+          }
+          return v
+        })
+        break
+      }
       case 'open': {
         // close
         const appKey = app$().key
         storage[`session_appByKey_${appKey}_visibility$`]('minimized')
-        storage[`session_workspaceByKey_${app$().workspaceKey}_openAppKeys$`](v => {
-          const i = v.findIndex(v2 => v2 === appKey)
-          if (i !== -1) v.splice(i, 1)
-          return v
-        })
       }
     }
   })

@@ -58,6 +58,7 @@ if (isDev) {
   // esbuild's built-in web server
   const { hosts, port } = await ctx.serve({
     host: '127.0.0.1',
+    port: 8080,
     // serve non-built assets from here like /index.html ~~is~~was
     // (now it's at entryPoints and has loader: { '.html': 'copy' } for it)
     // servedir must contain the outdir
