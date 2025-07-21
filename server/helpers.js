@@ -1,17 +1,19 @@
 import { createServer as netCreateServer, isIP } from 'node:net' // simpler then 'node:http''s createServer
 
 export function replyWithError (res, error = { base: ['Resource not found'] }) {
-  if (res.writableEnded) {
-    console.log('won\'t reply with error because already replied')
-    return
-  }
   try {
-    res.setHeader('content-type', 'application/json')
-    res.writeHead(404)
+    if (res.writableEnded) {
+      console.log('won\'t reply with error because already replied')
+      return
+    }
+    if (!res.headersSent) {
+      res.setHeader('content-type', 'application/json')
+      res.writeHead(404)
+    }
+    res.end(JSON.stringify({ error }))
   } catch (err) {
-    console.error(err)
+    console.error('errouuu', err)
   }
-  res.end(JSON.stringify({ error }))
 }
 
 export function withWebUrl (req) {

@@ -1,7 +1,8 @@
 import Router from 'url-router'
-import { f, useStore, useTask, useSignal, useStateSignal, useClosestStore } from 'f'
+// import { f, useStore, useTask, useSignal, useStateSignal, useClosestStore } from '#f'
 
 export const router = new Router({
+  '/app-:napp(\\w+)': {},
   // https://esbuild.github.io/api/#glob
   // note that esbuild does understand dynamic import paths if stating with ./ or ../
   // such as import('../views/${path}.js') but esbuild would include all possible
@@ -16,28 +17,28 @@ export const router = new Router({
   // "/n/(.*)": { Page: Groups },
 })
 
-f(function aRoute () {
-  const {
-    handler: { tag, loadModule }, params
-  } = router.find(path)
-  const isActive$ = useStateSignal(isActive)
+// f(function aRoute () {
+//   const {
+//     handler: { tag, loadModule }, params
+//   } = router.find(path)
+//   const isActive$ = useStateSignal(isActive)
 
-  useClosestStore('aRoute', {
-    stackIndex,
-    path,
-    navigationState, // initial state
-    params,
-    isActive$
-  })
+//   useClosestStore('aRoute', {
+//     stackIndex,
+//     path,
+//     navigationState, // initial state
+//     params,
+//     isActive$
+//   })
 
-  const isLoaded$ = useSignal(false)
-  useTask(async () => {
-    await loadModule()
-    isLoaded$.set(true)
-  })
+//   const isLoaded$ = useSignal(false)
+//   useTask(async () => {
+//     await loadModule()
+//     isLoaded$.set(true)
+//   })
 
-  if (!isLoaded$.get()) return
+//   if (!isLoaded$.get()) return
 
-  // dynamic tag doesn't work with uhtml: return this.h`<${tag} props=${{ stackIndex, path, navigationState, params }} />`
-  return this.h([`<${tag} props=`, ' />'], { stackIndex, path, navigationState, params })
-})
+//   // dynamic tag doesn't work with uhtml: return this.h`<${tag} props=${{ stackIndex, path, navigationState, params }} />`
+//   return this.h([`<${tag} props=`, ' />'], { stackIndex, path, navigationState, params })
+// })

@@ -1,4 +1,4 @@
-import { f, useStore } from 'f'
+import { f, useStore } from '#f'
 import '#shared/svg.js'
 
 f(function iconUserCircle () {

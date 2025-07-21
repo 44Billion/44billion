@@ -1,0 +1,34 @@
+import IttyRouter from './itty-router.js'
+import { getBuiltFileRstream } from '#helpers/stream.js'
+import { pipeline } from 'node:stream/promises'
+
+const isProduction = process.env.NODE_ENV === 'production'
+
+// <domain>
+const domainRouter = IttyRouter()
+// // We need this to make the platform work offline
+// .get('/sw.js', (req, res) => { return res })
+
+if (isProduction) {
+  domainRouter
+    .get('/', async (req, res) => {
+      res.setHeader('content-type', 'text/html')
+      res.writeHead(200)
+      await pipeline(
+        (await getBuiltFileRstream('index.html')).result,
+        res
+      )
+      return res
+    })
+    .get('/app.js', async (req, res) => {
+      res.setHeader('content-type', 'text/javascript')
+      res.writeHead(200)
+      await pipeline(
+        (await getBuiltFileRstream('app.js')).result,
+        res
+      )
+      return res
+    })
+}
+
+export default domainRouter

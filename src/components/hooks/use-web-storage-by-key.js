@@ -1,4 +1,4 @@
-import { useGlobalSignal, useGlobalComputed, useTask } from 'f'
+import { useGlobalSignal, useGlobalComputed, useTask } from '#f'
 
 let handlerByKeyMap
 let abortController

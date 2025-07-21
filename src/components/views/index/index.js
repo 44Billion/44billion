@@ -1,4 +1,4 @@
-import { f } from 'f'
+import { f } from '#f'
 
 f(function aIndex () {
   return `

@@ -1,5 +1,7 @@
-import { useTask, useGlobalSignal } from 'f'
+import { useTask, useGlobalSignal } from '#f'
 import useWebStorage from '#hooks/use-web-storage.js'
+import { appDecode } from '#helpers/nip19.js'
+import { addressObjToAppId } from '#helpers/app.js'
 
 // the screen has
 // 1 active (active as in last clicked) user (pk) at all times ('' is the anon user pk)
@@ -20,7 +22,10 @@ import useWebStorage from '#hooks/use-web-storage.js'
 // 1-* wss (even if no open app)
 // each with 0-*
 
-const coreAppIds = ['44b', 'mail']
+const coreAppIds = [
+  'app-1lkOUr6SlBbcv4Qo6Aed8nmXG4MCGj7ocjyODJ0J4FGmfNjyxnklgNoM7bagwa7'
+].map(appDecode).map(addressObjToAppId) // ['44b', 'mail']
+console.log('coreAppIds', coreAppIds)
 
 export default function useInitOrResetScreen () {
   const storage = useWebStorage(localStorage)
@@ -62,22 +67,23 @@ export default function useInitOrResetScreen () {
 function addUser ({ userPk, storage, isFirstTimeUser }) {
   const defaultPinnedApps = coreAppIds.map((id, i) => ({
     id,
-    // many apps with same id withing same ws may be open at once
-    key: Math.random().toString(36).slice(2),
+    // many apps with same id within same ws may be open at once
+    key: Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2),
     visibility: i === 0 ? 'open' : 'closed', // open|minimized|closed
     isNew: false // when announcing a new core app
   }))
 
-  const wsKey = Math.random().toString(36).slice(2)
-  storage.config_isMultiWindow$(true)
+  const wsKey = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
+  if (storage.config_isSingleWindow$() === undefined) storage.config_isSingleWindow$(false)
+  if (storage.config_vaultUrl$() === undefined) storage.config_vaultUrl$(window.IS_DEVELOPMENT ? 'http://localhost:4467' : 'https://44billion.github.io/44b-vault')
   storage.session_workspaceKeys$([wsKey])
   storage.session_openWorkspaceKeys$([wsKey]) // order of group of windows
   // de-normalized from `session_appByKey_${app.key}_visibility$` (open or minimized)
   storage[`session_workspaceByKey_${wsKey}_openAppKeys$`](isFirstTimeUser ? [defaultPinnedApps[0].key] : []) // order of windows
   storage[`session_workspaceByKey_${wsKey}_userPk$`](userPk)
   defaultPinnedApps.forEach(app => {
-    storage[`session_appById_${app.id}_appKeys$`]([app.key])
-    // storage[`session_appById_${app.key}_icon$`](...) add from local asset
+    storage[`session_workspaceByKey_${wsKey}_appById_${app.id}_appKeys$`]([app.key])
+    // storage[`session_appById_${app.id}_icon$`](...) add from local asset? no, load from idb chunks
     // also, the +<appname> on path upon app selection if from us or
     // +<appname>.<host>.<example>? hmm better naddr1
     storage[`session_appByKey_${app.key}_id$`](app.id)

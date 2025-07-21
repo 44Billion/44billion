@@ -1,4 +1,4 @@
-import { f, useStore, useTask } from 'f'
+import { f, useStore, useTask } from '#f'
 
 f(function aMenu () {
   const store = useStore({

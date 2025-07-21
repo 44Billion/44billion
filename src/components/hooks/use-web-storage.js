@@ -1,4 +1,4 @@
-import { useStore, useMemo, useTask, useGlobalSignal, toSignal } from 'f'
+import { useStore, useMemo, useTask, useGlobalSignal, toSignal } from '#f'
 import WeakValueMap from '#services/weak-value-map.js'
 
 function isValidVariableName (str) {

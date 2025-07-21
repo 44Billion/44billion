@@ -1,4 +1,4 @@
-import { f, useStore, useTask } from 'f'
+import { f, useStore, useTask } from '#f'
 import { jsVars } from '#assets/styles/theme.js'
 
 export const Modal = f(function aModal () {

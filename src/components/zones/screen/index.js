@@ -1,4 +1,4 @@
-import { f, useCallback, useComputed, useStore, useGlobalSignal, useStateSignal, useSignal, useClosestSignal, useClosestStore } from 'f'
+import { f, useCallback, useComputed, useStore, useGlobalSignal, useStateSignal, useSignal, useClosestSignal, useClosestStore, useTask } from '#f'
 import useInitOrResetScreen from './use-init-or-reset-screen.js'
 import useWebStorage from '#hooks/use-web-storage.js'
 import useLongPress from '#hooks/use-long-press.js'
@@ -9,11 +9,16 @@ import {
   cssClasses,
   cssVars
 } from '#assets/styles/theme.js'
+import useAppRouter from './use-app-router.js'
+import { generateB62SecretKey } from '#helpers/nip01.js'
+import { initMessageListener } from '#helpers/window-message/browser/index.js'
 
 f(function aScreen () {
   useInitOrResetScreen()
-  const isMultiWindow$ = useWebStorage(localStorage).config_isMultiWindow$
-  const style$ = useComputed(() => `
+  useAppRouter()
+
+  const isSingleWindow$ = useWebStorage(localStorage).config_isSingleWindow$
+  const style$ = useComputed(() => /* css */`
     @scope {
       &${cssStrings.defaultTheme}
 
@@ -28,6 +33,7 @@ f(function aScreen () {
         @media (orientation: portrait) {
           flex-direction: column;
         }
+        /**/
       }
     }
 
@@ -68,6 +74,7 @@ f(function aScreen () {
       }
       flex: 0 0 auto;
       background-color: ${cssVars.colors.mg};
+      /**/
     }
   `)
 
@@ -75,7 +82,7 @@ f(function aScreen () {
 
   return this.h`
     <div id="screen" class=${{
-      'multi-window': isMultiWindow$(),
+      'multi-window': !isSingleWindow$(),
       [cssClasses.defaultTheme]: true
     }}>
       <style>${style$()}</style>
@@ -136,7 +143,7 @@ f(function workspaceWindow () {
 
   return this.h`
     ${openAppKeys$().map(appKey => this.h({ key: appKey })`
-      <app-window key=${appKey} props=${{ appKey }} />
+      <app-window key=${appKey} props=${{ appKey, wsKey: this.props.workspaceKey }} />
     `)}
   `
 })
@@ -144,10 +151,13 @@ f(function appWindow () {
   const storage = useWebStorage(localStorage)
   const {
     [`session_appByKey_${this.props.appKey}_id$`]: appId$,
-    [`session_appByKey_${this.props.appKey}_visibility$`]: appVisibility$
+    [`session_appByKey_${this.props.appKey}_visibility$`]: appVisibility$,
+    [`session_workspaceByKey_${this.props.wsKey}_userPk$`]: maybeUserPk$
   } = storage
+  const userPk$ = useComputed(() => maybeUserPk$() || generateB62SecretKey())
 
-  // TODO: minimized still has iframe like open
+  useTask(() => { initMessageListener(userPk$(), appId$()) })
+
   return this.h`
     <div
       style=${`
@@ -173,8 +183,8 @@ f(function appWindow () {
           /**/
           iframe {
             border: none;
-            height: 100vh;
-            width: 100vw;
+            height: 100%;
+            width: 100%;
           }
         }
         app-window:nth-child(1) > &.open {
@@ -199,7 +209,7 @@ f(function appWindow () {
         }
       }
     </style>
-    <iframe src=${`//${appId$()}.${window.IS_PRODUCTION ? '44billion.net' : 'localhost:10000'}`} />
+    <iframe src=${`//u${userPk$()}.${window.IS_PRODUCTION ? '44billion.net' : 'localhost:10000'}/${appId$()}`} />
     </div>
   `
 })
@@ -317,7 +327,7 @@ f(function toolbarPinnedApps () {
     const pinnedAppIds = storage[`session_workspaceByKey_${wsKey}_pinnedAppIds$`]() || []
     return pinnedAppIds.reduce((r, appId, i) => {
       const appIndex = i + 1
-      storage[`session_appById_${appId}_appKeys$`]().forEach(appKey => { r.push({ appId, appKey, appIndex }) })
+      storage[`session_workspaceByKey_${wsKey}_appById_${appId}_appKeys$`]().forEach(appKey => { r.push({ appId, appKey, appIndex }) })
       return r
     }, [])
   })
@@ -333,7 +343,7 @@ f(function toolbarUnpinnedApps () {
     const unpinnedAppIds = storage[`session_workspaceByKey_${wsKey}_unpinnedAppIds$`]() || []
     return unpinnedAppIds.reduce((r, appId, i) => {
       const appIndex = i + 1 + pinnedAppIdsLength
-      storage[`session_appById_${appId}_appKeys$`]().forEach(appKey => { r.push({ appId, appKey, appIndex }) })
+      storage[`session_workspaceByKey_${wsKey}_appById_${appId}_appKeys$`]().forEach(appKey => { r.push({ appId, appKey, appIndex }) })
       return r
     }, [])
   })
@@ -380,11 +390,12 @@ f(function toolbarAppLauncher () {
         // maximize
         const appKey = app$().key
         storage[`session_appByKey_${appKey}_visibility$`]('open')
-        storage[`session_workspaceByKey_${app$().workspaceKey}_openAppKeys$`](v => {
+        storage[`session_workspaceByKey_${app$().workspaceKey}_openAppKeys$`]((v, eqKey) => {
           const i = v.indexOf(appKey)
           if (i !== -1) {
             v.splice(i, 1) // remove
             v.unshift(appKey) // place at beginning
+            v[eqKey] = Math.random()
           }
           return v
         })

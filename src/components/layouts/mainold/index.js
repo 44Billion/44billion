@@ -1,5 +1,5 @@
 // this layout forms the basis with the body and bottom panel
-import { f } from 'f'
+import { f } from '#f'
 
 f(function mainLayout () {
   return this.h`<div class='wrapper'>

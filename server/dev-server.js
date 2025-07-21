@@ -5,27 +5,25 @@ import {
   replyWithError,
   findFreePort
 } from './helpers.js'
-import {
-  subdomainAppRouter
-} from './router/index.js'
+import router from './router/index.js'
 
 // dev server, but router is also used at production
 const server = createServer(async function httpHandler (req, res) {
   try {
     withWebUrl(req)
-    logReqRes(req, res, 'http')
     withDomains(req)
+    logReqRes(req, res, 'http')
     if (!req.domain && req.webUrl.hostname !== '127.0.0.1') return replyWithError(res)
     if (req.domain !== '44billion.net' && req.domain !== 'localhost') return replyWithError(res)
 
-    console.log('req.webUrl', req.webUrl)
-    if (req.subdomain && req.subdomain.split('.')[0].length === req.subdomain.length) {
-      console.log('entered app router')
-      await subdomainAppRouter.fetch(req, res)
+    if (!req.webUrl.pathname.endsWith('.js.map')) {
+      await router.fetch(req, res)
     }
 
+    // CAUTION: one needs to await rstream.pipe(res).on('finish', resolve)
+    // or await pipeline(rstream, res) from 'node:stream/promises'
+    // so that res.writableEnded is set to true
     if (!res.writableEnded) await maybeProxyToEsbuild(req, res)
-
     if (!res.writableEnded) replyWithError(res)
   } catch (err) {
     console.error(err)
@@ -52,7 +50,7 @@ process.on('SIGINT', async function () {
 })
 
 function logReqRes (req, res, mode = 'http') {
-  console.log(`${req.method} ${req.url} (fwd: ${req.headers['x-forwarded-for'] ?? 'none'} - sckt: ${req.socket.remoteAddress})`)
+  console.log(`${req.method} ${req.url} (sub: ${req.subdomain ?? 'none'} - fwd: ${req.headers['x-forwarded-for'] ?? 'none'} - sckt: ${req.socket.remoteAddress})`)
   req.on('error', err => { console.error(`${mode === 'ws' ? '(Websocket) ' : ''}Request error: ${err.stack}`) })
   res.on('error', err => { console.error(`${mode === 'ws' ? '(Websocket) ' : ''}Response error: ${err.stack}`) })
 }
@@ -61,6 +59,7 @@ async function maybeProxyToEsbuild (req, res) {
   const isDev = process.env.NODE_ENV === 'development'
   if (!isDev) return
 
+  console.log('esbuild router:', req.url)
   const url = httpReqToUrl(req, '8080') // esbuild server at default port
   const options = httpReqToFetchOptions(req)
   const response = await fetch(url, options)

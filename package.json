@@ -6,13 +6,12 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "starta": "NODE_ENV=development node server/dev-server.js",
-    "start": "NODE_ENV=development node bin/build.js & NODE_ENV=development node server/dev-server.js",
-    "build": "NODE_ENV=production node bin/build.js"
+    "start": "NODE_ENV=development npm run _build & NODE_ENV=development node server/dev-server.js",
+    "build": "NODE_ENV=production npm run _build",
+    "_build": "node bin/build.js",
+    "test": "node --test 'tests/**/*.test.js'",
+    "test:only": "node --test --test-only 'tests/**/*.test.js'"
   },
-  "workspaces": [
-    "../f"
-  ],
   "devDependencies": {
     "esbuild": "^0.25.1",
     "eslint": "^9.22.0",
@@ -21,15 +20,26 @@
     "neostandard": "^0.12.1"
   },
   "imports": {
+    "#f": "thenameisf",
     "#bin/*": "./bin/*",
-    "#*": ["./src/*"],
+    "#server/*": "./server/*",
+    "#*": [
+      "./src/*"
+    ],
     "#assets/*": "./src/assets/*",
     "#config/*": "./src/config/*",
     "#helpers/*": "./src/helpers/*",
+    "#scripts/*": "./src/scripts/*",
     "#services/*": "./src/services/*",
+    "#service-workers/*": "./src/service-workers/*",
     "#hooks/*": "./src/components/hooks/*",
     "#shared/*": "./src/components/shared/*",
     "#views/*": "./src/components/views/*",
     "#zones/*": "./src/components/zones/*"
+  },
+  "dependencies": {
+    "mime": "^4.0.7",
+    "nostr-tools": "^2.16.2",
+    "thenameisf": "^1.0.0"
   }
 }

@@ -1,0 +1,110 @@
+import { useTask, useCallback } from '#f'
+import useLocation from '#hooks/use-location.js'
+import useWebStorage from '#hooks/use-web-storage.js'
+import { appDecode } from '#helpers/nip19.js'
+import { addressObjToAppId } from '#helpers/app.js'
+
+export default function useAppRouter () {
+  const loc = useLocation()
+  const storage = useWebStorage(localStorage)
+  const {
+    session_openWorkspaceKeys$: openWorkspaceKeys$
+  } = storage
+
+  const maybeOpenInstalledApp = useCallback(appId => {
+    const wsKey = openWorkspaceKeys$()[0]
+    if (!wsKey) throw new Error('User n/a')
+
+    const {
+      [`session_workspaceByKey_${wsKey}_appById_${appId}_appKeys$`]: appKeys$,
+      [`session_workspaceByKey_${wsKey}_pinnedAppIds$`]: pinnedAppIds$,
+      [`session_workspaceByKey_${wsKey}_pinnedAppIds$`]: unpinnedAppIds$
+    } = storage
+    if (!pinnedAppIds$().includes(appId) && !unpinnedAppIds$().includes(appId)) {
+      return { hasOpened: false, isInstalled: false }
+    }
+
+    function getScore (vis) { return { closed: 3, minimized: 2, open: 1 }[vis] }
+    const app = appKeys$()
+      .map(key => ({ key, wsKey, vis: storage[`session_appByKey_${key}_visibility$`]() }))
+      .sort((a, b) => getScore(b.vis) - getScore(a.vis))[0]
+    if (!app) throw new Error('App install error')
+
+    switch (app.vis) {
+      case 'closed': {
+        // open
+        storage[`session_appByKey_${app.key}_visibility$`]('open')
+        storage[`session_workspaceByKey_${app.wsKey}_openAppKeys$`](v => {
+          v.unshift(app.key)
+          return v
+        })
+        break
+      }
+      case 'minimized': {
+        // maximize
+        const appKey = app.key
+        storage[`session_appByKey_${appKey}_visibility$`]('open')
+        storage[`session_workspaceByKey_${app.wsKey}_openAppKeys$`]((v, eqKey) => {
+          const i = v.indexOf(appKey)
+          if (i !== -1) {
+            v.splice(i, 1) // remove
+            v.unshift(appKey) // place at beginning
+            v[eqKey] = Math.random()
+          }
+          return v
+        })
+        break
+      }
+      case 'open': {
+        // tell caller to open new app instance (new appKey)
+        return { hasOpened: false, isInstalled: true }
+      }
+    }
+
+    return { hasOpened: true, isInstalled: true }
+  })
+
+  const openApp = useCallback(napp => {
+    if (!openWorkspaceKeys$().length) throw new Error()
+    const decodedApp = appDecode(napp)
+    const appId = addressObjToAppId(decodedApp)
+    if (decodedApp.relays.length > 0) {
+      storage[`session_appById_${appId}_relayHints$`](decodedApp.relays)
+    }
+    const { hasOpened, isInstalled } = maybeOpenInstalledApp(appId)
+
+    if (hasOpened) return
+
+    const app = {
+      id: appId,
+      key: Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2),
+      visibility: 'open',
+      isNew: false
+    }
+    const wsKey = openWorkspaceKeys$()[0]
+    storage[`session_workspaceByKey_${wsKey}_appById_${app.id}_appKeys$`](v => {
+      v.push(app.key)
+      return v
+    })
+    storage[`session_appByKey_${app.key}_id$`](app.id)
+    storage[`session_appByKey_${app.key}_visibility$`](app.visibility)
+    storage[`session_workspaceByKey_${wsKey}_openAppKeys$`](v => {
+      v.unshift(app.key)
+      return v
+    })
+
+    if (isInstalled) return
+
+    storage[`session_workspaceByKey_${wsKey}_unpinnedAppIds$`](v => {
+      v.unshift(app.id)
+      return v
+    })
+  })
+
+  useTask(({ track }) => {
+    if (!track(() => loc.url$().pathname).startsWith('/app-')) return
+
+    const { napp } = loc.params$()
+    try { openApp(napp) } catch (err) { console.log(err); history.replaceState('/') }
+  })
+}

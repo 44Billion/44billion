@@ -1,26 +1,16 @@
 import esbuild from 'esbuild'
-import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import fs from 'node:fs'
+import jsTextPlugin from './plugins/js-text.js'
+import cssTextPlugin from './plugins/css-text.js'
+import htmlTextPlugin from './plugins/html-text.js'
 
 const { dirname } = import.meta
-// https://github.com/evanw/esbuild/issues/2609#issuecomment-1279867125
-const textLoaderMinifiedCssPlugin = {
-  name: 'text-loader-minified-css',
-  setup (build) {
-    build.onLoad({ filter: /\.css$/ }, async (args) => {
-      const f = await readFile(args.path)
-      const css = await esbuild.transform(f, { loader: 'css', minify: true })
-      return { loader: 'text', contents: css.code }
-    })
-  }
-}
-
 const isDev = process.env.NODE_ENV === 'development'
 const prodOutdir = `${dirname}/../dist/${dirname.split('/').slice(-2, -1)}` // dist/<root dir>
 // same as esbuild.build, but reusable
 const ctx = await esbuild.context({
-  plugins: [textLoaderMinifiedCssPlugin],
+  plugins: [jsTextPlugin, cssTextPlugin, htmlTextPlugin],
   loader: {
     '.html': 'copy', '.ico': 'copy',
     '.svg': 'text',
@@ -31,8 +21,11 @@ const ctx = await esbuild.context({
     : { define: { 'window.IS_PRODUCTION': JSON.stringify(true) } }),
   entryPoints: [
     `${dirname}/../src/components/app.js`,
-    `${dirname}/../src/assets/html/index.html` // will use "copy" loader
+    `${dirname}/../src/scripts/user-page.js`,
+    `${dirname}/../src/assets/html/index.html`, // will use "copy" loader
+    `${dirname}/../src/assets/html/user-page.html`, // will use "copy" loader
     // `${dirname}/../src/assets/media/favicon.ico` // will use "copy" loader
+    { in: `${dirname}/../src/service-workers/app/index.js`, out: 'app-sw' } // app-sw.js
   ],
   outdir: isDev
     // .serve({ servedir: `${dirname}/../src/assets/html` }) will serve app.js from memory as if it was there
@@ -47,6 +40,7 @@ const ctx = await esbuild.context({
   // https://caniuse.com/?search=top%20level%20await
   target: ['edge89', 'firefox89', 'chrome89', 'safari15'],
   minify: !isDev,
+  sourcemap: isDev,
   keepNames: false, // set it to true if the code relies on (function a(){}).name === 'a'
   write: !isDev // serve from memory if isDev
 })

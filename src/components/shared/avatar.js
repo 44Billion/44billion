@@ -1,4 +1,4 @@
-import { f, useStore, useAsyncComputed } from 'f'
+import { f, useStore, useAsyncComputed } from '#f'
 import { getSvgAvatar } from '#helpers/avatar.js'
 import '#shared/icons/icon-user-circle.js'
 import '#shared/svg.js'
