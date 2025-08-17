@@ -13,6 +13,35 @@ const trustedAppPage = injectScript(_trustedAppPage, trustedAppPageScriptContent
 // this can't be dynamically called at a worker
 initReplyListener()
 
+// Stores clientId to MessagePort map.
+// A MessageChannel initiated at the client,
+// sending the port to the sw which would
+// then use it to do port.postMessage, was
+// the way that worked for sw to talk to clients
+/// because client.postMessaged dind't work.
+const readyClients = new Map()
+
+// Clean up dead clients periodically, although
+// sw tend to be short lived
+setInterval(async () => {
+  const clients = await self.clients.matchAll()
+  const activeIds = new Set(clients.map(c => c.id))
+  for (const id of readyClients.keys()) {
+    if (!activeIds.has(id)) readyClients.delete(id)
+  }
+}, 30000)
+
+// Handle ready signals from clients
+self.addEventListener('message', async e => {
+  if (
+    !e.source.id ||
+    e.data.code !== 'TRUSTED_IFRAME_READY' ||
+    new URL(e.source.url).pathname !== '/~~napp'
+  ) return
+
+  readyClients.set(e.source.id, e.ports[0])
+})
+
 const getErrorHtml = (e, err) => /* html */`
 <!doctype html>
 <html>
@@ -20,55 +49,66 @@ const getErrorHtml = (e, err) => /* html */`
   </head>
   <body>
     <p>${[e.request.method, e.request.url].join(' | ')}</p>
-    <p>Error: ${err.stack}</p>
+    <p>Error: ${err.stack ?? err}</p>
   </body>
 </html>
 `
-self.addEventListener('install', () => {
+
+self.addEventListener('install', async () => {
   console.log('Service Worker: Install event')
-  self.skipWaiting() // Force the new SW to activate immediately
+  await self.skipWaiting() // Force the new SW to activate immediately
 })
 
-self.addEventListener('activate', (event) => {
+self.addEventListener('activate', e => {
   console.log('Service Worker: Activate event')
-  event.waitUntil(self.clients.claim()) // Take control of existing clients immediately
-})
-
-self.addEventListener('fetch', e => {
-  if (
-    !e.clientId ||
-    (e.request.pathname = new URL(e.request.url).pathname) !== '/~~napp'
-  ) return
-  e.respondWith(new Response(trustedAppPage, { headers: { 'content-type': 'text/html' } }))
+  e.waitUntil((async function () {
+    await self.clients.claim() // Take control of existing clients immediately
+    // Regular client.postMessage doesn't work. It's ok as we use BroadcastChannel
+    // later, instead of here.
+    // const clients = await self.clients.matchAll()
+    // clients
+    //   .filter(client => new URL(client.url).pathname === '/~~napp')
+    //   .forEach(client => {
+    //     client.postMessage({ code: 'GET_READY_STATUS' })
+    //   })
+  })())
 })
 
 self.addEventListener('fetch', e => {
   if (!e.clientId) return
-  e.respondWith(
-    handleRequest(e.request)
-      // future: esbuild html text plugin too, then replace {{error}}
-      .catch(err => new Response(getErrorHtml(e, err), { headers: { 'content-type': 'text/html' } }))
-  )
+
+  e.request.pathname = new URL(e.request.url).pathname
+  e.respondWith((async function () {
+    if (e.request.pathname === '/~~napp') {
+      return new Response(
+        trustedAppPage,
+        { headers: { 'content-type': 'text/html', 'cache-control': 'no-cache' } }
+      )
+    }
+
+    return handleRequest(e.request)
+      // TODO: esbuild html text plugin too, then replace {{error}}
+      .catch(err => new Response(getErrorHtml(e, err), { headers: { 'content-type': 'text/html', 'cache-control': 'no-cache' } }))
+  })())
 })
 
+// TODO: add timeout to requestMultipleMessages, catch error and if it's a timeout one
+// call selectClientToPostMessagesTo again by recursively retrying handleRequest
 async function handleRequest (request) {
   const pathname = request.pathname ?? new URL(request.url).pathname
-  const to = await selectClientToPostMessagesTo()
+  const toPort = await selectClientToPostMessagesTo() // Now 'toPort' is a MessagePort
   const msg = { code: 'STREAM_APP_FILE', pathname }
-  console.log('GET FILE', request.url, '<- which one; to ->', new URL(to.url).origin, 'type:', typeof self.location.origin) // self.location.origin  is empty
-  const iterator = requestMultipleMessages(to, msg, { targetOrigin: new URL(to.url).origin }) // '*' /* self.location.origin */ })
-  console.log('GETTING FILE', request.url, 'from', to)
+
+  const iterator = requestMultipleMessages(toPort, msg, { targetOrigin: self.location.origin || '*' })
   const firstReplyMsg = (await iterator.next()).value
-  console.log('GOT FIRST CHUNK FILE', request.url, firstReplyMsg)
 
   if (firstReplyMsg.error) {
     if (firstReplyMsg.error.message !== 'File not cached yet') throw firstReplyMsg.error
 
     // this html waits for complete file chunk caching then reloads itself
-    return new Response(appPageLoader, { headers: { 'content-type': 'text/html' } })
+    return new Response(appPageLoader, { headers: { 'content-type': 'text/html', 'cache-control': 'no-cache' } })
   }
   const { content: firstContent, contentType } = firstReplyMsg.payload
-  console.log('firstContent', firstContent)
   async function * source () {
     yield firstContent
     for await (const { payload: { content }, error } of iterator) {
@@ -80,7 +120,7 @@ async function handleRequest (request) {
   if (contentType !== 'text/html') {
     return new Response(
       new Base122Decoder(source).getDecoded(),
-      { headers: { 'content-type': contentType } }
+      { headers: { 'content-type': contentType, 'cache-control': 'no-cache' } }
     )
   } else {
     let appPage = ''
@@ -90,20 +130,29 @@ async function handleRequest (request) {
     }
     // appPageScriptContent injects window.(nostr|napp)
     appPage = injectScript(appPage, appPageScriptContent)
-    return new Response(appPage, { headers: { 'content-type': 'text/html' } })
+    return new Response(appPage, { headers: { 'content-type': 'text/html', 'cache-control': 'no-cache' } })
   }
 }
 
+let bc
 async function selectClientToPostMessagesTo () {
-  let targetClient
-  while (!targetClient) {
+  let targetPort
+  while (!targetPort) {
     // Spec already puts most recently focused first
     const clients = await self.clients.matchAll({ includeUncontrolled: false, type: 'window' })
-    targetClient = clients.find(client => new URL(client.url).pathname === '/~~napp')
-    if (!targetClient) {
-      console.log('Service Worker: No client available, retrying...')
-      await new Promise(resolve => setTimeout(resolve, 500))
+
+    const targetClient = clients.find(client =>
+      new URL(client.url).pathname === '/~~napp' &&
+      readyClients.has(client.id) // Check if we have a port for this client
+    )
+
+    if (targetClient) targetPort = readyClients.get(targetClient.id)
+    else {
+      console.log('Service Worker: No client available with ready port, retrying...')
+      bc ??= new BroadcastChannel('sw~~napp')
+      bc.postMessage({ code: 'GET_READY_STATUS', payload: null })
+      await new Promise(resolve => setTimeout(resolve, 300))
     }
   }
-  return targetClient
+  return targetPort
 }

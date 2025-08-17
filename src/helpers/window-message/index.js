@@ -43,7 +43,7 @@ export const initReplyListener = (hasRun => () => {
 export async function requestMessage (to, message, options, transfer) {
   initReplyListener()
   if (!message.code && !('payload' in message)) throw new Error('Missing args')
-  if (typeof options !== 'object') options = { targetOrigin: options, transfer }
+  if (options && typeof options !== 'object') options = { targetOrigin: options, transfer }
 
   const reqId = getReqId()
   const promise = initReqPromise(reqId, message.code, options.timeout)
@@ -64,7 +64,7 @@ export async function requestMessage (to, message, options, transfer) {
 }
 export async function replyWithMessage (originalMsgEvent, message, options, transfer) {
   if ((!('payload' in message) && !('error' in message))) throw new Error('Missing args')
-  if (typeof options !== 'object') options = { targetOrigin: options, transfer }
+  if (options && typeof options !== 'object') options = { targetOrigin: options, transfer }
   options.targetOrigin ??= originalMsgEvent.origin
   options.to ??= originalMsgEvent.source
   options.to.postMessage({
@@ -75,14 +75,14 @@ export async function replyWithMessage (originalMsgEvent, message, options, tran
 }
 export async function postMessage (to, message, options, transfer) {
   if (!message.code || (!('payload' in message) && !('error' in message))) throw new Error('Missing args')
-  if (typeof options !== 'object') options = { targetOrigin: options, transfer }
+  if (options && typeof options !== 'object') options = { targetOrigin: options, transfer }
   to.postMessage(message, options)
 }
 
 export async function * requestMultipleMessages (to, message, options, transfer) {
   initReplyListener()
   if (!message.code && !('payload' in message)) throw new Error('Missing args')
-  if (typeof options !== 'object') options = { targetOrigin: options, transfer }
+  if (options && typeof options !== 'object') options = { targetOrigin: options, transfer }
 
   const reqId = getReqId()
   const messageQueue = []

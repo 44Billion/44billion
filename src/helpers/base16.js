@@ -3,6 +3,7 @@ export function bytesToBase16 (uint8aBytes) {
 }
 
 export function base16ToBytes (base16String) {
+  if (base16String.length % 2 !== 0) throw new Error('invalid hex: odd length')
   const arr = new Uint8Array(base16String.length / 2) // create result array
   for (let i = 0; i < arr.length; i++) {
     const j = i * 2

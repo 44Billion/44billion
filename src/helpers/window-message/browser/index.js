@@ -2,16 +2,17 @@ import { getUserPageOrigin, handleMessageReply, requestMessage, replyWithMessage
 import { appIdToAddressObj } from '#helpers/app.js'
 import { streamFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
 import AppFileManager from '#services/app-file-manager/index.js'
-const currentVaultUrl = new URL(JSON.parse(localStorage.getItem('config_vaultUrl')))
-const vaultIframe = document.querySelector(`iframe[src="${currentVaultUrl.href}"]`)
-if (!vaultIframe) console.log('TODO: add vault') // throw new Error('Vault iframe not found')
-const vault = vaultIframe?.contentWindow
-// const vault = vaultIframe.contentWindow
 
 // Note: wildcard certificates for second-level subdomains are hard to get (*.<many>.a.com),
 // that's why the user page exists instead of unifying it with the app page
 // like <userpubkey>.<appid>.44billion.net
 export async function initMessageListener (userPk, appId) {
+  const currentVaultUrl = new URL(JSON.parse(localStorage.getItem('config_vaultUrl')))
+  const vaultIframe = document.querySelector(`iframe[src="${currentVaultUrl.href}"]`)
+  if (!vaultIframe) console.log('TODO: add vault') // throw new Error('Vault iframe not found')
+  const vault = vaultIframe?.contentWindow
+  // const vault = vaultIframe.contentWindow
+
   const userPageOrigin = getUserPageOrigin(userPk)
   const appAddress = appIdToAddressObj(appId)
   const appFiles = await AppFileManager.create(appId, appAddress)
@@ -24,7 +25,7 @@ export async function initMessageListener (userPk, appId) {
       if (e.origin !== vaultOrigin) return
       return handleMessageReply(e)
     }
-    // if (e.origin !== userPageOrigin) return
+    if (e.origin !== userPageOrigin) return
 
     switch (e.data.code) {
       // For now, sw doesn't need this info
@@ -49,7 +50,6 @@ export async function initMessageListener (userPk, appId) {
         break
       }
       case 'STREAM_APP_FILE': {
-        console.log('pediram STREAM_APP_FILE')
         try {
           // if chunk is missing (chunks aren't cached), send error,
           // signaling sw should respond with app loader html, if it's .html file,
@@ -87,7 +87,7 @@ export async function initMessageListener (userPk, appId) {
       case 'NIP07': {
         const { ns, nsParams = [], method, params = [] } = e.data.payload
         const appName = appId
-        const msg = await requestNip07Message(userPk, ns, nsParams, method, params, { appName })
+        const msg = await requestNip07Message(vault, userPk, ns, nsParams, method, params, { appName })
         replyWithMessage(e, msg)
         break
       }
@@ -95,7 +95,7 @@ export async function initMessageListener (userPk, appId) {
   })
 }
 
-export async function requestNip07Message (pubkey, ns, nsParams, method, params, { appName } = {}) {
+export async function requestNip07Message (vault, pubkey, ns, nsParams, method, params, { appName } = {}) {
   const msg = {
     code: 'NIP07',
     payload: {

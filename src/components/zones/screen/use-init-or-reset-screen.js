@@ -1,6 +1,7 @@
 import { useTask, useGlobalSignal } from '#f'
 import useWebStorage from '#hooks/use-web-storage.js'
 import { appDecode } from '#helpers/nip19.js'
+import { generateB62SecretKey } from '#helpers/nip01.js'
 import { addressObjToAppId } from '#helpers/app.js'
 
 // the screen has
@@ -24,8 +25,7 @@ import { addressObjToAppId } from '#helpers/app.js'
 
 const coreAppIds = [
   'app-1lkOUr6SlBbcv4Qo6Aed8nmXG4MCGj7ocjyODJ0J4FGmfNjyxnklgNoM7bagwa7'
-].map(appDecode).map(addressObjToAppId) // ['44b', 'mail']
-console.log('coreAppIds', coreAppIds)
+].map(appDecode).map(addressObjToAppId) // ['44b', 'minimoon']
 
 export default function useInitOrResetScreen () {
   const storage = useWebStorage(localStorage)
@@ -36,6 +36,7 @@ export default function useInitOrResetScreen () {
     if (storage.session_workspaceKeys$()) return
 
     const anonUserPk = ''
+    storage.session_anonPk$(generateB62SecretKey())
     addUser({ userPk: anonUserPk, storage, isFirstTimeUser: true })
   })
 

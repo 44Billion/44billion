@@ -10,7 +10,6 @@ import {
   cssVars
 } from '#assets/styles/theme.js'
 import useAppRouter from './use-app-router.js'
-import { generateB62SecretKey } from '#helpers/nip01.js'
 import { initMessageListener } from '#helpers/window-message/browser/index.js'
 
 f(function aScreen () {
@@ -152,9 +151,10 @@ f(function appWindow () {
   const {
     [`session_appByKey_${this.props.appKey}_id$`]: appId$,
     [`session_appByKey_${this.props.appKey}_visibility$`]: appVisibility$,
-    [`session_workspaceByKey_${this.props.wsKey}_userPk$`]: maybeUserPk$
+    [`session_workspaceByKey_${this.props.wsKey}_userPk$`]: maybeUserPk$,
+    session_anonPk$: anonPk$
   } = storage
-  const userPk$ = useComputed(() => maybeUserPk$() || generateB62SecretKey())
+  const userPk$ = useComputed(() => maybeUserPk$() || anonPk$())
 
   useTask(() => { initMessageListener(userPk$(), appId$()) })
 

@@ -14,7 +14,6 @@ export function initMessageListener (appSubdomain, trustedAppPageIframe) {
   let hasLoadedAppPageIframe = false
   window.addEventListener('message', async e => {
     if ([browserOrigin, appOrigin].includes(e.origin)) return
-console.log('e.data.code recebido na userpage', e.data.code, e.data)
 
     switch (e.data.code) {
       case 'REPLY': {
@@ -24,10 +23,7 @@ console.log('e.data.code recebido na userpage', e.data.code, e.data)
         break
       }
       case 'TRUSTED_IFRAME_READY': {
-        console.log('recbeido', 'TRUSTED_IFRAME_READY', 'hasLoadedAppPageIframe', hasLoadedAppPageIframe)
-        console.log('e.origin !== appOrigin', e.origin !== appOrigin, e.origin, appOrigin)
-        if (hasLoadedAppPageIframe) return // || e.origin !== appOrigin) return
-        console.log('recbeido2', 'TRUSTED_IFRAME_READY')
+        if (hasLoadedAppPageIframe || e.origin !== appOrigin) return
 
         // load real app page beside the trusted app page
         const domain = window.location.host.replace(/^[^.]+\./, '')
@@ -52,9 +48,6 @@ console.log('e.data.code recebido na userpage', e.data.code, e.data)
           replyWithMessage(e, msg)
           break // other methods will use the default case (handled by the browser)
         }
-      }
-      case 'STREAM_APP_FILE': {
-        console.log('PEDIU SIM','STREAM_APP_FILE', e.data )
       }
       // eslint-disable-next-line no-fallthrough
       default: {

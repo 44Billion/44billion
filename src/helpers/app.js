@@ -1,14 +1,18 @@
-import { bytesToBase62, base62ToBase16, base16ToBase62 } from '#helpers/base62.js'
+import { base62ToBase16, base16ToBase62 } from '#helpers/base62.js'
+import { bytesToBase36 } from '#helpers/base36.js'
 import { base16ToBytes } from '#helpers/base16.js'
 
-export const NOSTR_APP_D_TAG_MAX_LENGTH = 19
+// 63 - (1<channel> + 5<b63loggeduser> 50<b63pk>)
+// <b63loggeduser> pk chars at positions [7][17][27][37][47]
+export const NOSTR_APP_D_TAG_MAX_LENGTH = 7
 
 export function isNostrAppDTagSafe (string) {
   return isSubdomainSafe(string) && string.length <= NOSTR_APP_D_TAG_MAX_LENGTH
 }
 
 function isSubdomainSafe (string) {
-  return /(?:^[A-Za-z0-9]$)|(?:^(?!.*--)[A-Za-z0-9][A-Za-z0-9-]{0,61}[A-Za-z0-9]$)/.test(string)
+  return /(?:^[a-z0-9]$)|(?:^(?!.*--)[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$)/.test(string) &&
+  !/--/.test(string)
 }
 
 export function deriveNostrAppId (string) {
@@ -16,9 +20,9 @@ export function deriveNostrAppId (string) {
 }
 
 async function toSubdomainSafe (string, maxStringLength) {
-  const byteLength = base62MaxLengthToMaxSourceByteLength(maxStringLength)
+  const byteLength = baseMaxLengthToMaxSourceByteLength(maxStringLength, 36)
   const bytes = (await toSha1(string)).slice(0, byteLength)
-  return bytesToBase62(bytes, maxStringLength)
+  return bytesToBase36(bytes, maxStringLength)
 }
 
 async function toSha1 (string) {
@@ -26,16 +30,18 @@ async function toSha1 (string) {
   return new Uint8Array(await crypto.subtle.digest('SHA-1', bytes))
 }
 
-// base62MaxLengthToMaxSourceByteLength(19) === 14 byte length
-function base62MaxLengthToMaxSourceByteLength (maxStringLength) {
-  const log62 = Math.log(62)
+// base62MaxLengthToMaxSourceByteLength(19, 62) === 14 byte length
+function baseMaxLengthToMaxSourceByteLength (maxStringLength, base) {
+  if (!base) throw new Error('Which base?')
+  const baseLog = Math.log(base)
   const log256 = Math.log(256)
 
-  const maxByteLength = (maxStringLength * log62) / log256
+  const maxByteLength = (maxStringLength * baseLog) / log256
 
   return Math.floor(maxByteLength)
 }
 
+// TODO: change match
 export function userSubdomainToPk (subdomain) {
   const pk = base62ToBase16(subdomain.match(/^u(?<pubkeyB62>[A-Za-z0-9]{43})$/).groups.pubkeyB62)
   if (!/[a-f0-9]{64}/.test(pk)) throw new Error('Wrong pk format')
