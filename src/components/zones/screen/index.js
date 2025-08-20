@@ -11,6 +11,7 @@ import {
 } from '#assets/styles/theme.js'
 import useAppRouter from './use-app-router.js'
 import { initMessageListener } from '#helpers/window-message/browser/index.js'
+import { base62ToBase36 } from '#helpers/base36.js'
 
 f(function aScreen () {
   useInitOrResetScreen()
@@ -154,7 +155,7 @@ f(function appWindow () {
     [`session_workspaceByKey_${this.props.wsKey}_userPk$`]: maybeUserPk$,
     session_anonPk$: anonPk$
   } = storage
-  const userPk$ = useComputed(() => maybeUserPk$() || anonPk$())
+  const userPk$ = useComputed(() => base62ToBase36(maybeUserPk$() || anonPk$(), 50))
 
   useTask(() => { initMessageListener(userPk$(), appId$()) })
 

@@ -1,4 +1,5 @@
 import { base16ToBytes, bytesToBase16 } from '#helpers/base16.js'
+import { base62ToBytes, bytesToBase62 } from '#helpers/base62.js'
 
 export const BASE36_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz'
 const BASE = BigInt(BASE36_ALPHABET.length)
@@ -9,25 +10,33 @@ export function bytesToBase36 (bytes, padLength = 0) {
   return base16ToBase36(bytesToBase16(bytes), padLength)
 }
 
-export function base16ToBase36 (string, padLength) {
-  return bigIntToBase36(base16ToBigInt(string), padLength)
+export function base16ToBase36 (hex, padLength = 0) {
+  return bigIntToBase36(base16ToBigInt(hex), padLength)
 }
 
-export function base36ToBytes (string) {
-  return base16ToBytes(base36ToBase16(string))
+export function base62ToBase36 (base62str, padLength = 0) {
+  return bytesToBase36(base62ToBytes(base62str), padLength)
 }
 
-export function base36ToBase16 (string) {
-  return bigIntToBase16(base36ToBigInt(string))
+export function base36ToBytes (base36str) {
+  return base16ToBytes(base36ToBase16(base36str))
 }
 
-function base36ToBigInt (string) {
-  if (typeof string !== 'string') {
+export function base36ToBase16 (base36str) {
+  return bigIntToBase16(base36ToBigInt(base36str))
+}
+
+export function base36ToBase62 (base36str, padLength = 0) {
+  return bytesToBase62(base36ToBytes(base36str), padLength)
+}
+
+function base36ToBigInt (base36str) {
+  if (typeof base36str !== 'string') {
     throw new Error('Input must be a string.')
   }
 
   let result = 0n
-  for (const char of string) {
+  for (const char of base36str) {
     const value = CHAR_MAP.get(char)
     if (value === undefined) {
       throw new Error(`Invalid character in Base36 string: ${char}`)
@@ -41,7 +50,7 @@ function bigIntToBase36 (num, padLength) {
   if (typeof num !== 'bigint') throw new Error('Input must be a BigInt.')
   if (num < 0n) throw new Error('Can\'t be signed BigInt')
 
-  num.toString(36).padStart(padLength, LEADER)
+  return num.toString(36).padStart(padLength, LEADER)
 }
 
 function bigIntToBase16 (num) {

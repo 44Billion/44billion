@@ -1,5 +1,5 @@
 import { requestMultipleMessages } from '#helpers/window-message/index.js'
-import { appIdToAddressObj } from '#helpers/app.js'
+import { appSubdomainToAppId, appIdToAddressObj } from '#helpers/app.js'
 import Base122Decoder from '#services/base122-decoder.js'
 import { triggerReloadOnSwSkipWaiting } from '#helpers/service-worker.js'
 
@@ -9,7 +9,7 @@ const napp = new class extends EventTarget {
 }()
 window.napp = napp
 const to = window.parent
-const appId = location.hostname.split('.')[0]
+const appId = appSubdomainToAppId(location.hostname.split('.')[0])
 const appAddress = appIdToAddressObj(appId)
 
 async function maybeSetIcon () {

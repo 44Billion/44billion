@@ -31,7 +31,7 @@ export function bytesToBase62 (bytes, padLength = 0) {
   return result.padStart(padLength, LEADER)
 }
 
-export function base16ToBase62 (string, padLength) {
+export function base16ToBase62 (string, padLength = 0) {
   return bytesToBase62(base16ToBytes(string), padLength)
 }
 
