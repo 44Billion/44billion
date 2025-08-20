@@ -12,6 +12,7 @@ import {
 import useAppRouter from './use-app-router.js'
 import { initMessageListener } from '#helpers/window-message/browser/index.js'
 import { base62ToBase36 } from '#helpers/base36.js'
+import { appIdToAppSubdomain } from '#helpers/app.js'
 
 f(function aScreen () {
   useInitOrResetScreen()
@@ -155,9 +156,18 @@ f(function appWindow () {
     [`session_workspaceByKey_${this.props.wsKey}_userPk$`]: maybeUserPk$,
     session_anonPk$: anonPk$
   } = storage
-  const userPk$ = useComputed(() => base62ToBase36(maybeUserPk$() || anonPk$(), 50))
+  const userPkB36$ = useComputed(() => base62ToBase36(maybeUserPk$() || anonPk$(), 50))
+  const appSubdomain$ = useComputed(() => appIdToAppSubdomain(appId$(), userPkB36$()))
+  const appIframeRef$ = useSignal()
 
-  useTask(() => { initMessageListener(userPk$(), appId$()) })
+  useTask(
+    ({ cleanup }) => {
+      const ac = new AbortController()
+      cleanup(() => ac.abort())
+      initMessageListener(userPkB36$(), appId$(), appSubdomain$(), appIframeRef$(), ac.signal)
+    },
+    { after: 'rendering' }
+  )
 
   return this.h`
     <div
@@ -210,7 +220,10 @@ f(function appWindow () {
         }
       }
     </style>
-    <iframe src=${`//u${userPk$()}.${window.IS_PRODUCTION ? '44billion.net' : 'localhost:10000'}/${appId$()}`} />
+    <iframe
+      allowtransparency
+      ref=${appIframeRef$}
+      src=${`//${appSubdomain$()}.${window.location.host}/~~napp`} />
     </div>
   `
 })

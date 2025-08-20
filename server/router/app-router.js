@@ -24,7 +24,8 @@ export const appRouter = IttyRouter()
     )
     return res
   })
-  .get('/~~napp', async (req, res) => {
+  // /~~napp or /
+  .get('*', async (req, res) => {
     // Firefox problem:
     // Did set cache-control no-cache (even on production)
     // else on some browsers it may not handle the next
@@ -34,6 +35,8 @@ export const appRouter = IttyRouter()
     // from here in an infinite loop. window.location.replace
     // and window.location.pathname = '/~~napp' didn't work.
     // Also tried making /~~napp-loader be replaced with /~~napp
+    // Also checked if it needed an user action (click) before calling reload
+    // Alsi tried <script defer blocking="render"> on <head>
     const html = /* html */`
       <!doctype html>
       <html>
@@ -43,16 +46,16 @@ export const appRouter = IttyRouter()
               margin: 0;
             }
           </style>
-        </head>
-        <body>
           <script>
             (async function () {
               // no-op during subsequent visits
-              const registration = await navigator.serviceWorker.register('/sw.js')
+              await navigator.serviceWorker.register('/sw.js')
               await navigator.serviceWorker.ready
               window.location.reload()
             })()
           </script>
+        </head>
+        <body>
         </body>
       </html>
     `

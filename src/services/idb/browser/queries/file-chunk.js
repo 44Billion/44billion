@@ -3,10 +3,11 @@ import { addressObjToAppId } from '#helpers/app.js'
 
 export async function countFileChunksFromDb (appId, rootHash) {
   let total = null
-  for await (const storedChunk of streamFileChunksFromDb(rootHash)) {
+  for await (const storedChunk of streamFileChunksFromDb(appId, rootHash)) {
     const cTag = storedChunk.tags.find(t => t[0] === 'c' && t[1].startsWith(`${rootHash}:`))
     if (!cTag) continue
     const parsedTotal = parseInt(cTag[2])
+    if (Number.isNaN(parsedTotal)) continue
     if (parsedTotal > 0) { total = parsedTotal; break }
   }
   if (!total) return { count: 0, total }
@@ -42,11 +43,11 @@ export async function deleteStaleFileChunksFromDb (appId, allowedRootHashes, { s
   }
 }
 
-// Caution: use this only when no user has the app installed anymore
-export async function deleteFileChunksFromDb (appId) {
+// Caution: when there's no rootHash arg, use this only when no user has the app installed anymore
+export async function deleteFileChunksFromDb (appId, rootHash) {
   if (!appId) throw new Error('Missing bundle id')
 
-  const range = IDBKeyRange.bound([appId, '\u0000', -Infinity], [appId, '\uffff', Infinity])
+  const range = IDBKeyRange.bound([appId, rootHash ?? '\u0000', -Infinity], [appId, rootHash ?? '\uffff', Infinity])
   return run('delete', [range], 'fileChunks').then(v => v.result)
 }
 
@@ -84,7 +85,8 @@ export async function saveFileChunksToDB (bundle, fileChunks, appId) {
   let ret
   for (const chunk of fileChunks) {
     if (chunk.kind !== 34600) throw new Error('Wrong chunk kind')
-    let dTag, formatedCTags
+    let dTag
+    const formatedCTags = []
     for (const tag of chunk.tags) {
       if (tag[0] === 'd') dTag = tag
       // Although rare,
@@ -94,7 +96,7 @@ export async function saveFileChunksToDB (bundle, fileChunks, appId) {
       if (tag[0] === 'c') {
         const [fileRootHash, chunkPosition] = tag[1].split(':')
         if (chunkPosition !== undefined && bundleRootHashesObj[fileRootHash]) {
-          formatedCTags = [fileRootHash, parseInt(chunkPosition)]
+          formatedCTags.push([fileRootHash, parseInt(chunkPosition)])
         }
       }
     }

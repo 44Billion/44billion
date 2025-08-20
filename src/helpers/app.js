@@ -1,8 +1,11 @@
 import { base62ToBase16, base16ToBase62 } from '#helpers/base62.js'
-import { bytesToBase36, base36ToBase16, base36ToBase62, base16ToBase36 } from '#helpers/base36.js'
+import { bytesToBase36, base36ToBase62, base62ToBase36 } from '#helpers/base36.js'
 import { base16ToBytes } from '#helpers/base16.js'
 
-export const NOSTR_APP_D_TAG_MAX_LENGTH = 12
+// 63 - (1<channel> + 5<b36loggeduserpkslug> 50<b36pk>)
+// <b36loggeduserpkslug> pk chars at positions [7][17][27][37][47]
+// to avoid vanity or pow colisions
+export const NOSTR_APP_D_TAG_MAX_LENGTH = 7
 
 export function isNostrAppDTagSafe (string) {
   return isSubdomainSafe(string) && string.length <= NOSTR_APP_D_TAG_MAX_LENGTH
@@ -28,7 +31,7 @@ async function toSha1 (string) {
 }
 
 // baseMaxLengthToMaxSourceByteLength(19, 62) === 14 byte length
-// baseMaxLengthToMaxSourceByteLength(12, 36) === 7 byte length
+// baseMaxLengthToMaxSourceByteLength(7, 36) === 4 byte length
 function baseMaxLengthToMaxSourceByteLength (maxStringLength, base) {
   if (!base) throw new Error('Which base?')
   const baseLog = Math.log(base)
@@ -39,19 +42,8 @@ function baseMaxLengthToMaxSourceByteLength (maxStringLength, base) {
   return Math.floor(maxByteLength)
 }
 
-export function userSubdomainToPk (subdomain) {
-  const pk = base36ToBase16(subdomain.match(/^u(?<pubkeyB36>[a-z0-9]{50})$/).groups.pubkeyB36)
-  if (!/[a-f0-9]{64}/.test(pk)) throw new Error('Wrong pk format')
-  return pk
-}
-
-export function pkToUserSubdomain (pk) {
-  if (!/[a-f0-9]{64}/.test(pk)) throw new Error('Wrong pk format')
-  return `u${base16ToBase36(pk, 50)}`
-}
-
-function appSubdomainToGroupsObj (subdomain) {
-  return subdomain.match(/^(?<channelEnum>[abc]{1})(?<pubkeyB36>[a-z0-9]{50})(?<dTag>[a-z0-9-]{1,12})$/).groups
+export function appSubdomainToGroupsObj (subdomain) {
+  return subdomain.match(/^(?<channelEnum>[abc]{1})(?<userSlugB36>[a-z0-9]{5})(?<pubkeyB36>[a-z0-9]{50})(?<dTag>[a-z0-9-]{1,7})$/).groups
 }
 
 export function appSubdomainToAppId (subdomain) {
@@ -63,14 +55,29 @@ export function appSubdomainToAppId (subdomain) {
   return `${channelEnum}${base36ToBase62(pubkeyB36, 43)}${dTag}`
 }
 
-export function appIdToAddressObj (appId /* subdomain-formatted */) {
+export function appIdToAppSubdomain (appId, loggedInUserB36) {
+  if (!loggedInUserB36) throw new Error('Which user?')
+
+  // This guarantees the app's local db doesn't need to account for multiple users
+  const userSlugB36 = [7, 17, 27, 37, 47].map(i => loggedInUserB36[i]).join('')
   const {
     groups: {
       channelEnum,
       pubkeyB62,
       dTag
     }
-  } = appId.match(/^(?<channelEnum>[abc]{1})(?<pubkeyB62>[A-Za-z0-9]{43})(?<dTag>[a-z0-9-]{1,12})$/)
+  } = appId.match(/^(?<channelEnum>[abc]{1})(?<pubkeyB62>[A-Za-z0-9]{43})(?<dTag>[a-z0-9-]{1,7})$/)
+  return `${channelEnum}${userSlugB36}${base62ToBase36(pubkeyB62)}${dTag}`
+}
+
+export function appIdToAddressObj (appId) {
+  const {
+    groups: {
+      channelEnum,
+      pubkeyB62,
+      dTag
+    }
+  } = appId.match(/^(?<channelEnum>[abc]{1})(?<pubkeyB62>[A-Za-z0-9]{43})(?<dTag>[a-z0-9-]{1,7})$/)
   if (!isNostrAppDTagSafe(dTag)) throw new Error('Invalid d tag')
   const channel = {
     a: 'main',
@@ -129,8 +136,9 @@ export function addressObjToAppId (obj) {
 //  should match /a/b/index.html or /a/b/index.htm or /a/b.html or /a/b.htm
 export function findRouteFileTag (pathname, bundleTags) {
   const fileTags = bundleTags.filter(t => t[0] === 'file' && /\.html?$/.test(t[2]))
+  let tag
   for (const filename of getPotentialFilenameMatches(pathname)) {
-    if (fileTags.find(v => v[2] === filename)) return filename
+    if ((tag = fileTags.find(v => v[2] === filename))) return tag
   }
 
   return null

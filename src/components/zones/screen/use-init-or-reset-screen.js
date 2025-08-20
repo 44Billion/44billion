@@ -24,12 +24,12 @@ import { addressObjToAppId } from '#helpers/app.js'
 // each with 0-*
 
 const coreAppIds = [
-  'app-1lkOUr6SlBbcv4Qo6Aed8nmXG4MCGj7ocjyODJ0J4FGmfNjyxnklgNoM7bagwa7'
-].map(appDecode).map(addressObjToAppId) // ['44b', 'minimoon']
+  'app-hM6mgkBd80t8PnRiBRpmgCjKpCiN6cTfSGBxyQ4l0WsErq9om2QS684jD'
+].map(appDecode).map(addressObjToAppId) // ['44b', 'minimoon', 'newappstore']
 
 export default function useInitOrResetScreen () {
   const storage = useWebStorage(localStorage)
-  useGlobalSignal('hardcoded_newAppIdsObj', { mail: true })
+  useGlobalSignal('hardcoded_newAppIdsObj', {}) // { [app-...]: true }) <- minimoon
 
   // init
   useTask(() => {

@@ -140,13 +140,16 @@ function decode (base122Data) {
   return decoded
 }
 
+let decoder
 /**
  * Converts a sequence of UTF-8 bytes to a string.
  * @param {Uint8Array|Buffer} data - The UTF-8 data.
  * @returns {String} A string with each character representing a code point.
  */
 function utf8DataToString (data) {
-  return Buffer.from(data).toString('utf-8')
+  // original lib: return Buffer.from(data).toString('utf-8')
+  decoder ??= new TextDecoder()
+  return decoder.decode(data)
 }
 
 // For debugging.

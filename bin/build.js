@@ -21,9 +21,7 @@ const ctx = await esbuild.context({
     : { define: { 'window.IS_PRODUCTION': JSON.stringify(true) } }),
   entryPoints: [
     `${dirname}/../src/components/app.js`,
-    `${dirname}/../src/scripts/user-page.js`,
     `${dirname}/../src/assets/html/index.html`, // will use "copy" loader
-    `${dirname}/../src/assets/html/user-page.html`, // will use "copy" loader
     // `${dirname}/../src/assets/media/favicon.ico` // will use "copy" loader
     { in: `${dirname}/../src/service-workers/app/index.js`, out: 'app-sw' } // app-sw.js
   ],

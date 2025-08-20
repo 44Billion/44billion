@@ -41,7 +41,7 @@ export default class AppFileManager {
       delete this.#instancePromisesByAppId[appId]
       p.reject(new Error(`Couldn't find bundle after ${attempts} attempts`))
     }
-    const ret = new this(createToken, { id: appId, addressObj, bundle })
+    const ret = new this(createToken, { appId, addressObj, bundle })
     p.resolve(ret)
     return p.promise
   }
@@ -72,7 +72,6 @@ export default class AppFileManager {
   getFileRootHash (pathname, fileTag) {
     fileTag ??= findRouteFileTag(pathname, this.bundle.tags)
     if (!fileTag) throw new Error(`No matching file tag found for path: ${pathname}`)
-
     return fileTag[1]
   }
 
@@ -80,7 +79,7 @@ export default class AppFileManager {
     fileTag ??= findRouteFileTag(pathname, this.bundle.tags)
     if (!fileTag) throw new Error(`No matching file tag found for path: ${pathname}`)
     const fileRootHash = this.getFileRootHash(null, fileTag)
-    const chunkStatus = await countFileChunksFromDb(fileRootHash)
+    const chunkStatus = await countFileChunksFromDb(this.appId, fileRootHash)
     if (!withMeta) return { isCached: chunkStatus.count === chunkStatus.total }
 
     const mimeType =
@@ -95,35 +94,49 @@ export default class AppFileManager {
     }
   }
 
-  #cacheFileMemo = {} // { [filename]: current iterator }
-  // yield 0-100 progress
-  cacheFile (pathname, fileTag) {
+  #cacheFileMemo = {} // { filename: { subscribers: Set(), progress: null } }
+
+  // runs caching process and calls progressCallback with { progress: 0-100 } or { error }
+  async cacheFile (pathname, fileTag, progressCallback) {
     fileTag ??= findRouteFileTag(pathname, this.bundle.tags)
     if (!fileTag) throw new Error(`No matching file tag found for path: ${pathname}`)
     const filename = fileTag[2]
-    if (this.#cacheFileMemo[filename]) {
-      return this.#cacheFileMemo[filename]
+
+    let memo = this.#cacheFileMemo[filename]
+    if (memo) {
+      memo.subscribers.add(progressCallback)
+      if (memo.progress !== null) { progressCallback({ progress: memo.progress }) }
+      return
     }
 
-    const iterator = async function * () {
-      try {
-        const { appId, bundle } = this
-        for await (const progress of cacheMissingChunks(appId, bundle, filename, fileTag)) {
-          // a new consumer may find useful to know
-          // current progress of ongoing iterator
-          iterator.progress = progress
-          yield progress
-        }
+    memo = {
+      subscribers: new Set([progressCallback]),
+      progress: null
+    }
+    this.#cacheFileMemo[filename] = memo
 
+    try {
+      const { appId, bundle } = this
+      const iterator = cacheMissingChunks(appId, bundle, filename, fileTag)
+
+      for await (const progress of iterator) {
+        memo.progress = progress
+        for (const sub of memo.subscribers) { sub({ progress }) }
+      }
+
+      if (memo.progress < 100) {
+        const error = new Error(`File caching incomplete, stopped at ${memo.progress}%`)
+        for (const sub of memo.subscribers) { sub({ error }) }
+      } else {
         const isOnCheapInternet = !navigator.connection?.metered
         if (isOnCheapInternet) this.cacheMissingAppFiles(filename) // does nothing if already running
-      } finally {
-        delete this.#cacheFileMemo[filename]
       }
-    }.bind(this)()
-
-    this.#cacheFileMemo[filename] = iterator
-    return iterator
+    } catch (error) {
+      console.error(`Failed to cache ${filename}`, error)
+      for (const sub of memo.subscribers) { sub({ error }) }
+    } finally {
+      delete this.#cacheFileMemo[filename]
+    }
   }
 
   #isCacheMissingAppFilesRunning = false
@@ -133,10 +146,9 @@ export default class AppFileManager {
     this.#isCacheMissingAppFilesRunning = true
     try {
       const { appId, bundle } = this
-      const fileTags = bundle.tags
+      const fileTags = [...new Set(bundle.tags
         .filter(t => t[0] === 'file' && !!t[1] && t[2] !== lastCachedFilename)
-        .map(t => t[1])
-        .reduce((r, v) => ({ ...r, [v]: true }), {})
+      )]
 
       for (const fileTag of fileTags) {
         // eslint-disable-next-line no-empty

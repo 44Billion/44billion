@@ -1,12 +1,25 @@
-import { requestMessage } from '#helpers/window-message/index.js'
-import { waitUntilSwIsActive, triggerReloadOnSwSkipWaiting } from '#helpers/service-worker.js'
+import { postMessage, requestMessage } from '#helpers/window-message/index.js'
 
 // ERROR: Top-level await is currently not supported with the "iife" output format [plugin js-text]
 // https://github.com/evanw/esbuild/issues/253
 (async () => {
-  await waitUntilSwIsActive()
-  triggerReloadOnSwSkipWaiting()
+  const p = Promise.withResolvers()
+  injectNip07(p.promise) // first thing
+  tellParentImReady(p.resolve)
+  await p.promise
+})()
 
+function tellParentImReady (resolve) {
+  const { port1: browserPort, port2: appPagePortForBrowser } = new MessageChannel()
+  const readyMsg = {
+    code: 'APP_IFRAME_READY',
+    payload: null
+  }
+  postMessage(window.parent, readyMsg, { targetOrigin: '*', transfer: [appPagePortForBrowser] })
+  resolve(browserPort)
+}
+
+function injectNip07 (promise) {
   const nip07Methods = [
     'peekPublicKey',
     'getPublicKey',
@@ -26,7 +39,12 @@ import { waitUntilSwIsActive, triggerReloadOnSwSkipWaiting } from '#helpers/serv
   const defaultNsParams = []
 
   function createNostrMethod (method, nsName, nsParams) {
-    return (...params) => requestMessage(window.parent, { code: 'NIP07', ns: [nsName, ...nsParams], method, params })
+    return (...params) => promise
+      .then(browserPort => requestMessage(browserPort, { code: 'NIP07', payload: { ns: [nsName, ...nsParams], method, params } }))
+      .then(({ payload, error }) => {
+        if (error) throw error
+        return payload
+      })
   }
 
   function buildMethodsObject (methods, nsName, nsParams) {
@@ -58,4 +76,4 @@ import { waitUntilSwIsActive, triggerReloadOnSwSkipWaiting } from '#helpers/serv
   const napp = {}
 
   Object.assign(window, { nostr, napp })
-})()
+}

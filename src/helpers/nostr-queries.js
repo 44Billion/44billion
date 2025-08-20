@@ -19,6 +19,7 @@ export async function getEventsByStrategy (filter, st /*, timeoutMs = 3000 */) {
       if ((filter.authors?.length ?? 0) === 0 && (st.authors?.length ?? 0) === 0) throw new Error('Missing authors')
       const authors = st.authors || filter.authors
 
+      // [[userPk, [...relays]]]
       const userWriteRelays = Object.entries(await getUserRelays(authors)).map(([k, v]) => [k, v.write])
       const relayPopularity = {}
       userWriteRelays.forEach(v => v[1].forEach(v2 => {
@@ -43,8 +44,8 @@ export async function getEventsByStrategy (filter, st /*, timeoutMs = 3000 */) {
             usersByRelay[popularRelay].push(user)
           })
         })
-        const promises = Object.entries(usersByRelay).map(([authors, pickedRelays]) =>
-          nostrRelays.getEventsAsap({ ...filter, authors }, [...pickedRelays])
+        const promises = Object.entries(usersByRelay).map(([pickedRelay, authors]) =>
+          nostrRelays.getEventsAsap({ ...filter, authors }, [pickedRelay])
         )
 
         const results = await Promise.allSettled(promises)

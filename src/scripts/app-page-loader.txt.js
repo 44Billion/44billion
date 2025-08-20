@@ -1,20 +1,29 @@
-import { requestMultipleMessages } from '#helpers/window-message/index.js'
-import { appSubdomainToAppId, appIdToAddressObj } from '#helpers/app.js'
+import { postMessage, requestMultipleMessages } from '#helpers/window-message/index.js'
 import Base122Decoder from '#services/base122-decoder.js'
-import { triggerReloadOnSwSkipWaiting } from '#helpers/service-worker.js'
 
 const napp = new class extends EventTarget {
   icon = null
   progress = null
 }()
 window.napp = napp
-const to = window.parent
-const appId = appSubdomainToAppId(location.hostname.split('.')[0])
-const appAddress = appIdToAddressObj(appId)
 
-async function maybeSetIcon () {
-  const iconMsg = { code: 'GET_APP_ICON_CHUNKS', payload: { appAddress } }
-  const iterator = requestMultipleMessages(to, iconMsg, { targetOrigin: '*' })
+const browserPort = tellParentImReady()
+maybeSetIcon(browserPort)
+updateRouteLoadProgress(browserPort)
+
+function tellParentImReady () {
+  const readyMsg = {
+    code: 'APP_IFRAME_READY',
+    payload: null
+  }
+  const { port1: browserPort, port2: appPagePortForBrowser } = new MessageChannel()
+  postMessage(window.parent, readyMsg, { targetOrigin: '*', transfer: [appPagePortForBrowser] })
+  return browserPort
+}
+
+async function maybeSetIcon (to) {
+  const iconMsg = { code: 'STREAM_APP_ICON', payload: { pathname: window.location.pathname } }
+  const iterator = requestMultipleMessages(to, iconMsg)
   function extractFirstDataFromChunkMsg ({ payload: evt, error }) {
     if (error) return {}
     return {
@@ -37,17 +46,12 @@ async function maybeSetIcon () {
   napp.dispatchEvent(new CustomEvent('iconready'))
 }
 
-async function updateRouteLoadProgress () {
-  const filename = window.location.pathname.slice(1)
-  const routeLoadMsg = { code: 'CACHE_APP_FILE', payload: { appAddress, filename } }
+async function updateRouteLoadProgress (to) {
+  const routeLoadMsg = { code: 'CACHE_APP_FILE', payload: { pathname: window.location.pathname } }
 
-  for await (const { payload: progress, error } of requestMultipleMessages(to, routeLoadMsg, { targetOrigin: '*' })) {
+  for await (const { payload: progress, error } of requestMultipleMessages(to, routeLoadMsg)) {
     if (error) { console.log(error); continue }
     napp.progress = progress
     napp.dispatchEvent(new CustomEvent('progress'))
   }
 }
-
-triggerReloadOnSwSkipWaiting()
-maybeSetIcon()
-updateRouteLoadProgress()
