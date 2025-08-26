@@ -135,7 +135,7 @@ export function addressObjToAppId (obj) {
 // '/a/b', '/a/b/', '/a/b.html', '/a/b.htm', '/a/b/index.html' and '/a/b/index.htm'
 //  should match /a/b/index.html or /a/b/index.htm or /a/b.html or /a/b.htm
 export function findRouteFileTag (pathname, bundleTags) {
-  const fileTags = bundleTags.filter(t => t[0] === 'file' && /\.html?$/.test(t[2]))
+  const fileTags = bundleTags.filter(t => t[0] === 'file')
   let tag
   for (const filename of getPotentialFilenameMatches(pathname)) {
     if ((tag = fileTags.find(v => v[2] === filename))) return tag
@@ -145,7 +145,8 @@ export function findRouteFileTag (pathname, bundleTags) {
 }
 
 function * getPotentialFilenameMatches (pathname) {
-  let basePath = pathname.slice(1) // Remove the leading '/'
+  // Remove the leading '/'
+  let basePath = pathname[0] === '/' ? pathname.slice(1) : pathname
   if (/\.html?$/.test(basePath)) yield basePath
   else if (basePath.endsWith('/')) basePath = basePath.slice(0, -1)
 

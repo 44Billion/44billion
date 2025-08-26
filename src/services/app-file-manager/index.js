@@ -94,49 +94,39 @@ export default class AppFileManager {
     }
   }
 
-  #cacheFileMemo = {} // { filename: { subscribers: Set(), progress: null } }
-
+  #cacheFilePubSubConfig = {} // { [filename]: { subscribers: Set(), result: null, error: null } }
+  #getCacheFilePubSubConfig (filename) {
+    if (!filename) throw new Error('No filename')
+    return (this.#cacheFilePubSubConfig[filename] ??=
+      { subscribers: new Set(), result: null, error: null })
+  }
+  #deleteCacheFilePubSubConfig (filename) {
+    delete this.#cacheFilePubSubConfig[filename]
+  }
   // runs caching process and calls progressCallback with { progress: 0-100 } or { error }
-  async cacheFile (pathname, fileTag, progressCallback) {
+  // !navigator.connection?.metered is true if user is on cheap internet
+  async cacheFile (pathname, fileTag, progressCallback, { shouldCacheMissingFiles = !navigator.connection?.metered } = {}) {
     fileTag ??= findRouteFileTag(pathname, this.bundle.tags)
     if (!fileTag) throw new Error(`No matching file tag found for path: ${pathname}`)
     const filename = fileTag[2]
+    const config = this.#getCacheFilePubSubConfig(filename)
 
-    let memo = this.#cacheFileMemo[filename]
-    if (memo) {
-      memo.subscribers.add(progressCallback)
-      if (memo.progress !== null) { progressCallback({ progress: memo.progress }) }
-      return
+    if (progressCallback) {
+      config.subscribers.add(progressCallback)
+      if (config.result !== null) progressCallback({ progress: config.result })
+      if (config.error) { progressCallback({ error: config.error }); return }
     }
 
-    memo = {
-      subscribers: new Set([progressCallback]),
-      progress: null
-    }
-    this.#cacheFileMemo[filename] = memo
-
-    try {
-      const { appId, bundle } = this
-      const iterator = cacheMissingChunks(appId, bundle, filename, fileTag)
-
-      for await (const progress of iterator) {
-        memo.progress = progress
-        for (const sub of memo.subscribers) { sub({ progress }) }
-      }
-
-      if (memo.progress < 100) {
-        const error = new Error(`File caching incomplete, stopped at ${memo.progress}%`)
-        for (const sub of memo.subscribers) { sub({ error }) }
-      } else {
-        const isOnCheapInternet = !navigator.connection?.metered
-        if (isOnCheapInternet) this.cacheMissingAppFiles(filename) // does nothing if already running
-      }
-    } catch (error) {
-      console.error(`Failed to cache ${filename}`, error)
-      for (const sub of memo.subscribers) { sub({ error }) }
-    } finally {
-      delete this.#cacheFileMemo[filename]
-    }
+    const p = Promise.withResolvers()
+    config.subscribers.add(({ progress, error }) => {
+      if (progress >= 100) {
+        p.resolve()
+        if (!shouldCacheMissingFiles) return
+        this.cacheMissingAppFiles(filename) // does nothing if already running
+      } else if (error) p.reject()
+    })
+    this.#cacheFileInBackground(filename, fileTag)
+    return p.promise
   }
 
   #isCacheMissingAppFilesRunning = false
@@ -145,17 +135,52 @@ export default class AppFileManager {
 
     this.#isCacheMissingAppFilesRunning = true
     try {
-      const { appId, bundle } = this
-      const fileTags = [...new Set(bundle.tags
-        .filter(t => t[0] === 'file' && !!t[1] && t[2] !== lastCachedFilename)
-      )]
+      const seenFilenames = { ...(lastCachedFilename && { [lastCachedFilename]: true }) }
+      const fileTags = this.bundle.tags
+        .filter(t => {
+          if (t[0] !== 'file' || !t[1] || !t[2] || seenFilenames[t[2]]) return false
+          return (seenFilenames[t[2]] = true)
+        })
 
       for (const fileTag of fileTags) {
-        // eslint-disable-next-line no-empty
-        for await (const _ of cacheMissingChunks(appId, bundle, null, fileTag)) {}
+        await this.cacheFile(`/${fileTag[2]}`, fileTag, null, { shouldCacheMissingFiles: false })
       }
     } finally {
       this.#isCacheMissingAppFilesRunning = false
+    }
+  }
+
+  #isCacheFileInBackgroundRunning = {} // { [filename]: true }
+  async #cacheFileInBackground (filename, fileTag) {
+    if (this.#isCacheFileInBackgroundRunning[filename]) return
+
+    this.#isCacheFileInBackgroundRunning[filename] = true
+    const iterator = cacheMissingChunks(this.appId, this.bundle, filename, fileTag)
+    const config = this.#getCacheFilePubSubConfig(filename)
+
+    try {
+      for await (const progress of iterator) {
+        config.result = progress
+        for (const sub of config.subscribers) {
+          try { sub({ progress }) } catch (err) { console.log(err) }
+        }
+      }
+
+      if (config.result >= 100) return
+
+      const error = new Error(`File caching incomplete, stopped at ${config.result}%`)
+      config.error = error
+      for (const sub of config.subscribers) {
+        try { sub({ error }) } catch (err) { console.log(err) }
+      }
+    } catch (error) {
+      config.error = error
+      for (const sub of config.subscribers) {
+        try { sub({ error }) } catch (err) { console.log(err) }
+      }
+    } finally {
+      this.#deleteCacheFilePubSubConfig(filename)
+      delete this.#isCacheFileInBackgroundRunning[filename]
     }
   }
 }

@@ -9,7 +9,6 @@ export async function initMessageListener (userPkB36, appId, appSubdomain, trust
   const currentVaultUrl = new URL(JSON.parse(localStorage.getItem('config_vaultUrl')))
   const vaultIframe = document.querySelector(`iframe[src="${currentVaultUrl.href}"]`)
   if (!vaultIframe) console.log('TODO: add vault') // throw new Error('Vault iframe not found')
-  const vault = vaultIframe?.contentWindow
   // const vault = vaultIframe.contentWindow
 
   const appAddress = appIdToAddressObj(appId)
@@ -168,7 +167,6 @@ export async function initMessageListener (userPkB36, appId, appSubdomain, trust
                 replyWithMessage(e, { error, isLast: true }, { to: appPagePort })
               } else {
                 const isLast = progress >= 100
-                console.log(e.data.payload.pathname, 'progress:', progress, 'isLast:', isLast, JSON.stringify(e.data))
                 replyWithMessage(e, { payload: progress, isLast }, { to: appPagePort })
               }
             }

@@ -33,7 +33,7 @@ self.addEventListener('activate', () => {
 self.addEventListener('fetch', e => {
   if (!e.clientId) return
 
-  console.log('fetch from sw:', e.request.url)
+  // console.log('Service Worker: fetching', e.request.url)
   e.request.pathname = new URL(e.request.url).pathname
   e.respondWith((async function () {
     if (e.request.pathname === '/~~napp') {
@@ -95,11 +95,11 @@ async function handleRequest (request) {
 // sending the port to the sw which would
 // then use it to do port.postMessage, was
 // the way that worked for sw to talk to clients
-// because client.postMessage dind't work.
+// because client.postMessage didn't work.
 const readyClients = new Map()
 
 // Clean up dead clients periodically, although
-// sw tend to be short lived
+// sw tends to be short lived
 setInterval(async () => {
   const clients = await self.clients.matchAll()
   const activeIds = new Set(clients.map(c => c.id))
@@ -144,7 +144,7 @@ async function selectClientToPostMessagesTo () {
       //   .forEach(client => {
       //     client.postMessage({ code: 'GET_READY_STATUS' })
       //   })
-      console.log('Service Worker: No client available with ready port, retrying...')
+      // console.log('Service Worker: No client available with ready port, retrying...')
       ;({ promise, resolve } = Promise.withResolvers())
       bc ??= new BroadcastChannel('sw~~napp')
       bc.postMessage({ code: 'GET_READY_STATUS', payload: null })
