@@ -12,6 +12,9 @@ if (window.IS_DEVELOPMENT) {
 }
 
 f(function aApp () {
+  // we rely on us being the top for reusing same
+  // key for storage partition
+  if (window.location.origin !== window.top.location.origin) return
   useLocation({})
 
   return this.h`
