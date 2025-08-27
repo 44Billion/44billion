@@ -153,6 +153,7 @@ f(function appWindow () {
   const {
     [`session_appByKey_${this.props.appKey}_id$`]: appId$,
     [`session_appByKey_${this.props.appKey}_visibility$`]: appVisibility$,
+    [`session_appByKey_${this.props.appKey}_route$`]: initialRoute$,
     [`session_workspaceByKey_${this.props.wsKey}_userPk$`]: maybeUserPk$,
     session_anonPk$: anonPk$
   } = storage
@@ -162,9 +163,11 @@ f(function appWindow () {
 
   useTask(
     ({ cleanup }) => {
+      const initialRoute = initialRoute$() || ''
+      if (initialRoute) initialRoute$(undefined)
       const ac = new AbortController()
       cleanup(() => ac.abort())
-      initMessageListener(userPkB36$(), appId$(), appSubdomain$(), appIframeRef$(), ac.signal)
+      initMessageListener(userPkB36$(), appId$(), appSubdomain$(), initialRoute, appIframeRef$(), ac.signal)
     },
     { after: 'rendering' }
   )

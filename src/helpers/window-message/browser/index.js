@@ -4,7 +4,7 @@ import { base36ToBase16 } from '#helpers/base36.js'
 import { streamFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
 import AppFileManager from '#services/app-file-manager/index.js'
 
-export async function initMessageListener (userPkB36, appId, appSubdomain, trustedAppPageIframe, componentSignal) {
+export async function initMessageListener (userPkB36, appId, appSubdomain, initialRoute, trustedAppPageIframe, componentSignal) {
   const userPkB16 = base36ToBase16(userPkB36)
   const currentVaultUrl = new URL(JSON.parse(localStorage.getItem('config_vaultUrl')))
   const vaultIframe = document.querySelector(`iframe[src="${currentVaultUrl.href}"]`)
@@ -37,22 +37,18 @@ export async function initMessageListener (userPkB36, appId, appSubdomain, trust
     ac?.abort()
     ac = new AbortController()
     // iframe's page may reload on sw controller change
-    // listenToTrustedAppPageMessages(trustedAppPagePort, AbortSignal.any([componentSignal, ac.signal]))
     listenToTrustedAppPageMessages(e.ports[0], AbortSignal.any([componentSignal, ac.signal]))
-
-    // replyWithMessage(e, { payload: null }, { transfer: [browserPortForTrusted] })
-
-    loadAppOnce(appSubdomain)
+    loadAppOnce(appSubdomain, initialRoute)
   }, { signal: componentSignal })
 
   let hasRunLoadApp = false
-  function loadAppOnce (appSubdomain) {
+  function loadAppOnce (appSubdomain, route = '') {
     if (hasRunLoadApp) return
 
     // load real app page beside the already loaded trusted app page iframe
     const domain = window.location.host
     const appPageIframe = document.createElement('iframe')
-    appPageIframe.src = `//${appSubdomain}.${domain}`
+    appPageIframe.src = `//${appSubdomain}.${domain}${route}`
     appPageIframe.allowtransparency = true
     trustedAppPageIframe.insertAdjacentElement('beforebegin', appPageIframe)
     hasRunLoadApp = true

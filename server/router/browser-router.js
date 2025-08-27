@@ -11,15 +11,6 @@ const domainRouter = IttyRouter()
 
 if (isProduction) {
   domainRouter
-    .get('/', async (req, res) => {
-      res.setHeader('content-type', 'text/html')
-      res.writeHead(200)
-      await pipeline(
-        (await getBuiltFileRstream('index.html')).result,
-        res
-      )
-      return res
-    })
     .get('/app.js', async (req, res) => {
       res.setHeader('content-type', 'text/javascript')
       res.writeHead(200)
@@ -29,6 +20,18 @@ if (isProduction) {
       )
       return res
     })
+    .get('/', serveIndex)
+    .get('/app-:appWithRoute+', serveIndex)
+
+  async function serveIndex (req, res) {
+    res.setHeader('content-type', 'text/html')
+    res.writeHead(200)
+    await pipeline(
+      (await getBuiltFileRstream('index.html')).result,
+      res
+    )
+    return res
+  }
 }
 
 export default domainRouter

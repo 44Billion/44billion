@@ -11,7 +11,7 @@ export default function useAppRouter () {
     session_openWorkspaceKeys$: openWorkspaceKeys$
   } = storage
 
-  const maybeOpenInstalledApp = useCallback(appId => {
+  const maybeOpenInstalledApp = useCallback((appId, appRoute) => {
     const wsKey = openWorkspaceKeys$()[0]
     if (!wsKey) throw new Error('User n/a')
 
@@ -38,6 +38,8 @@ export default function useAppRouter () {
           v.unshift(app.key)
           return v
         })
+        // set initial route
+        storage[`session_appByKey_${app.key}_route$`](appRoute)
         break
       }
       case 'minimized': {
@@ -53,6 +55,8 @@ export default function useAppRouter () {
           }
           return v
         })
+        // set initial route
+        storage[`session_appByKey_${app.key}_route$`](appRoute)
         break
       }
       case 'open': {
@@ -64,14 +68,14 @@ export default function useAppRouter () {
     return { hasOpened: true, isInstalled: true }
   })
 
-  const openApp = useCallback(napp => {
+  const openApp = useCallback((napp, appRoute) => {
     if (!openWorkspaceKeys$().length) throw new Error()
     const decodedApp = appDecode(napp)
     const appId = addressObjToAppId(decodedApp)
     if (decodedApp.relays.length > 0) {
       storage[`session_appById_${appId}_relayHints$`](decodedApp.relays)
     }
-    const { hasOpened, isInstalled } = maybeOpenInstalledApp(appId)
+    const { hasOpened, isInstalled } = maybeOpenInstalledApp(appId, appRoute)
 
     if (hasOpened) return
 
@@ -79,6 +83,7 @@ export default function useAppRouter () {
       id: appId,
       key: Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2),
       visibility: 'open',
+      route: appRoute,
       isNew: false
     }
     const wsKey = openWorkspaceKeys$()[0]
@@ -87,6 +92,7 @@ export default function useAppRouter () {
       return v
     })
     storage[`session_appByKey_${app.key}_id$`](app.id)
+    storage[`session_appByKey_${app.key}_route$`](appRoute) // initial route
     storage[`session_appByKey_${app.key}_visibility$`](app.visibility)
     storage[`session_workspaceByKey_${wsKey}_openAppKeys$`](v => {
       v.unshift(app.key)
@@ -104,7 +110,15 @@ export default function useAppRouter () {
   useTask(({ track }) => {
     if (!track(() => loc.url$().pathname).startsWith('/app-')) return
 
-    const { napp } = loc.params$()
-    try { openApp(napp) } catch (err) { console.log(err); history.replaceState('/') }
+    let appRoute
+    let { napp, appPath } = loc.params$()
+    appPath = appPath.replace(/^\/{0,}/, '/')
+    const { search, hash } = loc.url$()
+    if (appPath !== '/' || search || hash) {
+      appRoute = appPath + search + hash
+    }
+    try { openApp(napp, appRoute) } catch (err) { console.log(err) } finally {
+      loc.replaceState(history.state, '', '/') // TODO: replace with previous url if available
+    }
   })
 }

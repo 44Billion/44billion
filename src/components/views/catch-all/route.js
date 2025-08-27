@@ -1,21 +1,21 @@
-import Router from 'url-router'
+// import Router from 'url-router'
 // import { f, useStore, useTask, useSignal, useStateSignal, useClosestStore } from '#f'
 
-export const router = new Router({
-  '/app-:napp(\\w+)': {},
-  // https://esbuild.github.io/api/#glob
-  // note that esbuild does understand dynamic import paths if stating with ./ or ../
-  // such as import('../views/${path}.js') but esbuild would include all possible
-  // files there to the bundle
-  '/(.*)': { tag: 'a-temp', loadModule: () => import('#views/catch-all/temp.js') },
-  '/temp2': { tag: 'a-temp-2', loadModule: () => import('#views/catch-all/temp2.js') }
+// export const router = new Router({
+//   '/app-:napp(\\w+)': {},
+//   // https://esbuild.github.io/api/#glob
+//   // note that esbuild does understand dynamic import paths if stating with ./ or ../
+//   // such as import('../views/${path}.js') but esbuild would include all possible
+//   // files there to the bundle
+//   '/(.*)': { tag: 'a-temp', loadModule: () => import('#views/catch-all/temp.js') },
+//   '/temp2': { tag: 'a-temp-2', loadModule: () => import('#views/catch-all/temp2.js') }
 
-  // "/(.*)": { Page: Index },
-  // "/nevent1(.*)": { Page: EventsShow },
+//   // "/(.*)": { Page: Index },
+//   // "/nevent1(.*)": { Page: EventsShow },
 
-  // "/:nevent(nevent1.*)": { tag: 'maybe-events-show', loadModule: () => import('#views/events/show/maybe.js') },
-  // "/n/(.*)": { Page: Groups },
-})
+//   // "/:nevent(nevent1.*)": { tag: 'maybe-events-show', loadModule: () => import('#views/events/show/maybe.js') },
+//   // "/n/(.*)": { Page: Groups },
+// })
 
 // f(function aRoute () {
 //   const {
