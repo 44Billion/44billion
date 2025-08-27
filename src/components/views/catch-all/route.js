@@ -2,7 +2,6 @@
 // import { f, useStore, useTask, useSignal, useStateSignal, useClosestStore } from '#f'
 
 // export const router = new Router({
-//   '/app-:napp(\\w+)': {},
 //   // https://esbuild.github.io/api/#glob
 //   // note that esbuild does understand dynamic import paths if stating with ./ or ../
 //   // such as import('../views/${path}.js') but esbuild would include all possible

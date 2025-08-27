@@ -1,7 +1,7 @@
 import { useTask, useCallback } from '#f'
 import useLocation from '#hooks/use-location.js'
 import useWebStorage from '#hooks/use-web-storage.js'
-import { appDecode } from '#helpers/nip19.js'
+import { NAPP_ENTITY_REGEX, appDecode } from '#helpers/nip19.js'
 import { addressObjToAppId } from '#helpers/app.js'
 
 export default function useAppRouter () {
@@ -108,7 +108,7 @@ export default function useAppRouter () {
   })
 
   useTask(({ track }) => {
-    if (!track(() => loc.url$().pathname).startsWith('/app-')) return
+    if (!NAPP_ENTITY_REGEX.test(track(() => loc.url$().pathname.split('/')[1]))) return
 
     let appRoute
     let { napp, appPath } = loc.params$()
@@ -117,6 +117,9 @@ export default function useAppRouter () {
     if (appPath !== '/' || search || hash) {
       appRoute = appPath + search + hash
     }
+    console.log('napp', napp)
+    console.log('appPath', appPath, typeof appPath)
+    console.log('appRoute', appRoute, typeof appRoute)
     try { openApp(napp, appRoute) } catch (err) { console.log(err) } finally {
       loc.replaceState(history.state, '', '/') // TODO: replace with previous url if available
     }

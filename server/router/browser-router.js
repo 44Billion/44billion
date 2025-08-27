@@ -21,7 +21,7 @@ if (isProduction) {
       return res
     })
     .get('/', serveIndex)
-    .get('/app-:appWithRoute+', serveIndex)
+    .get('/\\+{1,3}:nappIdWithRoute+', serveIndex)
 
   async function serveIndex (req, res) {
     res.setHeader('content-type', 'text/html')
