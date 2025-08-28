@@ -2,6 +2,7 @@ import { f, useCallback, useComputed, useStore, useGlobalSignal, useStateSignal,
 import useInitOrResetScreen from './use-init-or-reset-screen.js'
 import useWebStorage from '#hooks/use-web-storage.js'
 import useLongPress from '#hooks/use-long-press.js'
+import useScrollbarConfig from '#hooks/use-scrollbar-config.js'
 import '#shared/menu.js'
 import '#shared/avatar.js'
 import {
@@ -238,8 +239,10 @@ f(function appWindow () {
 // if multi-window we update its content with the
 // last selected workspace (a user may have many workspaces)
 f(function unifiedToolbar () {
+  const scrollbar$ = useScrollbarConfig()
+
   return this.h`
-    <style>
+    <style>${`
       /* @scope { */
       #unified-toolbar {
         toolbar-active-avatar {
@@ -261,17 +264,45 @@ f(function unifiedToolbar () {
         toolbar-app-list {
           flex: 1;
           display: flex !important;
-          overflow: visible hidden;
+          align-items: center;
+          overflow: auto hidden;
+          gap: 7px;
+          padding: 0 7px;
+
           @media (orientation: landscape) {
             flex-direction: column;
-            overflow: hidden visible;
+            overflow: hidden auto;
+            padding: 7px 0;
           }
-          align-items: center;
-          background-color: green;
+
+          ${scrollbar$.get(false).hasOverlay
+            ? ''
+            : /* css */`
+            scrollbar-color: rgba(255 255 255 / 0.2) transparent; /* thumb track */
+            transition: scrollbar-color .3s;
+            &:hover {
+              scrollbar-color: rgba(255 255 255 / 0.5) transparent;
+            }
+
+            scrollbar-width: thin;
+            @media (orientation: landscape) {
+              /*
+                scrollbar-gutter on chrome works just for vertical scrollbars due to a bug
+                Considering we can't reliably set styles for specific browsers, we are going
+                to restrict it to landscape for everyone
+              */
+              scrollbar-gutter: stable;
+              scrollbar-width: unset; /* or else left prop won't work correctly */
+              toolbar-app-launcher > div {
+                position: relative;
+                left: ${Math.floor(scrollbar$.get(false).width / 2)}px;
+              }
+            }
+          `}
         }
         /**/
       }
-    </style>
+    `}</style>
     <toolbar-active-avatar />
     <toolbar-app-list />
   `
@@ -450,14 +481,7 @@ f(function toolbarAppLauncher () {
     <style>${`
       .scope_df81hd {
         & {
-          @media (orientation: portrait) {
-            margin-left: 7px;
-          }
-          @media (orientation: landscape) {
-            margin-top: 7px;
-          }
           flex-shrink: 0;
-          /**/
         }
         .squircle {
           position: absolute;
