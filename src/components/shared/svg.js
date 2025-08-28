@@ -24,10 +24,12 @@ f(function aSvg () {
       // it varies from icon set to icon set
       viewBox$: this.props.viewBox$ || this.props.viewbox$ || this.props.viewBox || this.props.viewbox || '0 0 24 24',
       hadInitialSvg: !!(this.props.svg$ || this.props.svg),
+      class$: this.props.class$ || this.props.class || '',
       svg$: this.props.svg$ || this.props.svg || function () {
         // https://developer.mozilla.org/en-US/docs/Web/SVG/Reference/Attribute
         // https://github.com/Templarian/MaterialDesign-Web-Component/blob/master/src/mdi/icon/icon.ts
         return it.s`<svg
+          class=${this.class$.get()}
           xmlns="http://www.w3.org/2000/svg"
           viewBox=${this.viewBox$.get()}
         >
@@ -90,9 +92,11 @@ f(function aSvg () {
 
   if (!store.svg$.get()) return
 
-  return this.s`
-    <style>${`
-      @scope {
+  // this.s`
+  return this.h`<div class="scope_hd725d">${this.s`
+    <style>${/* css */`
+      /* @scope { */
+      .scope_hd725d { display: contents;
         svg {
           /*
             Aligns at middle when no size is set (default 1em)
@@ -123,5 +127,5 @@ f(function aSvg () {
         ${store.style$.get()}
       }
     `}</style>${store.svg$.get()}
-  `
+  `}</div>`
 })

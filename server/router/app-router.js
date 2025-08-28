@@ -24,7 +24,7 @@ export const appRouter = IttyRouter()
     )
     return res
   })
-  // /~~napp or /
+  // /~~napp or / or /inner/route
   .get('*', async (req, res) => {
     // Firefox problem:
     // Did set cache-control no-cache (even on production)
@@ -50,8 +50,14 @@ export const appRouter = IttyRouter()
             (async function () {
               // no-op during subsequent visits
               await navigator.serviceWorker.register('/sw.js')
-              await navigator.serviceWorker.ready
-              window.location.reload()
+              const registration = await navigator.serviceWorker.ready
+              if (registration.active && registration.active.state === 'activated') {
+                window.location.reload()
+              } else {
+                registration.active.addEventListener('statechange', e => {
+                  if (e.target.state === 'activated') window.location.reload()
+                })
+              }
             })()
           </script>
         </head>

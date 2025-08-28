@@ -27,9 +27,10 @@ f(function aMenu () {
       data-name='menu'
       popover
       onclose=${store.close /* popover may close by light-dismiss (ESC or backdrop click) */}
+      class="scope_f8d73h"
     >
       <style>${`
-        @scope {
+        .scope_f8d73h {
           & {
             container-type: normal;
             --duration: .3s;

@@ -31,7 +31,24 @@ self.addEventListener('activate', () => {
 })
 
 self.addEventListener('fetch', e => {
-  if (!e.clientId) return
+  // Don't add `if (!e.clientId) return` guard clause
+  // or else for '/~~napp' initial page load the sw may call the server
+  // instead of handling the request by itself
+  // Also, Firefox (wrongly) uses e.clientId='' instead of null/undefined
+  // for regular window clients (on development atleast; localhost and/or http)
+  //
+  // Alternatives depending on use-case:
+  // Check if it's a navigation request (initial page load)
+  // if (event.request.mode === 'navigate') {
+  //   // Handle navigation requests differently
+  //   return
+  // }
+  // // Or check request destination
+  // if (event.request.destination === 'document') {
+  //   // This is likely a page navigation
+  //   return
+  // }
+  // // Normal fetch handling
 
   // console.log('Service Worker: fetching', e.request.url)
   e.request.pathname = new URL(e.request.url).pathname

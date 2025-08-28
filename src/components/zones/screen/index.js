@@ -13,6 +13,7 @@ import useAppRouter from './use-app-router.js'
 import { initMessageListener } from '#helpers/window-message/browser/index.js'
 import { base62ToBase36 } from '#helpers/base36.js'
 import { appIdToAppSubdomain } from '#helpers/app.js'
+import '#shared/svg.js'
 
 f(function aScreen () {
   useInitOrResetScreen()
@@ -20,7 +21,8 @@ f(function aScreen () {
 
   const isSingleWindow$ = useWebStorage(localStorage).config_isSingleWindow$
   const style$ = useComputed(() => /* css */`
-    @scope {
+    /* @scope { */
+    #screen {
       &${cssStrings.defaultTheme}
 
       & {
@@ -178,11 +180,12 @@ f(function appWindow () {
         background-color: ${cssVars.colors.bg};
       `}
       class=${{
-        open: appVisibility$() === 'open'
+        open: appVisibility$() === 'open',
+        scope_khjha3: true
       }}
     >
     <style>
-      @scope {
+      .scope_khjha3 {
         & {
           display: none; /* minimized or closed */
           z-index: 1;
@@ -237,7 +240,8 @@ f(function appWindow () {
 f(function unifiedToolbar () {
   return this.h`
     <style>
-      @scope {
+      /* @scope { */
+      #unified-toolbar {
         toolbar-active-avatar {
           flex: 0 0 auto;
           display: flex !important;
@@ -257,8 +261,10 @@ f(function unifiedToolbar () {
         toolbar-app-list {
           flex: 1;
           display: flex !important;
+          overflow: visible hidden;
           @media (orientation: landscape) {
             flex-direction: column;
+            overflow: hidden visible;
           }
           align-items: center;
           background-color: green;
@@ -430,6 +436,7 @@ f(function toolbarAppLauncher () {
     ref=${appRef$}
     onclick=${onClick}
     @custom:longpress=${onLongPress}
+    class="scope_df81hd"
     style=${`
       background-color: ;
       width: 40px;
@@ -441,7 +448,7 @@ f(function toolbarAppLauncher () {
     `}
   >
     <style>${`
-      @scope {
+      .scope_df81hd {
         & {
           @media (orientation: portrait) {
             margin-left: 7px;
@@ -449,6 +456,7 @@ f(function toolbarAppLauncher () {
           @media (orientation: landscape) {
             margin-top: 7px;
           }
+          flex-shrink: 0;
           /**/
         }
         .squircle {
@@ -459,6 +467,7 @@ f(function toolbarAppLauncher () {
 
           path {
             fill: ${cssVars.colors.fg};
+            stroke: none;
           }
         }
       }

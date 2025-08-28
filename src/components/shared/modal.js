@@ -32,9 +32,10 @@ export const Modal = f(function aModal () {
       data-name='modal'
       popover
       onclose=${store.close /* popover may close by light-dismiss (ESC or backdrop click) */}
+      class="scope_g7h2g1"
     >
       <style>
-        @scope {
+        .scope_g7h2g1 {
           & /* &:modal are those opened with showModal() instead of show() */ {
             container-type: normal;
             --duration: .3s;
@@ -89,6 +90,7 @@ export const Modal = f(function aModal () {
       </style>
       <div
         data-name='modalContentContainer'
+        class="scope_f82h1k"
         style=${`
           position: absolute;
           transition: var(--duration) ease-in-out;
@@ -98,7 +100,7 @@ export const Modal = f(function aModal () {
         `}
       >
         <style>
-          ${`@scope {
+          ${`.scope_f82h1k {
             & {
               @media ${jsVars.breakpoints.desktop} {
                 left: 50%;
@@ -123,6 +125,7 @@ export const Modal = f(function aModal () {
         </style>
         <div
           data-name='modalContent'
+          class="scope_j3k1h2"
           style=${`
             overflow-y: auto;
             /*
@@ -140,7 +143,7 @@ export const Modal = f(function aModal () {
           `}
         >
           <style>
-            ${`@scope {
+            ${`.scope_j3k1h2 {
               & {
                 @media ${jsVars.breakpoints.desktop} {
                   border-radius: 17px;
