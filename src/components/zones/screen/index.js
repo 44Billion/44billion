@@ -168,7 +168,7 @@ f(function appWindow () {
   useTask(
     async ({ cleanup }) => {
       const initialRoute = initialRoute$() || ''
-      if (initialRoute) initialRoute$(undefined)
+      if (initialRoute) initialRoute$('') // reset
       const ac = new AbortController()
       cleanup(() => ac.abort())
       await initMessageListener(userPkB36$(), appId$(), appSubdomain$(), initialRoute, appIframeRef$(), { signal: ac.signal, isSingleNapp: false })

@@ -89,6 +89,7 @@ function addUser ({ userPk, storage, isFirstTimeUser }) {
     // +<appname>.<host>.<example>? hmm better naddr1
     storage[`session_appByKey_${app.key}_id$`](app.id)
     storage[`session_appByKey_${app.key}_visibility$`](app.visibility) // open|minimized|closed
+    storage[`session_appByKey_${app.key}_route$`]('')
   })
 
   // unpinned is better than pinned because new core apps would be automatically pinned
