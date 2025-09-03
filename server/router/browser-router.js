@@ -1,13 +1,12 @@
 import IttyRouter from './itty-router.js'
 import { getBuiltFileRstream } from '#helpers/stream.js'
 import { pipeline } from 'node:stream/promises'
+import getChunk from '../shared-handlers/get-chunk.js'
 
 const isProduction = process.env.NODE_ENV === 'production'
 
 // <domain>
 const domainRouter = IttyRouter()
-// // We need this to make the platform work offline
-// .get('/sw.js', (req, res) => { return res })
 
 if (isProduction) {
   domainRouter
@@ -20,6 +19,7 @@ if (isProduction) {
       )
       return res
     })
+    .get('/chunks/:name', getChunk)
     .get('/', serveIndex)
     .get('/\\+{1,3}:nappIdWithRoute+', serveIndex)
 
@@ -33,5 +33,8 @@ if (isProduction) {
     return res
   }
 }
+
+// // We need this to make the platform work offline
+// domainRouter.get('/sw.js', (req, res) => { return res })
 
 export default domainRouter

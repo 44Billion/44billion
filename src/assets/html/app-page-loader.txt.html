@@ -18,6 +18,8 @@
       --pixel-ostrich-leg: #8B4513; /* SaddleBrown */
       --pixel-ostrich-eye: #000000; /* Black */
       --pixel-ostrich-accent: var(--accent-darker-color);
+      --pulse-bg-1: #f0f0f0;
+      --pulse-bg-2: #999999;
     }
 
     @media (prefers-color-scheme: dark) {
@@ -31,6 +33,8 @@
         --pixel-ostrich-beak: #FFC966;
         --pixel-ostrich-leg: #A0522D;
         --pixel-ostrich-eye: #FFFFFF;
+        --pulse-bg-1: #000000;
+        --pulse-bg-2: #1E1E1E;
       }
     }
 
@@ -49,6 +53,28 @@
       color: var(--text-color);
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
       transition: background-color 0.3s, color 0.3s;
+      visibility: hidden;
+    }
+
+    #pulse-background {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100dvw;
+      height: 100dvh;
+      z-index: 1;
+    }
+
+    #pulse-background.pulsing {
+      display: block;
+      animation: pulse 2s infinite ease-in-out;
+    }
+
+    @keyframes pulse {
+      0% { background-color: var(--pulse-bg-1); }
+      50% { background-color: var(--pulse-bg-2); }
+      100% { background-color: var(--pulse-bg-1); }
     }
 
     .loader-container {
@@ -192,6 +218,7 @@
   </style>
 </head>
 <body>
+  <div id="pulse-background"></div>
   <div class="loader-container">
     <div class="ostrich-wrapper" id="ostrich-wrapper">
       <div id="pixel-ostrich"></div>
@@ -217,102 +244,117 @@
   </div>
 
   <script>
-    document.addEventListener('DOMContentLoaded', () => {
-      const napp = window.napp || new EventTarget()
+    document.body.style.visibility = 'hidden';
 
-      const iconDisplay = document.getElementById('icon-display')
-      const iconClipper = document.getElementById('icon-clipper')
-      const ostrichWrapper = document.getElementById('ostrich-wrapper')
-      const progressBar = document.getElementById('progress-bar')
-      const progressText = document.getElementById('progress-text')
-
-      let celebrationTimeout
-      let animationInterval
-      let currentRotation = 0
-
-      function startDefaultIconAnimation () {
-        animationInterval = setInterval(() => {
-          currentRotation += 90
-          iconClipper.style.transform = `rotate(${currentRotation}deg)`
-        }, 4000)
+    if (window.parent !== window.top) {
+      document.querySelector('.loader-container').style.display = 'none';
+      const pulseBg = document.getElementById('pulse-background');
+      pulseBg.classList.add('pulsing');
+      document.body.style.visibility = 'visible';
+      document.addEventListener('DOMContentLoaded', () => {
+        napp.addEventListener('progress', () => {
+          maybeReload(napp.progress)
+        })
+      })
+      function maybeReload (progress) {
+        if (progress < 100) return
+        window.location.reload()
       }
+    } else {
+      document.body.style.visibility = 'visible';
+      document.addEventListener('DOMContentLoaded', () => {
+        const napp = window.napp || new EventTarget()
 
-      function showIcon (iconUrl) {
-        iconDisplay.classList.add('ready')
-        if (iconUrl && typeof iconUrl === 'string') {
-          clearInterval(animationInterval)
-          iconClipper.style.transform = 'rotate(0deg)' // Reset rotation
-          iconClipper.innerHTML = `<img src="${iconUrl}" alt="App Icon">`
+        const iconDisplay = document.getElementById('icon-display')
+        const iconClipper = document.getElementById('icon-clipper')
+        const ostrichWrapper = document.getElementById('ostrich-wrapper')
+        const progressBar = document.getElementById('progress-bar')
+        const progressText = document.getElementById('progress-text')
+
+        let celebrationTimeout
+        let animationInterval
+        let currentRotation = 0
+
+        function startDefaultIconAnimation () {
+          animationInterval = setInterval(() => {
+            currentRotation += 90
+            iconClipper.style.transform = `rotate(${currentRotation}deg)`
+          }, 4000)
         }
-      }
 
-      function updateProgress (progress) {
-        if (typeof progress !== 'number' || progress < 0) return
-
-        const currentProgress = Math.min(progress, 100)
-        progressBar.style.width = `${currentProgress}%`
-        progressText.textContent = `Loading... ${currentProgress}%`
-
-        if (currentProgress >= 100) {
-          progressText.textContent = 'Done!'
-          if (!celebrationTimeout) {
+        function showIcon (iconUrl) {
+          iconDisplay.classList.add('ready')
+          if (iconUrl && typeof iconUrl === 'string') {
             clearInterval(animationInterval)
-            celebrationTimeout = setTimeout(() => {
-              ostrichWrapper.classList.add('celebrating')
-              setTimeout(() => {
-                if (typeof window.napp.reload === 'function') {
-                  window.napp.reload()
-                } else {
-                  window.location.reload()
-                }
-              }, 1200)
-            }, 300)
+            iconClipper.style.transform = 'rotate(0deg)' // Reset rotation
+            iconClipper.innerHTML = `<img src="${iconUrl}" alt="App Icon">`
           }
         }
-      }
 
-      // Show default icon and start its animation
-      showIcon()
-      startDefaultIconAnimation()
+        function updateProgress (progress) {
+          if (typeof progress !== 'number' || progress < 0) return
 
-      // Event Listeners
-      napp.addEventListener('iconready', () => {
-        showIcon(napp.icon)
-      })
+          const currentProgress = Math.min(progress, 100)
+          progressBar.style.width = `${currentProgress}%`
+          progressText.textContent = `Loading... ${currentProgress}%`
 
-      napp.addEventListener('progress', () => {
-        updateProgress(napp.progress)
-      })
-
-      // Initial state check
-      if (napp.icon) {
-        showIcon(napp.icon)
-      }
-      if (napp.progress) {
-        updateProgress(napp.progress)
-      }
-
-      // --- For testing purposes ---
-      if (!window.napp) {
-        console.log('Mocking window.napp for testing.')
-        window.napp = napp
-        let mockProgress = 0
-
-        setTimeout(() => {
-          napp.icon = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjggMTI4Ij48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImciIHgxPSIwIiB5MT0iMCIgeDI9IjAiIHkyPSIxMjgiIGdyYWRpZW50VW5pdHM9InVzZXJTcGFjZU9uVXNlIj48c3RvcCBvZmZzZXQ9IjAiIHN0b3AtY29sb3I9IiMzMjc0Y2UiLz48c3RvcCBvZmZzZXQ9IjEiIHN0b3AtY29sb3I9IiMxYzNkNjkiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz48cmVjdCB3aWR0aD0iMTI4IiBoZWlnaHQ9IjEyOCIgcng9IjI0IiBmaWxsPSJ1cmwoI2cpIi8+PHBhdGggZD0iTTY0IDM0Yy0xNiAwLTI5IDEzLTI5IDI5czEzIDI5IDI5IDI5IDI5LTEzIDI5LTI5LTEzLTI5LTI5LTI5em0wIDQ4Yy0xMC41IDAtMTktOC41LTE5LTE5czguNS0xOSAxOS0xOSAxOSA4LjUgMTkgMTktOC41IDE5LTE5IDE5em0wLTI5bC0xNCAyMWg4bC0yIDloMTZsLTItOWg4eiIgZmlsbD0iI2ZmZiIvPjwvc3ZnPg=='
-          napp.dispatchEvent(new CustomEvent('iconready'))
-        }, 5000)
-
-        const interval = setInterval(() => {
-          mockProgress += Math.floor(Math.random() * 10) + 5
-          napp.progress = mockProgress
-          napp.dispatchEvent(new CustomEvent('progress'))
-          if (mockProgress >= 100) {
-            clearInterval(interval)
+          if (currentProgress >= 100) {
+            progressText.textContent = 'Done!'
+            if (!celebrationTimeout) {
+              clearInterval(animationInterval)
+              celebrationTimeout = setTimeout(() => {
+                ostrichWrapper.classList.add('celebrating')
+                setTimeout(() => {
+                  window.location.reload()
+                }, 1200)
+              }, 300)
+            }
           }
-        }, 800)
-      }
-    })
+        }
+
+        // Show default icon and start its animation
+        showIcon()
+        startDefaultIconAnimation()
+
+        // Event Listeners
+        napp.addEventListener('iconready', () => {
+          showIcon(napp.icon)
+        })
+
+        napp.addEventListener('progress', () => {
+          updateProgress(napp.progress)
+        })
+
+        // Initial state check
+        if (napp.icon) {
+          showIcon(napp.icon)
+        }
+        if (napp.progress) {
+          updateProgress(napp.progress)
+        }
+
+        // --- For testing purposes ---
+        if (!window.napp) {
+          console.log('Mocking window.napp for testing.')
+          window.napp = napp
+          let mockProgress = 0
+
+          setTimeout(() => {
+            napp.icon = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjggMTI4Ij48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImciIHgxPSIwIiB5MT0iMCIgeDI9IjAiIHkyPSIxMjgiIGdyYWRpZW50VW5pdHM9InVzZXJTcGFjZU9uVXNlIj48c3RvcCBvZmZzZXQ9IjAiIHN0b3AtY29sb3I9IiMzMjc0Y2UiLz48c3RvcCBvZmZzZXQ9IjEiIHN0b3AtY29sb3I9IiMxYzNkNjkiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz48cmVjdCB3aWR0aD0iMTI4IiBoZWlnaHQ9IjEyOCIgcng9IjI0IiBmaWxsPSJ1cmwoI2cpIi8+PHBhdGggZD0iTTY0IDM0Yy0xNiAwLTI5IDEzLTI5IDI5czEzIDI5IDI5IDI5IDI5LTEzIDI5LTI5LTEzLTI5LTI5LTI5em0wIDQ4Yy0xMC41IDAtMTktOC41LTE5LTE5czguNS0xOSAxOS0xOSAxOSA4LjUgMTkgMTktOC41IDE5LTE5IDE5em0wLTI5bC0xNCAyMWg4bC0yIDloMTZsLTItOWg4eiIgZmlsbD0iI2ZmZiIvPjwvc3ZnPg=='
+            napp.dispatchEvent(new CustomEvent('iconready'))
+          }, 5000)
+
+          const interval = setInterval(() => {
+            mockProgress += Math.floor(Math.random() * 10) + 5
+            napp.progress = mockProgress
+            napp.dispatchEvent(new CustomEvent('progress'))
+            if (mockProgress >= 100) {
+              clearInterval(interval)
+            }
+          }, 800)
+        }
+      })
+    }
   </script>
 </body>
 </html>

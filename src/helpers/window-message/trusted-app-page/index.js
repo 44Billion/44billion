@@ -55,7 +55,7 @@ export async function tellSwImReady () {
 // sw needs this iframe ready to bridge communication to app browser
 // to load real app page files, so parent will
 // wait for this to add real app page iframe to DOM
-export async function tellParentImReady () {
+export function tellParentImReady () {
   const readyMsg = {
     code: 'TRUSTED_IFRAME_READY',
     payload: null

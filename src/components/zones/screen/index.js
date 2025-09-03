@@ -163,14 +163,16 @@ f(function appWindow () {
   const userPkB36$ = useComputed(() => base62ToBase36(maybeUserPk$() || anonPk$(), 50))
   const appSubdomain$ = useComputed(() => appIdToAppSubdomain(appId$(), userPkB36$()))
   const appIframeRef$ = useSignal()
+  const appIframeSrc$ = useSignal('about:blank')
 
   useTask(
-    ({ cleanup }) => {
+    async ({ cleanup }) => {
       const initialRoute = initialRoute$() || ''
       if (initialRoute) initialRoute$(undefined)
       const ac = new AbortController()
       cleanup(() => ac.abort())
-      initMessageListener(userPkB36$(), appId$(), appSubdomain$(), initialRoute, appIframeRef$(), ac.signal)
+      await initMessageListener(userPkB36$(), appId$(), appSubdomain$(), initialRoute, appIframeRef$(), { signal: ac.signal, isSingleNapp: false })
+      appIframeSrc$(`//${appSubdomain$()}.${window.location.host}/~~napp`)
     },
     { after: 'rendering' }
   )
@@ -200,9 +202,14 @@ f(function appWindow () {
           }
           /**/
           iframe {
-            border: none;
-            height: 100%;
-            width: 100%;
+            &.tilde-tilde-napp-page { display: none; }
+
+            &.napp-page {
+              border: none;
+              width: 100%;
+              height: 100%;
+              display: block; /* ensure it's not inline */
+            }
           }
         }
         app-window:nth-child(1) > &.open {
@@ -228,9 +235,10 @@ f(function appWindow () {
       }
     </style>
     <iframe
-      allowtransparency
+      class="tilde-tilde-napp-page"
       ref=${appIframeRef$}
-      src=${`//${appSubdomain$()}.${window.location.host}/~~napp`} />
+      src=${appIframeSrc$()}
+    />
     </div>
   `
 })

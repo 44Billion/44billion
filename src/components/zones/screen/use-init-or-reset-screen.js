@@ -76,7 +76,7 @@ function addUser ({ userPk, storage, isFirstTimeUser }) {
 
   const wsKey = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
   if (storage.config_isSingleWindow$() === undefined) storage.config_isSingleWindow$(false)
-  if (storage.config_vaultUrl$() === undefined) storage.config_vaultUrl$(window.IS_DEVELOPMENT ? 'http://localhost:4467' : 'https://44billion.github.io/44b-vault')
+  if (storage.config_vaultUrl$() === undefined) storage.config_vaultUrl$(IS_DEVELOPMENT ? 'http://localhost:4467' : 'https://44billion.github.io/44b-vault')
   storage.session_workspaceKeys$([wsKey])
   storage.session_openWorkspaceKeys$([wsKey]) // order of group of windows
   // de-normalized from `session_appByKey_${app.key}_visibility$` (open or minimized)

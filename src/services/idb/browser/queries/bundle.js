@@ -7,16 +7,16 @@ export async function getBundleFromDb (appId) {
   return run('get', [ref], 'bundles').then(v => v.result && toEvent(v.result))
 }
 
-export async function saveBundleToDb (bundle) {
-  const record = toDbRecord(bundle)
+export async function saveBundleToDb (bundle, metadata) {
+  const record = toDbRecord(bundle, metadata)
   return run('put', [record], 'bundles')
 }
 
-function toDbRecord (event, { hasUpdate = false } = {}) {
+function toDbRecord (event, { hasUpdate = false, lastOpenedAsSingleNappAt = 0 } = {}) {
   const dTag = event.tags.find(t => t[0] === 'd')?.[1] ?? ''
   if (!isNostrAppDTagSafe(dTag)) throw new Error('Invalid d tag')
 
-  const { kind, pubkey, ...evt } = event
+  const { kind, pubkey, meta: _, ...evt } = event
   const channelEnum = {
     37448: 'a',
     37449: 'b',
@@ -28,6 +28,7 @@ function toDbRecord (event, { hasUpdate = false } = {}) {
     p: base16ToBytes(pubkey),
     d: dTag,
     u: hasUpdate,
+    s: lastOpenedAsSingleNappAt,
     evt
   }
 }
@@ -40,8 +41,12 @@ function toEvent (record) {
   }[record.c]
   if (!kind) throw new Error('Invalid channel')
   return {
-    kind: record.c,
+    kind,
     pubkey: bytesToBase16(record.p),
-    ...record.evt
+    ...record.evt,
+    meta: {
+      hasUpdate: record.u,
+      lastOpenedAsSingleNappAt: record.s
+    }
   }
 }

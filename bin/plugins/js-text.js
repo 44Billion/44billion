@@ -1,5 +1,6 @@
 import esbuild from 'esbuild'
 import path from 'node:path'
+import { esbuildDefineConfig } from '../build.js'
 
 export default {
   name: 'js-text',
@@ -13,6 +14,7 @@ export default {
         minify: true,
         format: 'iife',
         target: ['edge89', 'firefox89', 'chrome89', 'safari15'],
+        define: esbuildDefineConfig,
         globalName: path.basename(args.path, '.txt.js')
           .replace(/[^a-zA-Z0-9_]/g, '_'),
         write: false

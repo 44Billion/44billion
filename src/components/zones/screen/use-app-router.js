@@ -117,9 +117,7 @@ export default function useAppRouter () {
     if (appPath !== '/' || search || hash) {
       appRoute = appPath + search + hash
     }
-    console.log('napp', napp)
-    console.log('appPath', appPath, typeof appPath)
-    console.log('appRoute', appRoute, typeof appRoute)
+
     try { openApp(napp, appRoute) } catch (err) { console.log(err) } finally {
       loc.replaceState(history.state, '', '/') // TODO: replace with previous url if available
     }

@@ -2,6 +2,7 @@ import IttyRouter from './itty-router.js'
 import { getBuiltFileRstream, dupeRstream } from '#helpers/stream.js'
 import handleEtag from '#helpers/middleware/etag.js'
 import { pipeline } from 'node:stream/promises'
+import getChunk from '../shared-handlers/get-chunk.js'
 
 const isDev = process.env.NODE_ENV === 'development'
 
@@ -24,6 +25,8 @@ export const appRouter = IttyRouter()
     )
     return res
   })
+  // when app's sw.js request them
+  .get('/chunks/:name', getChunk)
   // /~~napp or / or /inner/route
   .get('*', async (req, res) => {
     // Firefox problem:
@@ -49,7 +52,7 @@ export const appRouter = IttyRouter()
           <script>
             (async function () {
               // no-op during subsequent visits
-              await navigator.serviceWorker.register('/sw.js')
+              await navigator.serviceWorker.register('/sw.js', { type: 'module' })
               const registration = await navigator.serviceWorker.ready
               if (registration.active && registration.active.state === 'activated') {
                 window.location.reload()

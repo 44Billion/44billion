@@ -5,8 +5,11 @@ import jsTextPlugin from './plugins/js-text.js'
 import cssTextPlugin from './plugins/css-text.js'
 import htmlTextPlugin from './plugins/html-text.js'
 
-const { dirname } = import.meta
 const isDev = process.env.NODE_ENV === 'development'
+export const esbuildDefineConfig = isDev
+  ? { IS_DEVELOPMENT: JSON.stringify(true), IS_PRODUCTION: JSON.stringify(false), _F_SHOULD_RESTORE_STATE_ON_TAB_RELOAD: JSON.stringify(true) }
+  : { IS_DEVELOPMENT: JSON.stringify(false), IS_PRODUCTION: JSON.stringify(true), _F_SHOULD_RESTORE_STATE_ON_TAB_RELOAD: JSON.stringify(false) }
+const { dirname } = import.meta
 const prodOutdir = `${dirname}/../dist/${dirname.split('/').slice(-2, -1)}` // dist/<root dir>
 // same as esbuild.build, but reusable
 const ctx = await esbuild.context({
@@ -16,9 +19,7 @@ const ctx = await esbuild.context({
     '.svg': 'text',
     '.webp': 'dataurl'
   },
-  ...(isDev
-    ? { define: { 'window.IS_DEVELOPMENT': JSON.stringify(true), _F_SHOULD_RESTORE_STATE_ON_TAB_RELOAD: JSON.stringify(true) } }
-    : { define: { 'window.IS_PRODUCTION': JSON.stringify(true) } }),
+  define: esbuildDefineConfig,
   entryPoints: [
     `${dirname}/../src/components/app.js`,
     `${dirname}/../src/assets/html/index.html`, // will use "copy" loader
@@ -32,6 +33,8 @@ const ctx = await esbuild.context({
     // .build() will create app.js at `${dirname}/../build
     : prodOutdir,
   entryNames: '[name]',
+  chunkNames: 'chunks/[name]-[hash]',
+  splitting: true, // it didn't work without this explicitly set
   bundle: true,
   platform: 'browser',
   format: 'esm',

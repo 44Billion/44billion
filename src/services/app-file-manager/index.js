@@ -2,6 +2,7 @@ import { appIdToAddressObj, findRouteFileTag } from '#helpers/app.js'
 import getBundleEvent from './get-bundle-event.js'
 import cacheMissingChunks from './cache-missing-chunks'
 import { countFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
+import { saveBundleToDb } from '#services/idb/browser/queries/bundle.js'
 import mime from 'mime'
 
 function getContentType (mimeType) {
@@ -44,6 +45,12 @@ export default class AppFileManager {
     const ret = new this(createToken, { appId, addressObj, bundle })
     p.resolve(ret)
     return p.promise
+  }
+
+  updateBundleMetadata (metadata) {
+    if (!metadata) throw new Error('Missing metadata arg')
+
+    return saveBundleToDb(this.bundle, { ...this.bundle.meta, ...metadata })
   }
 
   #faviconMetadata

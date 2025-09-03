@@ -1,10 +1,12 @@
-import { handleMessageReply, requestMessage, replyWithMessage } from '../index.js'
+import { /* handleMessageReply, */ requestMessage, replyWithMessage } from '../index.js'
 import { appIdToAddressObj } from '#helpers/app.js'
 import { base36ToBase16 } from '#helpers/base36.js'
 import { streamFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
 import AppFileManager from '#services/app-file-manager/index.js'
 
-export async function initMessageListener (userPkB36, appId, appSubdomain, initialRoute, trustedAppPageIframe, componentSignal) {
+export async function initMessageListener (userPkB36, appId, appSubdomain, initialRoute, trustedAppPageIframe,
+  { signal: componentSignal, isSingleNapp = false } = {}
+) {
   const userPkB16 = base36ToBase16(userPkB36)
   const currentVaultUrl = new URL(JSON.parse(localStorage.getItem('config_vaultUrl')))
   const vaultIframe = document.querySelector(`iframe[src="${currentVaultUrl.href}"]`)
@@ -13,6 +15,7 @@ export async function initMessageListener (userPkB36, appId, appSubdomain, initi
 
   const appAddress = appIdToAddressObj(appId)
   const appFiles = await AppFileManager.create(appId, appAddress)
+  if (isSingleNapp) appFiles.updateBundleMetadata({ lastOpenedAsSingleNappAt: Date.now() })
 
   // window.addEventListener('message', async e => {
   //   console.log('MSG received', e.data.code)
@@ -48,8 +51,10 @@ export async function initMessageListener (userPkB36, appId, appSubdomain, initi
     // load real app page beside the already loaded trusted app page iframe
     const domain = window.location.host
     const appPageIframe = document.createElement('iframe')
+    appPageIframe.className = 'napp-page'
     appPageIframe.src = `//${appSubdomain}.${domain}${route}`
-    appPageIframe.allowtransparency = true
+    // Note: for transparent bg, the iframe's html should add
+    // <meta name="color-scheme" content="light dark"> to the head tag
     trustedAppPageIframe.insertAdjacentElement('beforebegin', appPageIframe)
     hasRunLoadApp = true
 
@@ -108,7 +113,6 @@ export async function initMessageListener (userPkB36, appId, appSubdomain, initi
 
   function listenToAppPageMessages (appPagePort, signal) {
     appPagePort.addEventListener('message', async e => {
-      console.log('appPagePort msg received', e.data)
       switch (e.data.code) {
         case 'NIP07': {
           if (

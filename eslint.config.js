@@ -12,7 +12,9 @@ export default [
       sourceType: 'module',
       globals: {
         ...globals.browser,
-        ...globals.serviceworker
+        ...globals.serviceworker,
+        IS_DEVELOPMENT: 'readonly',
+        IS_PRODUCTION: 'readonly'
       }
     },
     rules: {
