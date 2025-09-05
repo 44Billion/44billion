@@ -1,5 +1,6 @@
 import { f, useCallback, useComputed, useStore, useGlobalSignal, useStateSignal, useSignal, useClosestSignal, useClosestStore, useTask } from '#f'
 import useInitOrResetScreen from './use-init-or-reset-screen.js'
+import useCollectScreenGarbage from './use-collect-screen-garbage.js'
 import useWebStorage from '#hooks/use-web-storage.js'
 import useLongPress from '#hooks/use-long-press.js'
 import useScrollbarConfig from '#hooks/use-scrollbar-config.js'
@@ -18,6 +19,7 @@ import '#shared/svg.js'
 
 f(function aScreen () {
   useInitOrResetScreen()
+  useCollectScreenGarbage()
   useAppRouter()
 
   const isSingleWindow$ = useWebStorage(localStorage).config_isSingleWindow$
@@ -144,11 +146,14 @@ f(function workspaceWindow () {
   const {
     [`session_workspaceByKey_${this.props.workspaceKey}_openAppKeys$`]: openAppKeys$
   } = useWebStorage(localStorage)
-
+  const mruRankByAppKey = useComputed(() => openAppKeys$().cssOrder.reduce((r, v, i) => ({ ...r, [v]: i + 1 }), {}))()
   return this.h`
-    ${openAppKeys$().map(appKey => this.h({ key: appKey })`
-      <app-window key=${appKey} props=${{ appKey, wsKey: this.props.workspaceKey }} />
-    `)}
+    ${openAppKeys$().domOrder.map(appKey => {
+      const mruRank = mruRankByAppKey[appKey]
+      return this.h({ key: appKey })`
+      <app-window key=${appKey} props=${{ appKey, wsKey: this.props.workspaceKey, mruRank }} />
+      `
+    })}
   `
 })
 f(function appWindow () {
@@ -162,11 +167,25 @@ f(function appWindow () {
   } = storage
   const userPkB36$ = useComputed(() => base62ToBase36(maybeUserPk$() || anonPk$(), 50))
   const appSubdomain$ = useComputed(() => appIdToAppSubdomain(appId$(), userPkB36$()))
+  const isClosed$ = useComputed(() => appVisibility$() === 'closed')
   const appIframeRef$ = useSignal()
   const appIframeSrc$ = useSignal('about:blank')
 
   useTask(
-    async ({ cleanup }) => {
+    async ({ track, cleanup }) => {
+      const isClosed = track(() => isClosed$())
+      // ?? n sei se faz sentido pq openAppKeys$ a principio n tem closed
+      // mas se abrir e depois fechar, tem q manter no openAppKeys até reiniciar 44billion
+      // (entao TODO: tem q fazer essa limpa lá em cima dos closed que estão no openAppKeys$)
+      // ... e tb acho que vamos ter que logar msgs no sw p/ ver se ta functinando ok
+      // p comunicacao com iframe 2 de 3
+      //
+      // This component won't load when app starts closed
+      // because openAppKeys$.domOrder initially is populated
+      // by open (or minimized) apps
+      // but will be reused on re-opening: open->closed->open
+      if (isClosed) return
+
       const initialRoute = initialRoute$() || ''
       if (initialRoute) initialRoute$('') // reset
       const ac = new AbortController()
@@ -184,7 +203,8 @@ f(function appWindow () {
       `}
       class=${{
         open: appVisibility$() === 'open',
-        scope_khjha3: true
+        scope_khjha3: true,
+        [`mru-rank-${this.props.mruRank}`]: !!this.props.mruRank
       }}
     >
     <style>
@@ -212,22 +232,25 @@ f(function appWindow () {
             }
           }
         }
-        app-window:nth-child(1) > &.open {
+        &.mru-rank-0 { order: 0; }
+        &.mru-rank-1 { order: 1; }
+        &.mru-rank-2 { order: 2; }
+        &.mru-rank-1.open {
           display: block;
         }
         #screen.multi-window &.open {
-          app-window:nth-child(2) > & {
+          &.mru-rank-2 {
             display: block;
           }
           /* thin or thinner (shrinking number) */
           @media (max-aspect-ratio: 8/16) {
-            app-window:nth-child(3) > &.open {
+            &.mru-rank-3 {
               display: block;
             }
           }
           /* short or shorter (growing number) */
           @media (min-aspect-ratio: 16/8) {
-            app-window:nth-child(3) > &.open {
+            &.mru-rank-3 {
               display: block;
             }
           }
@@ -442,8 +465,13 @@ f(function toolbarAppLauncher () {
       case 'closed': {
         // open
         storage[`session_appByKey_${app$().key}_visibility$`]('open')
-        storage[`session_workspaceByKey_${app$().workspaceKey}_openAppKeys$`](v => {
-          v.unshift(app$().key)
+        storage[`session_workspaceByKey_${app$().workspaceKey}_openAppKeys$`]((v, eqKey) => {
+          const appKey = app$().key
+          if (!v.domOrder.includes(appKey)) {
+            v.domOrder.push(appKey) // must not change order of previous windows
+          }
+          v.cssOrder.unshift(appKey) // place at beginning
+          v[eqKey] = Math.random()
           return v
         })
         break
@@ -453,20 +481,29 @@ f(function toolbarAppLauncher () {
         const appKey = app$().key
         storage[`session_appByKey_${appKey}_visibility$`]('open')
         storage[`session_workspaceByKey_${app$().workspaceKey}_openAppKeys$`]((v, eqKey) => {
-          const i = v.indexOf(appKey)
-          if (i !== -1) {
-            v.splice(i, 1) // remove
-            v.unshift(appKey) // place at beginning
-            v[eqKey] = Math.random()
-          }
+          const i = v.cssOrder.indexOf(appKey)
+          if (i !== -1) v.cssOrder.splice(i, 1) // remove
+          v.cssOrder.unshift(appKey) // place at beginning
+          v[eqKey] = Math.random()
           return v
         })
         break
       }
       case 'open': {
-        // close
+        // bring to front or minimize
         const appKey = app$().key
-        storage[`session_appByKey_${appKey}_visibility$`]('minimized')
+        let i
+        storage[`session_workspaceByKey_${app$().workspaceKey}_openAppKeys$`]((v, eqKey) => {
+          i = v.cssOrder.indexOf(appKey)
+          if (i > -1) {
+            v.cssOrder.splice(i, 1) // remove (to e.g. let 3rd app become 2nd)
+            if (i === 0) storage[`session_appByKey_${appKey}_visibility$`]('minimized')
+            else v.cssOrder.unshift(appKey) // place at beginning
+            v[eqKey] = Math.random()
+          }
+          return v
+        })
+        break
       }
     }
   })

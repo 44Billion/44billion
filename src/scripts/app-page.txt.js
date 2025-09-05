@@ -5,18 +5,22 @@ import { postMessage, requestMessage } from '#helpers/window-message/index.js'
 (async () => {
   const p = Promise.withResolvers()
   injectNip07(p.promise) // first thing
-  tellParentImReady(p.resolve)
+  tellParentImReady(p)
   await p.promise
 })()
 
-function tellParentImReady (resolve) {
+function tellParentImReady (p) {
   const { port1: browserPort, port2: appPagePortForBrowser } = new MessageChannel()
   const readyMsg = {
     code: 'APP_IFRAME_READY',
     payload: null
   }
+  browserPort.addEventListener('message', e => {
+    if (e.data.code !== 'BROWSER_READY') return p.reject()
+    p.resolve(browserPort)
+  }, { once: true })
+  browserPort.start()
   postMessage(window.parent, readyMsg, { targetOrigin: '*', transfer: [appPagePortForBrowser] })
-  resolve(browserPort)
 }
 
 function injectNip07 (promise) {

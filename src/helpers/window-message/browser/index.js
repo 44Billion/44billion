@@ -1,4 +1,4 @@
-import { /* handleMessageReply, */ requestMessage, replyWithMessage } from '../index.js'
+import { /* handleMessageReply, */ postMessage, requestMessage, replyWithMessage } from '../index.js'
 import { appIdToAddressObj } from '#helpers/app.js'
 import { base36ToBase16 } from '#helpers/base36.js'
 import { streamFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
@@ -52,10 +52,8 @@ export async function initMessageListener (userPkB36, appId, appSubdomain, initi
     const domain = window.location.host
     const appPageIframe = document.createElement('iframe')
     appPageIframe.className = 'napp-page'
-    appPageIframe.src = `//${appSubdomain}.${domain}${route}`
     // Note: for transparent bg, the iframe's html should add
     // <meta name="color-scheme" content="light dark"> to the head tag
-    trustedAppPageIframe.insertAdjacentElement('beforebegin', appPageIframe)
     hasRunLoadApp = true
 
     let ac
@@ -70,8 +68,10 @@ export async function initMessageListener (userPkB36, appId, appSubdomain, initi
       ac = new AbortController()
       // iframe's page may reload on sw controller change
       listenToAppPageMessages(e.ports[0], AbortSignal.any([componentSignal, ac.signal]))
-      loadAppOnce(appSubdomain)
     }, { signal: componentSignal })
+
+    appPageIframe.src = `//${appSubdomain}.${domain}${route}`
+    trustedAppPageIframe.insertAdjacentElement('beforebegin', appPageIframe)
   }
 
   function listenToTrustedAppPageMessages (trustedAppPagePort, signal) {
@@ -109,6 +109,7 @@ export async function initMessageListener (userPkB36, appId, appSubdomain, initi
       }
     }, { signal })
     trustedAppPagePort.start()
+    postMessage(trustedAppPagePort, { code: 'BROWSER_READY', payload: null })
   }
 
   function listenToAppPageMessages (appPagePort, signal) {
@@ -180,6 +181,7 @@ export async function initMessageListener (userPkB36, appId, appSubdomain, initi
       }
     }, { signal })
     appPagePort.start()
+    postMessage(appPagePort, { code: 'BROWSER_READY', payload: null })
   }
 }
 

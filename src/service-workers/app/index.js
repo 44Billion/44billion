@@ -70,7 +70,7 @@ self.addEventListener('fetch', e => {
 // call selectClientToPostMessagesTo again by recursively retrying handleRequest
 async function handleRequest (request) {
   const pathname = request.pathname ?? new URL(request.url).pathname
-  const toPort = await selectClientToPostMessagesTo() // Now 'toPort' is a MessagePort
+  const toPort = await selectClientToPostMessagesTo()
   const msg = { code: 'STREAM_APP_FILE', payload: { pathname } }
   const iterator = requestMultipleMessages(toPort, msg, { targetOrigin: self.location.origin || '*' })
   const firstReplyMsg = (await iterator.next()).value
@@ -125,8 +125,8 @@ setInterval(async () => {
   }
 }, 30000)
 
-let promise
-let resolve = () => Promise.resolve()
+// A queue to avoid race condition
+const resolvers = []
 
 self.addEventListener('message', async e => {
   if (!e.source.id) return
@@ -136,7 +136,9 @@ self.addEventListener('message', async e => {
     case 'TRUSTED_IFRAME_READY': {
       if (pathname !== '/~~napp') return
       readyClients.set(e.source.id, e.ports[0])
-      resolve(e.ports[0])
+      while (resolvers.length) {
+        resolvers.shift()(e.ports[0])
+      }
       break
     }
   }
@@ -162,13 +164,25 @@ async function selectClientToPostMessagesTo () {
       //     client.postMessage({ code: 'GET_READY_STATUS' })
       //   })
       // console.log('Service Worker: No client available with ready port, retrying...')
-      ;({ promise, resolve } = Promise.withResolvers())
-      bc ??= new BroadcastChannel('sw~~napp')
-      bc.postMessage({ code: 'GET_READY_STATUS', payload: null })
+      const { promise, resolve } = Promise.withResolvers()
+      resolvers.push(resolve)
+
+      if (resolvers.length === 1) {
+        bc ??= new BroadcastChannel('sw~~napp')
+        bc.postMessage({ code: 'GET_READY_STATUS', payload: null })
+      }
+
       targetPort = await Promise.race([
         promise,
         new Promise(resolve => setTimeout(resolve, 1000))
       ])
+
+      if (!targetPort) {
+        const index = resolvers.indexOf(resolve)
+        if (index > -1) {
+          resolvers.splice(index, 1)
+        }
+      }
     }
   }
   return targetPort

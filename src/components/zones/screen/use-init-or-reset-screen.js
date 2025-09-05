@@ -80,7 +80,9 @@ function addUser ({ userPk, storage, isFirstTimeUser }) {
   storage.session_workspaceKeys$([wsKey])
   storage.session_openWorkspaceKeys$([wsKey]) // order of group of windows
   // de-normalized from `session_appByKey_${app.key}_visibility$` (open or minimized)
-  storage[`session_workspaceByKey_${wsKey}_openAppKeys$`](isFirstTimeUser ? [defaultPinnedApps[0].key] : []) // order of windows
+  const openAppKeys = isFirstTimeUser ? [defaultPinnedApps[0].key] : []
+  // order of iframes on DOM must be stable or esle they reload their content
+  storage[`session_workspaceByKey_${wsKey}_openAppKeys$`]({ domOrder: openAppKeys, cssOrder: openAppKeys }) // order of windows
   storage[`session_workspaceByKey_${wsKey}_userPk$`](userPk)
   defaultPinnedApps.forEach(app => {
     storage[`session_workspaceByKey_${wsKey}_appById_${app.id}_appKeys$`]([app.key])

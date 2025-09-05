@@ -9,10 +9,8 @@
 import { postMessage } from '../index.js'
 
 const swOrigin = window.location.origin // same as app's origin
-// let browserPort
-const { port1: browserPort, port2: trustedAppPagePortForBrowser } = new MessageChannel()
+let browserPortPromise
 let swPortPromise
-
 let swPort
 let trustedAppPagePortForSw
 
@@ -21,14 +19,14 @@ export function initMessageListener () {
   // when it didn't have a MessageChannel port sent
   // from this page already
   const bc = new BroadcastChannel('sw~~napp')
-  bc.addEventListener('message', e => {
+  bc.addEventListener('message', async e => {
     if (e.data.code !== 'GET_READY_STATUS') return
-    if (browserPort) tellSwImReady()
+    tellSwImReady()
   })
 }
 
 let ac
-export async function tellSwImReady () {
+export function tellSwImReady () {
   // sw checks this to tell if the iframe is ready
   const readyMsg = {
     code: 'TRUSTED_IFRAME_READY',
@@ -44,23 +42,30 @@ export async function tellSwImReady () {
   ac?.abort()
   ac = new AbortController()
   // This port1 will receive messages from the service worker
-  swPort.addEventListener('message', e => {
-    postMessage(browserPort, e.data)
+  swPort.addEventListener('message', async e => {
+    postMessage(await browserPortPromise, e.data)
   }, { signal: ac.signal })
   swPort.start()
 
   postMessage(getSw(), readyMsg, { targetOrigin: swOrigin, transfer: [trustedAppPagePortForSw] })
 }
 
-// sw needs this iframe ready to bridge communication to app browser
-// to load real app page files, so parent will
-// wait for this to add real app page iframe to DOM
 export function tellParentImReady () {
+  // sw needs this iframe ready to bridge communication to app browser
+  // to load real app page files, so parent will
+  // wait for this to add real app page iframe to DOM
   const readyMsg = {
     code: 'TRUSTED_IFRAME_READY',
     payload: null
   }
 
+  const { port1: browserPort, port2: trustedAppPagePortForBrowser } = new MessageChannel()
+  let resolve, reject
+  ;({ promise: browserPortPromise, resolve, reject } = Promise.withResolvers())
+  browserPort.addEventListener('message', e => {
+    if (e.data.code !== 'BROWSER_READY') return reject()
+    resolve(browserPort)
+  }, { once: true })
   browserPort.addEventListener('message', async e => {
     switch (e.data.code) {
       case 'REPLY': {

@@ -1,15 +1,19 @@
 import { postMessage, requestMultipleMessages } from '#helpers/window-message/index.js'
 import Base122Decoder from '#services/base122-decoder.js'
 
-const napp = new class extends EventTarget {
-  icon = null
-  progress = null
-}()
-window.napp = napp
+// ERROR: Top-level await is currently not supported with the "iife" output format [plugin js-text]
+// https://github.com/evanw/esbuild/issues/253
+(async () => {
+  const napp = new class extends EventTarget {
+    icon = null
+    progress = null
+  }()
+  window.napp = napp
 
-const browserPort = tellParentImReady()
-maybeSetIcon(browserPort)
-updateRouteLoadProgress(browserPort)
+  const browserPort = await tellParentImReady()
+  maybeSetIcon(napp, browserPort)
+  updateRouteLoadProgress(napp, browserPort)
+})()
 
 function tellParentImReady () {
   const readyMsg = {
@@ -17,11 +21,17 @@ function tellParentImReady () {
     payload: null
   }
   const { port1: browserPort, port2: appPagePortForBrowser } = new MessageChannel()
+  const p = Promise.withResolvers()
+  browserPort.addEventListener('message', e => {
+    if (e.data.code !== 'BROWSER_READY') return p.reject()
+    p.resolve(browserPort)
+  }, { once: true })
+  browserPort.start()
   postMessage(window.parent, readyMsg, { targetOrigin: '*', transfer: [appPagePortForBrowser] })
-  return browserPort
+  return p.promise
 }
 
-async function maybeSetIcon (to) {
+async function maybeSetIcon (napp, to) {
   const iconMsg = { code: 'STREAM_APP_ICON', payload: { pathname: window.location.pathname } }
   const iterator = requestMultipleMessages(to, iconMsg)
   function extractFirstDataFromChunkMsg ({ payload: evt, error }) {
@@ -46,7 +56,7 @@ async function maybeSetIcon (to) {
   napp.dispatchEvent(new CustomEvent('iconready'))
 }
 
-async function updateRouteLoadProgress (to) {
+async function updateRouteLoadProgress (napp, to) {
   const routeLoadMsg = { code: 'CACHE_APP_FILE', payload: { pathname: window.location.pathname } }
 
   for await (const { payload: progress, error } of requestMultipleMessages(to, routeLoadMsg)) {
