@@ -16,6 +16,7 @@ import { initMessageListener } from '#helpers/window-message/browser/index.js'
 import { base62ToBase36 } from '#helpers/base36.js'
 import { appIdToAppSubdomain } from '#helpers/app.js'
 import '#shared/svg.js'
+import '#shared/icons/icon-close.js'
 
 f(function aScreen () {
   useInitOrResetScreen()
@@ -204,7 +205,7 @@ f(function appWindow () {
       class=${{
         open: appVisibility$() === 'open',
         scope_khjha3: true,
-        [`mru-rank-${this.props.mruRank}`]: !!this.props.mruRank
+        [`mru-rank-${this.props.mruRank ?? 'none'}`]: !!this.props.mruRank
       }}
     >
     <style>
@@ -342,9 +343,9 @@ f(function unifiedToolbar () {
 f(function toolbarActiveAvatar () {
   useClosestStore('<a-menu>', {
     isOpen$: false,
-    open: function () { this.isOpen$(true) },
-    close: function () { this.isOpen$(false) },
-    toggle: function () { this.isOpen$(v => !v) }
+    open () { this.isOpen$(true) },
+    close () { this.isOpen$(false) },
+    toggle () { this.isOpen$(v => !v) }
   })
 
   return this.h`
@@ -399,6 +400,25 @@ f(function toolbarAvatar () {
 })
 
 f(function toolbarAppList () {
+  useClosestStore('<a-menu>', () => ({
+    isOpenedByLongPress: true,
+    isOpen$: false,
+    open () { this.isOpen$(true) },
+    close () { this.isOpen$(false) },
+    app$: { key: 'n/a' },
+    toggleMenu (nextApp$) {
+      const isSameApp = this.app$().key === nextApp$().key
+      if (isSameApp) this.isOpen$(v => !v)
+      else {
+        this.close()
+        window.requestIdleCallback(() => {
+          this.app$(nextApp$())
+          this.open()
+        })
+      }
+    }
+  }))
+
   return this.h`
     <toolbar-pinned-apps />
     <toolbar-unpinned-apps />
@@ -433,14 +453,86 @@ f(function toolbarUnpinnedApps () {
     }, [])
   })
 
-  return this.h`${appIdsdKeysIndexes$().map(v => this.h({ key: v.appKey })`<toolbar-app-launcher key=${v.appKey} props=${v} />`)}`
+  return this.h`
+    <app-launchers-menu />
+    ${appIdsdKeysIndexes$().map(v => this.h({ key: v.appKey })`<toolbar-app-launcher key=${v.appKey} props=${v} />`)}
+  `
+})
+f(function appLaunchersMenu () {
+  const store = useClosestStore('<a-menu>')
+  const storage = useWebStorage(localStorage)
+  const menuProps = useStore(() => ({
+    ...store,
+    closeApp () {
+      const app = store.app$()
+      const appKey = app.key
+      storage[`session_appByKey_${appKey}_visibility$`]('closed')
+      storage[`session_workspaceByKey_${app.workspaceKey}_openAppKeys$`]((v, eqKey) => {
+        let hasUpdated = false
+        if (v.domOrder[v.domOrder.length - 1] === appKey) {
+          v.domOrder.pop() // safe to remove if last
+          hasUpdated = true
+        }
+        const i = v.cssOrder.indexOf(appKey)
+        if (i !== -1) {
+          v.cssOrder.splice(i, 1) // remove
+          hasUpdated = true
+        }
+        if (hasUpdated) v[eqKey] = Math.random()
+        return v
+      })
+      store.close() // close menu
+    },
+    render: useCallback(function () {
+      const { visibility } = store.app$()
+
+      return this.h`<div id='scope_pfgf892'>
+        <style>${`
+          #scope_pfgf892 {
+            & > div {
+              &.invisible { display: none; }
+              display: flex;
+              align-items: center;
+            }
+            .icon-wrapper-271yiduh {
+              flex: 0 1 min-content;
+              margin: 10px;
+            }
+            .menu-label {
+              flex: 1;
+              min-height: 30px;
+              padding: 10px 10px 10px 3px;
+            }
+          }
+        `}</style>
+        <div class=${{ invisible: visibility === 'closed' }}>
+          <div class='icon-wrapper-271yiduh'><icon-close props=${{ size: '16px' }} /></div>
+          <div class='menu-label' onclick=${menuProps.closeApp}>Close</div>
+        </div>
+      </div>`
+    }),
+    style$: () => `& {
+      position-anchor: --app-launchers-menu;
+      position-area: top span-right;
+      margin-bottom: 6px;
+      @media (orientation: landscape) {
+        position-area: left span-bottom;
+        margin-right: 7px;
+      }
+      background-color: ${cssVars.colors.mg};
+      color: ${cssVars.colors.mgFont};
+      min-width: 120px;
+      display: flex;
+      flex-direction: column;
+    }`
+  }))
+  return this.h`<a-menu props=${menuProps} />`
 })
 f(function toolbarAppLauncher () {
   const storage = useWebStorage(localStorage)
   const newAppIdsObj$ = useGlobalSignal('hardcoded_newAppIdsObj')
   const appIndex$ = useStateSignal(this.props.appIndex)
   const appRef$ = useSignal()
-  // const menu = useClosestStore('toolbarAppMenu')
 
   const app$ = useComputed(() => ({
     id: this.props.appId,
@@ -455,7 +547,9 @@ f(function toolbarAppLauncher () {
 
   const unifiedToolbarRef$ = useClosestSignal('unifiedToolbarRef')
   useLongPress(unifiedToolbarRef$, appRef$)
-  const onLongPress = () => console.log('menu.openMenu({ app$ })')
+  const { toggleMenu, app$: currApp$ } = useClosestStore('<a-menu>')
+  const onLongPress = () => toggleMenu(app$)
+  const anchorName$ = useComputed(() => currApp$().key === app$().key ? '--app-launchers-menu' : 'none')
 
   const onClick = useCallback(e => {
     // canceled by longpress
@@ -514,7 +608,8 @@ f(function toolbarAppLauncher () {
     @custom:longpress=${onLongPress}
     class="scope_df81hd"
     style=${`
-      background-color: ;
+      anchor-name: ${anchorName$()};
+      background-color: transparent;
       width: 40px;
       height: 40px;
       display: flex;

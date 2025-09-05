@@ -18,6 +18,8 @@ f(function aSvg () {
   const store = useStore(() => {
     const it = this
     return {
+      // id is needed for styling while Firefox doesn't support @scope
+      scopeId$: 'scope_' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2),
       style$: this.props.style$ || this.props.style || '',
       // import { mdiAccount as path } from '@mdi/js'
       path$: this.props.path$ || this.props.paths$ || this.props.path || this.props.paths,
@@ -29,7 +31,7 @@ f(function aSvg () {
         // https://developer.mozilla.org/en-US/docs/Web/SVG/Reference/Attribute
         // https://github.com/Templarian/MaterialDesign-Web-Component/blob/master/src/mdi/icon/icon.ts
         return it.s`<svg
-          class=${this.class$.get()}
+          class=${this.class$.get() /* uhtml's attr.set('class', classHandler) not working on svg; use a string */}
           xmlns="http://www.w3.org/2000/svg"
           viewBox=${this.viewBox$.get()}
         >
@@ -93,10 +95,10 @@ f(function aSvg () {
   if (!store.svg$.get()) return
 
   // this.s`
-  return this.h`<div class="scope_hd725d">${this.s`
+  return this.h`<div id=${store.scopeId$()}>${this.s`
     <style>${/* css */`
       /* @scope { */
-      .scope_hd725d { display: contents;
+      #${store.scopeId$()} { display: contents;
         svg {
           /*
             Aligns at middle when no size is set (default 1em)

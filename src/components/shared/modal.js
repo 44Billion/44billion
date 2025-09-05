@@ -13,11 +13,13 @@ export const Modal = f(function aModal () {
 
   useTask(({ track }) => {
     const isOpen = track(() => store.isOpen$.get())
+    // maybe needs popover attribute and showPopover() to be light-dismissable on Safari
+    // cause of lack of closedby='any' support
     if (isOpen) store.dialogRef$().showModal()
     else store.dialogRef$().close()
-  })
+  }, { after: 'rendering' })
 
-  // https://css-tricks.com/clarifying-the-relationship-between-popovers-and-dialogs
+  // https://css-tricks.com/clarifying-the-relationship-between-popovers-and-dialogs/
   // offtopic: video::backdrop is useful to style when fullscreen
   // https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/dialog#transitioning_dialog_elements
   // https://developer.mozilla.org/en-US/docs/Web/CSS/@starting-style#examples
@@ -26,11 +28,13 @@ export const Modal = f(function aModal () {
   // https://developer.mozilla.org/en-US/docs/Web/API/Popover_API/Using#auto_state_and_light_dismiss
   // popover(=auto) attr on a dialog makes clicking on backdrop or pressing ESC close it (light dismiss)
   // i.e. no need for onkeydown=${store.onKeydown}
+  // although closedby='any' has the same effect while being a real modal (focus trapping etc)
+  // when paired with .showModal()
   return this.h`
     <dialog
       ref=${store.dialogRef$}
       data-name='modal'
-      popover
+      closedby='any'
       onclose=${store.close /* popover may close by light-dismiss (ESC or backdrop click) */}
       class="scope_g7h2g1"
     >
@@ -40,8 +44,9 @@ export const Modal = f(function aModal () {
             container-type: normal;
             --duration: .3s;
             /* display: none; (default) */
-            overlay var(--duration) ease-in-out allow-discrete,
-            display var(--duration) ease-in-out allow-discrete;
+            transition:
+              overlay var(--duration) ease-in-out allow-discrete,
+              display var(--duration) ease-in-out allow-discrete;
             /* reset [popover] */
             &:focus-visible { outline: 0; }
             color: initial;
