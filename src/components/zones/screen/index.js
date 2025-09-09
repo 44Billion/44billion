@@ -17,6 +17,7 @@ import { base62ToBase36 } from '#helpers/base36.js'
 import { appIdToAppSubdomain } from '#helpers/app.js'
 import '#shared/svg.js'
 import '#shared/icons/icon-close.js'
+import '#shared/icons/icon-maximize.js'
 
 f(function aScreen () {
   useInitOrResetScreen()
@@ -175,12 +176,6 @@ f(function appWindow () {
   useTask(
     async ({ track, cleanup }) => {
       const isClosed = track(() => isClosed$())
-      // ?? n sei se faz sentido pq openAppKeys$ a principio n tem closed
-      // mas se abrir e depois fechar, tem q manter no openAppKeys até reiniciar 44billion
-      // (entao TODO: tem q fazer essa limpa lá em cima dos closed que estão no openAppKeys$)
-      // ... e tb acho que vamos ter que logar msgs no sw p/ ver se ta functinando ok
-      // p comunicacao com iframe 2 de 3
-      //
       // This component won't load when app starts closed
       // because openAppKeys$.domOrder initially is populated
       // by open (or minimized) apps
@@ -405,19 +400,19 @@ f(function toolbarAppList () {
     isOpen$: false,
     open () { this.isOpen$(true) },
     close () { this.isOpen$(false) },
-    app$: { key: 'n/a' },
-    toggleMenu (nextApp$) {
-      const isSameApp = this.app$().key === nextApp$().key
-      if (isSameApp) this.isOpen$(v => !v)
+    app$: { key: '' },
+    toggleMenu (nextApp) {
+      const isSameApp = this.app$().key === nextApp.key
+      if (isSameApp) { this.app$(nextApp); this.isOpen$(v => !v) }
       else {
         this.close()
         window.requestIdleCallback(() => {
-          this.app$(nextApp$())
+          this.app$(nextApp)
           this.open()
         })
       }
     }
-  }))
+  }), { isStatic: false })
 
   return this.h`
     <toolbar-pinned-apps />
@@ -463,11 +458,25 @@ f(function appLaunchersMenu () {
   const storage = useWebStorage(localStorage)
   const menuProps = useStore(() => ({
     ...store,
+    openApp () {
+      this.close() // close menu
+      const { key: appKey, workspaceKey } = this.app$()
+      storage[`session_appByKey_${appKey}_visibility$`]('open')
+      storage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]((v, eqKey) => {
+        // if closed it may not be on domOrder anymore
+        if (!v.domOrder.includes(appKey)) v.domOrder.push(appKey)
+        const i = v.cssOrder.indexOf(appKey)
+        if (i !== -1) v.cssOrder.splice(i, 1) // remove
+        v.cssOrder.unshift(appKey) // place at beginning
+        v[eqKey] = Math.random()
+        return v
+      })
+    },
     closeApp () {
-      const app = store.app$()
-      const appKey = app.key
+      this.close() // close menu
+      const { key: appKey, workspaceKey } = this.app$()
       storage[`session_appByKey_${appKey}_visibility$`]('closed')
-      storage[`session_workspaceByKey_${app.workspaceKey}_openAppKeys$`]((v, eqKey) => {
+      storage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]((v, eqKey) => {
         let hasUpdated = false
         if (v.domOrder[v.domOrder.length - 1] === appKey) {
           v.domOrder.pop() // safe to remove if last
@@ -481,11 +490,16 @@ f(function appLaunchersMenu () {
         if (hasUpdated) v[eqKey] = Math.random()
         return v
       })
-      store.close() // close menu
     },
     render: useCallback(function () {
-      const { visibility } = store.app$()
-
+      const {
+        openApp,
+        closeApp,
+        app$
+      } = menuProps
+      const {
+        visibility
+      } = app$()
       return this.h`<div id='scope_pfgf892'>
         <style>${`
           #scope_pfgf892 {
@@ -505,9 +519,13 @@ f(function appLaunchersMenu () {
             }
           }
         `}</style>
+        <div class=${{ invisible: visibility === 'open' }}>
+          <div class='icon-wrapper-271yiduh'><icon-maximize props=${{ size: '16px' }} /></div>
+          <div class='menu-label' onclick=${openApp}>${visibility === 'closed' ? 'Open' : 'Maximize'}</div>
+        </div>
         <div class=${{ invisible: visibility === 'closed' }}>
           <div class='icon-wrapper-271yiduh'><icon-close props=${{ size: '16px' }} /></div>
-          <div class='menu-label' onclick=${menuProps.closeApp}>Close</div>
+          <div class='menu-label' onclick=${closeApp}>Close</div>
         </div>
       </div>`
     }),
@@ -548,7 +566,7 @@ f(function toolbarAppLauncher () {
   const unifiedToolbarRef$ = useClosestSignal('unifiedToolbarRef')
   useLongPress(unifiedToolbarRef$, appRef$)
   const { toggleMenu, app$: currApp$ } = useClosestStore('<a-menu>')
-  const onLongPress = () => toggleMenu(app$)
+  const onLongPress = () => toggleMenu({ ...app$() })
   const anchorName$ = useComputed(() => currApp$().key === app$().key ? '--app-launchers-menu' : 'none')
 
   const onClick = useCallback(e => {
