@@ -19,6 +19,7 @@ import '#shared/svg.js'
 import '#shared/icons/icon-close.js'
 import '#shared/icons/icon-minimize.js'
 import '#shared/icons/icon-maximize.js'
+import '#shared/icons/icon-stack-front.js'
 
 f(function aScreen () {
   useInitOrResetScreen()
@@ -473,6 +474,21 @@ f(function appLaunchersMenu () {
         return v
       })
     },
+    bringToFirst () {
+      this.close() // close menu
+      const { key: appKey, workspaceKey } = this.app$()
+      let i
+      storage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]((v, eqKey) => {
+        i = v.cssOrder.indexOf(appKey)
+        console.log('position', i)
+        if (i > -1) {
+          v.cssOrder.splice(i, 1) // remove
+          v.cssOrder.unshift(appKey) // place at beginning
+          v[eqKey] = Math.random()
+        }
+        return v
+      })
+    },
     minimizeApp () {
       this.close() // close menu
       const { key: appKey, workspaceKey } = this.app$()
@@ -509,13 +525,17 @@ f(function appLaunchersMenu () {
     render: useCallback(function () {
       const {
         openApp,
+        bringToFirst,
         minimizeApp,
         closeApp,
         app$
       } = menuProps
       const {
-        visibility
+        key: appKey,
+        visibility,
+        workspaceKey
       } = app$()
+      const { cssOrder } = storage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]()
       return this.h`<div id='scope_pfgf892'>
         <style>${`
           #scope_pfgf892 {
@@ -538,6 +558,10 @@ f(function appLaunchersMenu () {
         <div class=${{ invisible: visibility === 'open' }}>
           <div class='icon-wrapper-271yiduh'><icon-maximize props=${{ size: '16px' }} /></div>
           <div class='menu-label' onclick=${openApp}>${visibility === 'closed' ? 'Open' : 'Maximize'}</div>
+        </div>
+        <div class=${{ invisible: visibility !== 'open' || cssOrder[0] === appKey }}>
+          <div class='icon-wrapper-271yiduh'><icon-stack-front props=${{ size: '16px' }} /></div>
+          <div class='menu-label' onclick=${bringToFirst}>Bring to First</div>
         </div>
         <div class=${{ invisible: visibility !== 'open' }}>
           <div class='icon-wrapper-271yiduh'><icon-minimize props=${{ size: '16px' }} /></div>
