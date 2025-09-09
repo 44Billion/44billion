@@ -17,6 +17,7 @@ import { base62ToBase36 } from '#helpers/base36.js'
 import { appIdToAppSubdomain } from '#helpers/app.js'
 import '#shared/svg.js'
 import '#shared/icons/icon-close.js'
+import '#shared/icons/icon-minimize.js'
 import '#shared/icons/icon-maximize.js'
 
 f(function aScreen () {
@@ -472,6 +473,20 @@ f(function appLaunchersMenu () {
         return v
       })
     },
+    minimizeApp () {
+      this.close() // close menu
+      const { key: appKey, workspaceKey } = this.app$()
+      let i
+      storage[`session_appByKey_${appKey}_visibility$`]('minimized')
+      storage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]((v, eqKey) => {
+        i = v.cssOrder.indexOf(appKey)
+        if (i > -1) {
+          v.cssOrder.splice(i, 1) // remove (to e.g. let 3rd app become 2nd)
+          v[eqKey] = Math.random()
+        }
+        return v
+      })
+    },
     closeApp () {
       this.close() // close menu
       const { key: appKey, workspaceKey } = this.app$()
@@ -494,6 +509,7 @@ f(function appLaunchersMenu () {
     render: useCallback(function () {
       const {
         openApp,
+        minimizeApp,
         closeApp,
         app$
       } = menuProps
@@ -522,6 +538,10 @@ f(function appLaunchersMenu () {
         <div class=${{ invisible: visibility === 'open' }}>
           <div class='icon-wrapper-271yiduh'><icon-maximize props=${{ size: '16px' }} /></div>
           <div class='menu-label' onclick=${openApp}>${visibility === 'closed' ? 'Open' : 'Maximize'}</div>
+        </div>
+        <div class=${{ invisible: visibility !== 'open' }}>
+          <div class='icon-wrapper-271yiduh'><icon-minimize props=${{ size: '16px' }} /></div>
+          <div class='menu-label' onclick=${minimizeApp}>Minimize</div>
         </div>
         <div class=${{ invisible: visibility === 'closed' }}>
           <div class='icon-wrapper-271yiduh'><icon-close props=${{ size: '16px' }} /></div>
@@ -604,9 +624,8 @@ f(function toolbarAppLauncher () {
       case 'open': {
         // bring to front or minimize
         const appKey = app$().key
-        let i
         storage[`session_workspaceByKey_${app$().workspaceKey}_openAppKeys$`]((v, eqKey) => {
-          i = v.cssOrder.indexOf(appKey)
+          const i = v.cssOrder.indexOf(appKey)
           if (i > -1) {
             v.cssOrder.splice(i, 1) // remove (to e.g. let 3rd app become 2nd)
             if (i === 0) storage[`session_appByKey_${appKey}_visibility$`]('minimized')
