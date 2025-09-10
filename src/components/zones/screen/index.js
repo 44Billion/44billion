@@ -20,6 +20,7 @@ import '#shared/icons/icon-close.js'
 import '#shared/icons/icon-minimize.js'
 import '#shared/icons/icon-maximize.js'
 import '#shared/icons/icon-stack-front.js'
+import '#shared/icons/icon-remove.js'
 
 f(function aScreen () {
   useInitOrResetScreen()
@@ -522,20 +523,49 @@ f(function appLaunchersMenu () {
         return v
       })
     },
+    removeApp () {
+      this.close() // close menu
+      const { id: appId, key: appKey, workspaceKey } = this.app$()
+      const appKeys = storage[`session_workspaceByKey_${workspaceKey}_appById_${appId}_appKeys$`]()
+      if (appKeys.length <= 1) return // shouldn't happen as menu option is hidden
+
+      storage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]((v, eqKey) => {
+        let hasUpdated = false
+        if (v.domOrder[v.domOrder.length - 1] === appKey) {
+          v.domOrder.pop() // safe to remove if last
+          hasUpdated = true
+        }
+        const i = v.cssOrder.indexOf(appKey)
+        if (i !== -1) {
+          v.cssOrder.splice(i, 1) // remove
+          hasUpdated = true
+        }
+        if (hasUpdated) v[eqKey] = Math.random()
+        return v
+      })
+      const newAppKeys = appKeys.filter(v => v !== appKey)
+      storage[`session_workspaceByKey_${workspaceKey}_appById_${appId}_appKeys$`](newAppKeys)
+      storage[`session_appByKey_${appKey}_id$`](undefined)
+      storage[`session_appByKey_${appKey}_visibility$`](undefined)
+      storage[`session_appByKey_${appKey}_route$`](undefined)
+    },
     render: useCallback(function () {
       const {
         openApp,
         bringToFirst,
         minimizeApp,
         closeApp,
+        removeApp,
         app$
       } = menuProps
       const {
+        id: appId,
         key: appKey,
         visibility,
         workspaceKey
       } = app$()
       const { cssOrder } = storage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]()
+      const appKeys = storage[`session_workspaceByKey_${workspaceKey}_appById_${appId}_appKeys$`]()
       return this.h`<div id='scope_pfgf892'>
         <style>${`
           #scope_pfgf892 {
@@ -570,6 +600,10 @@ f(function appLaunchersMenu () {
         <div class=${{ invisible: visibility === 'closed' }}>
           <div class='icon-wrapper-271yiduh'><icon-close props=${{ size: '16px' }} /></div>
           <div class='menu-label' onclick=${closeApp}>Close</div>
+        </div>
+        <div class=${{ invisible: appKeys.length <= 1 }}>
+          <div class='icon-wrapper-271yiduh'><icon-remove props=${{ size: '16px' }} /></div>
+          <div class='menu-label' onclick=${removeApp}>Remove</div>
         </div>
       </div>`
     }),
