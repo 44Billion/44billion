@@ -1,8 +1,8 @@
 import { appIdToAddressObj, findRouteFileTag } from '#helpers/app.js'
 import getBundleEvent from './get-bundle-event.js'
 import cacheMissingChunks from './cache-missing-chunks'
-import { countFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
-import { saveBundleToDb } from '#services/idb/browser/queries/bundle.js'
+import { countFileChunksFromDb, deleteFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
+import { saveBundleToDb, deleteBundleFromDb } from '#services/idb/browser/queries/bundle.js'
 import mime from 'mime'
 
 function getContentType (mimeType) {
@@ -45,6 +45,35 @@ export default class AppFileManager {
     const ret = new this(createToken, { appId, addressObj, bundle })
     p.resolve(ret)
     return p.promise
+  }
+
+  async clearAppFiles () {
+    await this.#abortCaching()
+    await deleteFileChunksFromDb(this.appId)
+    await deleteBundleFromDb(this.appId)
+  }
+
+  async #abortCaching () {
+    // Stop any running cacheMissingAppFiles operation
+    this.#isCacheMissingAppFilesRunning = false
+
+    // Abort all running cacheFile operations
+    for (const filename in this.#cacheFilePubSubConfig) {
+      const config = this.#cacheFilePubSubConfig[filename]
+      const abortError = new Error('Cache operation aborted')
+      config.error = abortError
+      for (const sub of config.subscribers) {
+        try {
+          sub({ error: abortError })
+        } catch (err) {
+          console.log(err)
+        }
+      }
+      this.#deleteCacheFilePubSubConfig(filename)
+    }
+
+    // Reset all background caching flags
+    this.#isCacheFileInBackgroundRunning = {}
   }
 
   updateBundleMetadata (metadata) {
@@ -150,6 +179,7 @@ export default class AppFileManager {
         })
 
       for (const fileTag of fileTags) {
+        if (!this.#isCacheMissingAppFilesRunning) break // poor man's abort controller
         await this.cacheFile(`/${fileTag[2]}`, fileTag, null, { shouldCacheMissingFiles: false })
       }
     } finally {
@@ -167,11 +197,15 @@ export default class AppFileManager {
 
     try {
       for await (const progress of iterator) {
+        if (!this.#isCacheFileInBackgroundRunning[filename]) break // poor man's abort controller
         config.result = progress
         for (const sub of config.subscribers) {
           try { sub({ progress }) } catch (err) { console.log(err) }
         }
       }
+
+      // if we aborted early, don't continue
+      if (!this.#isCacheFileInBackgroundRunning[filename]) return
 
       if (config.result >= 100) return
 

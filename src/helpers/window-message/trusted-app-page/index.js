@@ -8,6 +8,36 @@
 // that's why we can't do  <loggedinuserpubkey>.<appid>.44billion.net
 import { postMessage } from '../index.js'
 
+export async function clearAppData () {
+  try {
+    // clear idb
+    const databases = await window.indexedDB.databases()
+    await Promise.all(databases.map(db =>
+      new Promise((resolve, reject) => {
+        const request = window.indexedDB.deleteDatabase(db.name)
+        request.onsuccess = () => resolve()
+        request.onerror = () => reject(request.error)
+      })
+    ))
+
+    // clear localStorage
+    window.localStorage.clear()
+
+    // unregister service worker
+    const registration = await navigator.serviceWorker.getRegistration()
+    if (registration) await registration.unregister()
+
+    // notify parent
+    postMessage(window.parent, { code: 'DATA_CLEARED', payload: null }, { targetOrigin: '*' })
+  } catch (error) {
+    // notify parent about the error
+    postMessage(window.parent, {
+      code: 'DATA_CLEAR_ERROR',
+      error
+    }, { targetOrigin: '*' })
+  }
+}
+
 const swOrigin = window.location.origin // same as app's origin
 let browserPortPromise
 let swPortPromise

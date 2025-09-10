@@ -1,4 +1,5 @@
 import { f, useCallback, useComputed, useStore, useGlobalSignal, useStateSignal, useSignal, useClosestSignal, useClosestStore, useTask } from '#f'
+import AppFileManager from '#services/app-file-manager/index.js'
 import useInitOrResetScreen from './use-init-or-reset-screen.js'
 import useCollectScreenGarbage from './use-collect-screen-garbage.js'
 import useWebStorage from '#hooks/use-web-storage.js'
@@ -407,8 +408,10 @@ f(function toolbarAppList () {
     app$: { key: '' },
     toggleMenu (nextApp) {
       const isSameApp = this.app$().key === nextApp.key
-      if (isSameApp) { this.app$(nextApp); this.isOpen$(v => !v) }
-      else {
+      if (isSameApp) {
+        this.app$(nextApp)
+        this.isOpen$(v => !v)
+      } else {
         this.close()
         window.requestIdleCallback(() => {
           this.app$(nextApp)
@@ -560,13 +563,81 @@ f(function appLaunchersMenu () {
       storage[`session_appByKey_${appKey}_visibility$`](undefined)
       storage[`session_appByKey_${appKey}_route$`](undefined)
     },
-    deleteApp () {
+    // open iframe at /~~napp#clear to let it clear its idb/localStorage
+    // and listen for postMessage to close it and remove bundle and file chunks
+    async maybeClearAppStorage () {
+      const { id: appId, workspaceKey } = this.app$()
+      const userPk = storage[`session_workspaceByKey_${workspaceKey}_userPk$`]() || storage.session_anonPk$()
+
+      const otherWorkspaces = storage.session_workspaceKeys$().filter(wsKey => wsKey !== workspaceKey)
+      let shouldClearAppData = true
+      let shouldClearAppFiles = true
+      for (const wsKey of otherWorkspaces) {
+        const hasApp = storage[`session_workspaceByKey_${wsKey}_appById_${appId}_appKeys$`]()?.length > 0
+        if (hasApp) {
+          shouldClearAppFiles = false // app exists in another workspace (same or other user)
+          const wsUserPk = storage[`session_workspaceByKey_${wsKey}_userPk$`]() || storage.session_anonPk$()
+          if (wsUserPk === userPk) {
+            shouldClearAppData = false // same user has app in another workspace
+            break // both conditions found
+          }
+        }
+      }
+
+      if (shouldClearAppData) {
+        const userPkB36 = base62ToBase36(userPk, 50)
+        const appSubdomain = appIdToAppSubdomain(appId, userPkB36)
+        await askAppToClearData(appSubdomain)
+      }
+      if (shouldClearAppFiles) {
+        const appFiles = await AppFileManager.create(appId)
+        await appFiles.clearAppFiles()
+      }
+
+      function askAppToClearData (appSubdomain) {
+        const p = Promise.withResolvers()
+        const iframe = document.createElement('iframe')
+        iframe.style.display = 'none'
+
+        // eslint-disable-next-line prefer-const
+        let timeout
+        const cleanup = () => {
+          if (timeout) clearTimeout(timeout)
+          window.removeEventListener('message', onMessage)
+          document.body.removeChild(iframe)
+        }
+
+        const appOrigin = `${window.location.protocol}//${appSubdomain}.${window.location.host}`
+        const onMessage = e => {
+          if (e.origin !== appOrigin) return
+          if (e.data.code === 'DATA_CLEARED') {
+            cleanup()
+            p.resolve()
+          }
+          if (e.data.code === 'DATA_CLEAR_ERROR') {
+            cleanup()
+            p.reject(e.data.error)
+          }
+        }
+        window.addEventListener('message', onMessage)
+        iframe.src = `${appOrigin}/~~napp#clear`
+        document.body.appendChild(iframe)
+
+        timeout = setTimeout(() => {
+          cleanup()
+          p.reject(new Error('Data clear timeout'))
+        }, 5000)
+        return p.promise
+      }
+    },
+    async deleteApp () {
       const { id: appId, workspaceKey } = this.app$()
       const appKeys = storage[`session_workspaceByKey_${workspaceKey}_appById_${appId}_appKeys$`]()
       if (appKeys.length !== 1) throw new Error('Can only delete an app that has a single instance')
+      this.removeApp({ isDeleteStep: true }) // may throw
 
-      this.removeApp({ isDeleteStep: true })
       this.close() // close menu
+      await this.maybeClearAppStorage()
       storage[`session_workspaceByKey_${workspaceKey}_pinnedAppIds$`](v => (v ?? []).filter(v2 => v2 !== appId))
       storage[`session_workspaceByKey_${workspaceKey}_unpinnedAppIds$`](v => (v ?? []).filter(v2 => v2 !== appId))
       storage[`session_workspaceByKey_${workspaceKey}_appById_${appId}_appKeys$`](undefined)

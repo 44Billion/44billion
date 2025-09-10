@@ -7,6 +7,12 @@ export async function getBundleFromDb (appId) {
   return run('get', [ref], 'bundles').then(v => v.result && toEvent(v.result))
 }
 
+// Caution: use this only when no user has the app installed anymore
+export async function deleteBundleFromDb (appId) {
+  const ref = appIdToDbAppRef(appId)
+  return run('delete', [ref], 'bundles')
+}
+
 export async function saveBundleToDb (bundle, metadata) {
   const record = toDbRecord(bundle, metadata)
   return run('put', [record], 'bundles')
