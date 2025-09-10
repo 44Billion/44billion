@@ -21,6 +21,7 @@ import '#shared/icons/icon-minimize.js'
 import '#shared/icons/icon-maximize.js'
 import '#shared/icons/icon-stack-front.js'
 import '#shared/icons/icon-remove.js'
+import '#shared/icons/icon-delete.js'
 
 f(function aScreen () {
   useInitOrResetScreen()
@@ -462,8 +463,10 @@ f(function appLaunchersMenu () {
   const menuProps = useStore(() => ({
     ...store,
     openApp () {
+      const { visibility, key: appKey, workspaceKey } = this.app$()
+      if (visibility === 'open') throw new Error('App is already open')
+
       this.close() // close menu
-      const { key: appKey, workspaceKey } = this.app$()
       storage[`session_appByKey_${appKey}_visibility$`]('open')
       storage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]((v, eqKey) => {
         // if closed it may not be on domOrder anymore
@@ -476,8 +479,12 @@ f(function appLaunchersMenu () {
       })
     },
     bringToFirst () {
+      const { visibility, key: appKey, workspaceKey } = this.app$()
+      const { cssOrder } = storage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]()
+      if (visibility !== 'open') throw new Error('Can only bring to first when app is open')
+      if (cssOrder[0] === appKey) throw new Error('App is already first')
+
       this.close() // close menu
-      const { key: appKey, workspaceKey } = this.app$()
       let i
       storage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]((v, eqKey) => {
         i = v.cssOrder.indexOf(appKey)
@@ -491,8 +498,10 @@ f(function appLaunchersMenu () {
       })
     },
     minimizeApp () {
+      const { visibility, key: appKey, workspaceKey } = this.app$()
+      if (visibility !== 'open') throw new Error('Can only minimize an open app')
+
       this.close() // close menu
-      const { key: appKey, workspaceKey } = this.app$()
       let i
       storage[`session_appByKey_${appKey}_visibility$`]('minimized')
       storage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]((v, eqKey) => {
@@ -505,8 +514,10 @@ f(function appLaunchersMenu () {
       })
     },
     closeApp () {
+      const { visibility, key: appKey, workspaceKey } = this.app$()
+      if (visibility === 'closed') throw new Error('App is already closed')
+
       this.close() // close menu
-      const { key: appKey, workspaceKey } = this.app$()
       storage[`session_appByKey_${appKey}_visibility$`]('closed')
       storage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]((v, eqKey) => {
         let hasUpdated = false
@@ -523,11 +534,11 @@ f(function appLaunchersMenu () {
         return v
       })
     },
-    removeApp () {
-      this.close() // close menu
+    removeApp ({ isDeleteStep = false } = {}) {
       const { id: appId, key: appKey, workspaceKey } = this.app$()
       const appKeys = storage[`session_workspaceByKey_${workspaceKey}_appById_${appId}_appKeys$`]()
-      if (appKeys.length <= 1) return // shouldn't happen as menu option is hidden
+      if (!isDeleteStep && appKeys.length <= 1) throw new Error('Cannot remove the last instance of an app')
+      if (!isDeleteStep) this.close() // close menu
 
       storage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]((v, eqKey) => {
         let hasUpdated = false
@@ -549,6 +560,17 @@ f(function appLaunchersMenu () {
       storage[`session_appByKey_${appKey}_visibility$`](undefined)
       storage[`session_appByKey_${appKey}_route$`](undefined)
     },
+    deleteApp () {
+      const { id: appId, workspaceKey } = this.app$()
+      const appKeys = storage[`session_workspaceByKey_${workspaceKey}_appById_${appId}_appKeys$`]()
+      if (appKeys.length !== 1) throw new Error('Can only delete an app that has a single instance')
+
+      this.removeApp({ isDeleteStep: true })
+      this.close() // close menu
+      storage[`session_workspaceByKey_${workspaceKey}_pinnedAppIds$`](v => (v ?? []).filter(v2 => v2 !== appId))
+      storage[`session_workspaceByKey_${workspaceKey}_unpinnedAppIds$`](v => (v ?? []).filter(v2 => v2 !== appId))
+      storage[`session_workspaceByKey_${workspaceKey}_appById_${appId}_appKeys$`](undefined)
+    },
     render: useCallback(function () {
       const {
         openApp,
@@ -556,6 +578,7 @@ f(function appLaunchersMenu () {
         minimizeApp,
         closeApp,
         removeApp,
+        deleteApp,
         app$
       } = menuProps
       const {
@@ -604,6 +627,10 @@ f(function appLaunchersMenu () {
         <div class=${{ invisible: appKeys.length <= 1 }}>
           <div class='icon-wrapper-271yiduh'><icon-remove props=${{ size: '16px' }} /></div>
           <div class='menu-label' onclick=${removeApp}>Remove</div>
+        </div>
+        <div class=${{ invisible: appKeys.length !== 1 }}>
+          <div class='icon-wrapper-271yiduh'><icon-delete props=${{ size: '16px' }} /></div>
+          <div class='menu-label' onclick=${deleteApp}>Delete</div>
         </div>
       </div>`
     }),
