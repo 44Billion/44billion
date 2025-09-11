@@ -13,14 +13,63 @@ f(function aMenu () {
     afterClose: this.props.afterClose,
     // e.g. `& {
     //   position-anchor: --fsjhdfojfd; /* need to add same value to anchor's anchor-name css property */
-    //   position-area: top span-right;
+    //   position-area: top span-right; /* https://anchor-tool.com/ */
     // }`
-    style$: this.props.style$ ?? this.props.style ?? ''
+    style$: this.props.style$ ?? this.props.style ?? '',
+    anchorRef$: this.props.anchorRef$, // Reference to anchor element for fallback positioning
+    fallbackPositioningStyle$: ''
   })
   const interceptorProps = useStore(() => ({
     isOpen$: store.isOpen$,
     isOpenedByLongPress: this.props.isOpenedByLongPress ?? false
   }))
+
+  // Fallback positioning for browsers that don't support CSS anchor positioning
+  useTask(({ track }) => {
+    const isOpen = track(() => store.isOpen$.get())
+    const anchorRef = track(() => store.anchorRef$())
+    if (!isOpen || !anchorRef || CSS.supports('position-anchor', '--test')) return
+
+    store.fallbackPositioningStyle$(`
+      & {
+        visibility: hidden;
+      }
+    `) // reset position and hide before moving
+    // Wait a bit to ensure dialog is shown and has dimensions
+    setTimeout(() => {
+      requestAnimationFrame(() => {
+        const anchorRect = anchorRef.getBoundingClientRect()
+        const dialogRect = store.dialogRef$().getBoundingClientRect()
+        const isLandscape = window.innerWidth > window.innerHeight
+        console.log('anchorRect', anchorRect, 'dialogRect', dialogRect, 'isLandscape', isLandscape)
+
+        // Consistent margin between menu and anchor
+        const margin = 6
+        let left
+        let top
+        // Position the menu relative to the anchor with consistent logic
+        if (isLandscape) {
+          // Position to the left of the anchor with margin
+          left = Math.max(margin, anchorRect.left - dialogRect.width - margin)
+          top = anchorRect.top
+        } else {
+          // Position above the anchor with margin
+          left = anchorRect.left
+          const menuHeight = dialogRect.height > 0 ? dialogRect.height : 100 // fallback height
+          top = Math.max(margin, anchorRect.top - menuHeight - margin)
+        }
+        console.log('Positioning left with', { left, top })
+        store.fallbackPositioningStyle$(`
+          & {
+            left: ${left}px;
+            top: ${top}px;
+            right: auto;
+            bottom: auto;
+          }
+        `)
+      })
+    }, 50) // or else dialogRect.height may be 0
+  }, { after: 'rendering' })
 
   useTask(({ track }) => {
     const isOpen = track(() => store.isOpen$.get())
@@ -87,7 +136,10 @@ f(function aMenu () {
               overlay var(--duration) ease-in-out allow-discrete;
           }
 
-          &#${store.id$()} { ${store.style$()} }
+          &#${store.id$()} {
+            ${store.fallbackPositioningStyle$()}
+            ${store.style$()}
+          }
         }
       `}</style>
       ${(store.shouldAlwaysDisplay$.get() || store.isOpen$.get() || '') && (store.render?.call(this) ?? '')}

@@ -343,6 +343,7 @@ f(function unifiedToolbar () {
 f(function toolbarActiveAvatar () {
   useClosestStore('<a-menu>', {
     isOpen$: false,
+    anchorRef$: null,
     open () { this.isOpen$(true) },
     close () { this.isOpen$(false) },
     toggle () { this.isOpen$(v => !v) }
@@ -354,25 +355,35 @@ f(function toolbarActiveAvatar () {
   `
 })
 f(function toolbarMenu () {
-  const {
-    session_workspaceKeys$: workspaceKeys$
-  } = useWebStorage(localStorage)
+  // const {
+  //   session_workspaceKeys$: workspaceKeys$
+  // } = useWebStorage(localStorage)
 
+  const menuStore = useClosestStore('<a-menu>')
   const menuProps = useStore({
     render: useCallback(function () {
       return this.h`<div>User Menu</div>`
-      return workspaceKeys$().map(workspaceKey =>
-        this.h({ key: workspaceKey })`<user-option key=${workspaceKey} props=${{ workspaceKey }} />`
-      )
+      // return this.h`<div>
+      //   ${workspaceKeys$().map(workspaceKey =>
+      //     this.h({ key: workspaceKey })`<user-option key=${workspaceKey} props=${{ workspaceKey }} />`
+      //   )}
+      // </div>`
     }),
-    style$: () => `& {
-      position-anchor: --toolbar-avatar-menu;
-      position-area: top span-right;
-      @media (orientation: landscape) {
-        position-area: left span-bottom;
-      }
-    }`,
-    ...useClosestStore('<a-menu>')
+    style$: () => {
+      const modernCSS = `& {
+        position-anchor: --toolbar-avatar-menu;
+        position-area: top span-right;
+        @media (orientation: landscape) {
+          position-area: left span-bottom;
+        }
+      }`
+      const fallbackCSS = `& {
+        position: fixed;
+        z-index: 1000;
+      }`
+      return CSS.supports('position-anchor', '--test') ? modernCSS : fallbackCSS
+    },
+    ...menuStore
   })
 
   return this.h`<a-menu props=${menuProps} />`
@@ -384,15 +395,17 @@ f(function toolbarAvatar () {
     const wsKey = openWorkspaceKeys$()[0]
     return storage[`workspaceByKey_${wsKey}_userPk$`]()
   })
-  const { toggle } = useClosestStore('<a-menu>')
+  const { toggle, anchorRef$ } = useClosestStore('<a-menu>')
 
   return this.h`<div
+    ref=${anchorRef$}
     onclick=${toggle}
     style=${`
       anchor-name: --toolbar-avatar-menu;
       color: ${cssVars.colors.mgFont};
       width: 40px; height: 40px; display: flex; justify-content: center; align-items: center;
       border-radius: 50%;
+      position: relative;
     `}
   >
     <a-avatar props=${{ pk$: userPk$(), size: '32px', weight$: 'duotone', strokeWidth$: 1 }} />
@@ -705,20 +718,36 @@ f(function appLaunchersMenu () {
         </div>
       </div>`
     }),
-    style$: () => `& {
-      position-anchor: --app-launchers-menu;
-      position-area: top span-right;
-      margin-bottom: 6px;
-      @media (orientation: landscape) {
-        position-area: left span-bottom;
-        margin-right: 7px;
-      }
-      background-color: ${cssVars.colors.mg};
-      color: ${cssVars.colors.mgFont};
-      min-width: 120px;
-      display: flex;
-      flex-direction: column;
-    }`
+    style$: () => {
+      const modernCSS = `& {
+        position-anchor: --app-launchers-menu;
+        position-area: top span-right;
+        margin-bottom: 6px;
+        @media (orientation: landscape) {
+          position-area: left span-bottom;
+          margin-right: 7px;
+        }
+      }`
+      const fallbackCSS = `& {
+        position: fixed;
+        z-index: 1000;
+        margin-bottom: 6px;
+        @media (orientation: landscape) {
+          margin-right: 7px;
+        }
+      }`
+      const commonCSS = `
+        background-color: ${cssVars.colors.mg};
+        color: ${cssVars.colors.mgFont};
+        min-width: 120px;
+        display: flex;
+        flex-direction: column;
+      `
+
+      const anchorCSS = CSS.supports('position-anchor', '--test') ? modernCSS : fallbackCSS
+      return `& { ${anchorCSS} ${commonCSS} }`
+    },
+    anchorRef$: () => menuProps.app$()?.ref
   }))
   return this.h`<a-menu props=${menuProps} />`
 })
