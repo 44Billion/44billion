@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import jsTextPlugin from './plugins/js-text.js'
 import cssTextPlugin from './plugins/css-text.js'
 import htmlTextPlugin from './plugins/html-text.js'
+import swModulePlugin from './plugins/sw-module.js'
 
 const isDev = process.env.NODE_ENV === 'development'
 export const esbuildDefineConfig = isDev
@@ -13,7 +14,7 @@ const { dirname } = import.meta
 const prodOutdir = `${dirname}/../dist/${dirname.split('/').slice(-2, -1)}` // dist/<root dir>
 // same as esbuild.build, but reusable
 const ctx = await esbuild.context({
-  plugins: [jsTextPlugin, cssTextPlugin, htmlTextPlugin],
+  plugins: [jsTextPlugin, cssTextPlugin, htmlTextPlugin, swModulePlugin],
   loader: {
     '.html': 'copy', '.ico': 'copy',
     '.svg': 'text',
@@ -24,6 +25,7 @@ const ctx = await esbuild.context({
     `${dirname}/../src/components/app.js`,
     `${dirname}/../src/assets/html/index.html`, // will use "copy" loader
     // `${dirname}/../src/assets/media/favicon.ico` // will use "copy" loader
+    // service worker is handled by sw-module plugin
     { in: `${dirname}/../src/service-workers/app/index.js`, out: 'app-sw' } // app-sw.js
   ],
   outdir: isDev

@@ -52,7 +52,7 @@ export const appRouter = IttyRouter()
           <script>
             (async function () {
               // no-op during subsequent visits
-              await navigator.serviceWorker.register('/sw.js', { type: 'module' })
+              await navigator.serviceWorker.register('/sw.js')
               const registration = await navigator.serviceWorker.ready
               if (registration.active && registration.active.state === 'activated') {
                 window.location.reload()
