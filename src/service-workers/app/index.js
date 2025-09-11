@@ -1,4 +1,5 @@
 // Any change to this file will reinstall sw
+import '#config/polyfills.js'
 import { injectScript } from '#helpers/html.js'
 import { requestMultipleMessages } from '#helpers/window-message/index.js'
 import Base122Decoder from '#services/base122-decoder.js'
