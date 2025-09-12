@@ -20,7 +20,7 @@ export default function useAppRouter () {
       [`session_workspaceByKey_${wsKey}_pinnedAppIds$`]: pinnedAppIds$,
       [`session_workspaceByKey_${wsKey}_pinnedAppIds$`]: unpinnedAppIds$
     } = storage
-    if (!pinnedAppIds$().includes(appId) && !unpinnedAppIds$().includes(appId)) {
+    if (!appKeys$() || (!pinnedAppIds$().includes(appId) && !unpinnedAppIds$().includes(appId))) {
       return { hasOpened: false, isInstalled: false }
     }
 
@@ -88,6 +88,7 @@ export default function useAppRouter () {
     }
     const wsKey = openWorkspaceKeys$()[0]
     storage[`session_workspaceByKey_${wsKey}_appById_${app.id}_appKeys$`](v => {
+      if (!isInstalled) v = []
       v.push(app.key)
       return v
     })
