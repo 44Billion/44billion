@@ -18,17 +18,17 @@ const getErrorHtml = (e, err) => /* html */`
   </head>
   <body>
     <p>${[e.request.method, e.request.url].join(' | ')}</p>
-    <p>Error: ${err.stack ?? err}</p>
+    <p>[Error] ${err?.stack ?? err ?? 'Unknown Error'}</p>
   </body>
 </html>
 `
 
 self.addEventListener('install', () => {
-  console.log('Service Worker: Install event')
+  console.log('[Service Worker] Install event')
 })
 
 self.addEventListener('activate', () => {
-  console.log('Service Worker: Activate event')
+  console.log('[Service Worker] Activate event')
 })
 
 self.addEventListener('fetch', e => {
@@ -52,7 +52,11 @@ self.addEventListener('fetch', e => {
   // // Normal fetch handling
 
   // console.log('Service Worker: fetching', e.request.url)
-  e.request.pathname = new URL(e.request.url).pathname
+  if (e.request.method !== 'GET') return
+  let origin
+  ;({ pathname: e.request.pathname, origin } = new URL(e.request.url))
+  if (origin !== self.location.origin) return
+
   e.respondWith((async function () {
     if (e.request.pathname === '/~~napp') {
       return new Response(
@@ -63,7 +67,11 @@ self.addEventListener('fetch', e => {
 
     return handleRequest(e.request)
       // TODO: esbuild html text plugin too, then replace {{error}}
-      .catch(err => new Response(getErrorHtml(e, err), { headers: { 'content-type': 'text/html', 'cache-control': 'no-cache' } }))
+      .catch(err => new Response(getErrorHtml(e, err), {
+        status: 404,
+        statusText: 'Not Found',
+        headers: { 'content-type': 'text/html', 'cache-control': 'no-cache' }
+      }))
   })())
 })
 
@@ -77,10 +85,19 @@ async function handleRequest (request) {
   const firstReplyMsg = (await iterator.next()).value
 
   if (firstReplyMsg.error) {
-    if (firstReplyMsg.error.message !== 'FILE_NOT_CACHED') throw firstReplyMsg.error
-
-    // this html waits for complete file chunk caching then reloads itself
-    return new Response(appPageLoader, { headers: { 'content-type': 'text/html', 'cache-control': 'no-cache' } })
+    switch (firstReplyMsg.error.message) {
+      case 'HTML_FILE_NOT_CACHED':
+        // this html waits for complete file chunk caching then reloads itself
+        return new Response(appPageLoader, { headers: { 'content-type': 'text/html', 'cache-control': 'no-cache' } })
+      case 'FILE_NOT_CACHED':
+        console.log(`[Service Worker] Asset not found for path: ${pathname}:\n${firstReplyMsg.error?.stack ?? firstReplyMsg.error ?? 'Unknown Error'}`)
+        return new Response(null, {
+          status: 404,
+          statusText: 'Not Found',
+          headers: { 'cache-control': 'no-cache' }
+        })
+      default: throw firstReplyMsg.error
+    }
   }
   const { content: firstContent, contentType } = firstReplyMsg.payload
   async function * source () {

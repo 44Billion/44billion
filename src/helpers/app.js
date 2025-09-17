@@ -144,11 +144,12 @@ export function findRouteFileTag (pathname, bundleTags) {
   return null
 }
 
-function * getPotentialFilenameMatches (pathname) {
+function * getPotentialFilenameMatches (pathname, htmlOnly = false) {
   // Remove the leading '/'
   let basePath = pathname[0] === '/' ? pathname.slice(1) : pathname
-  if (/\.html?$/.test(basePath)) yield basePath
-  else if (basePath.endsWith('/')) basePath = basePath.slice(0, -1)
+  const endsWithHtml = /\.html?$/.test(basePath)
+  if (endsWithHtml || (!htmlOnly && !!basePath)) yield basePath
+  if (!endsWithHtml && basePath.endsWith('/')) basePath = basePath.slice(0, -1)
 
   let cleanPath = basePath.replace(/(?:\/index)?\.html?$/, '')
   if (cleanPath.endsWith('/')) cleanPath = cleanPath.slice(0, -1)

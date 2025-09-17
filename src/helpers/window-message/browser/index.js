@@ -92,7 +92,17 @@ export async function initMessageListener (userPkB36, appId, appSubdomain, initi
             // which asks to cache it then reloads,
             // or defer response and sw itself asks to cache it then after done responds
             const cacheStatus = await appFiles.getFileCacheStatus(e.data.payload.pathname, null, { withMeta: true })
-            if (!cacheStatus.isCached) return replyWithMessage(e, { error: new Error('FILE_NOT_CACHED'), isLast: true }, { to: trustedAppPagePort })
+            if (!cacheStatus.isCached) {
+              if (cacheStatus.isHtml) return replyWithMessage(e, { error: new Error('HTML_FILE_NOT_CACHED'), isLast: true }, { to: trustedAppPagePort })
+              else {
+                try {
+                  await appFiles.cacheFile(e.data.payload.pathname, cacheStatus.fileTag)
+                } catch (err) {
+                  console.log(err)
+                  return replyWithMessage(e, { error: new Error('FILE_NOT_CACHED'), isLast: true }, { to: trustedAppPagePort })
+                }
+              }
+            }
 
             let i = 0
             for await (const chunk of streamFileChunksFromDb(appId, appFiles.getFileRootHash(e.data.payload.pathname))) {

@@ -54,7 +54,7 @@ async function * getAndCacheMissingChunks (fileRootHash, missingChunkPositions, 
         '#c': batch.map(pos => `${fileRootHash}:${pos}`),
         limit: batch.length
       }
-      const chunks = await getEventsByStrategy(filter, { code: 'WRITE_RELAYS' })
+      const chunks = await getEventsByStrategy(filter, { code: 'WRITE_RELAYS', maxRelaysPerUser: 7 })
       if (chunks) {
         success = true
         if (chunks.length > 0) {

@@ -126,7 +126,9 @@ export default class AppFileManager {
     return {
       ...chunkStatus,
       isCached: chunkStatus.count === chunkStatus.total,
-      contentType: getContentType(mimeType)
+      contentType: getContentType(mimeType),
+      isHtml: /^text\/html\b/.test(mimeType),
+      fileTag
     }
   }
 
@@ -159,7 +161,7 @@ export default class AppFileManager {
         p.resolve()
         if (!shouldCacheMissingFiles) return
         this.cacheMissingAppFiles(filename) // does nothing if already running
-      } else if (error) p.reject()
+      } else if (error) p.reject(error)
     })
     this.#cacheFileInBackground(filename, fileTag)
     return p.promise

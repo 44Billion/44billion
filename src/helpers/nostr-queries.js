@@ -28,6 +28,8 @@ export async function getEventsByStrategy (filter, st /*, timeoutMs = 3000 */) {
       }))
       const relaysSortedByPopularity = Object.entries(relayPopularity).sort(([, a], [, b]) => b - a)
         .map(([k]) => k)
+
+      const maxRelaysPerUser = st.maxRelaysPerUser || 2
       // pick 2 for each author and split requests,
       // deduplicate and limit number of events
       if (filter.authors) {
@@ -38,7 +40,7 @@ export async function getEventsByStrategy (filter, st /*, timeoutMs = 3000 */) {
             if (!writeRelays.includes(popularRelay)) return
 
             relayPickCountByUser[user] ??= 0
-            if (++relayPickCountByUser[user] === 2) return
+            if (++relayPickCountByUser[user] > maxRelaysPerUser) return
 
             usersByRelay[popularRelay] ??= []
             usersByRelay[popularRelay].push(user)
@@ -93,7 +95,7 @@ export async function getEventsByStrategy (filter, st /*, timeoutMs = 3000 */) {
         userWriteRelays.forEach(v => {
           let pickedCountByAuthor = 0
           for (const r of relaysSortedByPopularity) {
-            if (pickedCountByAuthor === 2) break
+            if (pickedCountByAuthor === maxRelaysPerUser) break
             if (!v[1].includes(r)) continue
 
             pickedCountByAuthor++
