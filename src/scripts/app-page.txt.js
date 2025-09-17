@@ -6,8 +6,40 @@ import { postMessage, requestMessage } from '#helpers/window-message/index.js'
   const p = Promise.withResolvers()
   injectNip07(p.promise) // first thing
   tellParentImReady(p)
+  await preventSwUsage()
   await p.promise
 })()
+
+async function preventSwUsage () {
+  const registration = await navigator.serviceWorker.ready
+
+  // Stub the methods to prevent napps from using them
+  Object.defineProperties(registration, {
+    unregister: {
+      value () {
+        console.warn('Napps can\'t unregister service workers')
+        return Promise.resolve(true)
+      }
+    },
+    addEventListener: {
+      value () { console.warn('Napps can\'t add event listeners to service worker registrations') }
+    },
+    removeEventListener: {
+      value () { console.warn('Napps can\'t remove event listeners from service worker registrations') }
+    }
+  })
+
+  navigator.serviceWorker.register = function () {
+    console.warn('Napps can\'t register service workers')
+    return Promise.resolve(registration)
+  }
+  Object.defineProperty(navigator.serviceWorker, 'ready', {
+    get () {
+      console.warn('Napps can\'t wait for service worker activation')
+      return Promise.resolve(registration)
+    }
+  })
+}
 
 function tellParentImReady (p) {
   const { port1: browserPort, port2: appPagePortForBrowser } = new MessageChannel()
