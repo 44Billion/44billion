@@ -4,7 +4,7 @@ import { addressObjToAppId } from '#helpers/app.js'
 export async function countFileChunksFromDb (appId, rootHash) {
   let total = null
   for await (const storedChunk of streamFileChunksFromDb(appId, rootHash)) {
-    const cTag = storedChunk.tags.find(t => t[0] === 'c' && t[1].startsWith(`${rootHash}:`))
+    const cTag = storedChunk.evt.tags.find(t => t[0] === 'c' && t[1].startsWith(`${rootHash}:`))
     if (!cTag) continue
     const parsedTotal = parseInt(cTag[2])
     if (Number.isNaN(parsedTotal)) continue
@@ -83,11 +83,11 @@ export async function saveFileChunksToDB (bundle, fileChunks, appId) {
     .reduce((r, v) => ({ ...r, [v]: true }), {})
 
   let ret
-  for (const chunk of fileChunks) {
-    if (chunk.kind !== 34600) throw new Error('Wrong chunk kind')
+  for (const chunkEvent of fileChunks) {
+    if (chunkEvent.kind !== 34600) throw new Error('Wrong chunk kind')
     let dTag
     const formatedCTags = []
-    for (const tag of chunk.tags) {
+    for (const tag of chunkEvent.tags) {
       if (tag[0] === 'd') dTag = tag
       // Although rare,
       // a chunk can have many c tags by being a chunk that
@@ -108,15 +108,17 @@ export async function saveFileChunksToDB (bundle, fileChunks, appId) {
     })
 
     for (const [fileRootHash, chunkPosition] of formatedCTags) {
-      chunk.appId = appId
-      chunk.x = dTag[1]
-      chunk.fx = fileRootHash
-      chunk.pos = chunkPosition
-      // We're not caring about normalizing the chunk.evt to a separate store
-      // because this loop rarely has more than 1 iteration
-      // In fact, the most space preserving structure would be chunk.x as store keypath
-      // but it is rare to share file chunks across different files or apps
-      chunk.evt = chunk
+      const chunk = {
+        appId,
+        x: dTag[1],
+        fx: fileRootHash,
+        pos: chunkPosition,
+        // We're not caring about normalizing the chunk.evt to a separate store
+        // because this loop rarely has more than 1 iteration
+        // In fact, the most space preserving structure would be chunk.x as store keypath
+        // but it is rare to share file chunks across different files or apps
+        evt: chunkEvent
+      }
       ret = await run('put', [chunk], 'fileChunks', null, ret)
     }
   }

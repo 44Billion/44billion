@@ -113,7 +113,7 @@ export async function initMessageListener (userPkB36, appId, appSubdomain, initi
                 }, isLast: ++i === cacheStatus.total
               }, { to: trustedAppPagePort })
             }
-          } catch (error) { replyWithMessage(e, { error, isLast: true }) }
+          } catch (error) { replyWithMessage(e, { error, isLast: true }, { to: trustedAppPagePort }) }
           break
         }
       }

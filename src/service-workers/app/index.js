@@ -2,7 +2,7 @@
 import '#config/polyfills.js'
 import { injectScript } from '#helpers/html.js'
 import { requestMultipleMessages } from '#helpers/window-message/index.js'
-import Base122Decoder from '#services/base122-decoder.js'
+import Base93Decoder from '#services/base93-decoder.js'
 import appPageScriptContent from '#scripts/app-page.txt.js'
 import _appPageLoader from '../../assets/html/app-page-loader.txt.html'
 import appPageLoaderScriptContent from '#scripts/app-page-loader.txt.js'
@@ -110,13 +110,13 @@ async function handleRequest (request) {
 
   if (!contentType.startsWith('text/html')) {
     return new Response(
-      new Base122Decoder(source, { mimeType: contentType }).getDecoded(),
+      new Base93Decoder(source, { mimeType: contentType }).getDecoded(),
       { headers: { 'content-type': contentType, 'cache-control': 'no-cache' } }
     )
   } else {
     let appPage = ''
     let htmlChunk
-    for await (htmlChunk of new Base122Decoder(source, { mimeType: contentType }).getDecoded()) {
+    for await (htmlChunk of new Base93Decoder(source, { mimeType: contentType, preferTextStreamDecoding: true }).getDecoded()) {
       appPage += htmlChunk
     }
     // appPageScriptContent injects window.(nostr|napp)

@@ -1,5 +1,5 @@
 import { postMessage, requestMultipleMessages } from '#helpers/window-message/index.js'
-import Base122Decoder from '#services/base122-decoder.js'
+import Base93Decoder from '#services/base93-decoder.js'
 
 // ERROR: Top-level await is currently not supported with the "iife" output format [plugin js-text]
 // https://github.com/evanw/esbuild/issues/253
@@ -51,7 +51,7 @@ async function maybeSetIcon (napp, to) {
       yield evt.content
     }
   }
-  const iconFile = new File(new Base122Decoder(source).getDecoded(), '', mimeType)
+  const iconFile = new File(new Base93Decoder(source).getDecoded(), '', mimeType)
   napp.icon = URL.createObjectURL(iconFile)
   napp.dispatchEvent(new CustomEvent('iconready'))
 }

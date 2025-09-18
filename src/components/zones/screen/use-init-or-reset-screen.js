@@ -24,7 +24,7 @@ import { addressObjToAppId } from '#helpers/app.js'
 // each with 0-*
 
 const coreAppIds = [
-  '+b5BGG2QdmYgLanIvoyEwIX7dfBYFaQgDMHjrbUYH4gcEygs6oaBSp'
+  '+333qLLdnYbXaUOQZSyn7fS8ieqFMzyMnq9o6PsZ57Wt8zNSE1FE0jb8x'
 ].map(appDecode).map(addressObjToAppId) // ['44b', 'minimoon', 'newappstore']
 
 export default function useInitOrResetScreen () {
