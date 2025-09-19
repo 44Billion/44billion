@@ -9,7 +9,7 @@ export default async function * cacheMissingChunks (appId, bundle, filename, fil
   const fileRootHash = fileTag[1]
   let chunkStatus = await countFileChunksFromDb(appId, fileRootHash)
   const isCached = chunkStatus.count === chunkStatus.total
-  if (isCached) { yield 100; return }
+  if (isCached) { yield { progress: 100, newlyCachedChunkIndexRanges: [] }; return }
   const pubkeyHints = [fileTag[4]?.trim(), bundle.pubkey].filter(Boolean)
   // don't know which chunks are missing
   if (!chunkStatus.total) {
@@ -39,9 +39,29 @@ export default async function * cacheMissingChunks (appId, bundle, filename, fil
 async function * getAndCacheMissingChunks (fileRootHash, missingChunkPositions, pubkeyHints, bundle, appId, chunkStatus) {
   let newlyStoredChunksLength = 0
   let total = chunkStatus.total
+  const batchCachedIndexes = []
 
   const getProgress = () =>
     Math.floor((chunkStatus.count + newlyStoredChunksLength) / total * 100)
+
+  const getContiguousRanges = (indexes) => {
+    if (indexes.length === 0) return []
+    const sorted = [...indexes].sort((a, b) => a - b)
+    const ranges = []
+    let start = sorted[0]
+    let end = sorted[0]
+
+    for (let i = 1; i < sorted.length; i++) {
+      if (sorted[i] === end + 1) {
+        end = sorted[i]
+      } else {
+        ranges.push([start, end])
+        start = end = sorted[i]
+      }
+    }
+    ranges.push([start, end])
+    return ranges
+  }
 
   // batches of 4
   for (let i = 0; i < missingChunkPositions.length; i += 4) {
@@ -60,13 +80,30 @@ async function * getAndCacheMissingChunks (fileRootHash, missingChunkPositions, 
         if (chunks.length > 0) {
           await saveFileChunksToDB(bundle, chunks, appId)
           newlyStoredChunksLength += chunks.length
+
+          for (const chunk of chunks) {
+            const cTag = chunk.tags.find(t => t[0] === 'c' && t[1].startsWith(`${fileRootHash}:`))
+            if (cTag) {
+              const chunkIndex = parseInt(cTag[1].split(':')[1])
+              if (!Number.isNaN(chunkIndex)) {
+                batchCachedIndexes.push(chunkIndex)
+              }
+            }
+          }
+
           if (!total) {
             for (const chunk of chunks) {
               if ((total = getNumberOfChunks(chunk, fileRootHash))) break
             }
           }
           if (!total) continue
-          yield getProgress()
+
+          const newlyCachedChunkIndexRanges = getContiguousRanges(batchCachedIndexes)
+          yield {
+            progress: getProgress(),
+            newlyCachedChunkIndexRanges
+          }
+          batchCachedIndexes.length = 0 // reset
         }
       } else {
         attempts++

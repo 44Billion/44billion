@@ -128,6 +128,7 @@ export default class AppFileManager {
       isCached: chunkStatus.count === chunkStatus.total,
       contentType: getContentType(mimeType),
       isHtml: /^text\/html\b/.test(mimeType),
+      fileRootHash,
       fileTag
     }
   }
@@ -151,12 +152,12 @@ export default class AppFileManager {
 
     if (progressCallback) {
       config.subscribers.add(progressCallback)
-      if (config.result !== null) progressCallback({ progress: config.result })
+      if (config.result !== null) progressCallback(config.result)
       if (config.error) { progressCallback({ error: config.error }); return }
     }
 
     const p = Promise.withResolvers()
-    config.subscribers.add(({ progress, error }) => {
+    config.subscribers.add(({ progress, error, newlyCachedChunkIndexRanges: _newlyCachedChunkIndexRanges }) => {
       if (progress >= 100) {
         p.resolve()
         if (!shouldCacheMissingFiles) return
@@ -198,20 +199,25 @@ export default class AppFileManager {
     const config = this.#getCacheFilePubSubConfig(filename)
 
     try {
-      for await (const progress of iterator) {
+      for await (const { progress, newlyCachedChunkIndexRanges } of iterator) {
         if (!this.#isCacheFileInBackgroundRunning[filename]) break // poor man's abort controller
-        config.result = progress
+
+        config.result = { progress, newlyCachedChunkIndexRanges }
         for (const sub of config.subscribers) {
-          try { sub({ progress }) } catch (err) { console.log(err) }
+          try {
+            sub({ progress, newlyCachedChunkIndexRanges })
+          } catch (err) {
+            console.log(err)
+          }
         }
       }
 
       // if we aborted early, don't continue
       if (!this.#isCacheFileInBackgroundRunning[filename]) return
 
-      if (config.result >= 100) return
+      if (config.result?.progress >= 100) return
 
-      const error = new Error(`File caching incomplete, stopped at ${config.result}%`)
+      const error = new Error(`File caching incomplete, stopped at ${config.result?.progress ?? 0}%`)
       config.error = error
       for (const sub of config.subscribers) {
         try { sub({ error }) } catch (err) { console.log(err) }

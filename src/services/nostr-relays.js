@@ -27,7 +27,10 @@ export class NostrRelays {
     if (this.#relays.has(url)) {
       clearTimeout(this.#relayTimeouts.get(url))
       this.#relayTimeouts.set(url, maybeUnref(setTimeout(() => this.disconnect(url), this.#timeout)))
-      return this.#relays.get(url)
+      const relay = this.#relays.get(url)
+      // reconnect if needed to avoid SendingOnClosedConnection errors
+      await relay.connect()
+      return relay
     }
 
     const relay = new Relay(url)

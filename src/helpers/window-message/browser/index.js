@@ -1,7 +1,7 @@
 import { /* handleMessageReply, */ postMessage, requestMessage, replyWithMessage } from '../index.js'
 import { appIdToAddressObj } from '#helpers/app.js'
 import { base36ToBase16 } from '#helpers/base36.js'
-import { streamFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
+import { streamFileChunksFromDb, getFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
 import AppFileManager from '#services/app-file-manager/index.js'
 
 export async function initMessageListener (userPkB36, appId, appSubdomain, initialRoute, trustedAppPageIframe,
@@ -86,20 +86,90 @@ export async function initMessageListener (userPkB36, appId, appSubdomain, initi
         // }
 
         case 'STREAM_APP_FILE': {
+          const handleStreamError = (originalError, errorToSend = new Error('FILE_NOT_CACHED')) => {
+            if (originalError) console.log(originalError)
+            return replyWithMessage(e, { error: errorToSend, isLast: true }, { to: trustedAppPagePort })
+          }
+
           try {
             // if chunk is missing (chunks aren't cached), send error,
             // signaling sw should respond with app loader html, if it's .html file,
             // which asks to cache it then reloads,
-            // or defer response and sw itself asks to cache it then after done responds
+            // or, when not html,
+            // stream as chunks get cached (could also be:
+            // defer response and sw itself asks to cache it then after done responds,
+            // but there would have a greater chance of the browser putting
+            // the sw to sleep compared to when sw is in the middle of a response streaming)
             const cacheStatus = await appFiles.getFileCacheStatus(e.data.payload.pathname, null, { withMeta: true })
             if (!cacheStatus.isCached) {
-              if (cacheStatus.isHtml) return replyWithMessage(e, { error: new Error('HTML_FILE_NOT_CACHED'), isLast: true }, { to: trustedAppPagePort })
+              if (cacheStatus.isHtml) handleStreamError(null, new Error('HTML_FILE_NOT_CACHED'))
               else {
+                let {
+                  fileRootHash,
+                  total: totalChunks // null when no chunks are cached
+                } = cacheStatus
+                let nextChunkIndexToStream = 0
+                let highestCachedIndex = -1
+                let hasErrored = false
+                let hasSentLast = false
+
+                const progressCallback = async ({ newlyCachedChunkIndexRanges, error }) => {
+                  if (hasErrored || hasSentLast) return
+                  if (error) { hasErrored = true; return handleStreamError(error) }
+
+                  if (newlyCachedChunkIndexRanges.length > 0) {
+                    for (const range of newlyCachedChunkIndexRanges) {
+                      highestCachedIndex = Math.max(highestCachedIndex, range[1])
+                    }
+                  } else if (totalChunks !== null) {
+                    highestCachedIndex = totalChunks - 1
+                  } else return handleStreamError(new Error('No cached chunks'))
+
+                  while (nextChunkIndexToStream <= highestCachedIndex && !hasErrored && !hasSentLast) {
+                    try {
+                      const chunks = await getFileChunksFromDb(appId, fileRootHash, {
+                        fromPos: nextChunkIndexToStream,
+                        toPos: nextChunkIndexToStream
+                      })
+
+                      if (chunks.length === 0) {
+                        hasErrored = true
+                        return handleStreamError(new Error(`Missing chunk at index ${nextChunkIndexToStream} for rootHash ${fileRootHash}`))
+                      }
+
+                      const chunk = chunks[0]
+                      if (totalChunks === null) {
+                        const cTag = chunk.evt.tags.find(t => t[0] === 'c' && t[1].startsWith(`${fileRootHash}:`))
+                        const parsedTotal = parseInt(cTag?.[2])
+                        if (!Number.isNaN(parsedTotal) && parsedTotal > 0) totalChunks = parsedTotal
+                      }
+                      if (totalChunks === null) {
+                        hasErrored = true
+                        return handleStreamError(new Error('Unable to determine total chunks.'))
+                      }
+
+                      const isLast = (totalChunks != null && nextChunkIndexToStream === totalChunks - 1)
+                      replyWithMessage(e, {
+                        payload: {
+                          content: chunk.evt.content,
+                          ...(nextChunkIndexToStream === 0 && { contentType: cacheStatus.contentType })
+                        },
+                        isLast
+                      }, { to: trustedAppPagePort })
+
+                      nextChunkIndexToStream++
+                      if (isLast) hasSentLast = true
+                    } catch (streamError) {
+                      hasErrored = true
+                      return handleStreamError(streamError)
+                    }
+                  }
+                }
+
                 try {
-                  await appFiles.cacheFile(e.data.payload.pathname, cacheStatus.fileTag)
+                  return appFiles.cacheFile(e.data.payload.pathname, cacheStatus.fileTag, progressCallback)
                 } catch (err) {
-                  console.log(err)
-                  return replyWithMessage(e, { error: new Error('FILE_NOT_CACHED'), isLast: true }, { to: trustedAppPagePort })
+                  return handleStreamError(err)
                 }
               }
             }
@@ -113,7 +183,7 @@ export async function initMessageListener (userPkB36, appId, appSubdomain, initi
                 }, isLast: ++i === cacheStatus.total
               }, { to: trustedAppPagePort })
             }
-          } catch (error) { replyWithMessage(e, { error, isLast: true }, { to: trustedAppPagePort }) }
+          } catch (error) { return handleStreamError(error, error) }
           break
         }
       }
