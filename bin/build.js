@@ -41,7 +41,8 @@ const ctx = await esbuild.context({
   platform: 'browser',
   format: 'esm',
   // https://caniuse.com/?search=top%20level%20await
-  target: ['edge89', 'firefox89', 'chrome89', 'safari15'],
+  // edge91 and chrome91 to make signal$?.() work
+  target: ['edge91', 'firefox89', 'chrome91', 'safari15'],
   minify: !isDev,
   sourcemap: isDev,
   keepNames: false, // set it to true if the code relies on (function a(){}).name === 'a'

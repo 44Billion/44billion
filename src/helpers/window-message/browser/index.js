@@ -4,7 +4,8 @@ import { base36ToBase16 } from '#helpers/base36.js'
 import { streamFileChunksFromDb, getFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
 import AppFileManager from '#services/app-file-manager/index.js'
 
-export async function initMessageListener (userPkB36, appId, appSubdomain, initialRoute, trustedAppPageIframe,
+export async function initMessageListener (
+  userPkB36, appId, appSubdomain, initialRoute, trustedAppPageIframe, cachingProgress$,
   { signal: componentSignal, isSingleNapp = false } = {}
 ) {
   const userPkB16 = base36ToBase16(userPkB36)
@@ -113,9 +114,36 @@ export async function initMessageListener (userPkB36, appId, appSubdomain, initi
                 let hasErrored = false
                 let hasSentLast = false
 
-                const progressCallback = async ({ newlyCachedChunkIndexRanges, error }) => {
+                const progressCallback = async ({ progress: cachingProgress, newlyCachedChunkIndexRanges, error }) => {
                   if (hasErrored || hasSentLast) return
-                  if (error) { hasErrored = true; return handleStreamError(error) }
+                  if (error) {
+                    hasErrored = true
+                    // Clear progress for this file
+                    const currentProgress = cachingProgress$()
+                    const { [e.data.payload.pathname]: _, ...remaining } = currentProgress
+                    cachingProgress$(remaining)
+                    return handleStreamError(error)
+                  }
+
+                  // Update caching progress in the signal
+                  const filename = e.data.payload.pathname
+                  const currentProgress = cachingProgress$()
+                  cachingProgress$({
+                    ...currentProgress,
+                    [filename]: {
+                      progress: cachingProgress,
+                      totalByteSizeEstimate: totalChunks ? (totalChunks - 1) * 51000 : 0
+                    }
+                  })
+
+                  // Remove from progress when completed
+                  if (cachingProgress >= 100) {
+                    setTimeout(() => {
+                      const latestProgress = cachingProgress$()
+                      const { [filename]: _, ...remaining } = latestProgress
+                      cachingProgress$(remaining)
+                    }, 1000) // Keep visible for 1 second after completion
+                  }
 
                   if (newlyCachedChunkIndexRanges.length > 0) {
                     for (const range of newlyCachedChunkIndexRanges) {

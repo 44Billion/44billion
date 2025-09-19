@@ -271,7 +271,7 @@
         const progressBar = document.getElementById('progress-bar')
         const progressText = document.getElementById('progress-text')
 
-        let celebrationTimeout
+        let isDone = false
         let animationInterval
         let currentRotation = 0
 
@@ -292,23 +292,22 @@
         }
 
         function updateProgress (progress) {
-          if (typeof progress !== 'number' || progress < 0) return
+          if (isDone || typeof progress !== 'number' || progress < 0) return
 
           const currentProgress = Math.min(progress, 100)
           progressBar.style.width = `${currentProgress}%`
           progressText.textContent = `Loading... ${currentProgress}%`
 
           if (currentProgress >= 100) {
+            isDone = true
             progressText.textContent = 'Done!'
-            if (!celebrationTimeout) {
-              clearInterval(animationInterval)
-              celebrationTimeout = setTimeout(() => {
-                ostrichWrapper.classList.add('celebrating')
-                setTimeout(() => {
-                  window.location.reload()
-                }, 1200)
-              }, 300)
-            }
+            clearInterval(animationInterval)
+            setTimeout(() => {
+              ostrichWrapper.classList.add('celebrating')
+              setTimeout(() => {
+                window.location.reload()
+              }, 1200)
+            }, 300)
           }
         }
 

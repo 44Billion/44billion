@@ -13,7 +13,7 @@ export default {
         bundle: true,
         minify: true,
         format: 'iife',
-        target: ['edge89', 'firefox89', 'chrome89', 'safari15'],
+        target: build.initialOptions.target,
         define: esbuildDefineConfig,
         globalName: path.basename(args.path, '.txt.js')
           .replace(/[^a-zA-Z0-9_]/g, '_'),

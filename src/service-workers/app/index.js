@@ -1,6 +1,6 @@
 // Any change to this file will reinstall sw
 import '#config/polyfills.js'
-import { injectScript } from '#helpers/html.js'
+import { injectIntoTheHeadTag } from '#helpers/html.js'
 import { requestMultipleMessages } from '#helpers/window-message/index.js'
 import Base93Decoder from '#services/base93-decoder.js'
 import appPageScriptContent from '#scripts/app-page.txt.js'
@@ -8,8 +8,8 @@ import _appPageLoader from '../../assets/html/app-page-loader.txt.html'
 import appPageLoaderScriptContent from '#scripts/app-page-loader.txt.js'
 import _trustedAppPage from '../../assets/html/trusted-app-page.txt.html'
 import trustedAppPageScriptContent from '#scripts/trusted-app-page.txt.js'
-const appPageLoader = injectScript(_appPageLoader, appPageLoaderScriptContent)
-const trustedAppPage = injectScript(_trustedAppPage, trustedAppPageScriptContent)
+const appPageLoader = injectIntoTheHeadTag(_appPageLoader, `<script>${appPageLoaderScriptContent}</script>`)
+const trustedAppPage = injectIntoTheHeadTag(_trustedAppPage, `<script>${trustedAppPageScriptContent}</script>`)
 
 const getErrorHtml = (e, err) => /* html */`
 <!doctype html>
@@ -119,8 +119,15 @@ async function handleRequest (request) {
     for await (htmlChunk of new Base93Decoder(source, { mimeType: contentType, preferTextStreamDecoding: true }).getDecoded()) {
       appPage += htmlChunk
     }
-    // appPageScriptContent injects window.(nostr|napp)
-    appPage = injectScript(appPage, appPageScriptContent)
+    const colorSchemeTag = '<meta name="color-scheme" content="light dark">'
+    appPage = injectIntoTheHeadTag(
+      appPage,
+      `${
+        colorSchemeTag // enable transparent bg, specially for when loading additional assets
+      }<script>${
+        appPageScriptContent // inject window.(nostr|napp)
+      }</script>`
+    )
     return new Response(appPage, { headers: { 'content-type': 'text/html', 'cache-control': 'no-cache' } })
   }
 }
