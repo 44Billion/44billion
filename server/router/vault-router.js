@@ -43,9 +43,54 @@ const vaultRouter = IttyRouter()
       // Handle root path
       const filePath = pathname === '/' ? '/index.html' : pathname
 
+      // Basic security validations
+      if (filePath.length > 1000) {
+        res.setHeader('content-type', 'text/plain')
+        res.writeHead(400)
+        res.end('Bad Request: Path too long')
+        return res
+      }
+
+      if (filePath.includes('\0') || filePath.includes('%00')) {
+        res.setHeader('content-type', 'text/plain')
+        res.writeHead(400)
+        res.end('Bad Request: Null bytes not allowed')
+        return res
+      }
+
+      // Early security check: detect suspicious patterns in the pathname
+      if (filePath.includes('..') || filePath.includes('*') || filePath.includes('?') ||
+          filePath.includes('[') || filePath.includes(']') || filePath.includes('{') ||
+          filePath.includes('}') || filePath.includes('~') || filePath.includes('|')) {
+        res.setHeader('content-type', 'text/plain')
+        res.writeHead(400)
+        res.end('Bad Request: Invalid characters in path')
+        return res
+      }
+
       // Construct the absolute path to the vault docs file
-      // If current project is at ~/example/44billion, vault is at ~/examples/vault
-      const vaultDocsPath = path.resolve(process.cwd(), '../vault/docs', filePath.slice(1)) // Remove leading slash
+      // Current project is at ~/repositories/44billion, vault is at ~/repositories/vault
+      const vaultDocsRoot = path.resolve(process.cwd(), '../vault/docs')
+      const vaultDocsPath = path.resolve(vaultDocsRoot, filePath.slice(1)) // Remove leading slash
+
+      // Security check: ensure the resolved path is still within the vault/docs directory
+      // e.g. preventing acess to /../../../home/user/.ssh/id_rsa
+      if (!vaultDocsPath.startsWith(vaultDocsRoot + path.sep) && vaultDocsPath !== vaultDocsRoot) {
+        res.setHeader('content-type', 'text/plain')
+        res.writeHead(403)
+        res.end('Access denied: Path traversal not allowed')
+        return res
+      }
+
+      // Block access to potentially sensitive file types
+      const fileExt = path.extname(vaultDocsPath).toLowerCase()
+      const blockedExtensions = ['.env', '.key', '.pem', '.p12', '.pfx', '.crt', '.csr', '.log']
+      if (blockedExtensions.includes(fileExt)) {
+        res.setHeader('content-type', 'text/plain')
+        res.writeHead(403)
+        res.end('Access denied: File type not allowed')
+        return res
+      }
 
       // Check if file exists
       try {
