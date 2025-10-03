@@ -41,7 +41,6 @@ f(function aMenu () {
         const anchorRect = anchorRef.getBoundingClientRect()
         const dialogRect = store.dialogRef$().getBoundingClientRect()
         const isLandscape = window.innerWidth > window.innerHeight
-        console.log('anchorRect', anchorRect, 'dialogRect', dialogRect, 'isLandscape', isLandscape)
 
         // Consistent margin between menu and anchor
         const margin = 6
@@ -58,7 +57,6 @@ f(function aMenu () {
           const menuHeight = dialogRect.height > 0 ? dialogRect.height : 100 // fallback height
           top = Math.max(margin, anchorRect.top - menuHeight - margin)
         }
-        console.log('Positioning left with', { left, top })
         store.fallbackPositioningStyle$(`
           & {
             left: ${left}px;

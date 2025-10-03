@@ -4,6 +4,8 @@ import { appDecode } from '#helpers/nip19.js'
 import { addressObjToAppId, appIdToAppSubdomain } from '#helpers/app.js'
 import { base62ToBase36 } from '#helpers/base36.js'
 import { initMessageListener } from '#helpers/window-message/browser/index.js'
+import { useVaultModalStore, useRequestVaultMessage } from '#zones/vault-modal/index.js'
+import '#shared/napp-assets-caching-progress-bar.js'
 
 f(function singleNapp () {
   const storage = useWebStorage(localStorage)
@@ -12,6 +14,12 @@ f(function singleNapp () {
   } = storage
   const wsKey = openWorkspaceKeys$()[0]
   if (!wsKey) throw new Error('User n/a')
+
+  useVaultModalStore(() => ({
+    isOpen$: false,
+    open () { this.isOpen$(true) },
+    close () { this.isOpen$(false) }
+  }))
 
   useClosestStore('napp', () => {
     let napp
@@ -34,7 +42,10 @@ f(function singleNapp () {
     }
   })
 
-  return this.h`<single-napp-launcher />`
+  return this.h`
+    <vault-modal />
+    <single-napp-launcher />
+  `
 })
 
 // this won't add napp to web storage, it's supposed to be ephemeral-ish
@@ -49,12 +60,25 @@ f(function singleNappLauncher () {
   const appSubdomain$ = useComputed(() => appIdToAppSubdomain(appId, userPkB36$()))
   const appIframeRef$ = useSignal()
   const appIframeSrc$ = useSignal('about:blank')
+  const { cachingProgress$ } = useClosestStore('<napp-assets-caching-progress-bar>', {
+    cachingProgress$: {
+      // [filename]: {
+      //   progress: 0, // 0-100
+      //   // Note: don't use it when it's 0
+      //   totalByteSizeEstimate: 0 // 51000 * (total number of chunks - 1); don't count last chunk as it may be smaller)
+      // }
+    }
+  })
+  const { requestVaultMessage } = useRequestVaultMessage()
 
   useTask(
     async ({ cleanup }) => {
       const ac = new AbortController()
       cleanup(() => ac.abort())
-      await initMessageListener(userPkB36$(), appId, appSubdomain$(), initialRoute, appIframeRef$(), { signal: ac.signal, isSingleNapp: true })
+      await initMessageListener(
+        userPkB36$(), appId, appSubdomain$(), initialRoute, appIframeRef$(), cachingProgress$, requestVaultMessage,
+        { signal: ac.signal, isSingleNapp: true }
+      )
       appIframeSrc$(`//${appSubdomain$()}.${window.location.host}/~~napp`)
     },
     { after: 'rendering' }
@@ -73,6 +97,7 @@ f(function singleNappLauncher () {
           }
         }
       </style>
+      <napp-assets-caching-progress-bar />
       <iframe
         class="tilde-tilde-napp-page"
         ref=${appIframeRef$}

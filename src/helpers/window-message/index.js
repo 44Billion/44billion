@@ -16,9 +16,14 @@ function initReqPromise (reqId, code, timeoutMs = 5000) {
     resolve,
     reject
   }
-  const timeout = setTimeout(() => {
-    resrejByReqId[reqId]?.reject?.(`Timeout for ${code} reqId: ${reqId}`)
-  }, timeoutMs)
+  let timeout
+  if (timeoutMs != null) { // null or undefined = no timeout
+    if (timeoutMs > 0) {
+      timeout = setTimeout(() => {
+        resrejByReqId[reqId]?.reject?.(`Timeout for ${code} reqId: ${reqId}`)
+      }, timeoutMs)
+    } else resrejByReqId[reqId]?.reject?.(`Timeout for ${code} reqId: ${reqId}`)
+  }
   return promise.finally(() => {
     clearTimeout(timeout)
     delete resrejByReqId[reqId]
@@ -36,13 +41,12 @@ export function handleMessageReply (e) {
   else resrej.resolve({ payload: e.data.payload, isLast: e.data.isLast ?? true, ports: e.ports })
 }
 export const initReplyListener = ((
-  isPort,
   hasRunKey,
   hasRunByKey = new WeakMap(),
   listenerRegistry = new FinalizationRegistry(controller => controller.abort())
 ) => maybePort => {
-  isPort = maybePort instanceof MessagePort
-  hasRunKey = maybePort instanceof MessagePort ? maybePort : globalThis // (window or sw's self)
+  const isPort = maybePort instanceof MessagePort
+  hasRunKey = isPort ? maybePort : globalThis // (window or sw's self)
   if (hasRunByKey.has(hasRunKey)) return
 
   const controller = new AbortController()
