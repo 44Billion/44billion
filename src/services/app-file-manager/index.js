@@ -126,6 +126,7 @@ export default class AppFileManager {
     return {
       ...chunkStatus,
       isCached: chunkStatus.count === chunkStatus.total,
+      mimeType,
       contentType: getContentType(mimeType),
       isHtml: /^text\/html\b/.test(mimeType),
       fileRootHash,

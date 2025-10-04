@@ -1,11 +1,11 @@
-import { /* handleMessageReply, */ postMessage, requestMessage, replyWithMessage } from '../index.js'
+import { /* handleMessageReply, */ postMessage, replyWithMessage } from '../index.js'
 import { appIdToAddressObj } from '#helpers/app.js'
 import { base36ToBase16 } from '#helpers/base36.js'
 import { streamFileChunksFromDb, getFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
 import AppFileManager from '#services/app-file-manager/index.js'
 
 export async function initMessageListener (
-  userPkB36, appId, appSubdomain, initialRoute, trustedAppPageIframe, cachingProgress$,
+  userPkB36, appId, appSubdomain, initialRoute, trustedAppPageIframe, cachingProgress$, requestVaultMessage,
   { signal: componentSignal, isSingleNapp = false } = {}
 ) {
   const userPkB16 = base36ToBase16(userPkB36)
@@ -233,10 +233,9 @@ export async function initMessageListener (
             replyWithMessage(e, msg, { to: appPagePort })
             break
           }
-          // const { ns, nsParams = [], method, params = [] } = e.data.payload
-          // const appName = appId
-          // const msg = await requestNip07Message(vault, userPkB16, ns, nsParams, method, params, { appName })
-          const msg = { error: new Error('Not implemented yet') }
+          const { ns, nsParams = [], method, params = [] } = e.data.payload
+          const appName = appId
+          const msg = await requestNip07Message(userPkB16, ns, nsParams, method, params, { appName })
           replyWithMessage(e, msg, { to: appPagePort })
           break
         }
@@ -253,20 +252,26 @@ export async function initMessageListener (
             const favicon = appFiles.getFaviconMetadata()
             if (!favicon) replyWithMessage(e, { error: new Error('No favicon'), isLast: true }, { to: appPagePort })
 
-            const cacheStatus = (await appFiles.getFileCacheStatus(null, favicon.tag))
-            // eslint-disable-next-line no-empty
-            if (!cacheStatus.isCached) for await (const _ of appFiles.cacheFile(null, favicon.tag)) {}
-
+            let cacheStatus = (await appFiles.getFileCacheStatus(null, favicon.tag, { withMeta: true }))
+            if (!cacheStatus.isCached) {
+              await appFiles.cacheFile(null, favicon.tag)
+              cacheStatus = (await appFiles.getFileCacheStatus(null, favicon.tag, { withMeta: true }))
+            }
             let i = 0
             for await (const chunk of streamFileChunksFromDb(appId, favicon.rootHash)) {
               replyWithMessage(e, {
                 payload: {
                   content: chunk.evt.content,
-                  ...(i === 0 && { contentType: favicon.contentType || cacheStatus.contentType })
+                  ...(i === 0 && {
+                    mimeType: favicon.mimeType || cacheStatus.mimeType,
+                    contentType: favicon.contentType || cacheStatus.contentType
+                  })
                 }, isLast: ++i === cacheStatus.total
               }, { to: appPagePort })
             }
-          } catch (error) { replyWithMessage(e, { error, isLast: true }, { to: appPagePort }) }
+          } catch (error) {
+            console.log(error.stack)
+            replyWithMessage(e, { error, isLast: true }, { to: appPagePort }) }
           break
         }
         case 'CACHE_APP_FILE': {
@@ -309,5 +314,5 @@ export async function requestNip07Message (vault, pubkey, ns, nsParams, method, 
       appName
     }
   }
-  return requestMessage(vault, msg, { timeout: 120000 })
+  return requestVaultMessage(msg, { timeout: 120000 })
 }

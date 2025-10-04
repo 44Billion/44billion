@@ -18,6 +18,7 @@ import { base62ToBase36 } from '#helpers/base36.js'
 import { appIdToAppSubdomain } from '#helpers/app.js'
 import { useVaultModalStore, useRequestVaultMessage } from '#zones/vault-modal/index.js'
 import '#shared/napp-assets-caching-progress-bar.js'
+import '#shared/app-icon-or-index.js'
 import '#shared/svg.js'
 import '#shared/icons/icon-close.js'
 import '#shared/icons/icon-minimize.js'
@@ -301,11 +302,11 @@ f(function unifiedToolbar () {
           display: flex !important;
 
           @media (orientation: portrait) {
-            min-width: 80px;
+            padding-left: 7px; */
           }
           @media (orientation: landscape) {
             flex-direction: column;
-            min-height: 80px;
+            padding-top: 7px; */
             /**/
           }
 
@@ -892,9 +893,10 @@ f(function toolbarAppLauncher () {
     ${this.s`<svg viewbox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" class="squircle">
       <path d="M 0, 100 C 0, 12 12, 0 100, 0 S 200, 12 200, 100 188, 200 100, 200 0, 188 0, 100"></path>
     </svg>`}
-    <span style=${`
-      display: block;
-      z-index: 1;
-    `}>${app$().index}</span>
+    <app-icon-or-index props=${{
+      appId: this.props.appId,
+      appKey: this.props.appKey,
+      index: app$().index
+    }} />
   </div>`
 })

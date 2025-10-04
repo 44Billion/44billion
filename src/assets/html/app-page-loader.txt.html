@@ -287,7 +287,46 @@
           if (iconUrl && typeof iconUrl === 'string') {
             clearInterval(animationInterval)
             iconClipper.style.transform = 'rotate(0deg)' // Reset rotation
-            iconClipper.innerHTML = `<img src="${iconUrl}" alt="App Icon">`
+            iconClipper.innerHTML = ''
+            const img = document.createElement('img')
+            img.alt = 'App Icon'
+            img.style.opacity = '0'
+            img.style.transition = 'opacity .5s'
+            img.style.willChange = 'opacity'
+
+            let isBlob = false
+            img.addEventListener('load', () => {
+              // Double rAF ensures at least one paint with opacity 0 before transitioning
+              requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                  img.style.opacity = '1'
+                })
+              })
+            }, { once: true })
+
+            img.addEventListener('transitionend', e => {
+              if (e.propertyName === 'opacity' && isBlob) {
+                try { URL.revokeObjectURL(img.src) } catch (e) { /* ignore */ }
+              }
+            }, { once: true })
+
+            // Append to DOM first to ensure opacity 0 can be painted
+            iconClipper.appendChild(img)
+
+            // Set src after element is in DOM and styles are committed
+            queueMicrotask(() => {
+              isBlob = iconUrl.startsWith('blob:')
+              img.src = iconUrl
+
+              // Handle already-cached images (complete before load event)
+              if (img.complete) {
+                requestAnimationFrame(() => {
+                  requestAnimationFrame(() => {
+                    img.style.opacity = '1'
+                  })
+                })
+              }
+            })
           }
         }
 

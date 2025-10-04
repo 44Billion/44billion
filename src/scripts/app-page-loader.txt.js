@@ -34,25 +34,28 @@ function tellParentImReady () {
 async function maybeSetIcon (napp, to) {
   const iconMsg = { code: 'STREAM_APP_ICON', payload: { pathname: window.location.pathname } }
   const iterator = requestMultipleMessages(to, iconMsg)
-  function extractFirstDataFromChunkMsg ({ payload: evt, error }) {
+  function extractFirstDataFromChunkMsg ({ payload, error }) {
     if (error) return {}
     return {
-      mimeType: evt.tags.find(t => t[0] === 'm' && t[1])?.[1] || 'image/vnd.microsoft.icon',
-      content: evt.content
+      mimeType: payload.mimeType || 'image/vnd.microsoft.icon',
+      contentType: payload.contentType || 'image/vnd.microsoft.icon',
+      content: payload.content
     }
   }
-  const { mimeType, content: firstContent } = extractFirstDataFromChunkMsg((await iterator.next()).value)
+  const { mimeType, contentType, content: firstContent } = extractFirstDataFromChunkMsg((await iterator.next()).value)
   if (!firstContent) { console.log('no icon'); return }
 
   async function * source () {
     yield firstContent
-    for await (const { payload: evt, error } of iterator) {
+    for await (const { payload, error } of iterator) {
       if (error) throw error
-      yield evt.content
+      yield payload.content
     }
   }
-  const iconFile = new File(new Base93Decoder(source).getDecoded(), '', mimeType)
-  napp.icon = URL.createObjectURL(iconFile)
+
+  const decodedStream = new Base93Decoder(source(), { mimeType }).getDecoded()
+  const response = new Response(decodedStream, { headers: { 'content-type': contentType } })
+  napp.icon = URL.createObjectURL(await response.blob())
   napp.dispatchEvent(new CustomEvent('iconready'))
 }
 
