@@ -3,6 +3,35 @@ import { appIdToAddressObj } from '#helpers/app.js'
 import { base36ToBase16 } from '#helpers/base36.js'
 import { streamFileChunksFromDb, getFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
 import AppFileManager from '#services/app-file-manager/index.js'
+import { setWebStorageItem } from '#hooks/use-web-storage.js'
+import { decode } from '#services/base93-decoder.js'
+
+// Update icon storage with data URL from streamed chunks
+async function updateIconStorage (appId, favicon, chunks) {
+  try {
+    // Decode base93 content to binary
+    const binaryChunks = chunks.map(chunk => decode(chunk))
+    const blob = new Blob(binaryChunks, { type: favicon.contentType })
+
+    // Convert to data URL for persistent caching (doesn't get revoked like URL.createObjectURL() does)
+    const reader = new FileReader()
+    const dataUrlPromise = new Promise((resolve, reject) => {
+      reader.onload = () => resolve(reader.result)
+      reader.onerror = reject
+      reader.readAsDataURL(blob)
+    })
+
+    const dataUrl = await dataUrlPromise
+
+    // Update storage using setWebStorageItem to trigger cross-component updates
+    setWebStorageItem(localStorage, `session_appById_${appId}_icon`, {
+      fx: favicon.rootHash,
+      url: dataUrl
+    })
+  } catch (error) {
+    console.log('Failed to update icon storage:', error)
+  }
+}
 
 export async function initMessageListener (
   userPkB36, appId, appSubdomain, initialRoute, trustedAppPageIframe, cachingProgress$, requestVaultMessage,
@@ -17,6 +46,25 @@ export async function initMessageListener (
   const appAddress = appIdToAddressObj(appId)
   const appFiles = await AppFileManager.create(appId, appAddress)
   if (isSingleNapp) appFiles.updateBundleMetadata({ lastOpenedAsSingleNappAt: Date.now() })
+
+  let currentTrustedAppPagePort = null
+  let currentAppPagePort = null
+  let currentAppPageIframe = null
+  // Setup cleanup
+  componentSignal?.addEventListener('abort', () => {
+    if (currentTrustedAppPagePort) {
+      currentTrustedAppPagePort.close()
+      currentTrustedAppPagePort = null
+    }
+    if (currentAppPagePort) {
+      currentAppPagePort.close()
+      currentAppPagePort = null
+    }
+
+    if (currentAppPageIframe && currentAppPageIframe.parentNode) {
+      currentAppPageIframe.parentNode.removeChild(currentAppPageIframe)
+    }
+  }, { once: true })
 
   // window.addEventListener('message', async e => {
   //   console.log('MSG received', e.data.code)
@@ -38,10 +86,12 @@ export async function initMessageListener (
       e.origin !== appOrigin
     ) return
 
+    // iframe's page may reload on sw controller change (and send a new 'TRUSTED_IFRAME_READY' msg)
     ac?.abort()
     ac = new AbortController()
-    // iframe's page may reload on sw controller change
-    listenToTrustedAppPageMessages(e.ports[0], AbortSignal.any([componentSignal, ac.signal]))
+    if (currentTrustedAppPagePort) currentTrustedAppPagePort.close()
+    currentTrustedAppPagePort = e.ports[0]
+    listenToTrustedAppPageMessages(currentTrustedAppPagePort, AbortSignal.any([componentSignal, ac.signal]))
     loadAppOnce(appSubdomain, initialRoute)
   }, { signal: componentSignal })
 
@@ -56,6 +106,7 @@ export async function initMessageListener (
     // Note: for transparent bg, the iframe's html should add
     // <meta name="color-scheme" content="light dark"> to the head tag
     hasRunLoadApp = true
+    currentAppPageIframe = appPageIframe
 
     let ac
     window.addEventListener('message', e => {
@@ -65,10 +116,12 @@ export async function initMessageListener (
         e.origin !== appOrigin
       ) return
 
+      // iframe's page may reload on sw controller change (and send a new 'APP_IFRAME_READY' msg)
       ac?.abort()
       ac = new AbortController()
-      // iframe's page may reload on sw controller change
-      listenToAppPageMessages(e.ports[0], AbortSignal.any([componentSignal, ac.signal]))
+      if (currentAppPagePort) currentAppPagePort.close()
+      currentAppPagePort = e.ports[0]
+      listenToAppPageMessages(currentAppPagePort, AbortSignal.any([componentSignal, ac.signal]))
     }, { signal: componentSignal })
 
     appPageIframe.src = `//${appSubdomain}.${domain}${route}`
@@ -235,7 +288,7 @@ export async function initMessageListener (
           }
           const { ns, nsParams = [], method, params = [] } = e.data.payload
           const appName = appId
-          const msg = await requestNip07Message(userPkB16, ns, nsParams, method, params, { appName })
+          const msg = await requestNip07Message(requestVaultMessage, userPkB16, ns, nsParams, method, params, { appName })
           replyWithMessage(e, msg, { to: appPagePort })
           break
         }
@@ -250,15 +303,22 @@ export async function initMessageListener (
             // first find a favicon.??? that has image extension or is of image/... mime-type
             // and if not cached, cache it completly, only then stream chunks
             const favicon = appFiles.getFaviconMetadata()
-            if (!favicon) replyWithMessage(e, { error: new Error('No favicon'), isLast: true }, { to: appPagePort })
+            if (!favicon) {
+              replyWithMessage(e, { error: new Error('No favicon'), isLast: true }, { to: appPagePort })
+              break
+            }
 
             let cacheStatus = (await appFiles.getFileCacheStatus(null, favicon.tag, { withMeta: true }))
             if (!cacheStatus.isCached) {
               await appFiles.cacheFile(null, favicon.tag)
               cacheStatus = (await appFiles.getFileCacheStatus(null, favicon.tag, { withMeta: true }))
             }
+
+            // Collect chunks for storage update
+            const allChunks = []
             let i = 0
             for await (const chunk of streamFileChunksFromDb(appId, favicon.rootHash)) {
+              allChunks.push(chunk.evt.content)
               replyWithMessage(e, {
                 payload: {
                   content: chunk.evt.content,
@@ -269,9 +329,15 @@ export async function initMessageListener (
                 }, isLast: ++i === cacheStatus.total
               }, { to: appPagePort })
             }
+
+            // Update icon storage with complete data
+            if (allChunks.length > 0) {
+              await updateIconStorage(appId, favicon, allChunks)
+            }
           } catch (error) {
             console.log(error.stack)
-            replyWithMessage(e, { error, isLast: true }, { to: appPagePort }) }
+            replyWithMessage(e, { error, isLast: true }, { to: appPagePort })
+          }
           break
         }
         case 'CACHE_APP_FILE': {
@@ -303,7 +369,7 @@ function handleNappRequest (e) {
 }
 
 // Maybe will need to send port too on the first time
-export async function requestNip07Message (vault, pubkey, ns, nsParams, method, params, { appName } = {}) {
+export async function requestNip07Message (requestVaultMessage, pubkey, ns, nsParams, method, params, { appName } = {}) {
   const msg = {
     code: 'NIP07',
     payload: {

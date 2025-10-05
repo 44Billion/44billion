@@ -894,9 +894,7 @@ f(function toolbarAppLauncher () {
       <path d="M 0, 100 C 0, 12 12, 0 100, 0 S 200, 12 200, 100 188, 200 100, 200 0, 188 0, 100"></path>
     </svg>`}
     <app-icon-or-index props=${{
-      appId: this.props.appId,
-      appKey: this.props.appKey,
-      index: app$().index
+      app$
     }} />
   </div>`
 })

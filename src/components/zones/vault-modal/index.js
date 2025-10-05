@@ -96,6 +96,15 @@ function initMessageListener ({
   vaultPort$,
   componentSignal
 }) {
+  let currentVaultPort = null
+  // Setup cleanup
+  componentSignal?.addEventListener('abort', () => {
+    if (currentVaultPort) {
+      currentVaultPort.close()
+      currentVaultPort = null
+    }
+  }, { once: true })
+
   let ac
   window.addEventListener('message', e => {
     if (
@@ -105,13 +114,15 @@ function initMessageListener ({
       !e.ports[0]
     ) return
 
+    // vault iframe's page may reload on sw controller change (and send a new 'VAULT_READY' msg)
     ac?.abort()
     ac = new AbortController()
-    // vault iframe's page may reload on sw controller change
-    listenToVaultMessages({ vaultPort: e.ports[0], signal: AbortSignal.any([componentSignal, ac.signal]) })
+    if (currentVaultPort) currentVaultPort.close()
+    currentVaultPort = e.ports[0]
+    listenToVaultMessages({ vaultPort: currentVaultPort, signal: AbortSignal.any([componentSignal, ac.signal]) })
     // before setting vaultPort$, which could trigger other messages to vault
-    tellVaultImReady(e.ports[0])
-    vaultPort$(e.ports[0])
+    tellVaultImReady(currentVaultPort)
+    vaultPort$(currentVaultPort)
   }, { signal: componentSignal })
 
   function listenToVaultMessages ({ vaultPort, signal }) {

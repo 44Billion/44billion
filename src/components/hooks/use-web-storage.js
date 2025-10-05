@@ -126,3 +126,37 @@ export default function useWebStorage (storageArea = localStorage, getOrCreateOb
 
   return proxy
 }
+
+// If you aren't using a signal instance from useWebStorage,
+// use this to notify all signal instances on the same tab
+export function setWebStorageItem (storageArea = localStorage, key, value) {
+  const oldValue = storageArea.getItem(key)
+  let newValue
+
+  if (value === undefined) {
+    storageArea.removeItem(key)
+    newValue = null
+  } else {
+    newValue = JSON.stringify(value)
+    storageArea.setItem(key, newValue)
+  }
+
+  // Manually dispatch storage event to trigger same-tab updates
+  const storageEvent = new StorageEvent('storage', {
+    key,
+    oldValue,
+    newValue,
+    storageArea,
+    url: window.location.href
+  })
+
+  window.dispatchEvent(storageEvent)
+}
+
+export function setLocalStorageItem (key, value) {
+  setWebStorageItem(localStorage, key, value)
+}
+
+export function setSessionStorageItem (key, value) {
+  setWebStorageItem(sessionStorage, key, value)
+}
