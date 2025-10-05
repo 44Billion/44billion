@@ -34,7 +34,9 @@ async function updateIconStorage (appId, favicon, chunks) {
 }
 
 export async function initMessageListener (
-  userPkB36, appId, appSubdomain, initialRoute, trustedAppPageIframe, cachingProgress$, requestVaultMessage,
+  userPkB36, appId, appSubdomain, initialRoute,
+  trustedAppPageIframe, appPageIframe, appPageIframeSrc$,
+  cachingProgress$, requestVaultMessage,
   { signal: componentSignal, isSingleNapp = false } = {}
 ) {
   const userPkB16 = base36ToBase16(userPkB36)
@@ -49,7 +51,6 @@ export async function initMessageListener (
 
   let currentTrustedAppPagePort = null
   let currentAppPagePort = null
-  let currentAppPageIframe = null
   // Setup cleanup
   componentSignal?.addEventListener('abort', () => {
     if (currentTrustedAppPagePort) {
@@ -60,22 +61,7 @@ export async function initMessageListener (
       currentAppPagePort.close()
       currentAppPagePort = null
     }
-
-    if (currentAppPageIframe && currentAppPageIframe.parentNode) {
-      currentAppPageIframe.parentNode.removeChild(currentAppPageIframe)
-    }
   }, { once: true })
-
-  // window.addEventListener('message', async e => {
-  //   console.log('MSG received', e.data.code)
-  //   // from vault; but just having correct reqId is enough to be sure
-  //   if (e.data.code !== 'REPLY') return
-  //   // vault url may change during app use
-  //   // const vaultOrigin = new URL(JSON.parse(localStorage.getItem('config_vaultUrl'))).origin
-  //   // if (e.origin !== vaultOrigin) return
-
-  //   return handleMessageReply(e)
-  // }, { signal: componentSignal })
 
   let ac
   const appOrigin = location.origin.replace('//', `//${appSubdomain}.`)
@@ -99,15 +85,7 @@ export async function initMessageListener (
   function loadAppOnce (appSubdomain, route = '') {
     if (hasRunLoadApp) return
 
-    // load real app page beside the already loaded trusted app page iframe
-    const domain = window.location.host
-    const appPageIframe = document.createElement('iframe')
-    appPageIframe.className = 'napp-page'
-    // Note: for transparent bg, the iframe's html should add
-    // <meta name="color-scheme" content="light dark"> to the head tag
     hasRunLoadApp = true
-    currentAppPageIframe = appPageIframe
-
     let ac
     window.addEventListener('message', e => {
       if (
@@ -124,8 +102,12 @@ export async function initMessageListener (
       listenToAppPageMessages(currentAppPagePort, AbortSignal.any([componentSignal, ac.signal]))
     }, { signal: componentSignal })
 
-    appPageIframe.src = `//${appSubdomain}.${domain}${route}`
-    trustedAppPageIframe.insertAdjacentElement('beforebegin', appPageIframe)
+    const domain = window.location.host
+    // Load real app page beside the already loaded trusted app page iframe
+    //
+    // Note: for transparent bg, the iframe's html should add
+    // <meta name="color-scheme" content="light dark"> to the head tag
+    appPageIframeSrc$(`//${appSubdomain}.${domain}${route}`)
   }
 
   function listenToTrustedAppPageMessages (trustedAppPagePort, signal) {

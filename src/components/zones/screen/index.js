@@ -178,6 +178,8 @@ f(function appWindow () {
   const userPkB36$ = useComputed(() => base62ToBase36(maybeUserPk$() || anonPk$(), 50))
   const appSubdomain$ = useComputed(() => appIdToAppSubdomain(appId$(), userPkB36$()))
   const isClosed$ = useComputed(() => appVisibility$() === 'closed')
+  const trustedAppIframeRef$ = useSignal()
+  const trustedAppIframeSrc$ = useSignal('about:blank')
   const appIframeRef$ = useSignal()
   const appIframeSrc$ = useSignal('about:blank')
   const { cachingProgress$ } = useClosestStore('<napp-assets-caching-progress-bar>', {
@@ -200,6 +202,8 @@ f(function appWindow () {
       // but will be reused on re-opening: open->closed->open
       if (isClosed) {
         cachingProgress$({}) // reset
+        appIframeSrc$('about:blank')
+        trustedAppIframeSrc$('about:blank')
         return
       }
 
@@ -208,13 +212,17 @@ f(function appWindow () {
       const ac = new AbortController()
       cleanup(() => ac.abort())
       await initMessageListener(
-        userPkB36$(), appId$(), appSubdomain$(), initialRoute, appIframeRef$(), cachingProgress$, requestVaultMessage,
+        userPkB36$(), appId$(), appSubdomain$(), initialRoute,
+        trustedAppIframeRef$(), appIframeRef$(), appIframeSrc$,
+        cachingProgress$, requestVaultMessage,
         { signal: ac.signal, isSingleNapp: false }
       )
-      appIframeSrc$(`//${appSubdomain$()}.${window.location.host}/~~napp`)
+      trustedAppIframeSrc$(`//${appSubdomain$()}.${window.location.host}/~~napp`)
     },
     { after: 'rendering' }
   )
+
+  if (isClosed$()) return
 
   return this.h`
     <div
@@ -279,9 +287,14 @@ f(function appWindow () {
     </style>
     <napp-assets-caching-progress-bar />
     <iframe
-      class="tilde-tilde-napp-page"
+      class="napp-page"
       ref=${appIframeRef$}
       src=${appIframeSrc$()}
+    />
+    <iframe
+      class="tilde-tilde-napp-page"
+      ref=${trustedAppIframeRef$}
+      src=${trustedAppIframeSrc$()}
     />
     </div>
   `
