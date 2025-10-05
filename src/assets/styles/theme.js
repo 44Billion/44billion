@@ -25,11 +25,13 @@ const [defaultThemeCssClass, colorCssVarsObj, defaultThemeCssString] = createThe
   mgBorder: 'oklch(0.35 0 256)',
   mgFont: 'oklch(0.79 0 256)',
   fg: 'oklch(0.35 0 256)',
+  fgPrimary: 'oklch(0.44 0.16 291.61)',
+  fgSecondary: 'oklch(0.53 0.13 56.36)',
   fgFont: 'oklch(0.96 0.01 256)',
   ffg: 'oklch(0.49 0.01 17.47)',
-  primary: 'oklch(0.62 0.12 256)', // darkred
-  secondary: 'oklch(0.72 0.11 76)',
-  logo: '#002D80',
+  primary: 'oklch(0.65 0.20 280)',
+  secondary: 'oklch(0.70 0.15 65)',
+  logo: 'oklch(0.27 0.20 280)',
   counter: 'oklch(0.63 0 0)' // it is headerFont a bit darker but lighter than ffg
 })
 

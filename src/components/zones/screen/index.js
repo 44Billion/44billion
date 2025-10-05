@@ -869,6 +869,19 @@ f(function toolbarAppLauncher () {
     }
   })
 
+  const squircleColor$ = useComputed(() => {
+    const visibility = app$().visibility
+    switch (visibility) {
+      case 'open':
+        return cssVars.colors.fgPrimary
+      case 'minimized':
+        return cssVars.colors.fgSecondary
+      case 'closed':
+      default:
+        return cssVars.colors.fg
+    }
+  })
+
   return this.h`<div
     ref=${appRef$}
     onclick=${onClick}
@@ -897,7 +910,7 @@ f(function toolbarAppLauncher () {
           z-index: 0;
 
           path {
-            fill: ${cssVars.colors.fg};
+            fill: ${squircleColor$()};
             stroke: none;
           }
         }
