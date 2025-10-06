@@ -178,9 +178,9 @@ f(function appWindow () {
   const userPkB36$ = useComputed(() => base62ToBase36(maybeUserPk$() || anonPk$(), 50))
   const appSubdomain$ = useComputed(() => appIdToAppSubdomain(appId$(), userPkB36$()))
   const isClosed$ = useComputed(() => appVisibility$() === 'closed')
-  const trustedAppIframeRef$ = useSignal()
+  const trustedAppIframeRef$ = useSignal(null)
   const trustedAppIframeSrc$ = useSignal('about:blank')
-  const appIframeRef$ = useSignal()
+  const appIframeRef$ = useSignal(null)
   const appIframeSrc$ = useSignal('about:blank')
   const { cachingProgress$ } = useClosestStore('<napp-assets-caching-progress-bar>', {
     cachingProgress$: {
@@ -195,17 +195,24 @@ f(function appWindow () {
 
   useTask(
     async ({ track, cleanup }) => {
-      const isClosed = track(() => isClosed$())
+      const [isClosed, iframeRef] = track(() => [isClosed$(), trustedAppIframeRef$()])
       // This component won't load when app starts closed
       // because openAppKeys$.domOrder initially is populated
       // by open (or minimized) apps
       // but will be reused on re-opening: open->closed->open
       if (isClosed) {
         cachingProgress$({}) // reset
+        trustedAppIframeRef$(null)
         appIframeSrc$('about:blank')
+        appIframeRef$(null)
         trustedAppIframeSrc$('about:blank')
         return
       }
+      // without this check, `e.source !== trustedAppPageIframe.contentWindow`
+      // may be true after closing then re-opening the app, because useTask
+      // runs before rendering on subsequent calls ({ after: 'rendering' }
+      // useTask's config is just for the first call)
+      if (!iframeRef) return
 
       const initialRoute = initialRoute$() || ''
       if (initialRoute) initialRoute$('') // reset
