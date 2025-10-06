@@ -295,12 +295,14 @@ export async function initMessageListener (
               await appFiles.cacheFile(null, favicon.tag)
               cacheStatus = (await appFiles.getFileCacheStatus(null, favicon.tag, { withMeta: true }))
             }
+            const currentlyCachedAppIconFxOnLs = JSON.parse(localStorage.getItem(`session_appById_${appId}_icon`))?.fx
+            const shouldCacheIconOnLs = currentlyCachedAppIconFxOnLs !== favicon.rootHash
 
             // Collect chunks for storage update
             const allChunks = []
             let i = 0
             for await (const chunk of streamFileChunksFromDb(appId, favicon.rootHash)) {
-              allChunks.push(chunk.evt.content)
+              if (shouldCacheIconOnLs) allChunks.push(chunk.evt.content)
               replyWithMessage(e, {
                 payload: {
                   content: chunk.evt.content,
