@@ -260,9 +260,9 @@ f(function appWindow () {
             }
           }
         }
-        &.mru-rank-0 { order: 0; }
-        &.mru-rank-1 { order: 1; }
-        &.mru-rank-2 { order: 2; }
+        &.mru-rank-1 { order: 0; }
+        &.mru-rank-2 { order: 1; }
+        &.mru-rank-3 { order: 2; }
         &.mru-rank-1.open {
           display: block;
         }
@@ -886,7 +886,7 @@ f(function toolbarAppLauncher () {
     ref=${appRef$}
     onclick=${onClick}
     @custom:longpress=${onLongPress}
-    class="scope_df81hd"
+    id=${`scope_df81hd_${app$().key}`}
     style=${`
       anchor-name: ${anchorName$()};
       background-color: transparent;
@@ -899,7 +899,7 @@ f(function toolbarAppLauncher () {
     `}
   >
     <style>${`
-      .scope_df81hd {
+      #scope_df81hd_${app$().key} {
         & {
           flex-shrink: 0;
         }
