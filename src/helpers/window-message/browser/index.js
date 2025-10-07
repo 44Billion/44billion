@@ -1,6 +1,7 @@
 import { /* handleMessageReply, */ postMessage, replyWithMessage } from '../index.js'
 import { appIdToAddressObj } from '#helpers/app.js'
 import { base36ToBase16 } from '#helpers/base36.js'
+import { appEncode } from '#helpers/nip19.js'
 import { streamFileChunksFromDb, getFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
 import AppFileManager from '#services/app-file-manager/index.js'
 import { setWebStorageItem } from '#hooks/use-web-storage.js'
@@ -23,11 +24,13 @@ async function updateIconStorage (appId, favicon, chunks) {
 
     const dataUrl = await dataUrlPromise
 
-    // Update storage using setWebStorageItem to trigger cross-component updates
-    setWebStorageItem(localStorage, `session_appById_${appId}_icon`, {
+    const icon = {
       fx: favicon.rootHash,
       url: dataUrl
-    })
+    }
+    // Update storage using setWebStorageItem to trigger cross-component updates
+    setWebStorageItem(localStorage, `session_appById_${appId}_icon`, icon)
+    return icon
   } catch (error) {
     console.log('Failed to update icon storage:', error)
   }
@@ -255,6 +258,7 @@ export async function initMessageListener (
     postMessage(trustedAppPagePort, { code: 'BROWSER_READY', payload: null })
   }
 
+  let nip07AppObject
   function listenToAppPageMessages (appPagePort, signal) {
     appPagePort.addEventListener('message', async e => {
       switch (e.data.code) {
@@ -268,9 +272,20 @@ export async function initMessageListener (
             replyWithMessage(e, msg, { to: appPagePort })
             break
           }
-          const { ns, nsParams = [], method, params = [] } = e.data.payload
-          const appName = appId
-          const msg = await requestNip07Message(requestVaultMessage, userPkB16, ns, nsParams, method, params, { appName })
+          const { ns, method, params = [] } = e.data.payload
+          nip07AppObject ??= {
+            id: appEncode(appAddress) // no relay hint allowed
+            // alias: +[+][+]abc@44billion.net, i.e. from +<appIdAlias>[@<domain>]
+            // name: from bundleMetadata event
+          }
+          if (!nip07AppObject.icon) {
+            const icon = JSON.parse(localStorage.getItem(`session_appById_${appId}_icon`))
+            if (icon) nip07AppObject.icon = icon
+          }
+          const msg = await requestNip07Message(
+            requestVaultMessage, userPkB16, ns, method, params,
+            { app: nip07AppObject }
+          )
           replyWithMessage(e, msg, { to: appPagePort })
           break
         }
@@ -316,7 +331,8 @@ export async function initMessageListener (
 
             // Update icon storage with complete data
             if (allChunks.length > 0) {
-              await updateIconStorage(appId, favicon, allChunks)
+              const { url } = await updateIconStorage(appId, favicon, allChunks)
+              if (nip07AppObject) nip07AppObject.icon = { fx: favicon.rootHash, url }
             }
           } catch (error) {
             console.log(error.stack)
@@ -352,16 +368,17 @@ function handleNappRequest (e) {
   return replyWithMessage(e, { error: new Error('Not implemented yet') })
 }
 
-// Maybe will need to send port too on the first time
-export async function requestNip07Message (requestVaultMessage, pubkey, ns, nsParams, method, params, { appName } = {}) {
+export async function requestNip07Message (
+  requestVaultMessage, pubkey, ns, method, params, { app } = {}
+) {
   const msg = {
     code: 'NIP07',
     payload: {
+      app,
       pubkey,
       ns, // [name, ...optionalArgs]
       method,
-      params,
-      appName
+      params
     }
   }
   return requestVaultMessage(msg, { timeout: 120000 })

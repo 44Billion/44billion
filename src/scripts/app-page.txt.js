@@ -76,7 +76,10 @@ function injectNip07 (promise) {
 
   function createNostrMethod (method, nsName, nsParams) {
     return (...params) => promise
-      .then(browserPort => requestMessage(browserPort, { code: 'NIP07', payload: { ns: [nsName, ...nsParams], method, params } }))
+      .then(browserPort => requestMessage(
+        browserPort,
+        { code: 'NIP07', payload: { ns: [nsName, ...nsParams], method, params } }
+      ))
       .then(({ payload, error }) => {
         if (error) throw error
         return payload

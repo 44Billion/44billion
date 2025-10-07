@@ -114,8 +114,6 @@ f(function aMenu () {
           }
 
           &:popover-open, /* &[open] */ /* after dialog.showPopover() */ {
-            display: flex;
-            position: fixed;
           }
 
           &:popover-open::backdrop /* &[open]::backdrop */ {

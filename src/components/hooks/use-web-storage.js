@@ -151,6 +151,7 @@ export function setWebStorageItem (storageArea = localStorage, key, value) {
   })
 
   window.dispatchEvent(storageEvent)
+  return value
 }
 
 export function setLocalStorageItem (key, value) {

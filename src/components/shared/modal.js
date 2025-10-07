@@ -63,9 +63,7 @@ export const Modal = f(function aModal () {
           }
 
           /* &:popover-open, */ &[open] /* after dialog.showModal() */ {
-            display: flex;
-            position: fixed;
-            inset: 0;
+            /* --modal-state: open; /* only for dialog modal */
           }
 
           /* &:popover-open::backdrop, */ &[open]::backdrop {
@@ -96,33 +94,42 @@ export const Modal = f(function aModal () {
       <div
         data-name='modalContentContainer'
         class="scope_f82h1k"
-        style=${`
-          position: absolute;
-          transition: var(--duration) ease-in-out;
-          transition-property: top, transform;
-          border-top-right-radius: 17px; /* for scrollbar */
-          overflow: hidden; /* for scrollbar */
-        `}
       >
         <style>
           ${`.scope_f82h1k {
             & {
+              position: fixed;
+              transition: var(--duration) ease-in-out;
+              border-top-right-radius: 17px; /* for scrollbar */
+              overflow: hidden; /* for scrollbar */
+
               @media ${jsVars.breakpoints.desktop} {
+                transition-property: bottom, transform;
+                bottom: 0;
+                transform: translate(-50%, 100%);
                 left: 50%;
-                top: 100%;
-                transform: translate(-50%, 0%);
-                @container /* style(:popover-open), */ style([open]) {
-                  top: 50%;
-                  transform: translate(-50%, -50%);
+                /* @container style(:popover-open), style(--modal-state: open) { */
+                .scope_g7h2g1[open] & {
+                  bottom: 50%;
+                  transform: translate(-50%, 50%);
+                  @starting-style {
+                    bottom: 0;
+                    transform: translate(-50%, 100%);
+                  }
                 }
                 border-bottom-right-radius: 17px; /* for scrollbar */
               }
 
               @media ${jsVars.breakpoints.mobile} {
-                align-self: flex-end;
-                transform: translate(0, 100%);
-                @container /* style(:popover-open), */ style([open]) {
-                  transform: translate(0, 0);
+                transition-property: top, transform;
+                transform: translate(0, 0);
+                top: 100%;
+                /* @container style(:popover-open), style(--modal-state: open) { */
+                .scope_g7h2g1[open] & {
+                  transform: translate(0, -100%);
+                  @starting-style {
+                    transform: translate(0, 0);
+                  }
                 }
               }
             }
@@ -131,25 +138,24 @@ export const Modal = f(function aModal () {
         <div
           data-name='modalContent'
           class="scope_j3k1h2"
-          style=${`
-            overflow-y: auto;
-            /*
-              https://gist.github.com/adamcbrewer/5859738
-              https://stackoverflow.com/questions/5736503/how-to-make-css3-rounded-corners-hide-overflow-in-chrome-opera
-              the scroll without this ignores border-radius
-              but it will blur content
-              mask-image: -webkit-radial-gradient(circle, white, black);
-            */
-
-            display: flex;
-            flex-direction: column;
-            /* background-color: white; */
-            min-height: 250px; /* when there is loading (dynamic content) */
-          `}
         >
           <style>
             ${`.scope_j3k1h2 {
               & {
+                overflow-y: auto;
+                /*
+                  https://gist.github.com/adamcbrewer/5859738
+                  https://stackoverflow.com/questions/5736503/how-to-make-css3-rounded-corners-hide-overflow-in-chrome-opera
+                  the scroll without this ignores border-radius
+                  but it will blur content
+                  mask-image: -webkit-radial-gradient(circle, white, black);
+                */
+
+                display: flex;
+                flex-direction: column;
+                /* background-color: white; */
+                min-height: 200px; /* when there is loading (dynamic content) */
+
                 @media ${jsVars.breakpoints.desktop} {
                   border-radius: 17px;
                   min-width: 400px;
@@ -173,7 +179,7 @@ export const Modal = f(function aModal () {
               ${(store.shouldAlwaysDisplay$.get() || '') && `
                 content-visibility: auto;
                 contain-intrinsic-width: auto 400px;
-                contain-intrinsic-height: auto 250px;
+                contain-intrinsic-height: auto 200px;
               `}
             }`}
           </style>

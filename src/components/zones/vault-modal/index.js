@@ -1,6 +1,7 @@
 import { f, useGlobalStore, useClosestStore, useStore, useTask, useCallback, useComputed } from '#f'
 import useWebStorage from '#hooks/use-web-storage.js'
 import { postMessage, requestMessage } from '#helpers/window-message/index.js'
+import { setAccountsState } from '#zones/screen/use-init-or-reset-screen.js'
 import '#shared/modal.js'
 
 export function useVaultModalStore (init) {
@@ -30,16 +31,19 @@ f(function vaultMessenger () {
     vaultPort$,
     vaultIframeRef$,
     vaultIframeSrc$,
-    isVaultMessengerReady$
+    isVaultMessengerReady$,
+    widgetMinHeight$
   } = useGlobalStore('vaultMessenger', () => ({
     vaultPort$: null,
     vaultIframeRef$: null,
     vaultIframeSrc$: 'about:blank',
-    isVaultMessengerReady$: false
+    isVaultMessengerReady$: false,
+    widgetMinHeight$: 0
   }))
+  const storage = useWebStorage(localStorage)
   const {
     config_vaultUrl$: vaultUrl$
-  } = useWebStorage(localStorage)
+  } = storage
 
   useTask(() => {
     if (vaultUrl$() !== undefined) return
@@ -60,7 +64,10 @@ f(function vaultMessenger () {
     initMessageListener({
       vaultIframe: vaultIframeRef$(),
       vaultOrigin: new URL(vaultUrl$()).origin,
-      componentSignal: ac.signal
+      vaultPort$,
+      componentSignal: ac.signal,
+      widgetMinHeight$,
+      storage
     })
     isVaultMessengerReady$(true)
   }, { after: 'rendering' })
@@ -83,6 +90,7 @@ f(function vaultMessenger () {
       }
     </style>
     <iframe
+      style=${{ minHeight: `${widgetMinHeight$()}px` }}
       id='vault'
       ref=${vaultIframeRef$}
       src=${vaultIframeSrc$()}
@@ -94,7 +102,9 @@ function initMessageListener ({
   vaultIframe,
   vaultOrigin,
   vaultPort$,
-  componentSignal
+  componentSignal,
+  widgetMinHeight$,
+  storage
 }) {
   let currentVaultPort = null
   // Setup cleanup
@@ -114,6 +124,9 @@ function initMessageListener ({
       !e.ports[0]
     ) return
 
+    if (!e.data.payload.accounts) console.log('Missing account data on vault startup')
+    else setAccountsState(e.data.payload.accounts, storage)
+
     // vault iframe's page may reload on sw controller change (and send a new 'VAULT_READY' msg)
     ac?.abort()
     ac = new AbortController()
@@ -127,9 +140,21 @@ function initMessageListener ({
 
   function listenToVaultMessages ({ vaultPort, signal }) {
     vaultPort.addEventListener('message', e => {
-      // TODO: handle 1) close modal requests; 2) resize modal (height) requests
-      // what about the first height?
-      console.log('Message from vault:', e.data)
+      switch (e.data.code) {
+        // TODO: maybe 'CLOSE_VAULT_VIEW' after adding account
+        case 'CHANGE_DIMENSIONS': {
+          widgetMinHeight$(e.data.payload.height)
+          break
+        }
+        case 'SET_ACCOUNTS_STATE': {
+          if (!e.data.payload.accounts) {
+            console.log('Missing account data on vault message')
+            break
+          }
+          setAccountsState(e.data.payload.accounts, storage)
+          break
+        }
+      }
     }, { signal })
     vaultPort.start()
   }

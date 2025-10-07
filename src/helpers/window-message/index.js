@@ -1,3 +1,4 @@
+import { reviveError } from '#helpers/error.js'
 const isDev = !!IS_DEVELOPMENT
 const protocol = isDev ? 'http://' : 'https://'
 const browserDomain = isDev ? 'localhost:10000' : '44billion.net'
@@ -37,7 +38,7 @@ export function handleMessageReply (e) {
     return
   }
 
-  if (e.data.error) resrej.reject(e.data.error)
+  if (e.data.error) resrej.reject(reviveError(e.data.error))
   else resrej.resolve({ payload: e.data.payload, isLast: e.data.isLast ?? true, ports: e.ports })
 }
 export const initReplyListener = ((
