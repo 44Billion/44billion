@@ -1,4 +1,4 @@
-import { f, useCallback, useComputed, useStore, useGlobalSignal, useStateSignal, useSignal, useClosestSignal, useClosestStore, useTask } from '#f'
+import { f, useCallback, useComputed, useStore, useGlobalStore, useGlobalSignal, useStateSignal, useSignal, useClosestSignal, useClosestStore, useTask } from '#f'
 import AppFileManager from '#services/app-file-manager/index.js'
 import useInitOrResetScreen from './use-init-or-reset-screen.js'
 import useCollectScreenGarbage from './use-collect-screen-garbage.js'
@@ -17,6 +17,7 @@ import { initMessageListener } from '#helpers/window-message/browser/index.js'
 import { base62ToBase36 } from '#helpers/base36.js'
 import { appIdToAppSubdomain } from '#helpers/app.js'
 import { useVaultModalStore, useRequestVaultMessage } from '#zones/vault-modal/index.js'
+import { base62ToBase16 } from '#helpers/base62.js'
 import '#shared/napp-assets-caching-progress-bar.js'
 import '#shared/app-icon-or-index.js'
 import '#shared/svg.js'
@@ -26,6 +27,7 @@ import '#shared/icons/icon-maximize.js'
 import '#shared/icons/icon-stack-front.js'
 import '#shared/icons/icon-remove.js'
 import '#shared/icons/icon-delete.js'
+import '#shared/icons/icon-lock.js'
 
 f(function aScreen () {
   useInitOrResetScreen()
@@ -395,31 +397,320 @@ f(function toolbarActiveAvatar () {
   `
 })
 f(function toolbarMenu () {
-  // const {
-  //   session_workspaceKeys$: workspaceKeys$
-  // } = useWebStorage(localStorage)
+  const storage = useWebStorage(localStorage)
+  const { session_openWorkspaceKeys$: openWorkspaceKeys$, session_workspaceKeys$: workspaceKeys$ } = storage
+  const { close: closeMenu } = useClosestStore('<a-menu>')
+  const vaultModalStore = useVaultModalStore()
+  const { requestVaultMessage } = useRequestVaultMessage()
+
+  // Track unlocking state for each user
+  const unlockingUsers$ = useSignal({})
+  const unlockErrors$ = useSignal({})
+
+  // Get all users from workspaces (allowing duplicates)
+  const allUsers$ = useComputed(() => {
+    const users = []
+    const userCounts = {} // Track count for each user
+
+    // Process all workspaces to get all users (including duplicates)
+    workspaceKeys$().forEach((wsKey) => {
+      const userPk = storage[`session_workspaceByKey_${wsKey}_userPk$`]()
+      if (userPk !== undefined && userPk !== null) {
+        const profile = storage[`session_accountsByUserPk_${userPk}_profile$`]()
+        const isLocked = storage[`session_accountsByUserPk_${userPk}_isLocked$`]()
+
+        // Initialize count for this user if not seen before
+        if (userCounts[userPk] === undefined) {
+          userCounts[userPk] = 0
+        }
+
+        // Increment count for this user
+        userCounts[userPk]++
+
+        users.push({
+          userPk,
+          wsKey,
+          profile,
+          name: profile?.name || profile?.npub || userPk || 'Anonymous',
+          isLocked,
+          index: userCounts[userPk], // User-specific index (1-indexed)
+          totalCount: userCounts[userPk] // Current count (will be final after loop)
+        })
+      }
+    })
+
+    // Update totalCount to the final count for each user
+    const finalUserCounts = {}
+    users.forEach(user => {
+      if (finalUserCounts[user.userPk] === undefined) {
+        finalUserCounts[user.userPk] = 0
+      }
+      finalUserCounts[user.userPk]++
+    })
+
+    // Update each user with the final count
+    users.forEach(user => {
+      user.totalCount = finalUserCounts[user.userPk]
+    })
+
+    return users
+  })
+
+  // Get current active user
+  const activeUserPk$ = useComputed(() => {
+    const wsKey = openWorkspaceKeys$()[0]
+    return storage[`session_workspaceByKey_${wsKey}_userPk$`]()
+  })
+
+  const { disableStartAtVaultHomeWorkaroundThisTime } = useGlobalStore('vaultMessenger')
+  const handleUserClick = useCallback(async (userPk, wsKey, isLocked) => {
+    if (userPk !== activeUserPk$()) {
+      // Switch user: move this user's workspace to the head of openWorkspaceKeys$
+      const currentOpenWorkspaceKeys = [...openWorkspaceKeys$()]
+      const newOpenWorkspaceKeys = [wsKey, ...currentOpenWorkspaceKeys.filter(key => key !== wsKey)]
+      storage.session_openWorkspaceKeys$(newOpenWorkspaceKeys)
+    }
+
+    // If user is locked, try to unlock
+    if (isLocked) {
+      const userKey = `${userPk}-${wsKey}`
+      unlockingUsers$({ ...unlockingUsers$(), [userKey]: true })
+      unlockErrors$({ ...unlockErrors$(), [userKey]: null })
+
+      try {
+        const userPkB16 = base62ToBase16(userPk)
+        const response = await requestVaultMessage(
+          { code: 'UNLOCK_ACCOUNT', payload: { pubkey: userPkB16 } },
+          { timeout: 120000, instant: true }
+        )
+
+        if (response.error || !response.payload?.isRouteReady) {
+          throw new Error(response.error?.message || 'Failed to unlock account')
+        }
+
+        closeMenu()
+        // cause above message makes vault navigate to unlock route
+        disableStartAtVaultHomeWorkaroundThisTime()
+        vaultModalStore.open()
+      } catch (error) {
+        // Show error message
+        unlockErrors$({ ...unlockErrors$(), [userKey]: error.message || 'Error unlocking' })
+
+        // Clear error after 3 seconds
+        setTimeout(() => {
+          unlockErrors$(prev => {
+            const newErrors = { ...prev }
+            delete newErrors[userKey]
+            return newErrors
+          })
+        }, 3000)
+      } finally {
+        // Clear unlocking state
+        unlockingUsers$(prev => {
+          const newUnlocking = { ...prev }
+          delete newUnlocking[userKey]
+          return newUnlocking
+        })
+      }
+    } else {
+      closeMenu()
+    }
+  })
+
+  const handleAddUserClick = useCallback(() => {
+    closeMenu()
+    vaultModalStore.open()
+  })
 
   const menuStore = useClosestStore('<a-menu>')
   const menuProps = useStore({
     render: useCallback(function () {
-      return this.h`<div>User Menu</div>`
-      // return this.h`<div>
-      //   ${workspaceKeys$().map(workspaceKey =>
-      //     this.h({ key: workspaceKey })`<user-option key=${workspaceKey} props=${{ workspaceKey }} />`
-      //   )}
-      // </div>`
+      return this.h`<div id='user-selection-menu'>
+        <style>${`
+          #user-selection-menu {
+            display: flex;
+            flex-direction: column;
+            padding: 4px;
+            min-width: 200px;
+            max-width: 230px;
+            background-color: ${cssVars.colors.mg};
+            color: ${cssVars.colors.mgFont};
+            border-radius: 6px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            overflow: hidden;
+
+            .user-item {
+              border-radius: 6px;
+              display: flex;
+              align-items: center;
+              padding: 5px 8px;
+              cursor: pointer;
+              transition: background-color 0.2s;
+            }
+            .user-item.active {
+              background-color: rgba(255, 255, 255, 0.05);
+            }
+            .user-item:hover {
+              background-color: rgba(255, 255, 255, 0.1);
+            }
+            .user-avatar {
+              margin-right: 12px;
+              flex-shrink: 0;
+              width: 40px;
+              height: 40px;
+              position: relative;
+            }
+            .user-name {
+              font-size: 15rem;
+              font-weight: 600;
+              white-space: nowrap;
+              overflow: hidden;
+              text-overflow: ellipsis;
+            }
+            .user-unlock-hint {
+              font-size: 12rem;
+              font-style: italic;
+              color: rgba(255, 255, 255, 0.6);
+              margin-top: 2px;
+            }
+            .user-unlock-error {
+              font-size: 12rem;
+              font-style: italic;
+              color: ${cssVars.colors.error};
+              margin-top: 2px;
+            }
+            .user-item.unlocking {
+              animation: pulsate 2s ease-in-out infinite;
+            }
+            @keyframes pulsate {
+              0% { background-color: rgba(255, 255, 255, 0.05); }
+              50% { background-color: rgba(255, 255, 255, 0.15); }
+              100% { background-color: rgba(255, 255, 255, 0.05); }
+            }
+            .user-index-badge {
+              position: absolute;
+              bottom: -2px;
+              left: -2px;
+              width: 16px;
+              height: 16px;
+              background-color: ${cssVars.colors.accentSecondary};
+              border-radius: 50%;
+              display: flex;
+              justify-content: center;
+              align-items: center;
+              color: white;
+              font-size: 10px;
+              font-weight: bold;
+            }
+            .lock-icon {
+              position: absolute;
+              bottom: -2px;
+              right: -2px;
+              width: 16px;
+              height: 16px;
+              background-color: ${cssVars.colors.accentPrimary};
+              border-radius: 50%;
+              display: flex;
+              justify-content: center;
+              align-items: center;
+              color: white;
+            }
+            .lock-icon svg {
+              width: 10px;
+              height: 10px;
+            }
+            .add-user-button {
+              border-radius: 6px;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              padding: 5px 8px;
+              cursor: pointer;
+              transition: background-color 0.2s;
+              margin-top: 4px;
+              background-color: rgba(255, 255, 255, 0.05);
+            }
+            .add-user-button:hover {
+              background-color: rgba(255, 255, 255, 0.1);
+            }
+            .add-user-icon {
+              width: 20px;
+              height: 20px;
+              display: flex;
+              justify-content: center;
+              align-items: center;
+              border-radius: 50%;
+              border: 2px solid ${cssVars.colors.mgFont};
+              color: ${cssVars.colors.mgFont};
+              flex-shrink: 0;
+            }
+            .add-user-icon svg {
+              width: 12px;
+              height: 12px;
+            }
+          }
+        `}</style>
+        ${allUsers$().map(user => {
+          const userKey = `${user.userPk}-${user.wsKey}`
+          const isUnlocking = unlockingUsers$()[userKey]
+          const errorMessage = unlockErrors$()[userKey]
+
+          return this.h({ key: userKey })`<div
+            class=${{
+              'user-item': true,
+              active: user.userPk === activeUserPk$(),
+              unlocking: isUnlocking
+            }}
+            onclick=${() => handleUserClick(user.userPk, user.wsKey, user.isLocked)}
+          >
+            <div class="user-avatar">
+              <a-avatar props=${{ pk$: user.userPk, size: '32px', weight$: 'duotone', strokeWidth$: 1 }} />
+              ${user.totalCount > 1
+                ? this.h`<div class="user-index-badge">${user.index}</div>`
+                : ''}
+              ${user.isLocked
+                ? this.h`<div class="lock-icon">
+                    <icon-lock props=${{ size: '10px' }} />
+                  </div>`
+                : ''}
+            </div>
+            <div>
+              <div class="user-name">${user.name}</div>
+              ${user.isLocked
+                ? this.h`<div class=${errorMessage ? 'user-unlock-error' : 'user-unlock-hint'}>
+                    ${errorMessage || 'Touch to unlock'}
+                  </div>`
+                : ''}
+            </div>
+          </div>`
+        })}
+        <div class="add-user-button" onclick=${handleAddUserClick}>
+          <div class="add-user-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19"></line>
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+          </div>
+        </div>
+      </div>`
     }),
     style$: () => {
       const modernCSS = `& {
         position-anchor: --toolbar-avatar-menu;
         position-area: top span-right;
+        margin: 0 0 6px -5px;
         @media (orientation: landscape) {
           position-area: left span-bottom;
+          margin: -5px 8px 0 0;
         }
       }`
       const fallbackCSS = `& {
         position: fixed;
         z-index: 1000;
+        margin: 0 0 6px -5px;
+        @media (orientation: landscape) {
+          margin: -5px 8px 0 0;
+        }
       }`
       return CSS.supports('position-anchor', '--test') ? modernCSS : fallbackCSS
     },
@@ -430,12 +721,54 @@ f(function toolbarMenu () {
 })
 f(function toolbarAvatar () {
   const storage = useWebStorage(localStorage)
-  const { session_openWorkspaceKeys$: openWorkspaceKeys$ } = storage
+  const { session_openWorkspaceKeys$: openWorkspaceKeys$, session_workspaceKeys$: workspaceKeys$ } = storage
 
   const userPk$ = useComputed(() => {
     const wsKey = openWorkspaceKeys$()[0]
     return storage[`session_workspaceByKey_${wsKey}_userPk$`]()
   })
+
+  const isLocked$ = useComputed(() => {
+    const userPk = userPk$()
+    return userPk ? storage[`session_accountsByUserPk_${userPk}_isLocked$`]() : false
+  })
+
+  // Calculate the user index and total count for the active user
+  const userIndex$ = useComputed(() => {
+    const activeUserPk = userPk$()
+    const activeWsKey = openWorkspaceKeys$()[0]
+
+    if (!activeUserPk || !activeWsKey) return { index: 1, showBadge: false }
+
+    // Count how many times this user appears before the active workspace
+    let userCount = 0
+    let totalCount = 0
+
+    // First pass: count total occurrences
+    for (const wsKey of workspaceKeys$()) {
+      const wsUserPk = storage[`session_workspaceByKey_${wsKey}_userPk$`]()
+      if (wsUserPk === activeUserPk) {
+        totalCount++
+      }
+    }
+
+    // Second pass: find the index of the active workspace
+    for (const wsKey of workspaceKeys$()) {
+      const wsUserPk = storage[`session_workspaceByKey_${wsKey}_userPk$`]()
+      if (wsUserPk === activeUserPk) {
+        userCount++
+        if (wsKey === activeWsKey) {
+          break // Found the active workspace, stop counting
+        }
+      }
+    }
+
+    return {
+      index: userCount,
+      showBadge: totalCount > 1
+    }
+  })
+
   const { toggle: toggleMenu, close: closeMenu, anchorRef$ } = useClosestStore('<a-menu>')
   const vaultModalStore = useVaultModalStore()
   const isLoggedIn$ = useComputed(() => !!userPk$() || openWorkspaceKeys$().length > 1)
@@ -460,7 +793,43 @@ f(function toolbarAvatar () {
       position: relative;
     `}
   >
-    <a-avatar props=${{ pk$: userPk$(), size: '32px', weight$: 'duotone', strokeWidth$: 1 }} />
+    <a-avatar props=${{ pk$: userPk$, size: '32px', weight$: 'duotone', strokeWidth$: 1 }} />
+    ${userIndex$().showBadge
+      ? this.h`<div style=${`
+          position: absolute;
+          bottom: -2px;
+          left: -2px;
+          width: 16px;
+          height: 16px;
+          background-color: ${cssVars.colors.accentSecondary};
+          border-radius: 50%;
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          color: white;
+          font-size: 10px;
+          font-weight: bold;
+        `}>
+          ${userIndex$().index}
+        </div>`
+      : ''}
+    ${isLocked$()
+      ? this.h`<div style=${`
+          position: absolute;
+          bottom: -2px;
+          right: -2px;
+          width: 16px;
+          height: 16px;
+          background-color: ${cssVars.colors.accentPrimary};
+          border-radius: 50%;
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          color: white;
+        `}>
+          <icon-lock props=${{ size: '10px' }} />
+        </div>`
+      : ''}
   </div>`
 })
 

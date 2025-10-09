@@ -28,17 +28,24 @@ f(function vaultModal () {
 
 f(function vaultMessenger () {
   const {
+    isFirstRun$,
     vaultPort$,
     vaultIframeRef$,
     vaultIframeSrc$,
     isVaultMessengerReady$,
-    widgetMinHeight$
+    widgetHeight$,
+    isWorkarounEnabled$
   } = useGlobalStore('vaultMessenger', () => ({
+    isWorkarounEnabled$: true,
+    disableStartAtVaultHomeWorkaroundThisTime () {
+      this.isWorkarounEnabled$(false)
+    },
+    isFirstRun$: true,
     vaultPort$: null,
     vaultIframeRef$: null,
     vaultIframeSrc$: 'about:blank',
     isVaultMessengerReady$: false,
-    widgetMinHeight$: 0
+    widgetHeight$: 0
   }))
   const storage = useWebStorage(localStorage)
   const {
@@ -49,24 +56,59 @@ f(function vaultMessenger () {
     if (vaultUrl$() !== undefined) return
 
     vaultUrl$(IS_DEVELOPMENT
-      ? 'http://localhost:4000/docs/' // vscode preview
+      ? 'http://localhost:4000'
       // http://vault.localhost asks for usb device instead of for browser extension
       // ? `${location.protocol}//vault.${location.host}`
       : 'https://44billion.github.io/44b-vault')
   })
 
-  const { cancelPreviousRequests } = useRequestVaultMessage(vaultPort$)
+  const { cancelPreviousRequests, postVaultMessage } = useRequestVaultMessage(vaultPort$)
+  const { isOpen$ } = useVaultModalStore()
+  useTask(({ track }) => {
+    const isOpen = track(() => isOpen$())
+    if (isFirstRun$() || isOpen) return
+
+    postVaultMessage(
+      { code: 'CLOSED_VAULT_VIEW', payload: null },
+      { instant: true }
+    )
+  })
+
+  // Temporary workaround for bugged 'CLOSED_VAULT_VIEW' vault msg handling
+  // due to how html dialogs work, atleast on Firefox
+  useTask(({ track }) => {
+    const wasWorkarounEnabled = isWorkarounEnabled$()
+    isWorkarounEnabled$(true)
+    const isClosed = track(() => !isOpen$())
+    if (isFirstRun$() || isClosed || !wasWorkarounEnabled) return
+
+    postVaultMessage(
+      { code: 'OPEN_VAULT_HOME', payload: null },
+      { instant: true }
+    )
+  })
+
+  useTask(() => { isFirstRun$(false) })
 
   useTask(async ({ track, cleanup }) => {
     track(() => vaultUrl$())
     const ac = new AbortController()
-    cleanup(() => ac.abort())
+    cleanup(() => { ac.abort() })
+
+    const vaultOrigin = new URL(vaultUrl$()).origin
+    vaultIframeRef$().addEventListener('load', () => {
+      postMessage(
+        vaultIframeRef$().contentWindow,
+        { code: 'RENDER', payload: null },
+        { targetOrigin: vaultOrigin }
+      )
+    }, { once: true, signal: ac.signal })
     initMessageListener({
       vaultIframe: vaultIframeRef$(),
-      vaultOrigin: new URL(vaultUrl$()).origin,
+      vaultOrigin,
       vaultPort$,
       componentSignal: ac.signal,
-      widgetMinHeight$,
+      widgetHeight$,
       storage
     })
     isVaultMessengerReady$(true)
@@ -90,7 +132,7 @@ f(function vaultMessenger () {
       }
     </style>
     <iframe
-      style=${{ minHeight: `${widgetMinHeight$()}px` }}
+      style=${{ height: `${widgetHeight$()}px` }}
       id='vault'
       ref=${vaultIframeRef$}
       src=${vaultIframeSrc$()}
@@ -103,9 +145,10 @@ function initMessageListener ({
   vaultOrigin,
   vaultPort$,
   componentSignal,
-  widgetMinHeight$,
+  widgetHeight$,
   storage
 }) {
+  const vaultModalStore = useVaultModalStore()
   let currentVaultPort = null
   // Setup cleanup
   componentSignal?.addEventListener('abort', () => {
@@ -141,9 +184,12 @@ function initMessageListener ({
   function listenToVaultMessages ({ vaultPort, signal }) {
     vaultPort.addEventListener('message', e => {
       switch (e.data.code) {
-        // TODO: maybe 'CLOSE_VAULT_VIEW' after adding account
         case 'CHANGE_DIMENSIONS': {
-          widgetMinHeight$(e.data.payload.height)
+          widgetHeight$(e.data.payload.height)
+          break
+        }
+        case 'CLOSE_VAULT_VIEW': {
+          vaultModalStore.close()
           break
         }
         case 'SET_ACCOUNTS_STATE': {
@@ -180,7 +226,6 @@ function useRequestVaultMessageInit (vaultPort$) {
   } = storage
 
   const {
-    vaultOrigin$,
     msgQueue$
   } = useGlobalStore('useRequestVaultMessage', () => ({
     vaultPort$,
@@ -189,23 +234,32 @@ function useRequestVaultMessageInit (vaultPort$) {
       waiting: [],
       running: []
     },
-    async requestVaultMessage (msg, { timeout } = {}) {
+    postVaultMessage (msg) {
+      if (!this.vaultPort$()) return Promise.reject(new Error('Vault not connected'))
+      postMessage(vaultPort$(), msg)
+    },
+    async requestVaultMessage (msg, { timeout, instant = false } = {}) {
+      if (instant) {
+        if (!this.vaultPort$()) return Promise.reject(new Error('Vault not connected'))
+        return requestMessage(this.vaultPort$(), msg, {
+          ...(timeout != null && { timeout })
+        })
+      }
+
       const queuedAt = Date.now()
       const p = Promise.withResolvers()
       p.promise.finally(() => {
         // trigger useTask below
-        this.msgQueue$((v, eqKey) => {
+        this.msgQueue$(v => {
           v.running = v.running.filter(r => r.p !== p)
-          v[eqKey] = Math.random()
-          return v
+          return { ...v }
         })
       })
 
       // trigger useTask below
-      this.msgQueue$((v, eqKey) => {
+      this.msgQueue$(v => {
         v.waiting.push({ msg, timeout, queuedAt, p })
-        v[eqKey] = Math.random()
-        return v
+        return { ...v }
       })
       return p.promise
     },
@@ -256,7 +310,6 @@ function useRequestVaultMessageInit (vaultPort$) {
       const { msg, timeout, queuedAt, p } = queue.running[queue.running.length - promisesToStart + i]
       // this never errors out, it resolves with { error } in that case
       requestMessage(vaultPort, msg, {
-        targetOrigin: vaultOrigin$(),
         ...(timeout != null && { timeout: queuedAt + timeout - now })
       })
         .then(v => { p.resolve(v) })

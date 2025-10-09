@@ -40,6 +40,19 @@ export default function useInitOrResetScreen () {
     storage.session_anonPk$(generateB62SecretKey())
     addUser({ userPk: anonUserPk, storage, isFirstTimeUser: true })
   })
+  // first run only
+  useTask(() => {
+    if (!storage.session_workspaceKeys$()) return
+
+    // Loop through all workspaces and set each user's account to locked status
+    const workspaceKeys = storage.session_workspaceKeys$() || []
+    workspaceKeys.forEach(wsKey => {
+      const userPk = storage[`session_workspaceByKey_${wsKey}_userPk$`]()
+      if (userPk !== undefined && userPk !== null) {
+        storage[`session_accountsByUserPk_${userPk}_isLocked$`](true)
+      }
+    })
+  })
 
   // reset during app use when all users are logged out
   useTask(({ track }) => {
@@ -99,6 +112,9 @@ function addUser ({ userPk, storage, isFirstTimeUser }) {
   storage[`session_workspaceByKey_${wsKey}_pinnedAppIds$`](defaultPinnedApps.map(({ id }) => id))
   // recent last; same app's open count is the number of its appKeys
   storage[`session_workspaceByKey_${wsKey}_unpinnedAppIds$`]([])
+
+  // anon user is readonly because there is no signer associate with it
+  storage[`session_accountsByUserPk_${userPk}_isLocked$`](true)
 }
 
 // nextAccountState: [
@@ -265,6 +281,7 @@ export function setAccountsState (nextAccountState, storage) {
   // Clean up old account data
   currentAccountUserPks.forEach(userPk => {
     if (!nextUserPks.includes(userPk)) {
+      storage[`session_accountsByUserPk_${userPk}_isLocked$`](undefined)
       storage[`session_accountsByUserPk_${userPk}_profile$`](undefined)
       storage[`session_accountsByUserPk_${userPk}_relays$`](undefined)
     }
@@ -273,6 +290,7 @@ export function setAccountsState (nextAccountState, storage) {
   // Add/update account data for all users in nextAccountState
   nextAccountState.forEach(account => {
     const userPk = base16ToBase62(account.pubkey)
+    storage[`session_accountsByUserPk_${userPk}_isLocked$`](account.isLocked ?? true)
     storage[`session_accountsByUserPk_${userPk}_profile$`](account.profile)
     storage[`session_accountsByUserPk_${userPk}_relays$`](account.relays)
   })

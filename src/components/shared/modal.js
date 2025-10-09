@@ -154,7 +154,7 @@ export const Modal = f(function aModal () {
                 display: flex;
                 flex-direction: column;
                 /* background-color: white; */
-                min-height: 200px; /* when there is loading (dynamic content) */
+                min-height: 100px; /* when there is loading (dynamic content) */
 
                 @media ${jsVars.breakpoints.desktop} {
                   border-radius: 17px;
@@ -179,7 +179,7 @@ export const Modal = f(function aModal () {
               ${(store.shouldAlwaysDisplay$.get() || '') && `
                 content-visibility: auto;
                 contain-intrinsic-width: auto 400px;
-                contain-intrinsic-height: auto 200px;
+                contain-intrinsic-height: auto 100px;
               `}
             }`}
           </style>

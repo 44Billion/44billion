@@ -79,7 +79,7 @@ f(function aSvg () {
       },
       // duotone won't work if a path is used for background instead of a path's fill
       fill$: this.props.fill$ || this.props.fill || function () {
-        return this.weight$.get() === 'duotone' ? 'currentcolor' /* 'currentColor' if attr */ : 'none'
+        return ['fill', 'duotone'].includes(this.weight$.get()) ? 'currentcolor' /* 'currentColor' if attr */ : 'none'
       },
       fillOpacity$: this.props.fillOpacity$ || this.props.fillOpacity || function () {
         return this.weight$.get() === 'duotone' ? '.2' : 'unset'

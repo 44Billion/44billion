@@ -29,10 +29,14 @@ const [defaultThemeCssClass, colorCssVarsObj, defaultThemeCssString] = createThe
   fgSecondary: 'oklch(0.53 0.13 56.36)',
   fgFont: 'oklch(0.96 0.01 256)',
   ffg: 'oklch(0.49 0.01 17.47)',
+  accentPrimary: 'oklch(0.56 0.25 302.32)',
+  accentSecondary: 'oklch(0.56 0.20 87.32)',
   primary: 'oklch(0.65 0.20 280)',
   secondary: 'oklch(0.70 0.15 65)',
   logo: 'oklch(0.27 0.20 280)',
-  counter: 'oklch(0.63 0 0)' // it is headerFont a bit darker but lighter than ffg
+  counter: 'oklch(0.63 0 0)', // it is headerFont a bit darker but lighter than ffg
+  error: 'oklch(0.55 0.22 25)'
+
 })
 
 export const cssStrings = {
