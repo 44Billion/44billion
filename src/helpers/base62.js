@@ -36,7 +36,9 @@ export function base16ToBase62 (string, padLength = 0) {
 }
 
 export function base62ToBytes (base62Str) {
-  if (typeof base62Str !== 'string') { throw new Error('base62ToBytes requires a string argument') }
+  if (typeof base62Str !== 'string') {
+    throw new Error(`base62ToBytes requires a string argument but got ${typeof base62Str}`)
+  }
   if (base62Str.length === 0) return new Uint8Array()
 
   let leadingZeros = 0

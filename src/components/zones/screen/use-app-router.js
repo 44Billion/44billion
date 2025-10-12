@@ -35,8 +35,9 @@ export default function useAppRouter () {
         // open
         storage[`session_appByKey_${app.key}_visibility$`]('open')
         storage[`session_workspaceByKey_${app.wsKey}_openAppKeys$`]((v, eqKey) => {
-          v.domOrder.unshift(app.key) // it is ok to change domOrder before placing iframes on DOM
-          v.cssOrder.unshift(app.key)
+          const i = v.indexOf(app.key)
+          if (i !== -1) v.splice(i, 1) // remove
+          v.unshift(app.key) // place at beginning
           v[eqKey] = Math.random()
           return v
         })
@@ -49,9 +50,9 @@ export default function useAppRouter () {
         const appKey = app.key
         storage[`session_appByKey_${appKey}_visibility$`]('open')
         storage[`session_workspaceByKey_${app.wsKey}_openAppKeys$`]((v, eqKey) => {
-          const i = v.cssOrder.indexOf(appKey)
-          if (i !== -1) v.cssOrder.splice(i, 1) // remove
-          v.cssOrder.unshift(appKey) // place at beginning
+          const i = v.indexOf(appKey)
+          if (i !== -1) v.splice(i, 1) // remove
+          v.unshift(appKey) // place at beginning
           v[eqKey] = Math.random()
           return v
         })
@@ -96,8 +97,9 @@ export default function useAppRouter () {
     storage[`session_appByKey_${app.key}_route$`](appRoute) // initial route
     storage[`session_appByKey_${app.key}_visibility$`](app.visibility)
     storage[`session_workspaceByKey_${wsKey}_openAppKeys$`]((v, eqKey) => {
-      v.domOrder.unshift(app.key) // it is ok to change domOrder before placing iframes on DOM
-      v.cssOrder.unshift(app.key)
+      const i = v.indexOf(app.key)
+      if (i !== -1) v.splice(i, 1) // remove
+      v.unshift(app.key) // place at beginning
       v[eqKey] = Math.random()
       return v
     })

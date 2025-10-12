@@ -1,7 +1,14 @@
 import { f, useClosestStore, useComputed } from '#f'
 
 f(function nappAssetsCachingProgressBar () {
-  const { cachingProgress$ } = useClosestStore('<napp-assets-caching-progress-bar>')
+  let cachingProgress$
+  try {
+    ({ cachingProgress$ } = useClosestStore('<napp-assets-caching-progress-bar>'))
+  } catch (err) {
+    // ancestor initializing the store was garbage collected first
+    console.warn('No cachingProgress$ store found', err)
+    return
+  }
 
   const progressEntries$ = useComputed(() =>
     Object.entries(cachingProgress$()).filter(([key]) =>

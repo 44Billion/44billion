@@ -44,9 +44,8 @@ export async function initMessageListener (
 ) {
   const userPkB16 = base36ToBase16(userPkB36)
   const currentVaultUrl = new URL(JSON.parse(localStorage.getItem('config_vaultUrl')))
-  const vaultIframe = document.querySelector(`iframe[src="${currentVaultUrl.href}"]`)
-  if (!vaultIframe) console.log('TODO: add vault') // throw new Error('Vault iframe not found')
-  // const vault = vaultIframe.contentWindow
+  const vaultIframe = document.querySelector(`iframe[src="${currentVaultUrl.href.replace(/\/$/, '')}"]`)
+  if (!vaultIframe) console.warn('Vault iframe not found')
 
   const appAddress = appIdToAddressObj(appId)
   const appFiles = await AppFileManager.create(appId, appAddress)

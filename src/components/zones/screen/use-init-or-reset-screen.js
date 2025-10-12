@@ -1,12 +1,12 @@
 import { useTask, useGlobalSignal } from '#f'
 import useWebStorage from '#hooks/use-web-storage.js'
-import { appDecode } from '#helpers/nip19.js'
-import { generateB62SecretKey } from '#helpers/nip01.js'
+import { appDecode, npubEncode } from '#helpers/nip19.js'
+import { generateB62SecretKey as getB62PublicKeyStub } from '#helpers/nip01.js'
 import { addressObjToAppId } from '#helpers/app.js'
-import { base16ToBase62 } from '#helpers/base62.js'
+import { base16ToBase62, base62ToBase16 } from '#helpers/base62.js'
 
 // the screen has
-// 1 active (active as in last clicked) user (pk) at all times ('' is the anon user pk)
+// 1 active (active as in last clicked) user (pk) at all times (defaultUserPk is the default user pk)
 // 0-1 active workspace (ws key) at all times that
 // itself has 0-1 active app (key) at all times
 //
@@ -30,15 +30,15 @@ const coreAppIds = [
 
 export default function useInitOrResetScreen () {
   const storage = useWebStorage(localStorage)
-  useGlobalSignal('hardcoded_newAppIdsObj', {}) // { [app-...]: true }) <- minimoon
+  useGlobalSignal('hardcoded_newAppIdsObj', {}) // { [+...]: true }) <- minimoon
 
   // init
   useTask(() => {
     if (storage.session_workspaceKeys$()) return
 
-    const anonUserPk = ''
-    storage.session_anonPk$(generateB62SecretKey())
-    addUser({ userPk: anonUserPk, storage, isFirstTimeUser: true })
+    const defaultUserPk = getB62PublicKeyStub()
+    storage.session_defaultUserPk$(defaultUserPk)
+    addUser({ userPk: defaultUserPk, storage, isFirstTimeUser: true })
   })
   // first run only
   useTask(() => {
@@ -46,9 +46,15 @@ export default function useInitOrResetScreen () {
 
     // Loop through all workspaces and set each user's account to locked status
     const workspaceKeys = storage.session_workspaceKeys$() || []
+    const defaultUserPk = storage.session_defaultUserPk$()
     workspaceKeys.forEach(wsKey => {
       const userPk = storage[`session_workspaceByKey_${wsKey}_userPk$`]()
-      if (userPk !== undefined && userPk !== null) {
+      if (
+        userPk !== undefined &&
+        userPk !== null &&
+        userPk !== defaultUserPk &&
+        !(storage[`session_accountsByUserPk_${userPk}_isReadOnly$`]() ?? false)
+      ) {
         storage[`session_accountsByUserPk_${userPk}_isLocked$`](true)
       }
     })
@@ -58,11 +64,12 @@ export default function useInitOrResetScreen () {
   useTask(({ track }) => {
     if (track(() => storage.session_workspaceKeys$().length > 0)) return
 
-    const anonUserPk = ''
-    addUser({ userPk: anonUserPk, storage, isFirstTimeUser: false })
+    const defaultUserPk = getB62PublicKeyStub()
+    storage.session_defaultUserPk$(defaultUserPk)
+    addUser({ userPk: defaultUserPk, storage, isFirstTimeUser: true }) // false })
   })
 
-  // we need a signal that whatches for online status?
+  // do we need a signal that watches for online status?
   // fetch and set app metadata if online for those without icon
   // elsewhere think on best way to keep'em updated
   // useTask(({ track }) => {
@@ -72,10 +79,6 @@ export default function useInitOrResetScreen () {
 
   return storage
 }
-
-// todo: if adding a non-anon user, if its the first user to be added,
-// copy apps and open apps from current anon then delete anon
-// function copyUser()?
 
 // what happens when app crashed before this finishes? we should add a task that is removed
 // from stack only when finished and re-run if app restarts and it's still on the stack
@@ -90,12 +93,12 @@ function addUser ({ userPk, storage, isFirstTimeUser }) {
 
   const wsKey = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
   if (storage.config_isSingleWindow$() === undefined) storage.config_isSingleWindow$(false)
-  storage.session_workspaceKeys$([wsKey])
-  storage.session_openWorkspaceKeys$([wsKey]) // order of group of windows
+
   // de-normalized from `session_appByKey_${app.key}_visibility$` (open or minimized)
   const openAppKeys = isFirstTimeUser ? [defaultPinnedApps[0].key] : []
-  // order of iframes on DOM must be stable or esle they reload their content
-  storage[`session_workspaceByKey_${wsKey}_openAppKeys$`]({ domOrder: openAppKeys, cssOrder: openAppKeys }) // order of windows
+  // order of iframes on DOM must be stable or else they reload their content
+  // dom order is now calculated at runtime, we only store css order (visual order)
+  storage[`session_workspaceByKey_${wsKey}_openAppKeys$`](openAppKeys) // order of windows
   storage[`session_workspaceByKey_${wsKey}_userPk$`](userPk) // base62
   defaultPinnedApps.forEach(app => {
     storage[`session_workspaceByKey_${wsKey}_appById_${app.id}_appKeys$`]([app.key])
@@ -113,8 +116,18 @@ function addUser ({ userPk, storage, isFirstTimeUser }) {
   // recent last; same app's open count is the number of its appKeys
   storage[`session_workspaceByKey_${wsKey}_unpinnedAppIds$`]([])
 
-  // anon user is readonly because there is no signer associate with it
-  storage[`session_accountsByUserPk_${userPk}_isLocked$`](true)
+  // default user is readonly because there is no signer associated with it
+  // but we won't add an account entry for it
+  // storage[`session_accountsByUserPk_${userPk}_isLocked$`](true)
+  // storage.session_accountUserPks$([userPk])
+  storage[`session_accountsByUserPk_${userPk}_isReadOnly$`](true)
+  storage[`session_accountsByUserPk_${userPk}_isLocked$`](false)
+  storage[`session_accountsByUserPk_${userPk}_profile$`]({ npub: npubEncode(base62ToBase16(userPk)), meta: { events: [] } })
+  storage[`session_accountsByUserPk_${userPk}_relays$`]({ meta: { events: [] } })
+
+  storage.session_accountUserPks$([userPk])
+  storage.session_workspaceKeys$([wsKey])
+  storage.session_openWorkspaceKeys$([wsKey]) // order of group of windows
 }
 
 // nextAccountState: [
@@ -134,70 +147,81 @@ function addUser ({ userPk, storage, isFirstTimeUser }) {
 //     }
 //   }
 // ]
-export function setAccountsState (nextAccountState, storage) {
-  // Convert pubkeys from hex to base62
-  const nextUserPks = nextAccountState.map(account => base16ToBase62(account.pubkey))
-
-  // Get current state
-  const anonPk = storage.session_anonPk$()
+export async function setAccountsState (nextAccountState, storage) {
   const currentWorkspaceKeys = storage.session_workspaceKeys$() || []
-  const currentAccountUserPks = storage.session_accountUserPks$() || []
+  const defaultUserPk = storage.session_defaultUserPk$()
 
-  // Check if we only have the anonymous user currently
-  const hasOnlyAnonUser = currentWorkspaceKeys.length === 1 &&
+  // Check if we only have the default user currently
+  const hasOnlyDefaultUser = currentWorkspaceKeys.length === 1 &&
     currentWorkspaceKeys.every(wsKey => {
       const userPk = storage[`session_workspaceByKey_${wsKey}_userPk$`]()
-      return userPk === '' || userPk === anonPk
+      return userPk === defaultUserPk
     })
 
-  // Special case: moving from anon-only to single user
-  if (hasOnlyAnonUser && nextUserPks.length === 1) {
-    const anonWorkspaceKey = currentWorkspaceKeys[0]
+  // No change needed
+  if (nextAccountState.length === 0 && hasOnlyDefaultUser) return
+
+  const currentAccountUserPks = storage.session_accountUserPks$() || []
+  const nextUserPks = nextAccountState.map(account => base16ToBase62(account.pubkey))
+
+  let isReadOnly // true when vault has just the pk, without the sk pair
+  // Add/update account data for all users in nextAccountState
+  nextAccountState.forEach(account => {
+    const userPk = base16ToBase62(account.pubkey)
+    storage[`session_accountsByUserPk_${userPk}_isReadOnly$`]((isReadOnly = account.isReadOnly ?? false))
+    storage[`session_accountsByUserPk_${userPk}_isLocked$`](isReadOnly ? false : (account.isLocked ?? true))
+    storage[`session_accountsByUserPk_${userPk}_profile$`](account.profile)
+    storage[`session_accountsByUserPk_${userPk}_relays$`](account.relays)
+  })
+
+  // Special case: moving from default-only to single user
+  if (hasOnlyDefaultUser && nextUserPks.length === 1) {
+    const defaultWorkspaceKey = currentWorkspaceKeys[0]
     const newUserPk = nextUserPks[0]
 
-    // Transfer ownership of the workspace to the new user
-    storage[`session_workspaceByKey_${anonWorkspaceKey}_userPk$`](newUserPk)
-
     // Close all open apps and schedule opening the first pinned app
-    const { domOrder } = storage[`session_workspaceByKey_${anonWorkspaceKey}_openAppKeys$`]() || { domOrder: [], cssOrder: [] }
+    const openAppKeys = storage[`session_workspaceByKey_${defaultWorkspaceKey}_openAppKeys$`]() || []
 
     // Close all currently open apps
-    domOrder.forEach(appKey => {
+    openAppKeys.forEach(appKey => {
       storage[`session_appByKey_${appKey}_visibility$`]('closed')
     })
 
     // Clear open apps list
-    storage[`session_workspaceByKey_${anonWorkspaceKey}_openAppKeys$`]({ domOrder: [], cssOrder: [] })
+    storage[`session_workspaceByKey_${defaultWorkspaceKey}_openAppKeys$`]([])
 
-    // Schedule opening the first pinned app on next tick
-    window.requestIdleCallback(() => {
-      window.requestIdleCallback(() => {
-        const pinnedAppIds = storage[`session_workspaceByKey_${anonWorkspaceKey}_pinnedAppIds$`]() || []
-        const unpinnedAppIds = storage[`session_workspaceByKey_${anonWorkspaceKey}_unpinnedAppIds$`]() || []
+    // Transfer ownership of the workspace to the new user
+    storage[`session_workspaceByKey_${defaultWorkspaceKey}_userPk$`](newUserPk)
 
-        let appToOpen = null
+    // Schedule opening the first (pinned or unpinned) app on next tick
+    await new Promise(resolve => window.requestIdleCallback(() => window.requestIdleCallback(resolve)))
+    const pinnedAppIds = storage[`session_workspaceByKey_${defaultWorkspaceKey}_pinnedAppIds$`]() || []
+    const unpinnedAppIds = storage[`session_workspaceByKey_${defaultWorkspaceKey}_unpinnedAppIds$`]() || []
 
-        if (pinnedAppIds.length > 0) {
-          // Find first pinned app
-          const appKeys = storage[`session_workspaceByKey_${anonWorkspaceKey}_appById_${pinnedAppIds[0]}_appKeys$`]() || []
-          if (appKeys.length > 0) appToOpen = appKeys[0]
-        } else if (unpinnedAppIds.length > 0) {
-          // Find first unpinned app
-          const appKeys = storage[`session_workspaceByKey_${anonWorkspaceKey}_appById_${unpinnedAppIds[0]}_appKeys$`]() || []
-          if (appKeys.length > 0) appToOpen = appKeys[0]
-        }
+    let appToOpen = null
 
-        if (appToOpen) {
-          storage[`session_appByKey_${appToOpen}_visibility$`]('open')
-          storage[`session_workspaceByKey_${anonWorkspaceKey}_openAppKeys$`]((v, eqKey) => {
-            v.domOrder.push(appToOpen)
-            v.cssOrder.unshift(appToOpen)
-            v[eqKey] = Math.random()
-            return v
-          })
-        }
+    if (pinnedAppIds.length > 0) {
+      // Find first pinned app
+      const appKeys = storage[`session_workspaceByKey_${defaultWorkspaceKey}_appById_${pinnedAppIds[0]}_appKeys$`]() || []
+      if (appKeys.length > 0) appToOpen = appKeys[0]
+    } else if (unpinnedAppIds.length > 0) {
+      // Find first unpinned app
+      const appKeys = storage[`session_workspaceByKey_${defaultWorkspaceKey}_appById_${unpinnedAppIds[0]}_appKeys$`]() || []
+      if (appKeys.length > 0) appToOpen = appKeys[0]
+    }
+
+    if (appToOpen) {
+      storage[`session_appByKey_${appToOpen}_visibility$`]('open')
+      storage[`session_workspaceByKey_${defaultWorkspaceKey}_openAppKeys$`]((v, eqKey) => {
+        const i = v.indexOf(appToOpen)
+        if (i !== -1) v.splice(i, 1) // remove
+        v.unshift(appToOpen) // place at beginning
+        v[eqKey] = Math.random()
+        return v
       })
-    })
+    }
+
+    storage.session_defaultUserPk$(undefined)
   } else {
     // Regular case: handle multiple users or complex transitions
 
@@ -205,47 +229,22 @@ export function setAccountsState (nextAccountState, storage) {
     const usersToAdd = nextUserPks.filter(userPk => !currentAccountUserPks.includes(userPk))
     const usersToRemove = currentAccountUserPks.filter(userPk => !nextUserPks.includes(userPk))
 
-    // Remove users that are no longer needed
-    usersToRemove.forEach(userPk => {
-      // Find all workspaces for this user
-      const workspacesToRemove = currentWorkspaceKeys.filter(wsKey => {
+    // Always remove default user if adding users
+    if (usersToAdd.length > 0 && defaultUserPk) {
+      storage.session_defaultUserPk$(undefined)
+    }
+
+    let workspacesToRemove = []
+    for (const userPk of usersToRemove) {
+      workspacesToRemove = workspacesToRemove.concat(currentWorkspaceKeys.filter(wsKey => {
         const wsUserPk = storage[`session_workspaceByKey_${wsKey}_userPk$`]()
         return wsUserPk === userPk
-      })
+      }))
+    }
 
-      // Update workspace keys list
-      const newWorkspaceKeys = currentWorkspaceKeys.filter(wsKey => !workspacesToRemove.includes(wsKey))
-      storage.session_openWorkspaceKeys$(newWorkspaceKeys)
-      storage.session_workspaceKeys$(newWorkspaceKeys)
-
-      // Remove all apps and workspace data for each workspace
-      workspacesToRemove.forEach(wsKey => {
-        const pinnedAppIds = storage[`session_workspaceByKey_${wsKey}_pinnedAppIds$`]() || []
-        const unpinnedAppIds = storage[`session_workspaceByKey_${wsKey}_unpinnedAppIds$`]() || []
-        const allAppIds = [...new Set([...pinnedAppIds, ...unpinnedAppIds])]
-
-        // Remove all apps
-        allAppIds.forEach(appId => {
-          const appKeys = storage[`session_workspaceByKey_${wsKey}_appById_${appId}_appKeys$`]() || []
-          appKeys.forEach(appKey => {
-            storage[`session_appByKey_${appKey}_id$`](undefined)
-            storage[`session_appByKey_${appKey}_visibility$`](undefined)
-            storage[`session_appByKey_${appKey}_route$`](undefined)
-          })
-          storage[`session_workspaceByKey_${wsKey}_appById_${appId}_appKeys$`](undefined)
-        })
-
-        // Remove workspace data
-        storage[`session_workspaceByKey_${wsKey}_openAppKeys$`](undefined)
-        storage[`session_workspaceByKey_${wsKey}_userPk$`](undefined)
-        storage[`session_workspaceByKey_${wsKey}_unpinnedCoreAppIdsObj$`](undefined)
-        storage[`session_workspaceByKey_${wsKey}_pinnedAppIds$`](undefined)
-        storage[`session_workspaceByKey_${wsKey}_unpinnedAppIds$`](undefined)
-      })
-    })
-
+    const newWorkspaceKeys = []
     // Add new users
-    usersToAdd.forEach(userPk => {
+    for (const userPk of usersToAdd) {
       const defaultPinnedApps = coreAppIds.map((id) => ({
         id,
         key: Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2),
@@ -254,9 +253,10 @@ export function setAccountsState (nextAccountState, storage) {
       }))
 
       const wsKey = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
+      newWorkspaceKeys.push(wsKey)
 
       // Setup workspace with no open apps
-      storage[`session_workspaceByKey_${wsKey}_openAppKeys$`]({ domOrder: [], cssOrder: [] })
+      storage[`session_workspaceByKey_${wsKey}_openAppKeys$`]([])
       storage[`session_workspaceByKey_${wsKey}_userPk$`](userPk)
 
       // Setup pinned apps (all closed)
@@ -271,30 +271,58 @@ export function setAccountsState (nextAccountState, storage) {
       storage[`session_workspaceByKey_${wsKey}_unpinnedCoreAppIdsObj$`]({})
       storage[`session_workspaceByKey_${wsKey}_pinnedAppIds$`](defaultPinnedApps.map(({ id }) => id))
       storage[`session_workspaceByKey_${wsKey}_unpinnedAppIds$`]([])
-
-      // Add workspace to lists
-      storage.session_workspaceKeys$(v => [...(v || []), wsKey])
-      storage.session_openWorkspaceKeys$(v => [...(v || []), wsKey])
-    })
-  }
-
-  // Clean up old account data
-  currentAccountUserPks.forEach(userPk => {
-    if (!nextUserPks.includes(userPk)) {
-      storage[`session_accountsByUserPk_${userPk}_isLocked$`](undefined)
-      storage[`session_accountsByUserPk_${userPk}_profile$`](undefined)
-      storage[`session_accountsByUserPk_${userPk}_relays$`](undefined)
     }
-  })
 
-  // Add/update account data for all users in nextAccountState
-  nextAccountState.forEach(account => {
-    const userPk = base16ToBase62(account.pubkey)
-    storage[`session_accountsByUserPk_${userPk}_isLocked$`](account.isLocked ?? true)
-    storage[`session_accountsByUserPk_${userPk}_profile$`](account.profile)
-    storage[`session_accountsByUserPk_${userPk}_relays$`](account.relays)
-  })
+    const nextWorkspaceKeys = currentWorkspaceKeys
+      .filter(wsKey => !workspacesToRemove.includes(wsKey))
+      .concat(newWorkspaceKeys)
+
+    // Update workspace lists
+    storage.session_openWorkspaceKeys$(nextWorkspaceKeys)
+    // This one is after storage.session_openWorkspaceKeys$(nextWorkspaceKeys)
+    // because it will trigger useTask above that may
+    // add a default user if empty, changing both arrays
+    //
+    // Note this can't be emptied then set because of above useTask
+    // that watches for empty storage.session_workspaceKeys$()
+    // to add a default user
+    storage.session_workspaceKeys$(nextWorkspaceKeys)
+
+    // Remove all apps and workspace data for unused workspaces
+    for (const wsKey of workspacesToRemove) {
+      const pinnedAppIds = storage[`session_workspaceByKey_${wsKey}_pinnedAppIds$`]() || []
+      const unpinnedAppIds = storage[`session_workspaceByKey_${wsKey}_unpinnedAppIds$`]() || []
+      const allAppIds = [...new Set([...pinnedAppIds, ...unpinnedAppIds])]
+
+      storage[`session_workspaceByKey_${wsKey}_unpinnedCoreAppIdsObj$`](undefined)
+      storage[`session_workspaceByKey_${wsKey}_pinnedAppIds$`](undefined)
+      storage[`session_workspaceByKey_${wsKey}_unpinnedAppIds$`](undefined)
+      storage[`session_workspaceByKey_${wsKey}_userPk$`](undefined)
+      storage[`session_workspaceByKey_${wsKey}_openAppKeys$`](undefined)
+
+      // Remove all apps
+      allAppIds.forEach(appId => {
+        const appKeys = storage[`session_workspaceByKey_${wsKey}_appById_${appId}_appKeys$`]() || []
+        appKeys.forEach(appKey => {
+          storage[`session_appByKey_${appKey}_id$`](undefined)
+          storage[`session_appByKey_${appKey}_visibility$`](undefined)
+          storage[`session_appByKey_${appKey}_route$`](undefined)
+        })
+        storage[`session_workspaceByKey_${wsKey}_appById_${appId}_appKeys$`](undefined)
+      })
+    }
+  }
 
   // Update the list of account user pubkeys
   storage.session_accountUserPks$(nextUserPks)
+
+  // Clean up old account data
+  currentAccountUserPks
+    .filter(userPk => !nextUserPks.includes(userPk))
+    .forEach(userPk => {
+      storage[`session_accountsByUserPk_${userPk}_isReadOnly$`](undefined)
+      storage[`session_accountsByUserPk_${userPk}_isLocked$`](undefined)
+      storage[`session_accountsByUserPk_${userPk}_profile$`](undefined)
+      storage[`session_accountsByUserPk_${userPk}_relays$`](undefined)
+    })
 }

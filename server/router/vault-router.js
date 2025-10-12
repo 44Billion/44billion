@@ -26,7 +26,7 @@ const vaultRouter = IttyRouter()
     res.end()
     return res
   })
-  // Handle all other routes by serving files from vault/docs
+  // Handle all other routes by serving files from 44b-vault/docs
   .get('*', async (req, res) => {
     try {
       const pathname = req.webUrl.pathname
@@ -70,7 +70,7 @@ const vaultRouter = IttyRouter()
 
       // Construct the absolute path to the vault docs file
       // Current project is at ~/repositories/44billion, vault is at ~/repositories/vault
-      const vaultDocsRoot = path.resolve(process.cwd(), '../vault/docs')
+      const vaultDocsRoot = path.resolve(process.cwd(), '../44b-vault/docs')
       const vaultDocsPath = path.resolve(vaultDocsRoot, filePath.slice(1)) // Remove leading slash
 
       // Security check: ensure the resolved path is still within the vault/docs directory

@@ -53,10 +53,9 @@ f(function singleNappLauncher () {
   const { wsKey, appId, initialRoute } = useClosestStore('napp')
   const storage = useWebStorage(localStorage)
   const {
-    [`session_workspaceByKey_${wsKey}_userPk$`]: maybeUserPk$,
-    session_anonPk$: anonPk$
+    [`session_workspaceByKey_${wsKey}_userPk$`]: userPk$
   } = storage
-  const userPkB36$ = useComputed(() => base62ToBase36(maybeUserPk$() || anonPk$(), 50))
+  const userPkB36$ = useComputed(() => base62ToBase36(userPk$(), 50))
   const appSubdomain$ = useComputed(() => appIdToAppSubdomain(appId, userPkB36$()))
   const trustedAppIframeRef$ = useSignal()
   const trustedAppIframeSrc$ = useSignal('about:blank')

@@ -56,6 +56,8 @@ f(function vaultMessenger () {
     if (vaultUrl$() !== undefined) return
 
     vaultUrl$(IS_DEVELOPMENT
+      // Or 'http://vault.localhost:10000' if using npm run _start
+      // but Chrome support was lacking
       ? 'http://localhost:4000'
       // http://vault.localhost asks for usb device instead of for browser extension
       // ? `${location.protocol}//vault.${location.host}`
@@ -132,6 +134,7 @@ f(function vaultMessenger () {
       }
     </style>
     <iframe
+      allow='clipboard-write'
       style=${{ height: `${widgetHeight$()}px` }}
       id='vault'
       ref=${vaultIframeRef$}
@@ -281,7 +284,7 @@ function useRequestVaultMessageInit (vaultPort$) {
     const wsKey = openWorkspaceKeys$()[0]
     return storage[`session_workspaceByKey_${wsKey}_userPk$`]()
   })
-  const isLoggedIn$ = useComputed(() => !!userPk$() || openWorkspaceKeys$().length > 1)
+  const isLoggedIn$ = useComputed(() => userPk$() !== storage.session_defaultUserPk$() || openWorkspaceKeys$().length > 1)
   const maybeFailEarly = useCallback(job => {
     if (isLoggedIn$()) return false
 

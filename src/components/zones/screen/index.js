@@ -1,7 +1,6 @@
 import { f, useCallback, useComputed, useStore, useGlobalStore, useGlobalSignal, useStateSignal, useSignal, useClosestSignal, useClosestStore, useTask } from '#f'
 import AppFileManager from '#services/app-file-manager/index.js'
 import useInitOrResetScreen from './use-init-or-reset-screen.js'
-import useCollectScreenGarbage from './use-collect-screen-garbage.js'
 import useWebStorage from '#hooks/use-web-storage.js'
 import useLongPress from '#hooks/use-long-press.js'
 import useScrollbarConfig from '#hooks/use-scrollbar-config.js'
@@ -31,7 +30,6 @@ import '#shared/icons/icon-lock.js'
 
 f(function aScreen () {
   useInitOrResetScreen()
-  useCollectScreenGarbage()
   useAppRouter()
 
   const isSingleWindow$ = useWebStorage(localStorage).config_isSingleWindow$
@@ -128,14 +126,25 @@ f(function systemViews () {
 
 f(function aWindows () {
   const {
-    // order is important, that's why we didn't compute from workspaceKeys$
-    // recently opened/clicked first
+    // Order is important, that's why we didn't compute from workspaceKeys$
+    // Recently opened/clicked first
     session_openWorkspaceKeys$: openWorkspaceKeys$
   } = useWebStorage(localStorage)
 
+  const stableDomOrderWsKeys$ = useSignal([])
+  useTask(({ track }) => {
+    const nextKeys = track(() => openWorkspaceKeys$())
+    stableDomOrderWsKeys$(v => {
+      return v.concat(nextKeys.filter(k => !v.includes(k)))
+    })
+  })
+  const mruRankByWsKey$ = useComputed(() => openWorkspaceKeys$().reduce((r, v, i) => ({ ...r, [v]: i + 1 }), {}))
+
   return this.h`
-    ${openWorkspaceKeys$().map(workspaceKey =>
-      this.h({ key: workspaceKey })`<workspace-window key=${workspaceKey} props=${{ workspaceKey }} />`
+    ${stableDomOrderWsKeys$().map(workspaceKey =>
+      this.h({
+        key: workspaceKey
+      })`<workspace-window key=${workspaceKey} props=${{ workspaceKey, mruRankByWsKey$ }} />`
     )}
     <windows-background />
   `
@@ -153,14 +162,30 @@ f(function windowsBackground () {
   `
 })
 f(function workspaceWindow () {
+  const storage = useWebStorage(localStorage)
   // App instances are useful for grouping app icons, but windows are not grouped by app
   // That's why we have openAppKeys$ instead of openAppIds$
   const {
     [`session_workspaceByKey_${this.props.workspaceKey}_openAppKeys$`]: openAppKeys$
-  } = useWebStorage(localStorage)
-  const mruRankByAppKey = useComputed(() => openAppKeys$().cssOrder.reduce((r, v, i) => ({ ...r, [v]: i + 1 }), {}))()
+  } = storage
+
+  // Calculate stable DOM order at runtime (similar to workspace windows)
+  const stableDomOrderAppKeys$ = useSignal([])
+  useTask(({ track }) => {
+    const nextKeys = track(() => openAppKeys$())
+    stableDomOrderAppKeys$(v => {
+      return v.concat(nextKeys.filter(k => !v.includes(k)))
+    })
+  })
+
+  const mruRankByAppKey = useComputed(() =>
+    (openAppKeys$() ?? []).reduce((r, v, i) => ({
+      ...r,
+      [v]: `${this.props.mruRankByWsKey$()[this.props.workspaceKey]}-${i + 1}`
+    }), {})
+  )()
   return this.h`
-    ${openAppKeys$().domOrder.map(appKey => {
+    ${stableDomOrderAppKeys$().map(appKey => {
       const mruRank = mruRankByAppKey[appKey]
       return this.h({ key: appKey })`
       <app-window key=${appKey} props=${{ appKey, wsKey: this.props.workspaceKey, mruRank }} />
@@ -174,10 +199,9 @@ f(function appWindow () {
     [`session_appByKey_${this.props.appKey}_id$`]: appId$,
     [`session_appByKey_${this.props.appKey}_visibility$`]: appVisibility$,
     [`session_appByKey_${this.props.appKey}_route$`]: initialRoute$,
-    [`session_workspaceByKey_${this.props.wsKey}_userPk$`]: maybeUserPk$,
-    session_anonPk$: anonPk$
+    [`session_workspaceByKey_${this.props.wsKey}_userPk$`]: userPk$
   } = storage
-  const userPkB36$ = useComputed(() => base62ToBase36(maybeUserPk$() || anonPk$(), 50))
+  const userPkB36$ = useComputed(() => (userPk$() || '') && base62ToBase36(userPk$(), 50))
   const appSubdomain$ = useComputed(() => appIdToAppSubdomain(appId$(), userPkB36$()))
   const isClosed$ = useComputed(() => appVisibility$() === 'closed')
   const trustedAppIframeRef$ = useSignal(null)
@@ -199,7 +223,7 @@ f(function appWindow () {
     async ({ track, cleanup }) => {
       const [isClosed, iframeRef] = track(() => [isClosed$(), trustedAppIframeRef$()])
       // This component won't load when app starts closed
-      // because openAppKeys$.domOrder initially is populated
+      // because stableDomOrderAppKeys$ initially is populated
       // by open (or minimized) apps
       // but will be reused on re-opening: open->closed->open
       if (isClosed) {
@@ -269,25 +293,31 @@ f(function appWindow () {
             }
           }
         }
-        &.mru-rank-1 { order: 0; }
-        &.mru-rank-2 { order: 1; }
-        &.mru-rank-3 { order: 2; }
-        &.mru-rank-1.open {
+        &.mru-rank-1-1 { order: 0; }
+        &.mru-rank-1-2 { order: 1; }
+        &.mru-rank-1-3 { order: 2; }
+        &.mru-rank-2-1 { order: 3; }
+        &.mru-rank-2-2 { order: 4; }
+        &.mru-rank-2-3 { order: 5; }
+        &.mru-rank-3-1 { order: 6; }
+        &.mru-rank-3-2 { order: 7; }
+        &.mru-rank-3-3 { order: 8; }
+        &.mru-rank-1-1.open, &.mru-rank-2-1.open, &.mru-rank-3-1.open {
           display: block;
         }
         #screen.multi-window &.open {
-          &.mru-rank-2 {
+          &.mru-rank-1-2, &.mru-rank-2-2, &.mru-rank-3-2 {
             display: block;
           }
           /* thin or thinner (shrinking number) */
           @media (max-aspect-ratio: 8/16) {
-            &.mru-rank-3 {
+            &.mru-rank-1-3, &.mru-rank-2-3, &.mru-rank-3-3 {
               display: block;
             }
           }
           /* short or shorter (growing number) */
           @media (min-aspect-ratio: 16/8) {
-            &.mru-rank-3 {
+            &.mru-rank-1-3, &.mru-rank-2-3, &.mru-rank-3-3 {
               display: block;
             }
           }
@@ -407,6 +437,7 @@ f(function toolbarMenu () {
   const unlockingUsers$ = useSignal({})
   const unlockErrors$ = useSignal({})
 
+  const defaultUserPk$ = storage.session_defaultUserPk$
   // Get all users from workspaces (allowing duplicates)
   const allUsers$ = useComputed(() => {
     const users = []
@@ -431,7 +462,7 @@ f(function toolbarMenu () {
           userPk,
           wsKey,
           profile,
-          name: profile?.name || profile?.npub || userPk || 'Anonymous',
+          name: profile?.name || profile?.npub || (userPk !== defaultUserPk$() && base62ToBase16(userPk)) || 'Default User',
           isLocked,
           index: userCounts[userPk], // User-specific index (1-indexed)
           totalCount: userCounts[userPk] // Current count (will be final after loop)
@@ -771,7 +802,7 @@ f(function toolbarAvatar () {
 
   const { toggle: toggleMenu, close: closeMenu, anchorRef$ } = useClosestStore('<a-menu>')
   const vaultModalStore = useVaultModalStore()
-  const isLoggedIn$ = useComputed(() => !!userPk$() || openWorkspaceKeys$().length > 1)
+  const isLoggedIn$ = useComputed(() => userPk$() !== storage.session_defaultUserPk$() || openWorkspaceKeys$().length > 1)
   useTask(({ track }) => {
     if (track(() => isLoggedIn$())) return
     closeMenu()
@@ -906,29 +937,26 @@ f(function appLaunchersMenu () {
       this.close() // close menu
       storage[`session_appByKey_${appKey}_visibility$`]('open')
       storage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]((v, eqKey) => {
-        // if closed it may not be on domOrder anymore
-        if (!v.domOrder.includes(appKey)) v.domOrder.push(appKey)
-        const i = v.cssOrder.indexOf(appKey)
-        if (i !== -1) v.cssOrder.splice(i, 1) // remove
-        v.cssOrder.unshift(appKey) // place at beginning
+        const i = v.indexOf(appKey)
+        if (i !== -1) v.splice(i, 1) // remove
+        v.unshift(appKey) // place at beginning
         v[eqKey] = Math.random()
         return v
       })
     },
     bringToFirst () {
       const { visibility, key: appKey, workspaceKey } = this.app$()
-      const { cssOrder } = storage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]()
+      const openAppKeys = storage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]()
       if (visibility !== 'open') throw new Error('Can only bring to first when app is open')
-      if (cssOrder[0] === appKey) throw new Error('App is already first')
+      if (openAppKeys[0] === appKey) throw new Error('App is already first')
 
       this.close() // close menu
       let i
       storage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]((v, eqKey) => {
-        i = v.cssOrder.indexOf(appKey)
-        console.log('position', i)
+        i = v.indexOf(appKey)
         if (i > -1) {
-          v.cssOrder.splice(i, 1) // remove
-          v.cssOrder.unshift(appKey) // place at beginning
+          v.splice(i, 1) // remove
+          v.unshift(appKey) // place at beginning
           v[eqKey] = Math.random()
         }
         return v
@@ -942,9 +970,9 @@ f(function appLaunchersMenu () {
       let i
       storage[`session_appByKey_${appKey}_visibility$`]('minimized')
       storage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]((v, eqKey) => {
-        i = v.cssOrder.indexOf(appKey)
+        i = v.indexOf(appKey)
         if (i > -1) {
-          v.cssOrder.splice(i, 1) // remove (to e.g. let 3rd app become 2nd)
+          v.splice(i, 1) // remove (to e.g. let 3rd app become 2nd)
           v[eqKey] = Math.random()
         }
         return v
@@ -957,17 +985,11 @@ f(function appLaunchersMenu () {
       this.close() // close menu
       storage[`session_appByKey_${appKey}_visibility$`]('closed')
       storage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]((v, eqKey) => {
-        let hasUpdated = false
-        if (v.domOrder[v.domOrder.length - 1] === appKey) {
-          v.domOrder.pop() // safe to remove if last
-          hasUpdated = true
-        }
-        const i = v.cssOrder.indexOf(appKey)
+        const i = v.indexOf(appKey)
         if (i !== -1) {
-          v.cssOrder.splice(i, 1) // remove
-          hasUpdated = true
+          v.splice(i, 1) // remove
+          v[eqKey] = Math.random()
         }
-        if (hasUpdated) v[eqKey] = Math.random()
         return v
       })
     },
@@ -978,17 +1000,11 @@ f(function appLaunchersMenu () {
       if (!isDeleteStep) this.close() // close menu
 
       storage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]((v, eqKey) => {
-        let hasUpdated = false
-        if (v.domOrder[v.domOrder.length - 1] === appKey) {
-          v.domOrder.pop() // safe to remove if last
-          hasUpdated = true
-        }
-        const i = v.cssOrder.indexOf(appKey)
+        const i = v.indexOf(appKey)
         if (i !== -1) {
-          v.cssOrder.splice(i, 1) // remove
-          hasUpdated = true
+          v.splice(i, 1) // remove
+          v[eqKey] = Math.random()
         }
-        if (hasUpdated) v[eqKey] = Math.random()
         return v
       })
       const newAppKeys = appKeys.filter(v => v !== appKey)
@@ -1001,7 +1017,7 @@ f(function appLaunchersMenu () {
     // and listen for postMessage to close it and remove bundle and file chunks
     async maybeClearAppStorage () {
       const { id: appId, workspaceKey } = this.app$()
-      const userPk = storage[`session_workspaceByKey_${workspaceKey}_userPk$`]() || storage.session_anonPk$()
+      const userPk = storage[`session_workspaceByKey_${workspaceKey}_userPk$`]()
 
       const otherWorkspaces = storage.session_workspaceKeys$().filter(wsKey => wsKey !== workspaceKey)
       let shouldClearAppData = true
@@ -1010,7 +1026,7 @@ f(function appLaunchersMenu () {
         const hasApp = storage[`session_workspaceByKey_${wsKey}_appById_${appId}_appKeys$`]()?.length > 0
         if (hasApp) {
           shouldClearAppFiles = false // app exists in another workspace (same or other user)
-          const wsUserPk = storage[`session_workspaceByKey_${wsKey}_userPk$`]() || storage.session_anonPk$()
+          const wsUserPk = storage[`session_workspaceByKey_${wsKey}_userPk$`]()
           if (wsUserPk === userPk) {
             shouldClearAppData = false // same user has app in another workspace
             break // both conditions found
@@ -1092,7 +1108,7 @@ f(function appLaunchersMenu () {
         visibility,
         workspaceKey
       } = app$()
-      const { cssOrder } = storage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]()
+      const openAppKeys = storage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]()
       const appKeys = storage[`session_workspaceByKey_${workspaceKey}_appById_${appId}_appKeys$`]()
       return this.h`<div id='scope_pfgf892'>
         <style>${`
@@ -1117,7 +1133,7 @@ f(function appLaunchersMenu () {
           <div class='icon-wrapper-271yiduh'><icon-maximize props=${{ size: '16px' }} /></div>
           <div class='menu-label' onclick=${openApp}>${visibility === 'closed' ? 'Open' : 'Maximize'}</div>
         </div>
-        <div class=${{ invisible: visibility !== 'open' || cssOrder[0] === appKey }}>
+        <div class=${{ invisible: visibility !== 'open' || openAppKeys[0] === appKey }}>
           <div class='icon-wrapper-271yiduh'><icon-stack-front props=${{ size: '16px' }} /></div>
           <div class='menu-label' onclick=${bringToFirst}>Bring to First</div>
         </div>
@@ -1205,10 +1221,9 @@ f(function toolbarAppLauncher () {
         storage[`session_appByKey_${app$().key}_visibility$`]('open')
         storage[`session_workspaceByKey_${app$().workspaceKey}_openAppKeys$`]((v, eqKey) => {
           const appKey = app$().key
-          if (!v.domOrder.includes(appKey)) {
-            v.domOrder.push(appKey) // must not change order of previous windows
-          }
-          v.cssOrder.unshift(appKey) // place at beginning
+          const i = v.indexOf(appKey)
+          if (i !== -1) v.splice(i, 1) // remove
+          v.unshift(appKey) // place at beginning
           v[eqKey] = Math.random()
           return v
         })
@@ -1219,9 +1234,9 @@ f(function toolbarAppLauncher () {
         const appKey = app$().key
         storage[`session_appByKey_${appKey}_visibility$`]('open')
         storage[`session_workspaceByKey_${app$().workspaceKey}_openAppKeys$`]((v, eqKey) => {
-          const i = v.cssOrder.indexOf(appKey)
-          if (i !== -1) v.cssOrder.splice(i, 1) // remove
-          v.cssOrder.unshift(appKey) // place at beginning
+          const i = v.indexOf(appKey)
+          if (i !== -1) v.splice(i, 1) // remove
+          v.unshift(appKey) // place at beginning
           v[eqKey] = Math.random()
           return v
         })
@@ -1231,11 +1246,11 @@ f(function toolbarAppLauncher () {
         // bring to front or minimize
         const appKey = app$().key
         storage[`session_workspaceByKey_${app$().workspaceKey}_openAppKeys$`]((v, eqKey) => {
-          const i = v.cssOrder.indexOf(appKey)
+          const i = v.indexOf(appKey)
           if (i > -1) {
-            v.cssOrder.splice(i, 1) // remove (to e.g. let 3rd app become 2nd)
+            v.splice(i, 1) // remove (to e.g. let 3rd app become 2nd)
             if (i === 0) storage[`session_appByKey_${appKey}_visibility$`]('minimized')
-            else v.cssOrder.unshift(appKey) // place at beginning
+            else v.unshift(appKey) // place at beginning
             v[eqKey] = Math.random()
           }
           return v

@@ -1,6 +1,7 @@
 import { bytesToBase16, base16ToBytes } from '#helpers/base16.js'
 import { bytesToBase62, base62ToBytes, BASE62_ALPHABET } from '#helpers/base62.js'
 import { isNostrAppDTagSafe } from '#helpers/app.js'
+import { bech32 } from '@scure/base'
 
 const MAX_SIZE = 5000
 export const NAPP_ENTITY_REGEX = new RegExp(`^\\+{1,3}[${BASE62_ALPHABET}]{48,${MAX_SIZE}}$`)
@@ -90,4 +91,28 @@ function tlvToObj (tlv) {
     ret[t].push(v)
   }
   return ret
+}
+
+export function npubEncode (hex) {
+  if (typeof hex !== 'string' || !/^[0-9a-f]{64}$/i.test(hex)) {
+    throw new Error('Invalid pubkey hex string')
+  }
+  const bytes = base16ToBytes(hex)
+  const words = bech32.toWords(bytes)
+  return bech32.encode('npub', words)
+}
+
+export function npubDecode (npub) {
+  if (typeof npub !== 'string' || !npub.startsWith('npub1')) {
+    throw new Error('Invalid npub format')
+  }
+  try {
+    const { prefix, words } = bech32.decode(npub)
+    if (prefix !== 'npub') throw new Error('Invalid npub prefix')
+    const bytes = new Uint8Array(bech32.fromWords(words))
+    if (bytes.length !== 32) throw new Error('Invalid pubkey length')
+    return bytesToBase16(bytes)
+  } catch (error) {
+    throw new Error(`Failed to decode npub: ${error.message}`)
+  }
 }
