@@ -134,7 +134,9 @@ f(function vaultMessenger () {
       }
     </style>
     <iframe
-      allow='clipboard-write'
+      allow='clipboard-write;
+             publickey-credentials-create;
+             publickey-credentials-get'
       style=${{ height: `${widgetHeight$()}px` }}
       id='vault'
       ref=${vaultIframeRef$}

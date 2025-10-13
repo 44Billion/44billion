@@ -326,12 +326,20 @@ f(function appWindow () {
     </style>
     <napp-assets-caching-progress-bar />
     <iframe
-      class="napp-page"
+      class='napp-page'
+      allow='fullscreen; screen-wake-lock; ambient-light-sensor;
+             autoplay; midi; encrypted-media;
+             accelerometer; gyroscope; magnetometer; xr-spatial-tracking;
+             clipboard-read; clipboard-write; web-share;
+             camera; microphone;
+             geolocation;
+             bluetooth;
+             payment'
       ref=${appIframeRef$}
       src=${appIframeSrc$()}
     />
     <iframe
-      class="tilde-tilde-napp-page"
+      class='ilde-tilde-napp-page'
       ref=${trustedAppIframeRef$}
       src=${trustedAppIframeSrc$()}
     />
