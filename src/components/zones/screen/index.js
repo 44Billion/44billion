@@ -18,7 +18,7 @@ import { appIdToAppSubdomain } from '#helpers/app.js'
 import { useVaultModalStore, useRequestVaultMessage } from '#zones/vault-modal/index.js'
 import { base62ToBase16 } from '#helpers/base62.js'
 import '#shared/napp-assets-caching-progress-bar.js'
-import '#shared/app-icon-or-index.js'
+import '#shared/app-icon.js'
 import '#shared/svg.js'
 import '#shared/icons/icon-close.js'
 import '#shared/icons/icon-minimize.js'
@@ -218,6 +218,8 @@ f(function appWindow () {
     }
   })
   const { requestVaultMessage } = useRequestVaultMessage()
+  const pdStore = useGlobalStore('<permission-dialog>')
+  const { requestPermission } = pdStore
 
   useTask(
     async ({ track, cleanup }) => {
@@ -247,7 +249,7 @@ f(function appWindow () {
       await initMessageListener(
         userPkB36$(), appId$(), appSubdomain$(), initialRoute,
         trustedAppIframeRef$(), appIframeRef$(), appIframeSrc$,
-        cachingProgress$, requestVaultMessage,
+        cachingProgress$, requestVaultMessage, requestPermission,
         { signal: ac.signal, isSingleNapp: false }
       )
       trustedAppIframeSrc$(`//${appSubdomain$()}.${window.location.host}/~~napp`)
@@ -1318,8 +1320,10 @@ f(function toolbarAppLauncher () {
     ${this.s`<svg viewbox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" class="squircle">
       <path d="M 0, 100 C 0, 12 12, 0 100, 0 S 200, 12 200, 100 188, 200 100, 200 0, 188 0, 100"></path>
     </svg>`}
-    <app-icon-or-index props=${{
-      app$
-    }} />
+    <div style='padding: 6px; width: 100%; height: 100%; z-index: 1; cursor: pointer;'>
+      <app-icon props=${{
+        app$
+      }} />
+    </div>
   </div>`
 })

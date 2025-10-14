@@ -30,6 +30,12 @@ const initDb = () => {
       store = tx.objectStore('bundles')
     }
     console.log(`[${db.name}DB v${db.version}] ${store.name} store is ready`)
+    if (!db.objectStoreNames.contains('permissions')) {
+      store = db.createObjectStore('permissions', { keyPath: ['appId', 'name', 'eKind'] })
+    } else {
+      store = tx.objectStore('permissions')
+    }
+    console.log(`[${db.name}DB v${db.version}] ${store.name} store is ready`)
   }
   return p.promise
 }

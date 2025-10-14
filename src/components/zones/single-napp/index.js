@@ -79,7 +79,9 @@ f(function singleNappLauncher () {
       await initMessageListener(
         userPkB36$(), appId, appSubdomain$(), initialRoute,
         trustedAppIframeRef$(), appIframeRef$(), appIframeSrc$,
-        cachingProgress$, requestVaultMessage,
+        cachingProgress$, requestVaultMessage, function requestPermission () {
+          throw new Error('Permission request not available in single napp mode yet')
+        },
         { signal: ac.signal, isSingleNapp: true }
       )
       trustedAppIframeSrc$(`//${appSubdomain$()}.${window.location.host}/~~napp`)

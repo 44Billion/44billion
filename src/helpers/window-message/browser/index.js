@@ -1,6 +1,7 @@
 import { /* handleMessageReply, */ postMessage, replyWithMessage } from '../index.js'
 import { appIdToAddressObj } from '#helpers/app.js'
 import { base36ToBase16 } from '#helpers/base36.js'
+import { base16ToBase62 } from '#helpers/base62.js'
 import { appEncode } from '#helpers/nip19.js'
 import { streamFileChunksFromDb, getFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
 import AppFileManager from '#services/app-file-manager/index.js'
@@ -39,10 +40,11 @@ async function updateIconStorage (appId, favicon, chunks) {
 export async function initMessageListener (
   userPkB36, appId, appSubdomain, initialRoute,
   trustedAppPageIframe, appPageIframe, appPageIframeSrc$,
-  cachingProgress$, requestVaultMessage,
+  cachingProgress$, requestVaultMessage, requestPermission,
   { signal: componentSignal, isSingleNapp = false } = {}
 ) {
   const userPkB16 = base36ToBase16(userPkB36)
+  const isDefaultUser = base16ToBase62(userPkB16) === JSON.parse(localStorage.getItem('session_defaultUserPk'))
   const currentVaultUrl = new URL(JSON.parse(localStorage.getItem('config_vaultUrl')))
   const vaultIframe = document.querySelector(`iframe[src="${currentVaultUrl.href.replace(/\/$/, '')}"]`)
   if (!vaultIframe) console.warn('Vault iframe not found')
@@ -273,7 +275,8 @@ export async function initMessageListener (
           }
           const { ns, method, params = [] } = e.data.payload
           nip07AppObject ??= {
-            id: appEncode(appAddress) // no relay hint allowed
+            id: appId,
+            napp: appEncode(appAddress) // no relay hint allowed
             // alias: +[+][+]abc@44billion.net, i.e. from +<appIdAlias>[@<domain>]
             // name: from bundleMetadata event
           }
@@ -281,10 +284,15 @@ export async function initMessageListener (
             const icon = JSON.parse(localStorage.getItem(`session_appById_${appId}_icon`))
             if (icon) nip07AppObject.icon = icon
           }
-          const msg = await requestNip07Message(
-            requestVaultMessage, userPkB16, ns, method, params,
-            { app: nip07AppObject }
-          )
+          let msg
+          try {
+            msg = await requestNip07Message(
+              requestVaultMessage, userPkB16, ns, method, params,
+              { isDefaultUser, requestPermission, app: nip07AppObject }
+            )
+          } catch (err) {
+            msg = { error: err }
+          }
           replyWithMessage(e, msg, { to: appPagePort })
           break
         }
@@ -367,13 +375,50 @@ function handleNappRequest (e) {
   return replyWithMessage(e, { error: new Error('Not implemented yet') })
 }
 
+const methodNameToPermissionName = {
+  getPublicKey: 'readProfile',
+  signEvent: 'signEvent',
+  nip04Encrypt: 'encrypt',
+  nip04Decrypt: 'decrypt',
+  nip44Encrypt: 'encrypt',
+  nip44Decrypt: 'decrypt'
+}
+function toPermissionName (method) {
+  return methodNameToPermissionName[method] ||
+    (() => { throw new Error(`Unknown method ${method}`) })()
+}
 export async function requestNip07Message (
-  requestVaultMessage, pubkey, ns, method, params, { app } = {}
+  requestVaultMessage, pubkey, ns, method, params, { isDefaultUser, requestPermission, app } = {}
 ) {
+  if (isDefaultUser) throw new Error('Please login')
+  if (requestPermission) {
+    const camelCaseMethod = method.includes('_')
+      ? method.replace(/_([a-z0-9])/g, (_, c) => c.toUpperCase())
+      : method
+    // TODO: find out the kind by decrypting first
+    const eKind = (() => {
+      switch (camelCaseMethod) {
+        case 'signEvent': return params?.[0]?.kind
+        // default: return -1 // all kinds
+        default: return null // won't grant to all kinds
+      }
+    })()
+
+    await requestPermission({
+      app,
+      name: toPermissionName(camelCaseMethod),
+      eKind
+    })
+  }
+
+  const { napp, ...appRest } = app
   const msg = {
     code: 'NIP07',
     payload: {
-      app,
+      app: {
+        ...appRest,
+        id: napp // for vault, this is the id
+      },
       pubkey,
       ns, // [name, ...optionalArgs]
       method,

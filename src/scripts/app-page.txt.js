@@ -73,12 +73,14 @@ function injectNip07 (promise) {
 
   const defaultNsName = ''
   const defaultNsParams = []
+  const timeout = 5 * 60 * 1000
 
   function createNostrMethod (method, nsName, nsParams) {
     return (...params) => promise
       .then(browserPort => requestMessage(
         browserPort,
-        { code: 'NIP07', payload: { ns: [nsName, ...nsParams], method, params } }
+        { code: 'NIP07', payload: { ns: [nsName, ...nsParams], method, params } },
+        { timeout }
       ))
       .then(({ payload, error }) => {
         if (error) throw error

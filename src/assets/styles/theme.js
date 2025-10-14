@@ -22,6 +22,7 @@ const [defaultThemeCssClass, colorCssVarsObj, defaultThemeCssString] = createThe
   headerFont: 'oklch(0.72 0 256)',
   subtleBg: 'oklch(0.29 0.01 256)', // based on header but lighter
   mg: 'oklch(0.22 0 256)',
+  mgLighter: 'oklch(0.25 0 256)',
   mgBorder: 'oklch(0.35 0 256)',
   mgFont: 'oklch(0.79 0 256)',
   fg: 'oklch(0.35 0 256)',
@@ -36,7 +37,6 @@ const [defaultThemeCssClass, colorCssVarsObj, defaultThemeCssString] = createThe
   logo: 'oklch(0.27 0.20 280)',
   counter: 'oklch(0.63 0 0)', // it is headerFont a bit darker but lighter than ffg
   error: 'oklch(0.55 0.22 25)'
-
 })
 
 export const cssStrings = {
