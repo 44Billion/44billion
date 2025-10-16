@@ -246,6 +246,9 @@ f(function permissionDialogCard () {
       .app-info {
         flex: 1;
         min-width: 0;
+        margin-right: 10px;
+        top: 1px;
+        position: relative;
       }
 
       .app-name {

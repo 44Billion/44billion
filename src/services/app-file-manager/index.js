@@ -4,6 +4,38 @@ import cacheMissingChunks from './cache-missing-chunks'
 import { countFileChunksFromDb, deleteFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
 import { saveBundleToDb, deleteBundleFromDb } from '#services/idb/browser/queries/bundle.js'
 import mime from 'mime'
+import { setWebStorageItem } from '#hooks/use-web-storage.js'
+import { getIcon, getName, getDescription } from './get-metadata.js'
+
+export function cacheAppMetadata (appId, metadata) {
+  if (!appId || !metadata) { throw new Error('Missing args') }
+
+  ['name', 'description', 'icon'].forEach(key => {
+    let value = metadata[key]
+    switch (key) {
+      case 'icon': value = value?.fx && value?.url && { fx: value.fx, url: value.url }; break
+      case 'description': value = (value?.length ?? 0) > 255 ? `${value.slice(0, 252)}...` : value; break
+      case 'name': value = (value?.length ?? 0) > 100 ? `${value.slice(0, 97)}...` : value; break
+    }
+    if (!value) return
+
+    // Update storage using setWebStorageItem to trigger cross-component updates
+    setWebStorageItem(localStorage, `session_appById_${appId}_${key}`, value)
+  })
+}
+
+export function getCachedAppMetadata (appId, metadataKeys = ['name', 'description', 'icon']) {
+  if (!appId) return
+  const metadata = {}
+  metadataKeys.forEach(key => {
+    let value = localStorage.getItem(`session_appById_${appId}_${key}`)
+    if (value) {
+      try { value = JSON.parse(value) } catch (_err) { console.log(`Error parsing "${key}" metadata from app "${appId}"`); return }
+      metadata[key] = value
+    }
+  })
+  return metadata
+}
 
 function getContentType (mimeType) {
   if (!mimeType) return 'application/octet-stream'
@@ -22,7 +54,7 @@ export default class AppFileManager {
   }
 
   static #instancePromisesByAppId = {}
-  static async create (appId, addressObj) {
+  static async create (appId, addressObj, { cacheMetadata = cacheAppMetadata, getCachedMetadata = getCachedAppMetadata } = {}) {
     if (this.#instancePromisesByAppId[appId]) return this.#instancePromisesByAppId[appId]
     const p = Promise.withResolvers()
     this.#instancePromisesByAppId[appId] = p.promise
@@ -42,9 +74,21 @@ export default class AppFileManager {
       delete this.#instancePromisesByAppId[appId]
       p.reject(new Error(`Couldn't find bundle after ${attempts} attempts`))
     }
-    const ret = new this(createToken, { appId, addressObj, bundle })
+    const ret = new this(createToken, { appId, addressObj, bundle, cacheMetadata, getCachedMetadata })
     p.resolve(ret)
     return p.promise
+  }
+
+  async getIcon (staleWhileRevalidate = false) {
+    return getIcon(this, staleWhileRevalidate)
+  }
+
+  async getName (staleWhileRevalidate = false) {
+    return getName(this, staleWhileRevalidate)
+  }
+
+  async getDescription (staleWhileRevalidate = false) {
+    return getDescription(this, staleWhileRevalidate)
   }
 
   async clearAppFiles () {

@@ -260,6 +260,10 @@ export async function initMessageListener (
   }
 
   let nip07AppObject
+  const isFetching = {
+    icon: false,
+    name: false
+  }
   function listenToAppPageMessages (appPagePort, signal) {
     appPagePort.addEventListener('message', async e => {
       switch (e.data.code) {
@@ -278,12 +282,26 @@ export async function initMessageListener (
             id: appId,
             napp: appEncode(appAddress) // no relay hint allowed
             // alias: +[+][+]abc@44billion.net, i.e. from +<appIdAlias>[@<domain>]
-            // name: from bundleMetadata event
+            // name: from bundleMetadata event or index.htm(l)
           }
-          if (!nip07AppObject.icon) {
-            const icon = JSON.parse(localStorage.getItem(`session_appById_${appId}_icon`))
-            if (icon) nip07AppObject.icon = icon
+          const promises = []
+          if (!('icon' in nip07AppObject) && !isFetching.icon) {
+            isFetching.icon = true
+            promises.push(
+              appFiles.getIcon()
+                .then(icon => icon && (nip07AppObject.icon = icon))
+                .then(() => { isFetching.icon = false })
+            )
           }
+          if (!('name' in nip07AppObject) && !isFetching.name) {
+            isFetching.name = true
+            promises.push(
+              appFiles.getName()
+                .then(name => name && (nip07AppObject.name = name))
+                .then(() => { isFetching.name = false })
+            )
+          }
+          if (promises.length > 0) await Promise.race([...promises, new Promise(resolve => setTimeout(resolve, 5000))])
           let msg
           try {
             msg = await requestNip07Message(
