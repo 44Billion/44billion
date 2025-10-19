@@ -1,4 +1,5 @@
 import { f, useGlobalStore, useClosestStore, useStore, useCallback } from '#f'
+import '#f/components/f-to-signals.js'
 import '#shared/modal.js'
 import { hasPermission, createOrUpdatePermission } from '#services/idb/browser/queries/permission.js'
 import { cssStrings, cssClasses, cssVars, jsVars } from '#assets/styles/theme.js'
@@ -18,12 +19,15 @@ f(function permissionDialog () {
     },
     queue$: [],
     getPermissionId (req) { return `${req.app.id}:${req.name}:${req.eKind}` },
+    isSingularPermission (req) {
+      return req.eKind != null || req.eKind === 5
+    },
     addPermissionRequest (req) {
       this.queue$(v => {
         let duplicate
         if (
           // can't deduplicate singular permissions
-          req.eKind != null &&
+          this.isSingularPermission(req) &&
           (duplicate = v.find(v2 => v2.id === req.id))
         ) {
           duplicate.promise.then(req.resolve).catch(req.reject)
@@ -44,6 +48,9 @@ f(function permissionDialog () {
           },
           name: req.name,
           eKind: req.eKind,
+          meta: {
+            params: req.meta.params
+          },
           promise: req.promise,
           resolve: req.resolve,
           reject: req.reject
@@ -66,7 +73,7 @@ f(function permissionDialog () {
       const req = current ?? this.queue$()[0]
       if (granted) {
         // grant just once
-        if (req.eKind == null) {
+        if (this.isSingularPermission(req)) {
           req.resolve(true)
           this.removeCurrent(current)
           return
@@ -143,9 +150,17 @@ f(function permissionDialogStack () {
     getNameToText (name) {
       return this.nameToText[name] || name
     },
-    getPemissionText (name, eKind) {
+    getPemissionText (name, eKind, meta) {
       let dynText
       if (eKind === 22242) dynText = 'tell servers who you are'
+      else if (eKind === 5) {
+        const event = meta?.params?.[0]
+        if (!event) throw new Error('Missing event parameter for eKind 5 permission')
+
+        const deleteTags = ['e', 'a']
+        const deleteCount = event.tags.filter(t => deleteTags.includes(t[0])).length || 1
+        dynText = `delete ${deleteCount} ${deleteCount === 1 ? 'item' : 'items'}`
+      }
 
       if (!dynText) {
         const eKindText = this.getEKindToText(eKind, name)
@@ -185,12 +200,18 @@ f(function permissionDialogStack () {
       /* this fixes syntax highlight */
     `}</style>
     <div id='permission-dialog-stack' class=${cssClasses.defaultTheme}>
-      ${store.permissionRequests$().map((req, i) => this.h({ key: req.id })`
-        <permission-dialog-card
+      ${store.permissionRequests$().map((req, index) => this.h({ key: req.id })`
+        <f-to-signals
           key=${req.id}
           props=${{
-            req,
-            index: i
+            from: ['req', 'index'], req, index, render ({ req$, index$ }) {
+              return this.h`<permission-dialog-card
+                props=${{
+                  req$,
+                  index$
+                }}
+              />`
+            }
           }}
         />
       `)}
@@ -201,9 +222,9 @@ f(function permissionDialogStack () {
 f(function permissionDialogCard () {
   const pdsStore = useClosestStore('<permission-dialog-stack>')
   const store = useStore(() => ({
-    req: this.props.req,
-    index: this.props.index,
-    resolveCurrent (granted) { return pdsStore.resolveCurrent(granted, this.req) },
+    req$: this.props.req$,
+    index$: this.props.index$,
+    resolveCurrent (granted) { return pdsStore.resolveCurrent(granted, this.req$()) },
     isButtonsDisabled$: false,
     allow () {
       this.isButtonsDisabled$(true)
@@ -213,14 +234,21 @@ f(function permissionDialogCard () {
       this.isButtonsDisabled$(true)
       return this.resolveCurrent(false)
     },
-    getPermissionText () {
-      return pdsStore.getPemissionText(this.req.name, this.req.eKind)
+    permissionText$ () {
+      const req = this.req$()
+      return pdsStore.getPemissionText(req.name, req.eKind, req.meta)
     },
-    getAppName () {
-      return this.req.app.name || this.req.app.alias || this.req.app.napp || 'App'
+    appName$ () {
+      const req = this.req$()
+      return req.app.name || req.app.alias || req.app.napp || 'App'
     }
   }))
-
+  const appIconProps = useStore(() => ({
+    app$: () => ({
+      id: store.req$().app.id,
+      index: '?'
+    })
+  }))
   return this.h`
     <style>${`
       .permission-dialog-card {
@@ -361,17 +389,11 @@ f(function permissionDialogCard () {
     `}</style>
     <div class='permission-dialog-card'>
       <div class="app-icon">
-        <app-icon props=${{
-          app$: () => ({
-            id: store.req.app.id,
-            index: '?'
-          }),
-          icon: store.req.app.icon
-        }} />
+        <app-icon props=${appIconProps} />
       </div>
       <div class="app-info">
-        <div class="app-name">${store.getAppName()}</div>
-        <div class="permission-text">${store.getPermissionText()}</div>
+        <div class="app-name">${store.appName$()}</div>
+        <div class="permission-text">${store.permissionText$()}</div>
       </div>
       <div class="permission-actions">
         <button

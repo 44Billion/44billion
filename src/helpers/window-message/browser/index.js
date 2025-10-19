@@ -425,7 +425,10 @@ export async function requestNip07Message (
     await requestPermission({
       app,
       name: toPermissionName(camelCaseMethod),
-      eKind
+      eKind,
+      meta: {
+        params
+      }
     })
   }
 
