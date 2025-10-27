@@ -1,8 +1,8 @@
 import { /* handleMessageReply, */ postMessage, replyWithMessage } from '../index.js'
-import { appIdToAddressObj } from '#helpers/app.js'
+import { appIdToAddressObj, addressObjToAppId } from '#helpers/app.js'
 import { base36ToBase16 } from '#helpers/base36.js'
 import { base16ToBase62 } from '#helpers/base62.js'
-import { appEncode } from '#helpers/nip19.js'
+import { appEncode, appDecode } from '#helpers/nip19.js'
 import { streamFileChunksFromDb, getFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
 import AppFileManager from '#services/app-file-manager/index.js'
 import { setWebStorageItem } from '#hooks/use-web-storage.js'
@@ -40,7 +40,7 @@ async function updateIconStorage (appId, favicon, chunks) {
 export async function initMessageListener (
   userPkB36, appId, appSubdomain, initialRoute,
   trustedAppPageIframe, appPageIframe, appPageIframeSrc$,
-  cachingProgress$, requestVaultMessage, requestPermission,
+  cachingProgress$, requestVaultMessage, requestPermission, openApp,
   { signal: componentSignal, isSingleNapp = false } = {}
 ) {
   const userPkB16 = base36ToBase16(userPkB36)
@@ -259,14 +259,102 @@ export async function initMessageListener (
     postMessage(trustedAppPagePort, { code: 'BROWSER_READY', payload: null })
   }
 
-  let nip07AppObject
-  const isFetching = {
-    icon: false,
-    name: false
+  const appMetadataCache = new Map() // Cache app metadata by app ID
+  const appFetchingState = new Map() // Track fetching state by app ID
+  // Helper function to gather app metadata for permission requests
+  async function getAppMetadata (appIdParam, appAddressParam) {
+    if (appMetadataCache.has(appIdParam)) return appMetadataCache.get(appIdParam)
+
+    if (!appFetchingState.has(appIdParam)) {
+      appFetchingState.set(appIdParam, {
+        icon: false,
+        name: false,
+        promise: null
+      })
+    }
+
+    const fetchingState = appFetchingState.get(appIdParam)
+    if (fetchingState.promise) return fetchingState.promise
+
+    appAddressParam ??= appIdToAddressObj(appIdParam)
+    // it handles caching internally
+    const targetAppFiles = await AppFileManager.create(appIdParam, appAddressParam)
+
+    const appObject = {
+      id: appIdParam,
+      napp: appEncode(appAddressParam) // no relay hint allowed
+      // alias: +[+][+]abc@44billion.net, i.e. from +<appIdAlias>[@<domain>]
+      // name: from bundleMetadata event or index.htm(l)
+    }
+
+    const promises = []
+    if (!('icon' in appObject) && !fetchingState.icon) {
+      fetchingState.icon = true
+      promises.push(
+        targetAppFiles.getIcon()
+          .then(icon => icon && (appObject.icon = icon))
+          .finally(() => { fetchingState.icon = false })
+      )
+    }
+    if (!('name' in appObject) && !fetchingState.name) {
+      fetchingState.name = true
+      promises.push(
+        targetAppFiles.getName()
+          .then(name => name && (appObject.name = name))
+          .finally(() => { fetchingState.name = false })
+      )
+    }
+
+    const metadataPromise = (async () => {
+      if (promises.length > 0) {
+        await Promise.race([...promises, new Promise(resolve => setTimeout(resolve, 5000))])
+      }
+
+      appMetadataCache.set(appIdParam, appObject)
+      appFetchingState.delete(appIdParam)
+
+      return appObject
+    })()
+    fetchingState.promise = metadataPromise
+
+    return metadataPromise
   }
+
   function listenToAppPageMessages (appPagePort, signal) {
     appPagePort.addEventListener('message', async e => {
       switch (e.data.code) {
+        case 'OPEN_APP': {
+          try {
+            const { href } = e.data.payload
+            const urlObj = new URL(href, self.location.origin)
+            const pathname = urlObj.pathname
+            const encodedAppPattern = /^\/(\+{1,3}[a-zA-Z0-9]{48,})/
+            const match = pathname.match(encodedAppPattern)
+            if (!match) {
+              console.error('Invalid app URL format:', href)
+              break
+            }
+
+            const encodedAppId = match[1]
+            const targetAppAddress = appDecode(encodedAppId)
+            const targetAppId = addressObjToAppId(targetAppAddress)
+            const targetAppMetadata = await getAppMetadata(targetAppId, targetAppAddress)
+
+            await requestPermission({
+              app: await getAppMetadata(appId, appAddress),
+              name: 'openApp',
+              eKind: null,
+              meta: {
+                params: { app: targetAppMetadata }
+              }
+            })
+
+            openApp(href)
+          } catch (error) {
+            console.error('Error in OPEN_APP handler:', error)
+          }
+          break
+        }
         case 'NIP07': {
           if (
             ['peek_public_key', 'get_public_key'].includes(e.data.payload.method) &&
@@ -278,35 +366,12 @@ export async function initMessageListener (
             break
           }
           const { ns, method, params = [] } = e.data.payload
-          nip07AppObject ??= {
-            id: appId,
-            napp: appEncode(appAddress) // no relay hint allowed
-            // alias: +[+][+]abc@44billion.net, i.e. from +<appIdAlias>[@<domain>]
-            // name: from bundleMetadata event or index.htm(l)
-          }
-          const promises = []
-          if (!('icon' in nip07AppObject) && !isFetching.icon) {
-            isFetching.icon = true
-            promises.push(
-              appFiles.getIcon()
-                .then(icon => icon && (nip07AppObject.icon = icon))
-                .then(() => { isFetching.icon = false })
-            )
-          }
-          if (!('name' in nip07AppObject) && !isFetching.name) {
-            isFetching.name = true
-            promises.push(
-              appFiles.getName()
-                .then(name => name && (nip07AppObject.name = name))
-                .then(() => { isFetching.name = false })
-            )
-          }
-          if (promises.length > 0) await Promise.race([...promises, new Promise(resolve => setTimeout(resolve, 5000))])
+          const appMetadata = await getAppMetadata(appId, appAddress)
           let msg
           try {
             msg = await requestNip07Message(
               requestVaultMessage, userPkB16, ns, method, params,
-              { isDefaultUser, requestPermission, app: nip07AppObject }
+              { isDefaultUser, requestPermission, app: appMetadata }
             )
           } catch (err) {
             msg = { error: err }
@@ -357,7 +422,11 @@ export async function initMessageListener (
             // Update icon storage with complete data
             if (allChunks.length > 0) {
               const { url } = await updateIconStorage(appId, favicon, allChunks)
-              if (nip07AppObject) nip07AppObject.icon = { fx: favicon.rootHash, url }
+              // Update cached metadata if it exists
+              if (appMetadataCache.has(appId)) {
+                const cachedMetadata = appMetadataCache.get(appId)
+                cachedMetadata.icon = { fx: favicon.rootHash, url }
+              }
             }
           } catch (error) {
             console.log(error.stack)

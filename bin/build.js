@@ -8,8 +8,8 @@ import swModulePlugin from './plugins/sw-module.js'
 
 const isDev = process.env.NODE_ENV === 'development'
 export const esbuildDefineConfig = isDev
-  ? { IS_DEVELOPMENT: JSON.stringify(true), IS_PRODUCTION: JSON.stringify(false), _F_SHOULD_RESTORE_STATE_ON_TAB_RELOAD: JSON.stringify(true) }
-  : { IS_DEVELOPMENT: JSON.stringify(false), IS_PRODUCTION: JSON.stringify(true), _F_SHOULD_RESTORE_STATE_ON_TAB_RELOAD: JSON.stringify(false) }
+  ? { IS_DEVELOPMENT: JSON.stringify(true), IS_PRODUCTION: JSON.stringify(false) } //, 'globalThis._F_SHOULD_RESTORE_STATE_ON_TAB_RELOAD': JSON.stringify(true) }
+  : { IS_DEVELOPMENT: JSON.stringify(false), IS_PRODUCTION: JSON.stringify(true) }
 const { dirname } = import.meta
 const prodOutdir = `${dirname}/../dist/${dirname.split('/').slice(-2, -1)}` // dist/<root dir>
 // same as esbuild.build, but reusable

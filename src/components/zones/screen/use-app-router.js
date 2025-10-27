@@ -1,8 +1,9 @@
-import { useTask, useCallback } from '#f'
+import { useTask, useCallback, useGlobalStore } from '#f'
 import useLocation from '#hooks/use-location.js'
 import useWebStorage from '#hooks/use-web-storage.js'
 import { NAPP_ENTITY_REGEX, appDecode } from '#helpers/nip19.js'
 import { addressObjToAppId } from '#helpers/app.js'
+import router from '#zones/multi-napp/router.js'
 
 export default function useAppRouter () {
   const loc = useLocation()
@@ -127,4 +128,19 @@ export default function useAppRouter () {
       loc.replaceState(history.state, '', '/') // TODO: replace with previous url if available
     }
   })
+
+  useGlobalStore('useAppRouter', () => ({
+    openApp (href) {
+      const url = new URL(href, window.location.origin)
+      let appRoute
+      let { napp, appPath } = router.find(url.pathname.replace(/\/+$/, '')).params
+      appPath = appPath.replace(/^\/{0,}/, '/')
+      const { search, hash } = url
+      if (appPath !== '/' || search || hash) {
+        appRoute = appPath + search + hash
+      } else appRoute = ''
+
+      openApp(napp, appRoute)
+    }
+  }))
 }

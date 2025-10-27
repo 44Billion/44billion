@@ -1,5 +1,5 @@
 import { base62ToBase16, base16ToBase62 } from '#helpers/base62.js'
-import { bytesToBase36, base36ToBase62, base62ToBase36 } from '#helpers/base36.js'
+import { isBase36, bytesToBase36, base36ToBase62, base62ToBase36 } from '#helpers/base36.js'
 import { base16ToBytes } from '#helpers/base16.js'
 
 // 63 - (1<channel> + 5<b36loggeduserpkslug> 50<b36pk>)
@@ -8,10 +8,10 @@ import { base16ToBytes } from '#helpers/base16.js'
 export const NOSTR_APP_D_TAG_MAX_LENGTH = 7
 
 export function isNostrAppDTagSafe (string) {
-  return isSubdomainSafe(string) && string.length <= NOSTR_APP_D_TAG_MAX_LENGTH
+  return string.length > 0 && string.length <= NOSTR_APP_D_TAG_MAX_LENGTH && isBase36(string)
 }
 
-function isSubdomainSafe (string) {
+export function isSubdomainSafe (string) {
   return /(?:^[a-z0-9]$)|(?:^(?!.*--)[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$)/.test(string)
 }
 

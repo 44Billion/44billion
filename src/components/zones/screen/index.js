@@ -220,6 +220,7 @@ f(function appWindow () {
   const { requestVaultMessage } = useRequestVaultMessage()
   const pdStore = useGlobalStore('<permission-dialog>')
   const { requestPermission } = pdStore
+  const { openApp } = useGlobalStore('useAppRouter')
 
   useTask(
     async ({ track, cleanup }) => {
@@ -249,7 +250,7 @@ f(function appWindow () {
       await initMessageListener(
         userPkB36$(), appId$(), appSubdomain$(), initialRoute,
         trustedAppIframeRef$(), appIframeRef$(), appIframeSrc$,
-        cachingProgress$, requestVaultMessage, requestPermission,
+        cachingProgress$, requestVaultMessage, requestPermission, openApp,
         { signal: ac.signal, isSingleNapp: false }
       )
       trustedAppIframeSrc$(`//${appSubdomain$()}.${window.location.host}/~~napp`)
@@ -457,8 +458,8 @@ f(function toolbarMenu () {
     workspaceKeys$().forEach((wsKey) => {
       const userPk = storage[`session_workspaceByKey_${wsKey}_userPk$`]()
       if (userPk !== undefined && userPk !== null) {
-        const profile = storage[`session_accountsByUserPk_${userPk}_profile$`]()
-        const isLocked = storage[`session_accountsByUserPk_${userPk}_isLocked$`]()
+        const profile = storage[`session_accountByUserPk_${userPk}_profile$`]()
+        const isLocked = storage[`session_accountByUserPk_${userPk}_isLocked$`]()
 
         // Initialize count for this user if not seen before
         if (userCounts[userPk] === undefined) {
@@ -771,7 +772,7 @@ f(function toolbarAvatar () {
 
   const isLocked$ = useComputed(() => {
     const userPk = userPk$()
-    return userPk ? storage[`session_accountsByUserPk_${userPk}_isLocked$`]() : false
+    return userPk ? storage[`session_accountByUserPk_${userPk}_isLocked$`]() : false
   })
 
   // Calculate the user index and total count for the active user

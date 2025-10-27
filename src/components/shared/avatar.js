@@ -12,7 +12,7 @@ f(function aAvatar () {
   const store = useStore({
     pk$: this.props.pk$ ?? this.props.pk,
     picture$ () {
-      const picture = storage[`session_accountsByUserPk_${this.pk$()}_profile$`]()?.picture
+      const picture = storage[`session_accountByUserPk_${this.pk$()}_profile$`]()?.picture
       if (!picture) return null
 
       const isDataImage = /^data:image\/[a-z0-9.+-]+(?:;[a-z0-9=.+-]+)*(?:;base64)?,/i.test(picture)

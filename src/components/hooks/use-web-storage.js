@@ -15,6 +15,7 @@ export function useSessionStorage (...args) {
 
 // A view on some fields. Can add field viewer at any time
 export default function useWebStorage (storageArea = localStorage, getOrCreateObjOrFn, { shouldUseStrictKeys = false, shouldReplaceInvalidValues = false } = {}) {
+  // maybe this would be enough: const store = useMemo(() => ({}), { shouldCache: false })
   const store = useStore({}, { shouldCache: false, isStatic: false })
   const signalProxyByKey = useMemo(() => ({}))
   const signalByKeyMap$ = useGlobalSignal(
@@ -100,7 +101,7 @@ export default function useWebStorage (storageArea = localStorage, getOrCreateOb
   useTask(() => {
     if (!getOrCreateObjOrFn) return
 
-    Object.entries(typeof upsertObjOrFn === 'function' ? getOrCreateObjOrFn() : getOrCreateObjOrFn)
+    Object.entries(typeof getOrCreateObjOrFn === 'function' ? getOrCreateObjOrFn() : getOrCreateObjOrFn)
       .forEach(([k, v]) => { proxy[k] = v })
   })
 

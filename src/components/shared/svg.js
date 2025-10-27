@@ -23,11 +23,24 @@ f(function aSvg () {
       style$: this.props.style$ || this.props.style || '',
       // import { mdiAccount as path } from '@mdi/js'
       path$: this.props.path$ || this.props.paths$ || this.props.path || this.props.paths,
+      _viewBox$: this.props.viewBox$ || this.props.viewbox$ || this.props.viewBox || this.props.viewbox,
       // it varies from icon set to icon set
-      viewBox$: this.props.viewBox$ || this.props.viewbox$ || this.props.viewBox || this.props.viewbox || '0 0 24 24',
+      viewBox$ () { return this._viewBox$() || '0 0 24 24' },
       hadInitialSvg: !!(this.props.svg$ || this.props.svg),
+      shouldKeepDefaultPathStyle$: this.props.shouldKeepDefaultPathStyle$ || this.props.shouldKeepDefaultPathStyle || !!(
+        it.props.svg$ || it.props.svg
+      ),
       class$: this.props.class$ || this.props.class || '',
-      svg$: this.props.svg$ || this.props.svg || function () {
+      _svgStrings$: [],
+      _svg$ () {
+        const svg = it.props.svg$?.() || it.props.svg
+        if (typeof svg !== 'string') return svg
+        this._svgStrings$().length = 0
+        this._svgStrings$().push(svg)
+        return it.s(this._svgStrings$())
+      },
+      svg$ () {
+        if (this._svg$()) return this._svg$()
         // https://developer.mozilla.org/en-US/docs/Web/SVG/Reference/Attribute
         // https://github.com/Templarian/MaterialDesign-Web-Component/blob/master/src/mdi/icon/icon.ts
         return it.s`<svg
@@ -88,8 +101,8 @@ f(function aSvg () {
   })
 
   useTask(({ track }) => {
-    track(() => [store.svg$.get(), store.viewBox$.get()])
-    if (store.hadInitialSvg) this.getElementsByTagName('svg')[0].setAttribute('viewBox', store.viewBox$.get())
+    track(() => [store.svg$.get(), store._viewBox$.get()])
+    if (store.hadInitialSvg && store._viewBox$.get()) this.getElementsByTagName('svg')[0].setAttribute('viewBox', store._viewBox$.get())
   }, { after: 'rendering' })
 
   if (!store.svg$.get()) return
@@ -115,7 +128,9 @@ f(function aSvg () {
           width: ${store.width$()};
           height: ${store.height$()};
         }
-        path {
+        ${store.shouldKeepDefaultPathStyle$()
+          ? ''
+          : `path {
           fill: ${store.fill$.get()};
           fill-opacity: ${store.fillOpacity$.get()};
           stroke: currentcolor;
@@ -125,7 +140,7 @@ f(function aSvg () {
             stroke-linecap: round;
             stroke-linejoin: round;
           `}
-        }
+        }`}
         ${store.style$.get()}
       }
     `}</style>${store.svg$.get()}

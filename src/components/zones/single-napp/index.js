@@ -81,6 +81,8 @@ f(function singleNappLauncher () {
         trustedAppIframeRef$(), appIframeRef$(), appIframeSrc$,
         cachingProgress$, requestVaultMessage, function requestPermission () {
           throw new Error('Permission request not available in single napp mode yet')
+        }, function openApp () {
+          throw new Error('Open app not available in single napp mode yet')
         },
         { signal: ac.signal, isSingleNapp: true }
       )

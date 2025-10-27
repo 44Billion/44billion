@@ -5,6 +5,7 @@ import { postMessage, requestMessage } from '#helpers/window-message/index.js'
 (async () => {
   const p = Promise.withResolvers()
   injectNip07(p.promise) // first thing
+  interceptNavigations(p.promise)
   tellParentImReady(p)
   await preventSwUsage()
   await p.promise
@@ -117,4 +118,157 @@ function injectNip07 (promise) {
   const napp = {}
 
   Object.assign(window, { nostr, napp })
+}
+
+// Intercept and cancel navigations to app URLs
+function interceptNavigations (browserPortPromise) {
+  const currentHostname = window.location.hostname
+  const isLocalhost = currentHostname === 'localhost' || currentHostname.endsWith('.localhost')
+  const hasSubdomain = isLocalhost
+    ? currentHostname !== 'localhost'
+    : currentHostname.split('.').length > 2
+  const baseHostname = isLocalhost
+    ? 'localhost'
+    : hasSubdomain
+      ? currentHostname.split('.').slice(-2).join('.')
+      : currentHostname
+
+  // If we are at test.example.com we intercept example.com/+[++]aaa...
+  // if at test.localhost:8080 we intercept localhost:8080/+[++]aaa...
+  function shouldInterceptUrl (url) {
+    if (url === undefined || url === null) return false
+    const candidateUrl = typeof url === 'string'
+      ? url
+      : (typeof url?.href === 'string'
+          ? url.href
+          : (typeof url?.url === 'string' ? url.url : `${url}`))
+    if (!candidateUrl || candidateUrl === '[object Object]') return false
+    try {
+      const urlObj = new URL(candidateUrl, window.location.origin)
+
+      const targetHostname = urlObj.hostname
+
+      // Skip if the navigation goes to a different site
+      if (hasSubdomain) {
+        if (targetHostname !== baseHostname) return false
+      } else {
+        if (targetHostname !== currentHostname) return false
+      }
+
+      // Check if pathname starts with an encoded app pattern
+      const pathname = urlObj.pathname
+      // Match patterns like /+abc123, /++abc123, /+++abc123
+      const encodedAppPattern = /^\/(\+{1,3}[a-zA-Z0-9]{48,})/
+      const match = pathname.match(encodedAppPattern)
+
+      return match !== null
+    } catch (_error) {
+      return false
+    }
+  }
+
+  function handleIntercept (kind, url) {
+    if (!shouldInterceptUrl(url)) return false
+    const displayUrl = typeof url === 'string'
+      ? url
+      : (typeof url?.href === 'string' ? url.href : (typeof url?.url === 'string' ? url.url : `${url}`))
+    console.log(`${kind} to`, displayUrl, 'was intercepted and canceled')
+    sendOpenAppMessage(displayUrl)
+    return true
+  }
+
+  function interceptLocationAPIs () {
+    const locationProto = window.Location && window.Location.prototype
+    if (!locationProto) return
+
+    // Note: the href setter on Location is not configurable in modern browsers, so
+    // direct assignments like `window.location = url` will always win. We still
+    // interpose the imperative helpers (assign/replace) to catch the majority of
+    // programmatic navigations.
+    const locationMethods = ['assign', 'replace']
+    for (const methodName of locationMethods) {
+      const descriptor = Object.getOwnPropertyDescriptor(locationProto, methodName)
+      const originalMethod = descriptor?.value
+      if (typeof originalMethod !== 'function') continue
+
+      Object.defineProperty(locationProto, methodName, {
+        configurable: true,
+        enumerable: descriptor.enumerable,
+        writable: true,
+        value: function (url, ...args) {
+          if (handleIntercept(`window.location.${methodName}`, url)) return
+          return originalMethod.call(this, url, ...args)
+        }
+      })
+    }
+  }
+
+  function interceptWindowOpen () {
+    const originalOpen = window.open
+    window.open = function (url, ...args) {
+      if (handleIntercept('Window open', url)) return null
+      return originalOpen.call(this, url, ...args)
+    }
+  }
+
+  function interceptNavigationAPI () {
+    if (!('navigation' in window) || typeof window.navigation.addEventListener !== 'function') return
+    window.navigation.addEventListener('navigate', event => {
+      const destinationUrl = event.destination?.url || event.targetLocation?.href || event.detail?.destination?.url
+      if (!destinationUrl) return
+      if (!handleIntercept('Navigation', destinationUrl)) return
+      if (event.cancelable) event.preventDefault()
+      if (typeof event.intercept === 'function') {
+        try {
+          event.intercept({})
+        } catch (_error) {
+          // ignore
+        }
+      }
+    })
+  }
+
+  interceptLocationAPIs()
+  interceptWindowOpen()
+  interceptNavigationAPI()
+
+  // Intercept link clicks
+  document.addEventListener('click', function (e) {
+    const anchor = e.target.closest('a')
+    if (anchor && anchor.href) {
+      if (shouldInterceptUrl(anchor.href)) {
+        e.preventDefault()
+        console.log('Link click to', anchor.href, 'was intercepted and canceled')
+        sendOpenAppMessage(anchor.href)
+      }
+    }
+  }, true)
+
+  // Intercept form submissions
+  document.addEventListener('submit', function (e) {
+    const form = e.target
+    if (form.action) {
+      if (shouldInterceptUrl(form.action)) {
+        e.preventDefault()
+        console.log('Form submission to', form.action, 'was intercepted and canceled')
+        sendOpenAppMessage(form.action)
+      }
+    }
+  }, true)
+
+  // Function to send OPEN_APP message to the parent iframe
+  function sendOpenAppMessage (url) {
+    try {
+      browserPortPromise.then(browserPort => {
+        postMessage(browserPort, {
+          code: 'OPEN_APP',
+          payload: { href: url }
+        })
+      }).catch(error => {
+        console.error('Failed to send OPEN_APP message:', error)
+      })
+    } catch (error) {
+      console.error('Error sending OPEN_APP message:', error)
+    }
+  }
 }

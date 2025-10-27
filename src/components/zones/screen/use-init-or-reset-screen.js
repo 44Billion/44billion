@@ -53,9 +53,9 @@ export default function useInitOrResetScreen () {
         userPk !== undefined &&
         userPk !== null &&
         userPk !== defaultUserPk &&
-        !(storage[`session_accountsByUserPk_${userPk}_isReadOnly$`]() ?? false)
+        !(storage[`session_accountByUserPk_${userPk}_isReadOnly$`]() ?? false)
       ) {
-        storage[`session_accountsByUserPk_${userPk}_isLocked$`](true)
+        storage[`session_accountByUserPk_${userPk}_isLocked$`](true)
       }
     })
   })
@@ -118,12 +118,12 @@ function addUser ({ userPk, storage, isFirstTimeUser }) {
 
   // default user is readonly because there is no signer associated with it
   // but we won't add an account entry for it
-  // storage[`session_accountsByUserPk_${userPk}_isLocked$`](true)
+  // storage[`session_accountByUserPk_${userPk}_isLocked$`](true)
   // storage.session_accountUserPks$([userPk])
-  storage[`session_accountsByUserPk_${userPk}_isReadOnly$`](true)
-  storage[`session_accountsByUserPk_${userPk}_isLocked$`](false)
-  storage[`session_accountsByUserPk_${userPk}_profile$`]({ npub: npubEncode(base62ToBase16(userPk)), meta: { events: [] } })
-  storage[`session_accountsByUserPk_${userPk}_relays$`]({ meta: { events: [] } })
+  storage[`session_accountByUserPk_${userPk}_isReadOnly$`](true)
+  storage[`session_accountByUserPk_${userPk}_isLocked$`](false)
+  storage[`session_accountByUserPk_${userPk}_profile$`]({ npub: npubEncode(base62ToBase16(userPk)), meta: { events: [] } })
+  storage[`session_accountByUserPk_${userPk}_relays$`]({ meta: { events: [] } })
 
   storage.session_accountUserPks$([userPk])
   storage.session_workspaceKeys$([wsKey])
@@ -168,10 +168,10 @@ export async function setAccountsState (nextAccountState, storage) {
   // Add/update account data for all users in nextAccountState
   nextAccountState.forEach(account => {
     const userPk = base16ToBase62(account.pubkey)
-    storage[`session_accountsByUserPk_${userPk}_isReadOnly$`]((isReadOnly = account.isReadOnly ?? false))
-    storage[`session_accountsByUserPk_${userPk}_isLocked$`](isReadOnly ? false : (account.isLocked ?? true))
-    storage[`session_accountsByUserPk_${userPk}_profile$`](account.profile)
-    storage[`session_accountsByUserPk_${userPk}_relays$`](account.relays)
+    storage[`session_accountByUserPk_${userPk}_isReadOnly$`]((isReadOnly = account.isReadOnly ?? false))
+    storage[`session_accountByUserPk_${userPk}_isLocked$`](isReadOnly ? false : (account.isLocked ?? true))
+    storage[`session_accountByUserPk_${userPk}_profile$`](account.profile)
+    storage[`session_accountByUserPk_${userPk}_relays$`](account.relays)
   })
 
   // Special case: moving from default-only to single user
@@ -320,9 +320,9 @@ export async function setAccountsState (nextAccountState, storage) {
   currentAccountUserPks
     .filter(userPk => !nextUserPks.includes(userPk))
     .forEach(userPk => {
-      storage[`session_accountsByUserPk_${userPk}_isReadOnly$`](undefined)
-      storage[`session_accountsByUserPk_${userPk}_isLocked$`](undefined)
-      storage[`session_accountsByUserPk_${userPk}_profile$`](undefined)
-      storage[`session_accountsByUserPk_${userPk}_relays$`](undefined)
+      storage[`session_accountByUserPk_${userPk}_isReadOnly$`](undefined)
+      storage[`session_accountByUserPk_${userPk}_isLocked$`](undefined)
+      storage[`session_accountByUserPk_${userPk}_profile$`](undefined)
+      storage[`session_accountByUserPk_${userPk}_relays$`](undefined)
     })
 }

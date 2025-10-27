@@ -145,7 +145,8 @@ f(function permissionDialogStack () {
       readProfile: 'read',
       signEvent: 'publish',
       encrypt: 'encrypt',
-      decrypt: 'decrypt'
+      decrypt: 'decrypt',
+      openApp: 'open'
     },
     getNameToText (name) {
       return this.nameToText[name] || name
@@ -160,6 +161,13 @@ f(function permissionDialogStack () {
         const deleteTags = ['e', 'a']
         const deleteCount = event.tags.filter(t => deleteTags.includes(t[0])).length || 1
         dynText = `delete ${deleteCount} ${deleteCount === 1 ? 'item' : 'items'}`
+      } else if (name === 'openApp') {
+        const { targetApp } = meta ?? {}
+        if (!targetApp) throw new Error('Missing app parameter for openApp permission')
+
+        const appName = targetApp.name || targetApp.alias || targetApp.napp
+        if (appName == null) throw new Error('Missing app name for openApp permission')
+        dynText = `${this.getNameToText(name)} the ${appName} napp`
       }
 
       if (!dynText) {
