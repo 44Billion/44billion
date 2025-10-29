@@ -40,6 +40,7 @@ f(function appIcon () {
           height: 100%;
           object-fit: cover;
           border-radius: 10px;
+          background-color: ${cssVars.colors.header};
           ${style$()}
         `}
       />
@@ -47,7 +48,7 @@ f(function appIcon () {
     : this.h`
       <span style=${`
         border-radius: 10px;
-        background-color: ${cssVars.colors.subtleBg};
+        background-color: ${cssVars.colors.header};
         color: ${cssVars.colors.fgFont};
         font-weight: bold;
         font-size: 14px;

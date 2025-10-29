@@ -82,12 +82,13 @@ export default function useInitOrResetScreen () {
 
 // what happens when app crashed before this finishes? we should add a task that is removed
 // from stack only when finished and re-run if app restarts and it's still on the stack
-function addUser ({ userPk, storage, isFirstTimeUser }) {
-  const defaultPinnedApps = coreAppIds.map((id, i) => ({
+function addUser ({ userPk, storage, isFirstTimeUser: _ }) {
+  const defaultPinnedApps = coreAppIds.map((id, _i) => ({
     id,
     // many apps with same id within same ws may be open at once
     key: Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2),
-    visibility: i === 0 ? 'open' : 'closed', // open|minimized|closed
+    // visibility: i === 0 ? 'open' : 'closed', // open|minimized|closed
+    visibility: 'closed',
     isNew: false // when announcing a new core app
   }))
 
@@ -95,7 +96,9 @@ function addUser ({ userPk, storage, isFirstTimeUser }) {
   if (storage.config_isSingleWindow$() === undefined) storage.config_isSingleWindow$(false)
 
   // de-normalized from `session_appByKey_${app.key}_visibility$` (open or minimized)
-  const openAppKeys = isFirstTimeUser ? [defaultPinnedApps[0].key] : []
+  // const openAppKeys = isFirstTimeUser ? [defaultPinnedApps[0].key] : []
+  const openAppKeys = []
+
   // order of iframes on DOM must be stable or else they reload their content
   // dom order is now calculated at runtime, we only store css order (visual order)
   storage[`session_workspaceByKey_${wsKey}_openAppKeys$`](openAppKeys) // order of windows

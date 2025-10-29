@@ -1,8 +1,8 @@
 {
-  "name": "44b",
+  "name": "44billion",
   "author": "Arthur França",
   "version": "1.0.0",
-  "description": "kind:1 nostr client",
+  "description": "Notsr App (napp) Launcher",
   "main": "index.js",
   "type": "module",
   "scripts": {

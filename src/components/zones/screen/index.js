@@ -9,8 +9,10 @@ import '#shared/avatar.js'
 import {
   cssStrings,
   cssClasses,
-  cssVars
+  cssVars,
+  jsVars
 } from '#assets/styles/theme.js'
+import windowsBackgroundImage from '#assets/media/bg-ostrich-stained-glass.webp'
 import useAppRouter from './use-app-router.js'
 import { initMessageListener } from '#helpers/window-message/browser/index.js'
 import { base62ToBase36 } from '#helpers/base36.js'
@@ -152,13 +154,33 @@ f(function aWindows () {
 f(function windowsBackground () {
   return this.h`
     <div
+      id='windows-background'
       style=${`
         background-color: ${cssVars.colors.bg};
+        background-image: url(${windowsBackgroundImage});
+        background-position: center;
+        background-repeat: no-repeat;
+        background-size: contain;
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
+        text-align: center;
+        padding: clamp(24px, 6vmin, 80px);
+        color: ${cssVars.colors.mgFont};
         z-index: 0;
         inset: 0;
         position: absolute;
       `}
-    >please open an app</div>
+    >
+      <style>${`
+        #windows-background {
+          @media ${jsVars.breakpoints.desktop} {
+            background-origin: content-box;
+          }
+        }
+      `}</style>
+      Please open a napp
+    </div>
   `
 })
 f(function workspaceWindow () {
@@ -1321,7 +1343,7 @@ f(function toolbarAppLauncher () {
     ${this.s`<svg viewbox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" class="squircle">
       <path d="M 0, 100 C 0, 12 12, 0 100, 0 S 200, 12 200, 100 188, 200 100, 200 0, 188 0, 100"></path>
     </svg>`}
-    <div style='padding: 6px; width: 100%; height: 100%; z-index: 1; cursor: pointer;'>
+    <div style='padding: 4px; width: 100%; height: 100%; z-index: 1; cursor: pointer;'>
       <app-icon props=${{
         app$
       }} />

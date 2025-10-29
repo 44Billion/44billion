@@ -28,7 +28,7 @@ const [defaultThemeCssClass, colorCssVarsObj, defaultThemeCssString] = createThe
   fg: 'oklch(0.35 0 256)',
   fgPrimary: 'oklch(0.44 0.16 291.61)',
   fgSecondary: 'oklch(0.53 0.13 56.36)',
-  fgFont: 'oklch(0.96 0.01 256)',
+  fgFont: 'oklch(0.71 0.01 256)',
   ffg: 'oklch(0.49 0.01 17.47)',
   accentPrimary: 'oklch(0.56 0.25 302.32)',
   accentSecondary: 'oklch(0.56 0.20 87.32)',

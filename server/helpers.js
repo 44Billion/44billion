@@ -12,7 +12,7 @@ export function replyWithError (res, error = { base: ['Resource not found'] }) {
     }
     res.end(JSON.stringify({ error }))
   } catch (err) {
-    console.error('errouuu', err)
+    console.error('replyWithError error:', err)
   }
 }
 
