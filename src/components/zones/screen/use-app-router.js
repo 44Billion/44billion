@@ -20,7 +20,7 @@ export default function useAppRouter () {
     const {
       [`session_workspaceByKey_${wsKey}_appById_${appId}_appKeys$`]: appKeys$,
       [`session_workspaceByKey_${wsKey}_pinnedAppIds$`]: pinnedAppIds$,
-      [`session_workspaceByKey_${wsKey}_pinnedAppIds$`]: unpinnedAppIds$
+      [`session_workspaceByKey_${wsKey}_unpinnedAppIds$`]: unpinnedAppIds$
     } = storage
     if (!appKeys$() || (!pinnedAppIds$().includes(appId) && !unpinnedAppIds$().includes(appId))) {
       return { hasOpened: false, isInstalled: false }
