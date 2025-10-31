@@ -1045,6 +1045,18 @@ f(function appLaunchersMenu () {
       storage[`session_appByKey_${appKey}_id$`](undefined)
       storage[`session_appByKey_${appKey}_visibility$`](undefined)
       storage[`session_appByKey_${appKey}_route$`](undefined)
+
+      let hasOtherInstances = false
+      for (const wsKey of storage.session_workspaceKeys$()) {
+        hasOtherInstances = storage[`session_workspaceByKey_${wsKey}_appById_${appId}_appKeys$`]()
+          .some(v => v !== appKey)
+        if (hasOtherInstances) break
+      }
+      if (hasOtherInstances) return
+
+      storage[`session_appById_${appId}_icon$`](undefined)
+      storage[`session_appById_${appId}_name$`](undefined)
+      storage[`session_appById_${appId}_description$`](undefined)
     },
     // open iframe at /~~napp#clear to let it clear its idb/localStorage
     // and listen for postMessage to close it and remove bundle and file chunks
