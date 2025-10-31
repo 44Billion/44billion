@@ -324,6 +324,7 @@ export async function initMessageListener (
     appPagePort.addEventListener('message', async e => {
       switch (e.data.code) {
         case 'OPEN_APP': {
+          let targetAppId
           try {
             const { href } = e.data.payload
             const urlObj = new URL(href, self.location.origin)
@@ -337,7 +338,7 @@ export async function initMessageListener (
 
             const encodedAppId = match[1]
             const targetAppAddress = appDecode(encodedAppId)
-            const targetAppId = addressObjToAppId(targetAppAddress)
+            targetAppId = addressObjToAppId(targetAppAddress)
             const targetAppMetadata = await getAppMetadata(targetAppId, targetAppAddress)
 
             await requestPermission({
@@ -351,6 +352,27 @@ export async function initMessageListener (
 
             openApp(href)
           } catch (error) {
+            // TODO: schedule this cache cleaning
+            // because other parts may be using these assets too,
+            // like dialogs other than the permission one,
+            // or may use them soon
+            let isTargetAppInstalled = false
+            for (const wsKey of JSON.parse(localStorage.getItem('session_workspaceKeys')) ?? []) {
+              isTargetAppInstalled = Array.isArray(
+                JSON.parse(
+                  localStorage.getItem(`session_workspaceByKey_${wsKey}_appById_${targetAppId}_appKeys`)
+                )
+              )
+              if (isTargetAppInstalled) break
+            }
+            if (!isTargetAppInstalled) {
+              setWebStorageItem(localStorage, `session_appById_${targetAppId}_icon`, undefined)
+              setWebStorageItem(localStorage, `session_appById_${targetAppId}_name`, undefined)
+              setWebStorageItem(localStorage, `session_appById_${targetAppId}_description`, undefined)
+              setWebStorageItem(localStorage, `session_appById_${targetAppId}_relayHints`, undefined)
+              const targetAppFiles = await AppFileManager.create(targetAppId)
+              await targetAppFiles.clearAppFiles()
+            }
             console.error('Error in OPEN_APP handler:', error)
           }
           break

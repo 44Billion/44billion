@@ -121,6 +121,7 @@ f('permissionDialog', function () {
 })
 
 f('permissionDialogStack', function () {
+  const storage = useWebStorage(localStorage)
   const pdStore = useGlobalStore('<permission-dialog>')
   const store = useClosestStore('<permission-dialog-stack>', () => ({
     resolveCurrent: pdStore.resolveCurrent.bind(pdStore),
@@ -169,7 +170,10 @@ f('permissionDialogStack', function () {
         const { targetApp } = meta ?? {}
         if (!targetApp) throw new Error('Missing app parameter for openApp permission')
 
-        const appName = targetApp.name || targetApp.alias || targetApp.napp
+        const {
+          [`session_appById_${targetApp.id}_name$`]: cachedTargetAppName$
+        } = storage
+        const appName = targetApp.name || cachedTargetAppName$() || targetApp.alias || targetApp.napp
         if (appName == null) throw new Error('Missing app name for openApp permission')
         dynText = `${this.getNameToText(name)} the ${appName} napp`
       }
