@@ -5,6 +5,7 @@ import { hasPermission, createOrUpdatePermission } from '#services/idb/browser/q
 import { cssStrings, cssClasses, cssVars, jsVars } from '#assets/styles/theme.js'
 import '#shared/app-icon.js'
 import '#shared/icons/icon-x.js'
+import useWebStorage from '#hooks/use-web-storage.js'
 
 // On the nip07 handler, call await pdStore.requestPermission(req)
 f(function permissionDialog () {
@@ -231,6 +232,7 @@ f(function permissionDialogStack () {
 })
 
 f(function permissionDialogCard () {
+  const storage = useWebStorage(localStorage)
   const pdsStore = useClosestStore('<permission-dialog-stack>')
   const store = useStore(() => ({
     req$: this.props.req$,
@@ -251,7 +253,11 @@ f(function permissionDialogCard () {
     },
     appName$ () {
       const req = this.req$()
-      return req.app.name || req.app.alias || req.app.napp || 'App'
+      const {
+        [`session_appById_${req.app.id}_name$`]: cachedAppName$
+      } = storage
+      const cachedAppName = cachedAppName$()
+      return req.app.name || cachedAppName || req.app.alias || req.app.napp || 'App'
     }
   }))
   const appIconProps = useStore(() => ({

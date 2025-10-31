@@ -307,7 +307,7 @@ export async function initMessageListener (
 
     const metadataPromise = (async () => {
       if (promises.length > 0) {
-        await Promise.race([...promises, new Promise(resolve => setTimeout(resolve, 5000))])
+        await Promise.race([...promises, new Promise(resolve => setTimeout(resolve, 1750))])
       }
 
       appMetadataCache.set(appIdParam, appObject)
