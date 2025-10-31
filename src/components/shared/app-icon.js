@@ -1,6 +1,14 @@
 import { f, useComputed, useSignal, useTask } from '#f'
 import useWebStorage from '#hooks/use-web-storage.js'
 import { cssVars } from '#assets/styles/theme.js'
+import AppFileManager from '#services/app-file-manager/index.js'
+import { debounce } from '#helpers/function.js'
+
+async function addIconToCache (appId) {
+  const appFiles = await AppFileManager.create(appId)
+  await appFiles.getIcon() // this adds it to the cache
+}
+const debouncedAddIconToCache = debounce(addIconToCache, 1000)
 
 f(function appIcon () {
   const storage = useWebStorage(localStorage)
@@ -29,6 +37,52 @@ f(function appIcon () {
     // If no cached icon, reset the icon URL
     iconUrl$(null)
   })
+
+  const isLoading$ = useSignal(false)
+  useTask(async ({ track }) => {
+    const appId = track(() => appId$())
+    if (!appId || hasIcon$()) return
+
+    isLoading$(true)
+    try {
+      // shared by other <app-icon> instances
+      await debouncedAddIconToCache(appId)
+    } catch (err) {
+      console.error('Failed to load app icon for appId:', appId, err)
+    } finally {
+      // after the other task sets the icon url
+      requestIdleCallback(() => isLoading$(false))
+    }
+  })
+
+  if (isLoading$()) {
+    return this.h`<div
+      style=${`
+        width: 100%;
+        height: 100%;
+        border-style: solid;
+        border-width: 0;
+        overflow: hidden;
+        border-radius: 10px;
+        background-color: ${cssVars.colors.mg};
+      `}
+    >
+      <style>${`
+        @keyframes pulse {
+          50% {
+            opacity: .5;
+          }
+        }
+        .animate-background {
+          animation: pulse 2s cubic-bezier(.4,0,.6,1) infinite;
+          background-color: ${cssVars.colors.fg};
+          position: relative;
+          height: 100%;
+        }
+      `}</style>
+      <div class='animate-background' />
+    </div>`
+  }
 
   return hasIcon$()
     ? this.h`
