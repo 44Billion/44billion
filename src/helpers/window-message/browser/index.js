@@ -345,7 +345,7 @@ export async function initMessageListener (
               name: 'openApp',
               eKind: null,
               meta: {
-                params: { app: targetAppMetadata }
+                targetApp: targetAppMetadata
               }
             })
 

@@ -18,9 +18,9 @@ f(function permissionDialog () {
       }
     },
     queue$: [],
-    getPermissionId (req) { return `${req.app.id}:${req.name}:${req.eKind}` },
+    getPermissionId (req) { return `${req.app.id}:${req.name}:${req.eKind ?? ''}` },
     isSingularPermission (req) {
-      return req.eKind != null || req.eKind === 5
+      return req.eKind == null || req.eKind === 5
     },
     addPermissionRequest (req) {
       this.queue$(v => {
@@ -49,7 +49,9 @@ f(function permissionDialog () {
           name: req.name,
           eKind: req.eKind,
           meta: {
-            params: req.meta.params
+            // params: req.meta.params (NIP07)
+            // targetApp: req.meta.targetApp (OPEN_APP)
+            ...req.meta
           },
           promise: req.promise,
           resolve: req.resolve,
@@ -89,6 +91,7 @@ f(function permissionDialog () {
       }
     },
     async queryPermission (req) {
+      if (req.app.id && req.name === 'openApp') return false
       return hasPermission(req.app.id, req.name, req.eKind)
     },
     async requestPermission (req) {
