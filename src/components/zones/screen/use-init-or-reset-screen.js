@@ -183,12 +183,16 @@ export async function setAccountsState (nextAccountState, storage) {
     const defaultWorkspaceKey = currentWorkspaceKeys[0]
     const newUserPk = nextUserPks[0]
 
-    // Close all open apps and schedule opening the first pinned app
+    // Close all open apps and schedule their re-opening
     const openAppKeys = storage[`session_workspaceByKey_${defaultWorkspaceKey}_openAppKeys$`]() || []
 
+    const appsToOpen = []
     // Close all currently open apps
     openAppKeys.forEach(appKey => {
-      storage[`session_appByKey_${appKey}_visibility$`]('closed')
+      storage[`session_appByKey_${appKey}_visibility$`](v => {
+        if (v === 'open') appsToOpen.push(appKey) // ignore minimized apps
+        return 'closed'
+      })
     })
 
     // Clear open apps list
@@ -197,33 +201,12 @@ export async function setAccountsState (nextAccountState, storage) {
     // Transfer ownership of the workspace to the new user
     storage[`session_workspaceByKey_${defaultWorkspaceKey}_userPk$`](newUserPk)
 
-    // Schedule opening the first (pinned or unpinned) app on next tick
+    // Schedule re-opening apps on next tick
     await new Promise(resolve => window.requestIdleCallback(() => window.requestIdleCallback(resolve)))
-    const pinnedAppIds = storage[`session_workspaceByKey_${defaultWorkspaceKey}_pinnedAppIds$`]() || []
-    const unpinnedAppIds = storage[`session_workspaceByKey_${defaultWorkspaceKey}_unpinnedAppIds$`]() || []
-
-    let appToOpen = null
-
-    if (pinnedAppIds.length > 0) {
-      // Find first pinned app
-      const appKeys = storage[`session_workspaceByKey_${defaultWorkspaceKey}_appById_${pinnedAppIds[0]}_appKeys$`]() || []
-      if (appKeys.length > 0) appToOpen = appKeys[0]
-    } else if (unpinnedAppIds.length > 0) {
-      // Find first unpinned app
-      const appKeys = storage[`session_workspaceByKey_${defaultWorkspaceKey}_appById_${unpinnedAppIds[0]}_appKeys$`]() || []
-      if (appKeys.length > 0) appToOpen = appKeys[0]
-    }
-
-    if (appToOpen) {
+    appsToOpen.forEach(appToOpen => {
       storage[`session_appByKey_${appToOpen}_visibility$`]('open')
-      storage[`session_workspaceByKey_${defaultWorkspaceKey}_openAppKeys$`]((v, eqKey) => {
-        const i = v.indexOf(appToOpen)
-        if (i !== -1) v.splice(i, 1) // remove
-        v.unshift(appToOpen) // place at beginning
-        v[eqKey] = Math.random()
-        return v
-      })
-    }
+    })
+    storage[`session_workspaceByKey_${defaultWorkspaceKey}_openAppKeys$`](appsToOpen)
 
     storage.session_defaultUserPk$(undefined)
   } else {
