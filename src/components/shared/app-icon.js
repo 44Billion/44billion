@@ -10,7 +10,7 @@ async function addIconToCache (appId) {
 }
 const debouncedAddIconToCache = debounce(addIconToCache, 1000)
 
-f(function appIcon () {
+f('appIcon', function () {
   const storage = useWebStorage(localStorage)
   const appId$ = useComputed(() => this.props.app$().id)
   const appIndex$ = useComputed(() => this.props.app$().index ?? '?')

@@ -7,7 +7,7 @@ import useWebStorage from '#hooks/use-web-storage.js'
 import { cssVars } from '#assets/styles/theme.js'
 
 // todo: if there's kind 0 picture, use it
-f(function aAvatar () {
+f('aAvatar', function () {
   const storage = useWebStorage(localStorage)
   const store = useStore({
     pk$: this.props.pk$ ?? this.props.pk,

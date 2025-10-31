@@ -8,7 +8,7 @@ import '#shared/icons/icon-x.js'
 import useWebStorage from '#hooks/use-web-storage.js'
 
 // On the nip07 handler, call await pdStore.requestPermission(req)
-f(function permissionDialog () {
+f('permissionDialog', function () {
   const pdStore = useGlobalStore('<permission-dialog>', () => ({
     isOpen$ () { return this.queue$().length > 0 },
     close () {
@@ -120,7 +120,7 @@ f(function permissionDialog () {
   return this.h`<a-modal props=${modalProps} />`
 })
 
-f(function permissionDialogStack () {
+f('permissionDialogStack', function () {
   const pdStore = useGlobalStore('<permission-dialog>')
   const store = useClosestStore('<permission-dialog-stack>', () => ({
     resolveCurrent: pdStore.resolveCurrent.bind(pdStore),
@@ -231,7 +231,7 @@ f(function permissionDialogStack () {
   `
 })
 
-f(function permissionDialogCard () {
+f('permissionDialogCard', function () {
   const storage = useWebStorage(localStorage)
   const pdsStore = useClosestStore('<permission-dialog-stack>')
   const store = useStore(() => ({

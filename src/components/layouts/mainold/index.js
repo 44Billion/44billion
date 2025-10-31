@@ -1,7 +1,7 @@
 // this layout forms the basis with the body and bottom panel
 import { f } from '#f'
 
-f(function mainLayout () {
+f('mainLayout', function () {
   return this.h`<div class='wrapper'>
     <div class='view-wrapper'>
       {store.views.map(view => <div key={view} style={{

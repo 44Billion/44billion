@@ -16,7 +16,7 @@
 //   // "/n/(.*)": { Page: Groups },
 // })
 
-// f(function aRoute () {
+// f('aRoute', function () {
 //   const {
 //     handler: { tag, loadModule }, params
 //   } = router.find(path)

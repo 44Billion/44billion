@@ -1,7 +1,7 @@
 import { f, useStore, useTask } from '#f'
 import { jsVars } from '#assets/styles/theme.js'
 
-export const Modal = f(function aModal () {
+export const Modal = f('aModal', function () {
   const store = useStore({
     dialogRef$: null,
     render: this.props.render, // instead of <slot>

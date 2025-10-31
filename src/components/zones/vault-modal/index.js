@@ -13,7 +13,7 @@ function useVaultModalInit (init) {
   return useClosestStore('<a-modal>', init)
 }
 
-f(function vaultModal () {
+f('vaultModal', function () {
   // other components may open/close it
   const upstreamStore = useVaultModalStore()
   const modalProps = useStore(() => ({
@@ -26,7 +26,7 @@ f(function vaultModal () {
   return this.h`<a-modal props=${modalProps} />`
 })
 
-f(function vaultMessenger () {
+f('vaultMessenger', function () {
   const {
     isFirstRun$,
     vaultPort$,

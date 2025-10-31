@@ -1,4 +1,4 @@
-f(function catchAll () {
+f('catchAll', function () {
   // const sessionstore = useSessionContext()
   const store = useRouter()
 

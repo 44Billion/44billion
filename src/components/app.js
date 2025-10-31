@@ -11,7 +11,7 @@ if (IS_DEVELOPMENT) {
   new EventSource('/esbuild').addEventListener('change', () => location.reload())
 }
 
-f(function aApp () {
+f('aApp', function () {
   // we rely on us being the top for reusing same
   // key for storage partition
   if (window.location.origin !== window.top.location.origin) {

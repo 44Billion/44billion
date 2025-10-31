@@ -5,7 +5,7 @@ import '#zones/screen/index.js'
 import { useVaultModalStore } from '#zones/vault-modal/index.js'
 import '#zones/permission-dialog/index.js'
 
-f(function multiNapp () {
+f('multiNapp', function () {
   useLocation(router)
   useVaultModalStore(() => ({
     isOpen$: false,

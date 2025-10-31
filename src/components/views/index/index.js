@@ -1,6 +1,6 @@
 import { f } from '#f'
 
-f(function aIndex () {
+f('aIndex', function () {
   return `
     <div>Index view</div>
   `

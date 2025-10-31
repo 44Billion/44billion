@@ -7,7 +7,7 @@ import { initMessageListener } from '#helpers/window-message/browser/index.js'
 import { useVaultModalStore, useRequestVaultMessage } from '#zones/vault-modal/index.js'
 import '#shared/napp-assets-caching-progress-bar.js'
 
-f(function singleNapp () {
+f('singleNapp', function () {
   const storage = useWebStorage(localStorage)
   const {
     session_openWorkspaceKeys$: openWorkspaceKeys$
@@ -49,7 +49,7 @@ f(function singleNapp () {
 })
 
 // this won't add napp to web storage, it's supposed to be ephemeral-ish
-f(function singleNappLauncher () {
+f('singleNappLauncher', function () {
   const { wsKey, appId, initialRoute } = useClosestStore('napp')
   const storage = useWebStorage(localStorage)
   const {

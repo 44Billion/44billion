@@ -30,7 +30,7 @@ import '#shared/icons/icon-remove.js'
 import '#shared/icons/icon-delete.js'
 import '#shared/icons/icon-lock.js'
 
-f(function aScreen () {
+f('aScreen', function () {
   useInitOrResetScreen()
   useAppRouter()
 
@@ -113,7 +113,7 @@ f(function aScreen () {
   `
 })
 
-f(function systemViews () {
+f('systemViews', function () {
   return this.h`
     <div
       style=${`
@@ -126,7 +126,7 @@ f(function systemViews () {
   `
 })
 
-f(function aWindows () {
+f('aWindows', function () {
   const {
     // Order is important, that's why we didn't compute from workspaceKeys$
     // Recently opened/clicked first
@@ -151,7 +151,7 @@ f(function aWindows () {
     <windows-background />
   `
 })
-f(function windowsBackground () {
+f('windowsBackground', function () {
   return this.h`
     <div
       id='windows-background'
@@ -183,7 +183,7 @@ f(function windowsBackground () {
     </div>
   `
 })
-f(function workspaceWindow () {
+f('workspaceWindow', function () {
   const storage = useWebStorage(localStorage)
   // App instances are useful for grouping app icons, but windows are not grouped by app
   // That's why we have openAppKeys$ instead of openAppIds$
@@ -215,7 +215,7 @@ f(function workspaceWindow () {
     })}
   `
 })
-f(function appWindow () {
+f('appWindow', function () {
   const storage = useWebStorage(localStorage)
   const {
     [`session_appByKey_${this.props.appKey}_id$`]: appId$,
@@ -375,7 +375,7 @@ f(function appWindow () {
 // multi-window or not, we use a single toolbar
 // if multi-window we update its content with the
 // last selected workspace (a user may have many workspaces)
-f(function unifiedToolbar () {
+f('unifiedToolbar', function () {
   const scrollbar$ = useScrollbarConfig()
 
   return this.h`
@@ -445,7 +445,7 @@ f(function unifiedToolbar () {
   `
 })
 
-f(function toolbarActiveAvatar () {
+f('toolbarActiveAvatar', function () {
   useClosestStore('<a-menu>', {
     isOpen$: false,
     anchorRef$: null,
@@ -459,7 +459,7 @@ f(function toolbarActiveAvatar () {
     <toolbar-avatar />
   `
 })
-f(function toolbarMenu () {
+f('toolbarMenu', function () {
   const storage = useWebStorage(localStorage)
   const { session_openWorkspaceKeys$: openWorkspaceKeys$, session_workspaceKeys$: workspaceKeys$ } = storage
   const { close: closeMenu } = useClosestStore('<a-menu>')
@@ -783,7 +783,7 @@ f(function toolbarMenu () {
 
   return this.h`<a-menu props=${menuProps} />`
 })
-f(function toolbarAvatar () {
+f('toolbarAvatar', function () {
   const storage = useWebStorage(localStorage)
   const { session_openWorkspaceKeys$: openWorkspaceKeys$, session_workspaceKeys$: workspaceKeys$ } = storage
 
@@ -897,7 +897,7 @@ f(function toolbarAvatar () {
   </div>`
 })
 
-f(function toolbarAppList () {
+f('toolbarAppList', function () {
   useClosestStore('<a-menu>', () => ({
     isOpenedByLongPress: true,
     isOpen$: false,
@@ -924,7 +924,7 @@ f(function toolbarAppList () {
     <toolbar-unpinned-apps />
   `
 })
-f(function toolbarPinnedApps () {
+f('toolbarPinnedApps', function () {
   const storage = useWebStorage(localStorage)
   const { session_openWorkspaceKeys$: openWorkspaceKeys$ } = storage
   const appIdsdKeysIndexes$ = useComputed(() => {
@@ -939,7 +939,7 @@ f(function toolbarPinnedApps () {
 
   return this.h`${appIdsdKeysIndexes$().map(v => this.h({ key: v.appKey })`<toolbar-app-launcher key=${v.appKey} props=${v} />`)}`
 })
-f(function toolbarUnpinnedApps () {
+f('toolbarUnpinnedApps', function () {
   const storage = useWebStorage(localStorage)
   const { session_openWorkspaceKeys$: openWorkspaceKeys$ } = storage
   const appIdsdKeysIndexes$ = useComputed(() => {
@@ -958,7 +958,7 @@ f(function toolbarUnpinnedApps () {
     ${appIdsdKeysIndexes$().map(v => this.h({ key: v.appKey })`<toolbar-app-launcher key=${v.appKey} props=${v} />`)}
   `
 })
-f(function appLaunchersMenu () {
+f('appLaunchersMenu', function () {
   const store = useClosestStore('<a-menu>')
   const storage = useWebStorage(localStorage)
   const menuProps = useStore(() => ({
@@ -1234,7 +1234,7 @@ f(function appLaunchersMenu () {
   }))
   return this.h`<a-menu props=${menuProps} />`
 })
-f(function toolbarAppLauncher () {
+f('toolbarAppLauncher', function () {
   const storage = useWebStorage(localStorage)
   const newAppIdsObj$ = useGlobalSignal('hardcoded_newAppIdsObj')
   const appIndex$ = useStateSignal(this.props.appIndex)

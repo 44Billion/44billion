@@ -1,6 +1,6 @@
 import { f, useStore, useTask } from '#f'
 
-f(function pointerupInterceptor () {
+f('pointerupInterceptor', function () {
   const { props: { isOpen$, isOpenedByLongPress } } = this
   if (!isOpenedByLongPress) return
 

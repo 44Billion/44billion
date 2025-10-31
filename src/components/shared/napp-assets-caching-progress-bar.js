@@ -1,6 +1,6 @@
 import { f, useClosestStore, useComputed } from '#f'
 
-f(function nappAssetsCachingProgressBar () {
+f('nappAssetsCachingProgressBar', function () {
   let cachingProgress$
   try {
     ({ cachingProgress$ } = useClosestStore('<napp-assets-caching-progress-bar>'))

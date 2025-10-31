@@ -1,7 +1,7 @@
 import { f, useStore, useTask } from '#f'
 import '#shared/pointerup-interceptor.js'
 
-f(function aMenu () {
+f('aMenu', function () {
   const store = useStore({
     // id is needed for styling while Firefox doesn't support @scope
     id$: this.props.id$ || this.props.id || ('a' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)),
