@@ -1057,6 +1057,7 @@ f(function appLaunchersMenu () {
       storage[`session_appById_${appId}_icon$`](undefined)
       storage[`session_appById_${appId}_name$`](undefined)
       storage[`session_appById_${appId}_description$`](undefined)
+      storage[`session_appById_${appId}_relayHints$`](undefined)
     },
     // open iframe at /~~napp#clear to let it clear its idb/localStorage
     // and listen for postMessage to close it and remove bundle and file chunks

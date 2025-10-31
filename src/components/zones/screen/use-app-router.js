@@ -3,6 +3,7 @@ import useLocation from '#hooks/use-location.js'
 import useWebStorage from '#hooks/use-web-storage.js'
 import { NAPP_ENTITY_REGEX, appDecode } from '#helpers/nip19.js'
 import { addressObjToAppId } from '#helpers/app.js'
+import { isValidRelayUrl } from '#helpers/relay.js'
 import router from '#zones/multi-napp/router.js'
 
 export default function useAppRouter () {
@@ -74,8 +75,12 @@ export default function useAppRouter () {
     if (!openWorkspaceKeys$().length) throw new Error()
     const decodedApp = appDecode(napp)
     const appId = addressObjToAppId(decodedApp)
-    if (decodedApp.relays.length > 0) {
-      storage[`session_appById_${appId}_relayHints$`](decodedApp.relays)
+    const decodedAppRelays = decodedApp.relays.slice(0, 4)
+      .map(v => v.trim().replace(/\/+$/, ''))
+      .filter(isValidRelayUrl)
+      .slice(0, 2)
+    if (decodedAppRelays.length > 0) {
+      storage[`session_appById_${appId}_relayHints$`](decodedAppRelays)
     }
     const { hasOpened, isInstalled } = maybeOpenInstalledApp(appId, appRoute)
 
