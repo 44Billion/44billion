@@ -1,7 +1,10 @@
 import fs from 'node:fs'
 import { Readable } from 'node:stream'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const isDev = process.env.NODE_ENV === 'development'
+const builtAssetsDir = fileURLToPath(new URL('../../dist/44billion/', import.meta.url))
 
 export async function writeWithBackpressure (wstream, data) {
   return new Promise(resolve => {
@@ -18,15 +21,15 @@ export async function getBuiltFileRstream (filename) {
       ts: undefined
     }
   } else {
-    filename = `../../dist/44billion/${filename}`
-    return { result: fs.createReadStream(filename), ts: await getFileModificationTime(filename) }
+    const filePath = join(builtAssetsDir, filename)
+    return { result: fs.createReadStream(filePath), ts: await getFileModificationTime(filePath) }
   }
 }
 
-async function getFileModificationTime (filename) {
+async function getFileModificationTime (filePath) {
   if (isDev) return
   try {
-    const stats = await fs.promises.stat(filename)
+    const stats = await fs.promises.stat(filePath)
     return stats.mtime.getTime()
   } catch (e) {
     if (e.code === 'ENOENT') return
