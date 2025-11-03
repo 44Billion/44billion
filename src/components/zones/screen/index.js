@@ -2,7 +2,7 @@ import { f, useCallback, useComputed, useStore, useGlobalStore, useGlobalSignal,
 import AppFileManager from '#services/app-file-manager/index.js'
 import useInitOrResetScreen from './use-init-or-reset-screen.js'
 import useWebStorage from '#hooks/use-web-storage.js'
-import useLongPress from '#hooks/use-long-press.js'
+// import useLongPress from '#hooks/use-long-press.js'
 import useScrollbarConfig from '#hooks/use-scrollbar-config.js'
 import '#shared/menu.js'
 import '#shared/avatar.js'
@@ -899,7 +899,7 @@ f('toolbarAvatar', function () {
 
 f('toolbarAppList', function () {
   useClosestStore('<a-menu>', () => ({
-    isOpenedByLongPress: true,
+    isOpenedByLongPress: false,
     isOpen$: false,
     open () { this.isOpen$(true) },
     close () { this.isOpen$(false) },
@@ -1251,60 +1251,60 @@ f('toolbarAppLauncher', function () {
     ref: appRef$()
   }))
 
-  const unifiedToolbarRef$ = useClosestSignal('unifiedToolbarRef')
-  useLongPress(unifiedToolbarRef$, appRef$)
+  // const unifiedToolbarRef$ = useClosestSignal('unifiedToolbarRef')
+  // useLongPress(unifiedToolbarRef$, appRef$)
   const { toggleMenu, app$: currApp$ } = useClosestStore('<a-menu>')
   const onLongPress = () => toggleMenu({ ...app$() })
   const anchorName$ = useComputed(() => currApp$().key === app$().key ? '--app-launchers-menu' : 'none')
 
-  const onClick = useCallback(e => {
-    // canceled by longpress
-    if (e.shouldStopPropagation) return
+  // const onClick = useCallback(e => {
+  //   // canceled by longpress
+  //   if (e.shouldStopPropagation) return
 
-    switch (app$().visibility) {
-      case 'closed': {
-        // open
-        storage[`session_appByKey_${app$().key}_visibility$`]('open')
-        storage[`session_workspaceByKey_${app$().workspaceKey}_openAppKeys$`]((v, eqKey) => {
-          const appKey = app$().key
-          const i = v.indexOf(appKey)
-          if (i !== -1) v.splice(i, 1) // remove
-          v.unshift(appKey) // place at beginning
-          v[eqKey] = Math.random()
-          return v
-        })
-        break
-      }
-      case 'minimized': {
-        // maximize
-        const appKey = app$().key
-        storage[`session_appByKey_${appKey}_visibility$`]('open')
-        storage[`session_workspaceByKey_${app$().workspaceKey}_openAppKeys$`]((v, eqKey) => {
-          const i = v.indexOf(appKey)
-          if (i !== -1) v.splice(i, 1) // remove
-          v.unshift(appKey) // place at beginning
-          v[eqKey] = Math.random()
-          return v
-        })
-        break
-      }
-      case 'open': {
-        // bring to front or minimize
-        const appKey = app$().key
-        storage[`session_workspaceByKey_${app$().workspaceKey}_openAppKeys$`]((v, eqKey) => {
-          const i = v.indexOf(appKey)
-          if (i > -1) {
-            v.splice(i, 1) // remove (to e.g. let 3rd app become 2nd)
-            if (i === 0) storage[`session_appByKey_${appKey}_visibility$`]('minimized')
-            else v.unshift(appKey) // place at beginning
-            v[eqKey] = Math.random()
-          }
-          return v
-        })
-        break
-      }
-    }
-  })
+  //   switch (app$().visibility) {
+  //     case 'closed': {
+  //       // open
+  //       storage[`session_appByKey_${app$().key}_visibility$`]('open')
+  //       storage[`session_workspaceByKey_${app$().workspaceKey}_openAppKeys$`]((v, eqKey) => {
+  //         const appKey = app$().key
+  //         const i = v.indexOf(appKey)
+  //         if (i !== -1) v.splice(i, 1) // remove
+  //         v.unshift(appKey) // place at beginning
+  //         v[eqKey] = Math.random()
+  //         return v
+  //       })
+  //       break
+  //     }
+  //     case 'minimized': {
+  //       // maximize
+  //       const appKey = app$().key
+  //       storage[`session_appByKey_${appKey}_visibility$`]('open')
+  //       storage[`session_workspaceByKey_${app$().workspaceKey}_openAppKeys$`]((v, eqKey) => {
+  //         const i = v.indexOf(appKey)
+  //         if (i !== -1) v.splice(i, 1) // remove
+  //         v.unshift(appKey) // place at beginning
+  //         v[eqKey] = Math.random()
+  //         return v
+  //       })
+  //       break
+  //     }
+  //     case 'open': {
+  //       // bring to front or minimize
+  //       const appKey = app$().key
+  //       storage[`session_workspaceByKey_${app$().workspaceKey}_openAppKeys$`]((v, eqKey) => {
+  //         const i = v.indexOf(appKey)
+  //         if (i > -1) {
+  //           v.splice(i, 1) // remove (to e.g. let 3rd app become 2nd)
+  //           if (i === 0) storage[`session_appByKey_${appKey}_visibility$`]('minimized')
+  //           else v.unshift(appKey) // place at beginning
+  //           v[eqKey] = Math.random()
+  //         }
+  //         return v
+  //       })
+  //       break
+  //     }
+  //   }
+  // })
 
   const squircleColor$ = useComputed(() => {
     const visibility = app$().visibility
@@ -1319,10 +1319,10 @@ f('toolbarAppLauncher', function () {
     }
   })
 
+  // @custom:longpress=${onLongPress}
   return this.h`<div
     ref=${appRef$}
-    onclick=${onClick}
-    @custom:longpress=${onLongPress}
+    onclick=${onLongPress}
     id=${`scope_df81hd_${app$().key}`}
     style=${`
       anchor-name: ${anchorName$()};
