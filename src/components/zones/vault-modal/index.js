@@ -98,20 +98,36 @@ f('vaultMessenger', function () {
     cleanup(() => { ac.abort() })
 
     const vaultOrigin = new URL(vaultUrl$()).origin
+    let renderHandshakeController
+    const stopRenderHandshake = () => {
+      if (!renderHandshakeController) return
+      renderHandshakeController.abort()
+    }
+    const trackRenderHandshakeController = controller => {
+      renderHandshakeController = controller
+      if (!controller) return
+      controller.signal.addEventListener('abort', () => {
+        if (renderHandshakeController === controller) renderHandshakeController = null
+      }, { once: true })
+    }
     vaultIframeRef$().addEventListener('load', () => {
-      postMessage(
-        vaultIframeRef$().contentWindow,
-        { code: 'RENDER', payload: null },
-        { targetOrigin: vaultOrigin }
-      )
-    }, { once: true, signal: ac.signal })
+      stopRenderHandshake()
+      const controller = startRenderHandshake({
+        vaultIframe: vaultIframeRef$(),
+        vaultOrigin,
+        vaultPort$,
+        abortSignal: ac.signal
+      })
+      trackRenderHandshakeController(controller)
+    }, { signal: ac.signal })
     initMessageListener({
       vaultIframe: vaultIframeRef$(),
       vaultOrigin,
       vaultPort$,
       componentSignal: ac.signal,
       widgetHeight$,
-      storage
+      storage,
+      stopRenderHandshake
     })
     isVaultMessengerReady$(true)
   }, { after: 'rendering' })
@@ -151,7 +167,8 @@ function initMessageListener ({
   vaultPort$,
   componentSignal,
   widgetHeight$,
-  storage
+  storage,
+  stopRenderHandshake
 }) {
   const vaultModalStore = useVaultModalStore()
   let currentVaultPort = null
@@ -182,6 +199,7 @@ function initMessageListener ({
     currentVaultPort = e.ports[0]
     listenToVaultMessages({ vaultPort: currentVaultPort, signal: AbortSignal.any([componentSignal, ac.signal]) })
     // before setting vaultPort$, which could trigger other messages to vault
+    stopRenderHandshake?.()
     tellVaultImReady(currentVaultPort)
     vaultPort$(currentVaultPort)
   }, { signal: componentSignal })
@@ -217,6 +235,56 @@ function initMessageListener ({
     }
     postMessage(vaultPort, readyMsg)
   }
+}
+
+function startRenderHandshake ({
+  vaultIframe,
+  vaultOrigin,
+  vaultPort$,
+  abortSignal
+}) {
+  if (abortSignal?.aborted) return null
+  const controller = new AbortController()
+  const { signal } = controller
+  let retryId
+  const stop = () => {
+    if (controller.signal.aborted) return
+    controller.abort()
+  }
+  if (abortSignal) abortSignal.addEventListener('abort', stop, { once: true })
+  signal.addEventListener('abort', () => {
+    if (retryId) clearTimeout(retryId)
+  }, { once: true })
+
+  const MAX_ATTEMPTS = 40
+  let attempts = 0
+  const sendRender = () => {
+    if (signal.aborted) return
+    const targetWindow = vaultIframe?.contentWindow
+    if (!targetWindow) {
+      stop()
+      return
+    }
+    postMessage(
+      targetWindow,
+      { code: 'RENDER', payload: null },
+      { targetOrigin: vaultOrigin }
+    )
+    if (vaultPort$()) {
+      stop()
+      return
+    }
+    if (attempts >= MAX_ATTEMPTS) {
+      stop()
+      return
+    }
+    attempts += 1
+    const delay = Math.min(500, 50 * attempts)
+    retryId = setTimeout(sendRender, delay)
+  }
+
+  sendRender()
+  return controller
 }
 
 export function useRequestVaultMessage (vaultPort$) {
