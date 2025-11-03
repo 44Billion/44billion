@@ -92,7 +92,7 @@ f('permissionDialog', function () {
       }
     },
     async queryPermission (req) {
-      if (req.app.id && req.name === 'openApp') return false
+      if (req.eKind == null || (req.app.id && req.name === 'openApp')) return false
       return hasPermission(req.app.id, req.name, req.eKind)
     },
     async requestPermission (req) {
