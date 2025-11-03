@@ -14,9 +14,11 @@ export default function useLongPress (container$, node$) {
       const abortController = new AbortController()
       const { signal } = abortController
       const watchedNodesSet = new Set()
+      const restoreStyleByNodeMap = new WeakMap()
       stateByContainerMap.set(container, {
         abortController,
-        watchedNodesSet
+        watchedNodesSet,
+        restoreStyleByNodeMap
       })
 
       let shouldPause = false
@@ -87,6 +89,16 @@ export default function useLongPress (container$, node$) {
         return false
       }
 
+      function preventNativeContextMenu (e) {
+        for (const watchedNode of watchedNodesSet) {
+          if (watchedNode.contains(e.target)) {
+            e.preventDefault()
+            return
+          }
+        }
+      }
+
+      container.addEventListener('contextmenu', preventNativeContextMenu, { signal, capture: true })
       container.addEventListener('pointerdown', startListener, { signal })
       container.addEventListener('click', function maybeCancelClick (e) {
         if (!hasTriggeredLongPress) return
@@ -96,13 +108,41 @@ export default function useLongPress (container$, node$) {
       }, { signal, capture: true /* ancestors first */ })
     }
 
-    stateByContainerMap.get(container).watchedNodesSet.add(node)
+    const state = stateByContainerMap.get(container)
+    state.watchedNodesSet.add(node)
+
+    if (node instanceof Element && !state.restoreStyleByNodeMap.has(node)) {
+      // iOS Safari ignores contextmenu prevention, so disable its native long-press UI via inline styles
+      const previousTouchCallout = node.style.webkitTouchCallout
+      const previousUserSelect = node.style.userSelect
+      const previousWebkitUserSelect = node.style.webkitUserSelect
+      const previousTouchAction = node.style.touchAction
+
+      node.style.webkitTouchCallout = 'none'
+      node.style.userSelect = 'none'
+      node.style.webkitUserSelect = 'none'
+      if (!previousTouchAction) node.style.touchAction = 'manipulation'
+
+      state.restoreStyleByNodeMap.set(node, () => {
+        node.style.webkitTouchCallout = previousTouchCallout
+        node.style.userSelect = previousUserSelect
+        node.style.webkitUserSelect = previousWebkitUserSelect
+        node.style.touchAction = previousTouchAction
+      })
+    }
 
     cleanup(() => {
-      const state = stateByContainerMap.get(container)
-      state.watchedNodesSet.delete(node)
-      if (state.watchedNodesSet.size === 0) {
-        state.abortController.abort()
+      const currentState = stateByContainerMap.get(container)
+      currentState.watchedNodesSet.delete(node)
+
+      const restore = currentState.restoreStyleByNodeMap.get(node)
+      if (restore) {
+        restore()
+        currentState.restoreStyleByNodeMap.delete(node)
+      }
+
+      if (currentState.watchedNodesSet.size === 0) {
+        currentState.abortController.abort()
         stateByContainerMap.delete(container)
         if (stateByContainerMap.size === 0) stateByContainerMap = undefined
       }
