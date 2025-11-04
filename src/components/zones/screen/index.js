@@ -1133,10 +1133,10 @@ f('appLaunchersMenu', function () {
       this.removeApp({ isDeleteStep: true }) // may throw
 
       this.close() // close menu
-      await this.maybeClearAppStorage()
       storage[`session_workspaceByKey_${workspaceKey}_pinnedAppIds$`](v => (v ?? []).filter(v2 => v2 !== appId))
       storage[`session_workspaceByKey_${workspaceKey}_unpinnedAppIds$`](v => (v ?? []).filter(v2 => v2 !== appId))
       storage[`session_workspaceByKey_${workspaceKey}_appById_${appId}_appKeys$`](undefined)
+      await this.maybeClearAppStorage()
     },
     render: useCallback(function () {
       const {
