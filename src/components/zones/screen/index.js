@@ -364,7 +364,7 @@ f('appWindow', function () {
       src=${appIframeSrc$()}
     />
     <iframe
-      class='ilde-tilde-napp-page'
+      class='tilde-tilde-napp-page'
       ref=${trustedAppIframeRef$}
       src=${trustedAppIframeSrc$()}
     />
