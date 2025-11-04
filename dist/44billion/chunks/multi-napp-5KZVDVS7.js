@@ -400,7 +400,7 @@ import{a as x,b as L,c as j,d as ie,e as re,f as N,g as U,h as g,i as O,j as T,k
       src=${$()}
     />
     <iframe
-      class='ilde-tilde-napp-page'
+      class='tilde-tilde-napp-page'
       ref=${p}
       src=${l()}
     />
