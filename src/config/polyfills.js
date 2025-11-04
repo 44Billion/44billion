@@ -32,3 +32,19 @@ if (typeof window !== 'undefined' && typeof window.cancelIdleCallback !== 'funct
     clearTimeout(handle)
   }
 }
+
+if (typeof ReadableStream !== 'undefined' && !ReadableStream.prototype[Symbol.asyncIterator]) {
+  // Safari lacks async iteration support for ReadableStream
+  ReadableStream.prototype[Symbol.asyncIterator] = function () {
+    const reader = this.getReader()
+    return {
+      next () {
+        return reader.read()
+      },
+      return () {
+        reader.releaseLock()
+        return Promise.resolve({ done: true })
+      }
+    }
+  }
+}
