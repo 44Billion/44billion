@@ -21,7 +21,7 @@ f('permissionDialog', function () {
     queue$: [],
     getPermissionId (req) { return `${req.app.id}:${req.name}:${req.eKind ?? ''}` },
     isSingularPermission (req) {
-      return req.eKind == null || req.eKind === 5
+      return req.eKind == null || req.eKind === 5 || req.eKind === 62
     },
     addPermissionRequest (req) {
       this.queue$(v => {
@@ -129,13 +129,47 @@ f('permissionDialogStack', function () {
       0: 'profiles',
       1: 'short text notes',
       3: 'follow lists',
-      6: 'renotes',
+      4: '(legacy) direct messages',
+      6: 'short text renotes',
       7: 'reactions',
+      13: 'message seals',
+      14: '(public) chat messages', // if signed, they won't be gift-wrapped/sealed
+      15: '(public) file decryption keys',
       16: 'renotes',
       20: 'pictures',
       21: 'videos',
-      9734: 'zaps',
-      30023: 'long text notes'
+      22: 'short vertical videos',
+      1018: 'poll responses',
+      1059: 'recipient directions',
+      1068: 'polls',
+      1111: 'comments',
+      1222: 'short voice notes',
+      1244: 'short voice comments',
+      1984: 'misconduct reports',
+      7376: 'nutzap redemption logs',
+      9321: 'nutzaps',
+      9734: 'bitcoin pre-payment data',
+      9735: 'bitcoin receipts',
+      10002: 'home server configurations',
+      10019: 'nutzap receiving addresses',
+      27235: 'API authentication requests',
+      30008: 'profile badges',
+      30009: 'profile badge definitions',
+      30023: 'long text notes',
+      30311: 'livestreams',
+      30402: 'classified listings',
+      30403: '(draft) classified listings',
+      31922: 'date events',
+      31923: 'time events',
+      31924: 'calendars',
+      31925: 'event RSVPs',
+      34600: 'files',
+      37348: 'napp stalls',
+      37349: '(next) napp stalls',
+      37350: '(draft) napp stalls',
+      37448: 'napp bundles',
+      37449: '(next) napp bundles',
+      37450: '(draft) napp bundles'
     },
     getEKindToText (kind, name) {
       if (name === 'readProfile') return 'your profile'
@@ -166,6 +200,15 @@ f('permissionDialogStack', function () {
         const deleteTags = ['e', 'a']
         const deleteCount = event.tags.filter(t => deleteTags.includes(t[0])).length || 1
         dynText = `delete ${deleteCount} ${deleteCount === 1 ? 'item' : 'items'}`
+      } else if (eKind === 62) {
+        const relayTags = event.tags.filter(t => t[0] === 'relay')
+        const relayCount = relayTags.some(v => v === 'ALL_RELAYS')
+          ? Infinity
+          : relayTags.length || 1
+        dynText = `delete ALL your items from ${relayCount === Infinity
+          ? 'ALL servers'
+          : `${relayCount} ${relayCount === 1 ? 'server' : 'servers'}`
+        }`
       } else if (name === 'openApp') {
         const { targetApp } = meta ?? {}
         if (!targetApp) throw new Error('Missing app parameter for openApp permission')
