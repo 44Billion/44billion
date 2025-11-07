@@ -914,7 +914,7 @@ f('toolbarAppList', function () {
         window.requestIdleCallback(() => {
           this.app$(nextApp)
           this.open()
-        })
+        }, { timeout: 150 })
       }
     }
   }), { isStatic: false })

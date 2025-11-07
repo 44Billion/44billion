@@ -12,7 +12,7 @@ f('pointerupInterceptor', function () {
       if (this.isFirstRun$.get(false)) { this.isFirstRun$.set(false); return false }
       return isOpen
     },
-    onPointerUp () { requestIdleCallback(() => this.dialogRef$().hidePopover()) }
+    onPointerUp () { requestIdleCallback(() => this.dialogRef$().hidePopover(), { timeout: 150 }) }
   }))
   useTask(({ track }) => {
     if (!track(() => store.shouldOpen$())) return

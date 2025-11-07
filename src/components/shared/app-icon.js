@@ -51,7 +51,7 @@ f('appIcon', function () {
       console.error('Failed to load app icon for appId:', appId, err)
     } finally {
       // after the other task sets the icon url
-      requestIdleCallback(() => isLoading$(false))
+      requestIdleCallback(() => isLoading$(false), { timeout: 150 })
     }
   })
 
