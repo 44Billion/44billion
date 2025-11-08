@@ -44,7 +44,7 @@
     "@scure/base": "^2.0.0",
     "mime": "^4.0.7",
     "nostr-tools": "^2.16.2",
-    "thenameisf": "^1.0.2",
+    "thenameisf": "^1.0.4",
     "url-router": "^13.0.0"
   }
 }
