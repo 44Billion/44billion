@@ -153,6 +153,7 @@ function addUser ({ userPk, storage, isFirstTimeUser: _ }) {
 // ]
 export async function setAccountsState (nextAccountState, storage) {
   const currentWorkspaceKeys = storage.session_workspaceKeys$() || []
+  const currentOpenWorkspaceKeys = storage.session_openWorkspaceKeys$() || []
   const defaultUserPk = storage.session_defaultUserPk$()
 
   // Check if we only have the default user currently
@@ -260,12 +261,21 @@ export async function setAccountsState (nextAccountState, storage) {
       storage[`session_workspaceByKey_${wsKey}_unpinnedAppIds$`]([])
     }
 
+    const workspacesToRemoveSet = new Set(workspacesToRemove)
     const nextWorkspaceKeys = currentWorkspaceKeys
-      .filter(wsKey => !workspacesToRemove.includes(wsKey))
+      .filter(wsKey => !workspacesToRemoveSet.has(wsKey))
       .concat(newWorkspaceKeys)
 
+    // Preserve the previous open workspace ordering for existing workspaces
+    const nextWorkspaceKeysSet = new Set(nextWorkspaceKeys)
+    const preservedOpenWorkspaceKeys = currentOpenWorkspaceKeys
+      .filter(wsKey => nextWorkspaceKeysSet.has(wsKey))
+    const preservedOpenWorkspaceKeysSet = new Set(preservedOpenWorkspaceKeys)
+    const nextOpenWorkspaceKeys = preservedOpenWorkspaceKeys
+      .concat(nextWorkspaceKeys.filter(wsKey => !preservedOpenWorkspaceKeysSet.has(wsKey)))
+
     // Update workspace lists
-    storage.session_openWorkspaceKeys$(nextWorkspaceKeys)
+    storage.session_openWorkspaceKeys$(nextOpenWorkspaceKeys)
     // This one is after storage.session_openWorkspaceKeys$(nextWorkspaceKeys)
     // because it will trigger useTask above that may
     // add a default user if empty, changing both arrays
