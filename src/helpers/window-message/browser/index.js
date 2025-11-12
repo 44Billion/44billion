@@ -262,7 +262,7 @@ export async function initMessageListener (
   const appMetadataCache = new Map() // Cache app metadata by app ID
   const appFetchingState = new Map() // Track fetching state by app ID
   // Helper function to gather app metadata for permission requests
-  async function getAppMetadata (appIdParam, appAddressParam) {
+  async function getAppMetadata (appIdParam, appAddressParam, { timeoutMs = 1750 } = {}) {
     if (appMetadataCache.has(appIdParam)) return appMetadataCache.get(appIdParam)
 
     if (!appFetchingState.has(appIdParam)) {
@@ -307,7 +307,9 @@ export async function initMessageListener (
 
     const metadataPromise = (async () => {
       if (promises.length > 0) {
-        await Promise.race([...promises, new Promise(resolve => setTimeout(resolve, 1750))])
+        const combinedPromises = Promise.all(promises)
+          .then(() => appMetadataCache.set(appIdParam, appObject))
+        await Promise.race([combinedPromises, new Promise(resolve => setTimeout(resolve, timeoutMs))])
       }
 
       appMetadataCache.set(appIdParam, appObject)
@@ -339,7 +341,7 @@ export async function initMessageListener (
             const encodedAppId = match[1]
             const targetAppAddress = appDecode(encodedAppId)
             targetAppId = addressObjToAppId(targetAppAddress)
-            const targetAppMetadata = await getAppMetadata(targetAppId, targetAppAddress)
+            const targetAppMetadata = await getAppMetadata(targetAppId, targetAppAddress, { timeoutMs: 0 })
 
             await requestPermission({
               app: await getAppMetadata(appId, appAddress),
@@ -388,7 +390,7 @@ export async function initMessageListener (
             break
           }
           const { ns, method, params = [] } = e.data.payload
-          const appMetadata = await getAppMetadata(appId, appAddress)
+          const appMetadata = await getAppMetadata(appId, appAddress, { timeoutMs: 0 })
           let msg
           try {
             msg = await requestNip07Message(
