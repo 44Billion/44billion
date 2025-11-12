@@ -25,7 +25,7 @@ import { base16ToBase62, base62ToBase16 } from '#helpers/base62.js'
 // each with 0-*
 
 const coreAppIds = [
-  '+33a0T7tbskjjdCMkBKV5Fn9obDCVLwdLlFbfthUcU0khDZh1eZVPL0mV', // jumble dtonon fork w/ window.nostr.peekPublicKey()
+  '+32PaEXMJYPC2Hj9F1oRFfg7RTwdBlbFuPQE85fvjsF2ygI4cPTw0YoUh', // fevela from dtonon w/ window.nostr.peekPublicKey()
   '+cB3lFAQviXRJmg7z5TJJoPALS3CKwd2Pvs2rSVW5hflKR70lfbqbBklPQ' // nappstore
 ].map(appDecode).map(addressObjToAppId) // ['44b', 'minimoon', 'nappstore']
 
