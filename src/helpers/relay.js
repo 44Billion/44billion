@@ -1,3 +1,5 @@
+export { Relay } from 'nostr-tools/relay'
+
 export function isValidRelayUrl (url) {
   try {
     const urlObject = new URL(url)

@@ -6,10 +6,15 @@ export async function getAppBundle (appIdObj, userRelays) {
   userRelays ??= (await getUserRelays(appIdObj.pubkey))[appIdObj.pubkey]
   if (userRelays.write.length === 0) return
 
-  const bundles = await nostrRelays.getEvents(
+  const bundlesResponse = await nostrRelays.getEvents(
     { authors: [appIdObj.pubkey], kinds: [appIdObj.kind], '#d': [appIdObj.dTag], limit: 1 },
     userRelays.write
   )
+  if (!bundlesResponse.success) {
+    throw bundlesResponse.errors?.[0]?.reason ||
+      new Error('Failed to fetch app bundle events')
+  }
+  const bundles = bundlesResponse.result ?? []
   return bundles.sort((a, b) => b.created_at - a.created_at)[0]
 }
 
@@ -48,6 +53,7 @@ export async function getEventsByStrategy (filter, st /*, timeoutMs = 3000 */) {
         })
         const promises = Object.entries(usersByRelay).map(([pickedRelay, authors]) =>
           nostrRelays.getEventsAsap({ ...filter, authors }, [pickedRelay])
+            .then(response => response.result ?? [])
         )
 
         const results = await Promise.allSettled(promises)
@@ -102,7 +108,8 @@ export async function getEventsByStrategy (filter, st /*, timeoutMs = 3000 */) {
             pickedRelays.add(r)
           }
         })
-        return nostrRelays.getEventsAsap(filter, [...pickedRelays])
+        const { result } = await nostrRelays.getEventsAsap(filter, [...pickedRelays])
+        return result
       }
     }
     default: throw new Error('Pick a strategy')
@@ -111,7 +118,12 @@ export async function getEventsByStrategy (filter, st /*, timeoutMs = 3000 */) {
 
 async function getUserRelays (authors) {
   if (!Array.isArray(authors)) authors = [authors]
-  const relayLists = await nostrRelays.getEvents({ authors, kinds: [10002], limit: authors.length }, seedRelays)
+  const relayListsResponse = await nostrRelays.getEvents({ authors, kinds: [10002], limit: authors.length }, seedRelays)
+  if (!relayListsResponse.success) {
+    throw relayListsResponse.errors?.[0]?.reason ||
+      new Error('Failed to fetch relay lists')
+  }
+  const relayLists = relayListsResponse.result ?? []
   const seenAuthorsObj = {}
   const keyAllowList = { read: true, write: true }
   const defaultRelayTypes = Object.keys(keyAllowList)

@@ -1,4 +1,4 @@
-import { Relay } from 'nostr-tools/relay'
+import { Relay } from '#helpers/relay.js'
 import { maybeUnref } from '#helpers/timer.js'
 
 export const seedRelays = [
@@ -10,10 +10,10 @@ export const seedRelays = [
   'wss://indexer.coracle.social'
 ]
 export const freeRelays = [
-  'wss://relay.damus.io',
-  'wss://relay.nostr.band',
+  'wss://relay.primal.net',
   'wss://nos.lol',
-  'wss://relay.primal.net'
+  'wss://relay.damus.io',
+  'wss://relay.nostr.band'
 ]
 
 // Interacts with Nostr relays
@@ -64,108 +64,160 @@ export class NostrRelays {
   // Get events from a list of relays
   async getEvents (filter, relays, timeout = 5000) {
     const events = []
+    const resolveOrReject = (resolve, reject, err) => {
+      err ? reject(err) : resolve()
+    }
     const promises = relays.map(async (url) => {
+      let sub
+      let isClosed = false
+      const p = Promise.withResolvers()
+      const timer = maybeUnref(setTimeout(() => {
+        sub?.close()
+        isClosed = true
+        resolveOrReject(p.resolve, p.reject, new Error(`timeout: ${url}`))
+      }, timeout))
       try {
         const relay = await this.#getRelay(url)
-        return new Promise((resolve) => {
-          const sub = relay.subscribe([filter], {
-            onevent: (event) => {
-              events.push(event)
-            },
-            onclose: () => {
-              clearTimeout(timer)
-              resolve()
-            },
-            oneose: () => {
-              clearTimeout(timer)
-              resolve()
-            }
-          })
-          const timer = maybeUnref(setTimeout(() => {
+        sub = relay.subscribe([filter], {
+          onevent: (event) => {
+            events.push(event)
+          },
+          onclose: err => {
+            clearTimeout(timer)
+            if (isClosed) return
+            resolveOrReject(p.resolve, p.reject, err /* may be empty (closed normally) */)
+          },
+          oneose: () => {
+            clearTimeout(timer)
+            isClosed = true
             sub.close()
-            resolve()
-          }, timeout))
+            p.resolve()
+          }
         })
-      } catch (error) {
-        console.error(`Failed to get events from ${url}`, error)
+
+        await p.promise
+      } catch (err) {
+        clearTimeout(timer)
+        p.reject(err)
       }
     })
 
     const results = await Promise.allSettled(promises)
-    if (results.some(v => v.status === 'rejected')) throw new Error(results[0].reason)
-    return events
+    const rejectedResults = results.filter(v => v.status === 'rejected')
+
+    return {
+      result: events,
+      errors: rejectedResults.map(v => ({ reason: v.reason, relay: relays[results.indexOf(v)] })),
+      success: events.length > 0 || results.length !== rejectedResults.length
+    }
   }
 
   // Considering write relays should be synced, first to reply
   // should be picked and the rest unsubscribed
   async getEventsAsap (filter, relays, timeout = 5000) {
-    return new Promise((resolve) => {
-      const subs = new Map()
-      let winner = null
+    const subs = new Map()
+    const errors = []
+    const winnerEvents = []
+    let winner = null
+    let closedRelaySubs = 0
+    let isResolved = false
+    const p = Promise.withResolvers()
 
-      const timer = maybeUnref(setTimeout(() => {
-        subs.forEach(sub => sub.close())
-        resolve([])
-      }, timeout))
+    const finalize = (events) => {
+      if (isResolved) return
+      isResolved = true
+      clearTimeout(timer)
+      subs.forEach(sub => sub.close())
+      p.resolve({
+        result: events,
+        errors,
+        success: events.length > 0 || relays.length !== errors.length
+      })
+    }
 
-      let closedRelaySubs = 0
-      for (const url of relays) {
-        this.#getRelay(url).then(relay => {
-          if (winner) return
+    const timer = maybeUnref(setTimeout(() => {
+      finalize([])
+    }, timeout))
 
-          const events = []
-          const sub = relay.subscribe([filter], {
-            onevent: (event) => {
-              if (!winner) {
-                winner = sub
-                // Close other subs
-                subs.forEach(s => { if (s !== winner) s.close() })
-                clearTimeout(timer)
-              }
-
-              if (sub === winner) {
-                events.push(event)
-              }
-            },
-            onclose: () => {
-              if ((++closedRelaySubs).length < relays.length) return
-
-              clearTimeout(timer)
-              resolve(events)
-            },
-            oneose: () => {
-              if (sub === winner) {
-                clearTimeout(timer)
-                resolve(events)
-              }
-              sub.close()
-            }
-          })
-          subs.set(url, sub)
-        }).catch(error => {
-          console.error(`Nostr relay error at ${url}: ${error}`)
-        })
+    const markClosedAndMaybeFinish = () => {
+      closedRelaySubs += 1
+      if (!isResolved && closedRelaySubs >= relays.length) {
+        finalize(winnerEvents)
       }
-    })
+    }
+
+    for (const url of relays) {
+      this.#getRelay(url).then(relay => {
+        if (isResolved) return
+
+        const sub = relay.subscribe([filter], {
+          onevent: (event) => {
+            if (!winner) {
+              winner = sub
+              subs.forEach(s => { if (s !== winner) s.close() })
+              clearTimeout(timer)
+            }
+
+            if (sub === winner) {
+              winnerEvents.push(event)
+            }
+          },
+          onclose: (err) => {
+            subs.delete(url)
+            if (err) {
+              const reason = err instanceof Error ? err : new Error(String(err))
+              errors.push({ reason, relay: url })
+            }
+            markClosedAndMaybeFinish()
+          },
+          oneose: () => {
+            sub.close()
+            if (sub === winner) {
+              finalize(winnerEvents)
+            }
+          }
+        })
+        subs.set(url, sub)
+      }).catch(error => {
+        errors.push({ reason: error, relay: url })
+        console.error(`Nostr relay error at ${url}: ${error}`)
+        markClosedAndMaybeFinish()
+      })
+    }
+
+    return p.promise
   }
 
   // Send an event to a list of relays
   async sendEvent (event, relays, timeout = 3000) {
     const promises = relays.map(async (url) => {
+      let timer
       try {
-        const relay = await this.#getRelay(url)
-        const timer = maybeUnref(setTimeout(() => {
-          throw new Error(`Timeout sending event to ${url}`)
+        timer = maybeUnref(setTimeout(() => {
+          throw new Error(`timeout: ${url}`)
         }, timeout))
+        const relay = await this.#getRelay(url)
         await relay.publish(event)
+      } catch (err) {
+        if (err.message?.startsWith('duplicate:')) return
+        if (err.message?.startsWith('mute:')) {
+          console.info(`${url} - ${err.message}`)
+          return
+        }
+        throw err
+      } finally {
         clearTimeout(timer)
-      } catch (error) {
-        console.error(`Failed to send event to ${url}`, error)
       }
     })
 
     const results = await Promise.allSettled(promises)
-    if (results.some(v => v.status === 'rejected')) throw new Error(results[0].reason)
+    const rejectedResults = results.filter(v => v.status === 'rejected')
+
+    return {
+      result: null,
+      errors: rejectedResults.map(v => ({ reason: v.reason, relay: relays[results.indexOf(v)] })),
+      success: results.length !== rejectedResults.length
+    }
   }
 }
 
