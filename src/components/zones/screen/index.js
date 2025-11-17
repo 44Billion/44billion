@@ -855,6 +855,7 @@ f('toolbarAvatar', function () {
       width: 40px; height: 40px; display: flex; justify-content: center; align-items: center;
       border-radius: 50%;
       position: relative;
+      cursor: pointer;
     `}
   >
     <a-avatar props=${{ pk$: userPk$, size: '32px', weight$: 'duotone', strokeWidth$: 1 }} />
@@ -1163,6 +1164,7 @@ f('appLaunchersMenu', function () {
               &.invisible { display: none; }
               display: flex;
               align-items: center;
+              cursor: pointer;
             }
             .icon-wrapper-271yiduh {
               flex: 0 1 min-content;
@@ -1356,7 +1358,13 @@ f('toolbarAppLauncher', function () {
     ${this.s`<svg viewbox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" class="squircle">
       <path d="M 0, 100 C 0, 12 12, 0 100, 0 S 200, 12 200, 100 188, 200 100, 200 0, 188 0, 100"></path>
     </svg>`}
-    <div style='padding: 4px; width: 100%; height: 100%; z-index: 1; cursor: pointer;'>
+    <div style=${`
+      width: 32px; height: 32px; z-index: 1; cursor: pointer;
+      overflow: hidden;
+      border-radius: 10px;
+      background-color: ${cssVars.colors.bgAvatar};
+      color: ${cssVars.colors.fg3};
+    `}>
       <app-icon props=${{
         app$
       }} />

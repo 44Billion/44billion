@@ -332,6 +332,10 @@ f('permissionDialogCard', function () {
           width: 40px;
           height: 40px;
           position: relative;
+          overflow: hidden;
+          border-radius: 10px;
+          background-color: ${cssVars.colors.bgAvatar};
+          color: ${cssVars.colors.fg3};
         }
 
         .app-info {

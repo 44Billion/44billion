@@ -63,7 +63,6 @@ f('appIcon', function () {
         border-style: solid;
         border-width: 0;
         overflow: hidden;
-        border-radius: 10px;
         background-color: ${cssVars.colors.bg2};
       `}
     >
@@ -93,17 +92,12 @@ f('appIcon', function () {
           width: 100%;
           height: 100%;
           object-fit: cover;
-          border-radius: 10px;
-          background-color: ${cssVars.colors.bgAvatar};
           ${style$()}
         `}
       />
     `
     : this.h`
       <span style=${`
-        border-radius: 10px;
-        background-color: ${cssVars.colors.bgAvatar};
-        color: ${cssVars.colors.fg3};
         font-weight: bold;
         font-size: 14px;
         display: flex;
