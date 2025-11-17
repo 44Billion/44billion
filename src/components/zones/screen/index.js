@@ -91,7 +91,7 @@ f('aScreen', function () {
         min-width: 50px;
       }
       flex: 0 0 auto;
-      background-color: ${cssVars.colors.mg};
+      background-color: ${cssVars.colors.bg2};
       /**/
     }
   `)
@@ -166,7 +166,7 @@ f('windowsBackground', function () {
         justify-content: center;
         text-align: center;
         padding: clamp(24px, 6vmin, 80px);
-        color: ${cssVars.colors.mgFont};
+        color: ${cssVars.colors.fg2};
         z-index: 0;
         inset: 0;
         position: absolute;
@@ -597,8 +597,8 @@ f('toolbarMenu', function () {
             padding: 4px;
             min-width: 200px;
             max-width: 230px;
-            background-color: ${cssVars.colors.mg};
-            color: ${cssVars.colors.mgFont};
+            background-color: ${cssVars.colors.bg2};
+            color: ${cssVars.colors.fg2};
             border-radius: 6px;
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
             overflow: hidden;
@@ -640,7 +640,7 @@ f('toolbarMenu', function () {
             .user-unlock-error {
               font-size: 12rem;
               font-style: italic;
-              color: ${cssVars.colors.error};
+              color: ${cssVars.colors.fgError};
               margin-top: 2px;
             }
             .user-item.unlocking {
@@ -657,7 +657,7 @@ f('toolbarMenu', function () {
               left: -2px;
               width: 16px;
               height: 16px;
-              background-color: ${cssVars.colors.accentSecondary};
+              background-color: ${cssVars.colors.bgAccentSecondary};
               border-radius: 50%;
               display: flex;
               justify-content: center;
@@ -672,7 +672,7 @@ f('toolbarMenu', function () {
               right: -2px;
               width: 16px;
               height: 16px;
-              background-color: ${cssVars.colors.accentPrimary};
+              background-color: ${cssVars.colors.bgAccentPrimary};
               border-radius: 50%;
               display: flex;
               justify-content: center;
@@ -704,8 +704,8 @@ f('toolbarMenu', function () {
               justify-content: center;
               align-items: center;
               border-radius: 50%;
-              border: 2px solid ${cssVars.colors.mgFont};
-              color: ${cssVars.colors.mgFont};
+              border: 2px solid ${cssVars.colors.fg2};
+              color: ${cssVars.colors.fg2};
               flex-shrink: 0;
             }
             .add-user-icon svg {
@@ -851,7 +851,7 @@ f('toolbarAvatar', function () {
     onclick=${onClick}
     style=${`
       anchor-name: --toolbar-avatar-menu;
-      color: ${cssVars.colors.mgFont};
+      color: ${cssVars.colors.fg2};
       width: 40px; height: 40px; display: flex; justify-content: center; align-items: center;
       border-radius: 50%;
       position: relative;
@@ -865,7 +865,7 @@ f('toolbarAvatar', function () {
           left: -2px;
           width: 16px;
           height: 16px;
-          background-color: ${cssVars.colors.accentSecondary};
+          background-color: ${cssVars.colors.bgAccentSecondary};
           border-radius: 50%;
           display: flex;
           justify-content: center;
@@ -884,7 +884,7 @@ f('toolbarAvatar', function () {
           right: -2px;
           width: 16px;
           height: 16px;
-          background-color: ${cssVars.colors.accentPrimary};
+          background-color: ${cssVars.colors.bgAccentPrimary};
           border-radius: 50%;
           display: flex;
           justify-content: center;
@@ -1220,8 +1220,8 @@ f('appLaunchersMenu', function () {
         }
       }`
       const commonCSS = `
-        background-color: ${cssVars.colors.mg};
-        color: ${cssVars.colors.mgFont};
+        background-color: ${cssVars.colors.bg2};
+        color: ${cssVars.colors.fg2};
         min-width: 120px;
         display: flex;
         flex-direction: column;
@@ -1310,12 +1310,12 @@ f('toolbarAppLauncher', function () {
     const visibility = app$().visibility
     switch (visibility) {
       case 'open':
-        return cssVars.colors.fgPrimary
+        return cssVars.colors.bg3Primary
       case 'minimized':
-        return cssVars.colors.fgSecondary
+        return cssVars.colors.bg3Secondary
       case 'closed':
       default:
-        return cssVars.colors.fg
+        return cssVars.colors.bg3
     }
   })
 

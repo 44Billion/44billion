@@ -246,8 +246,8 @@ f('permissionDialogStack', function () {
           margin: 0 auto;
           max-width: 500px;
         }
-        background-color: ${cssVars.colors.mgLighter};
-        color: ${cssVars.colors.mgFont};
+        background-color: ${cssVars.colors.bg2Lighter};
+        color: ${cssVars.colors.fg2};
         border-radius: 8px;
         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
         overflow: hidden;
@@ -321,133 +321,135 @@ f('permissionDialogCard', function () {
         align-items: center;
         padding: 5px 8px;
         transition: background-color 0.2s;
-      }
 
-      .permission-dialog-card:hover {
-        background-color: rgba(255, 255, 255, 0.05);
-      }
-
-      .app-icon {
-        margin-right: 12px;
-        flex-shrink: 0;
-        width: 40px;
-        height: 40px;
-        position: relative;
-      }
-
-      .app-info {
-        flex: 1;
-        min-width: 0;
-        margin-right: 10px;
-        top: 1px;
-        position: relative;
-      }
-
-      .app-name {
-        font-size: 15rem;
-        font-weight: 600;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-
-      .permission-text {
-        font-size: 16rem;
-        line-height: 1.3;
-        color: rgba(255, 255, 255, 0.7);
-        margin-top: 2px;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-
-      .permission-actions {
-        display: flex;
-        gap: 8px;
-        margin-left: 8px;
-      }
-
-      .permission-button {
-        padding: 6px 12px;
-        border-radius: 4px;
-        font-size: 14rem;
-        font-weight: 500;
-        cursor: pointer;
-        transition: background-color 0.2s, opacity 0.2s;
-        border: none;
-      }
-
-      .permission-button:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
-      }
-
-      .allow-button {
-        background-color: ${cssVars.colors.accentPrimary};
-        color: white;
-      }
-
-      .allow-button:hover:not(:disabled) {
-        background-color: ${cssVars.colors.primary};
-      }
-
-      .deny-button {
-        background-color: transparent;
-        color: ${cssVars.colors.mgFont};
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 32px;
-        height: 32px;
-        padding: 0;
-      }
-
-      .deny-button:hover:not(:disabled) {
-        background-color: rgba(255, 255, 255, 0.1);
-      }
-
-      .deny-button svg {
-        width: 16px;
-        height: 16px;
-      }
-
-      @media ${jsVars.breakpoints.mobile} {
-        .permission-dialog-card {
-          border-radius: 2px;
-          padding: 8px 12px;
+        &:hover {
+          background-color: rgba(255, 255, 255, 0.05);
         }
 
         .app-icon {
-          width: 32px;
-          height: 32px;
+          margin-right: 12px;
+          flex-shrink: 0;
+          width: 40px;
+          height: 40px;
+          position: relative;
+        }
+
+        .app-info {
+          flex: 1;
+          min-width: 0;
           margin-right: 10px;
+          top: 1px;
+          position: relative;
         }
 
         .app-name {
-          font-size: 14rem;
+          font-size: 15rem;
+          font-weight: 600;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
         }
 
         .permission-text {
           font-size: 16rem;
+          line-height: 1.3;
+          color: rgba(255, 255, 255, 0.7);
+          margin-top: 2px;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
         }
 
         .permission-actions {
-          gap: 6px;
+          display: flex;
+          gap: 8px;
+          margin-left: 8px;
         }
 
         .permission-button {
-          padding: 4px 8px;
-          font-size: 13rem;
+          padding: 6px 12px;
+          border-radius: 4px;
+          font-size: 14rem;
+          font-weight: 500;
+          cursor: pointer;
+          transition: background-color 0.2s, opacity 0.2s;
+          border: none;
+        }
+
+        .permission-button:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+
+        .allow-button {
+          background-color: ${cssVars.colors.bgAccentPrimary};
+          color: white;
+        }
+
+        .allow-button:hover:not(:disabled) {
+          background-color: ${cssVars.colors.bgPrimary};
         }
 
         .deny-button {
-          width: 28px;
-          height: 28px;
+          background-color: transparent;
+          color: ${cssVars.colors.fg2};
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: 32px;
+          height: 32px;
+          padding: 0;
+        }
+
+        .deny-button:hover:not(:disabled) {
+          background-color: rgba(255, 255, 255, 0.1);
         }
 
         .deny-button svg {
-          width: 14px;
-          height: 14px;
+          width: 16px;
+          height: 16px;
+        }
+
+        @media ${jsVars.breakpoints.mobile} {
+          .permission-dialog-card {
+            border-radius: 2px;
+            padding: 8px 12px;
+          }
+
+          .app-icon {
+            overflow: hidden;
+            border-radius: 10px;
+            width: 32px;
+            height: 32px;
+            margin-right: 10px;
+          }
+
+          .app-name {
+            font-size: 14rem;
+          }
+
+          .permission-text {
+            font-size: 16rem;
+          }
+
+          .permission-actions {
+            gap: 6px;
+          }
+
+          .permission-button {
+            padding: 4px 8px;
+            font-size: 13rem;
+          }
+
+          .deny-button {
+            width: 28px;
+            height: 28px;
+          }
+
+          .deny-button svg {
+            width: 14px;
+            height: 14px;
+          }
         }
       }
     `}</style>

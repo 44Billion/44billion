@@ -38,7 +38,7 @@ f('aAvatar', function () {
         height: 100%;
         object-fit: cover;
         border-radius: 50%;
-        background-color: ${cssVars.colors.header};
+        background-color: ${cssVars.colors.bgAvatar};
       `}
     />`
   }

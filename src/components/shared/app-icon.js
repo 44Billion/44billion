@@ -64,7 +64,7 @@ f('appIcon', function () {
         border-width: 0;
         overflow: hidden;
         border-radius: 10px;
-        background-color: ${cssVars.colors.mg};
+        background-color: ${cssVars.colors.bg2};
       `}
     >
       <style>${`
@@ -75,7 +75,7 @@ f('appIcon', function () {
         }
         .animate-background {
           animation: pulse 2s cubic-bezier(.4,0,.6,1) infinite;
-          background-color: ${cssVars.colors.fg};
+          background-color: ${cssVars.colors.bg3};
           position: relative;
           height: 100%;
         }
@@ -94,7 +94,7 @@ f('appIcon', function () {
           height: 100%;
           object-fit: cover;
           border-radius: 10px;
-          background-color: ${cssVars.colors.header};
+          background-color: ${cssVars.colors.bgAvatar};
           ${style$()}
         `}
       />
@@ -102,8 +102,8 @@ f('appIcon', function () {
     : this.h`
       <span style=${`
         border-radius: 10px;
-        background-color: ${cssVars.colors.header};
-        color: ${cssVars.colors.fgFont};
+        background-color: ${cssVars.colors.bgAvatar};
+        color: ${cssVars.colors.fg3};
         font-weight: bold;
         font-size: 14px;
         display: flex;
