@@ -111,14 +111,16 @@ f('vaultMessenger', function () {
       }, { once: true })
     }
     vaultIframeRef$().addEventListener('load', () => {
-      stopRenderHandshake()
-      const controller = startRenderHandshake({
-        vaultIframe: vaultIframeRef$(),
-        vaultOrigin,
-        vaultPort$,
-        abortSignal: ac.signal
-      })
-      trackRenderHandshakeController(controller)
+      setTimeout(() => {
+        stopRenderHandshake()
+        const controller = startRenderHandshake({
+          vaultIframe: vaultIframeRef$(),
+          vaultOrigin,
+          vaultPort$,
+          abortSignal: ac.signal
+        })
+        trackRenderHandshakeController(controller)
+      }, 100) // give the iframe some time for its js to init
     }, { signal: ac.signal })
     initMessageListener({
       vaultIframe: vaultIframeRef$(),
