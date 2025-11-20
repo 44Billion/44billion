@@ -40,6 +40,7 @@ const [defaultThemeCssClass, colorCssVarsObj, defaultThemeCssString] = createThe
   bg4: 'oklch(0.49 0.01 17.47)',
   bgAccentPrimary: 'oklch(0.56 0.25 302.32)',
   bgAccentSecondary: 'oklch(0.56 0.20 87.32)',
+  fgAccent: 'oklch(0.94 0.01 256)',
   bgPrimary: 'oklch(0.65 0.20 280)',
   bgSecondary: 'oklch(0.70 0.15 65)',
   fgError: 'oklch(0.55 0.22 25)'

@@ -387,7 +387,7 @@ f('permissionDialogCard', function () {
 
         .allow-button {
           background-color: ${cssVars.colors.bgAccentPrimary};
-          color: white;
+          color: ${cssVars.colors.fgAccent};
         }
 
         .allow-button:hover:not(:disabled) {
@@ -478,7 +478,7 @@ f('permissionDialogCard', function () {
           onclick=${store.deny}
           disabled=${store.isButtonsDisabled$()}
         >
-          <icon-x props={{ size: '16px' }} />
+          <icon-x props=${{ size: '16px' }} />
         </button>
       </div>
     </div>

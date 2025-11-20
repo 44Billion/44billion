@@ -962,6 +962,7 @@ f('toolbarUnpinnedApps', function () {
 f('appLaunchersMenu', function () {
   const store = useClosestStore('<a-menu>')
   const storage = useWebStorage(localStorage)
+  const { requestConfirmation } = useGlobalStore('<confirmation-dialog>')
   const menuProps = useStore(() => ({
     ...store,
     openApp () {
@@ -1128,6 +1129,14 @@ f('appLaunchersMenu', function () {
       }
     },
     async deleteApp () {
+      try {
+        await requestConfirmation({
+          confirmText: 'Delete'
+        })
+      } catch (err) { if (err.code !== 'DENIED_BY_USER') console.error(err); return }
+      await this._deleteApp()
+    },
+    async _deleteApp () {
       const { id: appId, workspaceKey } = this.app$()
       const appKeys = storage[`session_workspaceByKey_${workspaceKey}_appById_${appId}_appKeys$`]()
       if (appKeys.length !== 1) throw new Error('Can only delete an app that has a single instance')
