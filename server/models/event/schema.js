@@ -9,23 +9,30 @@ export default {
   primaryKey: 'ref',
   attributes: [
     'ref', // id or address: dTag ? bytesToBase64(sha256(new TextEncoder().encode(`${kind}:${pubkey}:${dTag}`)) : bytesToBase64(base16ToBytes(id)))
-    // [`${k} ${vN}`] // whitespace is a soft word separator - https://www.meilisearch.com/docs/learn/engine/datatypes#separators
-    // useful in case we want to turn itags searchable (instead)
-    // of just filterable
-    // for filtering, = is like an exact search though case-insensitive
-    'itags',
-    'fts', // add anything other than .content here
+    'receivedAt', // in seconds
     // keep in memory and from time to time write to db
     // and if not dirty for a while, remove from memory
-    'sat', // seen/stored at
-    'aat', // accessed at, in seconds - debounce when setting this
-    'exp', // expiration date, in seconds
+    'lastAccessedAt', // in seconds - debounce when setting this: once per day or hour
+    'expiresAt', // in seconds
+    'language', // optional, ISO 639-1 code, e.g., 'en', 'pt', 'es', 'fr', 'de', 'zh', etc
     // v nostr event v
     'id',
     'pubkey',
     'kind',
-    'tags',
-    'content',
+    'nonIndexableTags', // [tags[position], tags[position2], ...]
+    // [`${keyN} ${valueN}`] // whitespace is a soft word separator - https://www.meilisearch.com/docs/learn/engine/datatypes#separators
+    // useful in case we want to turn itags searchable (instead)
+    // of just filterable
+    // For filtering, = is like an exact search though case-insensitive
+    'indexableTags',
+    // [
+    //   [original array position, ...tags[position].slice(2)],
+    //   ...
+    // ]
+    'indexableTagExtras',
+    'fts', // optional, searchable values from tags or other metadata
+    'nonFtsContent', // not searchable
+    'ftsContent', // event.content = record.ftsContent ?? record.nonFtsContent
     'created_at',
     'sig'
   ],
@@ -35,18 +42,18 @@ export default {
       '*'
     ],
     searchableAttributes: [
-      'content',
-      'fts' // add anything other than .content here
+      'ftsContent',
+      'fts'
     ],
     filterableAttributes: [
       'id',
       'pubkey',
       'kind',
-      'itags', // k vN
+      'indexableTags',
       'created_at',
-      'sat',
-      'aat',
-      'exp'
+      'receivedAt',
+      'lastAccessedAt',
+      'expiresAt'
     ],
     sortableAttributes: [
       'created_at',
