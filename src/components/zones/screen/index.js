@@ -1050,7 +1050,7 @@ f('appLaunchersMenu', function () {
 
       let hasOtherInstances = false
       for (const wsKey of storage.session_workspaceKeys$()) {
-        hasOtherInstances = storage[`session_workspaceByKey_${wsKey}_appById_${appId}_appKeys$`]()
+        hasOtherInstances = (storage[`session_workspaceByKey_${wsKey}_appById_${appId}_appKeys$`]() ?? [])
           .some(v => v !== appKey)
         if (hasOtherInstances) break
       }
