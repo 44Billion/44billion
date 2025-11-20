@@ -27,27 +27,32 @@ const closedError = err => (err = new Error('Confirmation dialog closed')) && (e
 f('confirmation-dialog', function () {
   const cdStore = useGlobalStore('<confirmation-dialog>', () => ({
     currentRequest$: null,
+    lastRequest$: null,
     isOpen$ () {
       return Boolean(this.currentRequest$())
     },
     title$ () {
-      return this.currentRequest$()?.title ?? DEFAULT_TITLE
+      return (this.currentRequest$() ?? this.lastRequest$())?.title ?? DEFAULT_TITLE
     },
     message$ () {
-      return this.currentRequest$()?.message ?? DEFAULT_MESSAGE
+      return (this.currentRequest$() ?? this.lastRequest$())?.message ?? DEFAULT_MESSAGE
     },
     confirmText$ () {
-      return this.currentRequest$()?.confirmText ?? DEFAULT_CONFIRM_TEXT
+      return (this.currentRequest$() ?? this.lastRequest$())?.confirmText ?? DEFAULT_CONFIRM_TEXT
     },
     resolveCurrent () {
       const req = this.currentRequest$()
       if (!req) return
+
+      this.lastRequest$(req)
       this.currentRequest$(null)
       req.resolve(true)
     },
     rejectCurrent (error = rejectedError()) {
       const req = this.currentRequest$()
       if (!req) return
+
+      this.lastRequest$(req)
       this.currentRequest$(null)
       req.reject(error)
     },
