@@ -119,12 +119,13 @@ export default function useAppRouter () {
   })
 
   useTask(({ track }) => {
-    if (!NAPP_ENTITY_REGEX.test(track(() => loc.url$().pathname.split('/')[1]))) return
+    const route = track(() => loc.route$())
+    if (!NAPP_ENTITY_REGEX.test(route.url.pathname.split('/')[1])) return
 
     let appRoute
-    let { napp, appPath } = loc.params$()
+    let { napp, appPath } = route.params
     appPath = appPath.replace(/^\/{0,}/, '/')
-    const { search, hash } = loc.url$()
+    const { search, hash } = route.url
     if (appPath !== '/' || search || hash) {
       appRoute = appPath + search + hash
     } else appRoute = ''
