@@ -192,7 +192,7 @@ f('permissionDialogStack', function () {
     },
     getPemissionText (name, eKind, meta) {
       let dynText
-      if (eKind === 22242) dynText = 'tell servers who you are'
+      if (eKind === 22242) dynText = 'access content that needs login'
       else if (eKind === 5) {
         const event = meta?.params?.[0]
         if (!event) throw new Error('Missing event parameter for eKind 5 permission')
