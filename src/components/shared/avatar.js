@@ -9,10 +9,12 @@ import { cssVars } from '#assets/styles/theme.js'
 // todo: if there's kind 0 picture, use it
 f('aAvatar', function () {
   const storage = useWebStorage(localStorage)
+  const { props } = this
   const store = useStore({
-    pk$: this.props.pk$ ?? this.props.pk,
+    usePlaceholder$: props.usePlaceholder$ ?? props.usePlaceholder ?? false,
+    pk$: props.pk$ ?? props.pk,
     picture$ () {
-      const picture = storage[`session_accountByUserPk_${this.pk$()}_profile$`]()?.picture
+      const picture = props.picture$?.() ?? props.picture ?? storage[`session_accountByUserPk_${this.pk$()}_profile$`]()?.picture
       if (!picture) return null
 
       const isDataImage = /^data:image\/[a-z0-9.+-]+(?:;[a-z0-9=.+-]+)*(?:;base64)?,/i.test(picture)
@@ -44,7 +46,32 @@ f('aAvatar', function () {
   }
 
   if (!store.pk$() || !store.svg$()) {
-    return this.h`<icon-user-circle props=${this.props} />`
+    return store.usePlaceholder$()
+      ? this.h`<div
+          style=${`
+            width: 100%;
+            height: 100%;
+            border-style: solid;
+            border-width: 0;
+            overflow: hidden;
+          `}
+        >
+          <style>${`
+              @keyframes pulse {
+                50% {
+                  opacity: .5;
+                }
+              }
+            .animate-background {
+              animation: pulse 2s cubic-bezier(.4,0,.6,1) infinite;
+              background-color: ${cssVars.colors.bgAvatarLoading};
+              position: relative;
+              height: 100%;
+            }
+          `}</style>
+          <div class='animate-background' />
+        </div>`
+      : this.h`<icon-user-circle props=${this.props} />`
   }
 
   return this.h`<a-svg props=${{ ...this.props, svg: store.svg$() }} />`

@@ -29,6 +29,7 @@ const [defaultThemeCssClass, colorCssVarsObj, defaultThemeCssString] = createThe
   bg: 'oklch(0.12 0 256)',
   fg: 'oklch(0.87 0.01 256)',
   bgAvatar: 'oklch(0.25 0.01 256)',
+  bgAvatarLoading: 'oklch(0.35 0.01 256)',
   bg2: 'oklch(0.22 0 256)',
   bg2Lighter: 'oklch(0.25 0 256)',
   mg2: 'oklch(0.35 0 256)',
@@ -41,6 +42,7 @@ const [defaultThemeCssClass, colorCssVarsObj, defaultThemeCssString] = createThe
   bgAccentPrimary: 'oklch(0.56 0.25 302.32)',
   bgAccentSecondary: 'oklch(0.56 0.20 87.32)',
   fgAccent: 'oklch(0.94 0.01 256)',
+  fg2AccentPrimary: 'oklch(0.79 0.25 302.32)',
   bgPrimary: 'oklch(0.65 0.20 280)',
   bgSecondary: 'oklch(0.70 0.15 65)',
   fgError: 'oklch(0.55 0.22 25)'

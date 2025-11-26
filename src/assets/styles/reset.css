@@ -28,7 +28,6 @@ button:disabled {
   cursor: default;
 }
 input, button, textarea, select {
-  background-color: red;
   font: inherit;
 }
 a {

@@ -14,6 +14,7 @@ import {
 } from '#assets/styles/theme.js'
 import windowsBackgroundImage from '#assets/media/bg-ostrich-stained-glass.webp'
 import useAppRouter from './use-app-router.js'
+import useSystemRouter from './use-system-router.js'
 import { initMessageListener } from '#helpers/window-message/browser/index.js'
 import { base62ToBase36 } from '#helpers/base36.js'
 import { appIdToAppSubdomain } from '#helpers/app.js'
@@ -33,6 +34,7 @@ import '#shared/icons/icon-lock.js'
 f('aScreen', function () {
   useInitOrResetScreen()
   useAppRouter()
+  const { isSystemRoute$ } = useSystemRouter()
 
   const isSingleWindow$ = useWebStorage(localStorage).config_isSingleWindow$
   const style$ = useComputed(() => /* css */`
@@ -61,8 +63,9 @@ f('aScreen', function () {
 
       /* system views; above all; widgets view would be similar but below it with z-i:1 while sysviews z-i:2 */
       #system-views {
-        display: block !important; /* NO pois vai ficar sobre todos n vai poder selecionar txt etc*/
-        display: none !important; /* TODO block somente qdo rota de system der match */
+        display: ${isSystemRoute$() ? 'flex' : 'none'} !important;
+        justify-content: center;
+        background-color: ${cssVars.colors.bg};
         position: absolute;
         inset: 0;
         z-index: 1;
@@ -113,16 +116,9 @@ f('aScreen', function () {
   `
 })
 
-f('systemViews', function () {
+f('system-views', function () {
   return this.h`
-    <div
-      style=${`
-        background-color: ${cssVars.colors.bg};
-        display: none; /* while not at route */
-      `}
-    >
-      system views
-    </div>
+    <a-route props=${{ path: '/napp-updates' }} />
   `
 })
 

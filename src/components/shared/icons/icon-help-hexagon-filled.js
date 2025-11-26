@@ -14,10 +14,9 @@ f('icon-help-hexagon-filled', function () {
         path { stroke: none; }
         ${this.props.style$?.() || this.props.style || ''}
       `
-    },
+    }
   })
-  console.log(this.props)
-// 33 36
+
   return this.h`<a-svg
     props=${{
       ...store,
