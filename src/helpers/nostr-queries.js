@@ -25,7 +25,7 @@ export async function getEventsByStrategy (filter, st /*, timeoutMs = 3000 */) {
       const authors = st.authors || filter.authors
 
       // [[userPk, [...relays]]]
-      const userWriteRelays = Object.entries(await getUserRelays(authors)).map(([k, v]) => [k, v.write])
+      const userWriteRelays = Object.entries(st.userRelays || await getUserRelays(authors)).map(([k, v]) => [k, v.write])
       const relayPopularity = {}
       userWriteRelays.forEach(v => v[1].forEach(v2 => {
         relayPopularity[v2] ??= 0
@@ -116,7 +116,7 @@ export async function getEventsByStrategy (filter, st /*, timeoutMs = 3000 */) {
   }
 }
 
-async function getUserRelays (authors) {
+export async function getUserRelays (authors) {
   if (!Array.isArray(authors)) authors = [authors]
   const relayListsResponse = await nostrRelays.getEvents({ authors, kinds: [10002], limit: authors.length }, seedRelays)
   if (!relayListsResponse.success) {
