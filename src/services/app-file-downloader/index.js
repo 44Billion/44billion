@@ -18,9 +18,12 @@ export default class AppFileDownloader {
     this.sharedKey = `${appId}:${fileRootHash}`
   }
 
-  static async getBundleEvent (appId) {
+  static async getBundleEvent (appId, {
+    _getUserRelays = getUserRelays,
+    _getEventsByStrategy = getEventsByStrategy
+  } = {}) {
     const address = appIdToAddressObj(appId)
-    const relays = await getUserRelays([address.pubkey])
+    const relays = await _getUserRelays([address.pubkey])
     const writeRelays = Array.from(relays[address.pubkey].write)
 
     const filter = {
@@ -29,7 +32,7 @@ export default class AppFileDownloader {
       '#d': [address.dTag]
     }
 
-    const events = await getEventsByStrategy(filter, {
+    const events = await _getEventsByStrategy(filter, {
       code: 'WRITE_RELAYS',
       maxRelaysPerUser: 7,
       userRelays: relays
@@ -41,7 +44,13 @@ export default class AppFileDownloader {
     }
   }
 
-  async * run () {
+  async * run ({
+    _nostrRelays = nostrRelays,
+    _countFileChunksFromDb = countFileChunksFromDb,
+    _getFileChunksFromDb = getFileChunksFromDb,
+    _saveFileChunksToDB = saveFileChunksToDB
+  } = {}) {
+    const deps = { _nostrRelays, _countFileChunksFromDb, _getFileChunksFromDb, _saveFileChunksToDB }
     let state = activeDownloads.get(this.sharedKey)
     if (!state) {
       state = {
@@ -53,7 +62,7 @@ export default class AppFileDownloader {
         instances: 0,
         initPromise: null
       }
-      state.initPromise = this._initState(state)
+      state.initPromise = this._initState(state, deps)
       activeDownloads.set(this.sharedKey, state)
     }
     state.instances++
@@ -153,7 +162,7 @@ export default class AppFileDownloader {
         // Execute fetches
         const promises = []
         for (const [relayUrl, indexes] of relayAssignments) {
-          promises.push(this._fetchFromRelay(relayUrl, indexes, state))
+          promises.push(this._fetchFromRelay(relayUrl, indexes, state, deps))
         }
 
         await Promise.all(promises)
@@ -167,18 +176,18 @@ export default class AppFileDownloader {
     }
   }
 
-  async _initState (state) {
-    const dbInfo = await countFileChunksFromDb(this.appId, this.fileRootHash)
+  async _initState (state, { _countFileChunksFromDb, _getFileChunksFromDb }) {
+    const dbInfo = await _countFileChunksFromDb(this.appId, this.fileRootHash)
     if (dbInfo.total) state.total = dbInfo.total
 
-    const keys = await getFileChunksFromDb(this.appId, this.fileRootHash, { justKeys: true })
+    const keys = await _getFileChunksFromDb(this.appId, this.fileRootHash, { justKeys: true })
     for (const key of keys) {
       // key is [appId, rootHash, pos]
       state.downloaded.add(key[2])
     }
   }
 
-  async _fetchFromRelay (relayUrl, indexes, state) {
+  async _fetchFromRelay (relayUrl, indexes, state, { _nostrRelays, _saveFileChunksToDB }) {
     const { pubkey } = appIdToAddressObj(this.appId)
     const filter = {
       kinds: [34600],
@@ -187,13 +196,13 @@ export default class AppFileDownloader {
     }
 
     try {
-      const { result } = await nostrRelays.getEvents(filter, [relayUrl])
+      const { result } = await _nostrRelays.getEvents(filter, [relayUrl])
 
       const foundIndexes = new Set()
       const fakeBundle = { tags: [['file', this.fileRootHash]] }
 
       if (result && result.length > 0) {
-        await saveFileChunksToDB(fakeBundle, result, this.appId)
+        await _saveFileChunksToDB(fakeBundle, result, this.appId)
 
         for (const event of result) {
           const cTag = event.tags.find(t => t[0] === 'c' && t[1].startsWith(`${this.fileRootHash}:`))
