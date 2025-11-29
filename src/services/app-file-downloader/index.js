@@ -18,18 +18,38 @@ export default class AppFileDownloader {
     this.sharedKey = `${appId}:${fileRootHash}`
   }
 
-  static async getBundleEvent (appId, {
+  static async getBundleEvents (appIds, {
     _getUserRelays = getUserRelays,
     _getEventsByStrategy = getEventsByStrategy
   } = {}) {
-    const address = appIdToAddressObj(appId)
-    const relays = await _getUserRelays([address.pubkey])
-    const writeRelays = Array.from(relays[address.pubkey].write)
+    if (!appIds || appIds.length === 0) return {}
+
+    const appsByPubkey = {}
+    const addressByAppId = {}
+
+    for (const appId of appIds) {
+      const address = appIdToAddressObj(appId)
+      addressByAppId[appId] = address
+      if (!appsByPubkey[address.pubkey]) {
+        appsByPubkey[address.pubkey] = []
+      }
+      appsByPubkey[address.pubkey].push(address)
+    }
+
+    const pubkeys = Object.keys(appsByPubkey)
+    const relays = await _getUserRelays(pubkeys)
 
     const filter = {
-      kinds: [address.kind],
-      authors: [address.pubkey],
-      '#d': [address.dTag]
+      kinds: [],
+      authors: pubkeys,
+      '#d': [],
+      until: Math.floor(Date.now() / 1000)
+    }
+
+    for (const appId of appIds) {
+      const addr = addressByAppId[appId]
+      if (!filter.kinds.includes(addr.kind)) filter.kinds.push(addr.kind)
+      if (!filter['#d'].includes(addr.dTag)) filter['#d'].push(addr.dTag)
     }
 
     const events = await _getEventsByStrategy(filter, {
@@ -38,10 +58,24 @@ export default class AppFileDownloader {
       userRelays: relays
     })
 
-    return {
-      event: events[0],
-      writeRelays
+    const result = {}
+    for (const appId of appIds) {
+      const addr = addressByAppId[appId]
+      const event = events.find(e =>
+        e.kind === addr.kind &&
+        e.pubkey === addr.pubkey &&
+        e.tags.find(t => t[0] === 'd')?.[1] === addr.dTag
+      )
+
+      if (event) {
+        result[appId] = {
+          event,
+          writeRelays: Array.from(relays[addr.pubkey]?.write || [])
+        }
+      }
     }
+
+    return result
   }
 
   async * run ({

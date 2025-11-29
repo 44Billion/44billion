@@ -9,10 +9,12 @@ describe('AppFileDownloader', () => {
   const fileRootHash = 'hash123'
   const writeRelays = ['wss://relay1.com', 'wss://relay2.com', 'wss://relay3.com']
 
-  describe('getBundleEvent', () => {
-    it('should fetch bundle event and return it with write relays', async () => {
-      const mockEvent = { id: 'bundle1', kind: 37448, tags: [] }
+  describe('getBundleEvents', () => {
+    it('should fetch bundle events and return them grouped by appId', async () => {
+      const mockEvent = { id: 'bundle1', kind: 37448, tags: [['d', 'test']], pubkey: 'pubkey1' }
       const { pubkey } = appIdToAddressObj(appId)
+      // Override pubkey in mockEvent to match appId derived pubkey for the test to work
+      mockEvent.pubkey = pubkey
 
       const mockGetUserRelays = mock.fn(async () => ({
         [pubkey]: {
@@ -21,13 +23,13 @@ describe('AppFileDownloader', () => {
       }))
       const mockGetEventsByStrategy = mock.fn(async () => [mockEvent])
 
-      const result = await AppFileDownloader.getBundleEvent(appId, {
+      const result = await AppFileDownloader.getBundleEvents([appId], {
         _getUserRelays: mockGetUserRelays,
         _getEventsByStrategy: mockGetEventsByStrategy
       })
 
-      assert.deepEqual(result.event, mockEvent)
-      assert.deepEqual(result.writeRelays, writeRelays)
+      assert.deepEqual(result[appId].event, mockEvent)
+      assert.deepEqual(result[appId].writeRelays, writeRelays)
       assert.equal(mockGetUserRelays.mock.callCount(), 1)
       assert.equal(mockGetEventsByStrategy.mock.callCount(), 1)
     })
