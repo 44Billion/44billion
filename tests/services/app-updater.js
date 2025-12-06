@@ -336,4 +336,132 @@ describe('AppUpdater', () => {
       assert.equal(reports[1].overallProgress, 100)
     })
   })
+
+  describe('isAppOpen', () => {
+    it('should return true if app is open in any workspace', () => {
+      const mockLocalStorage = {
+        getItem: mock.fn((key) => {
+          if (key === 'session_workspaceKeys') return JSON.stringify(['ws1'])
+          if (key === 'session_workspaceByKey_ws1_openAppKeys') return JSON.stringify(['key1'])
+          if (key === 'session_workspaceByKey_ws1_appById_app1_appKeys') return JSON.stringify(['key1'])
+          return null
+        })
+      }
+      assert.equal(AppUpdater.isAppOpen('app1', { _localStorage: mockLocalStorage }), true)
+    })
+
+    it('should return false if app is not open', () => {
+      const mockLocalStorage = {
+        getItem: mock.fn((key) => {
+          if (key === 'session_workspaceKeys') return JSON.stringify(['ws1'])
+          if (key === 'session_workspaceByKey_ws1_openAppKeys') return JSON.stringify(['key2'])
+          if (key === 'session_workspaceByKey_ws1_appById_app1_appKeys') return JSON.stringify(['key1'])
+          return null
+        })
+      }
+      assert.equal(AppUpdater.isAppOpen('app1', { _localStorage: mockLocalStorage }), false)
+    })
+
+    it('should return false if storage is missing', () => {
+      assert.equal(AppUpdater.isAppOpen('app1', { _localStorage: null }), false)
+    })
+  })
+
+  describe('scheduleCleanup', () => {
+    it('should request lock and cleanup closed apps', async () => {
+      const mockNavigator = {
+        locks: {
+          request: mock.fn(async (name, options, callback) => {
+            return callback({ name })
+          })
+        }
+      }
+      // Mock isAppOpen to return false (closed)
+      const mockLocalStorage = {
+        getItem: mock.fn(() => JSON.stringify([]))
+      }
+      const mockGetBundle = mock.fn(async () => ({ tags: [['file', 'hash1']] }))
+      const mockDeleteStale = mock.fn(async () => {})
+
+      await AppUpdater.scheduleCleanup(['app1'], {
+        _navigator: mockNavigator,
+        _localStorage: mockLocalStorage,
+        _getBundleFromDb: mockGetBundle,
+        _deleteStaleFileChunksFromDb: mockDeleteStale
+      })
+
+      assert.equal(mockNavigator.locks.request.mock.callCount(), 1)
+      assert.equal(mockDeleteStale.mock.callCount(), 1)
+      assert.deepEqual(mockDeleteStale.mock.calls[0].arguments, ['app1', ['hash1']])
+    })
+
+    it('should reschedule if app is open', async () => {
+      const mockNavigator = {
+        locks: {
+          request: mock.fn(async (name, options, callback) => {
+            return callback({ name })
+          })
+        }
+      }
+      // Mock isAppOpen to return true (open)
+      const mockLocalStorage = {
+        getItem: mock.fn((key) => {
+          if (key === 'session_workspaceKeys') return JSON.stringify(['ws1'])
+          if (key.includes('openAppKeys')) return JSON.stringify(['key1'])
+          if (key.includes('appById_app1_appKeys')) return JSON.stringify(['key1'])
+          return null
+        })
+      }
+      const mockSetTimeout = mock.fn()
+      const mockDeleteStale = mock.fn()
+
+      await AppUpdater.scheduleCleanup(['app1'], {
+        _navigator: mockNavigator,
+        _localStorage: mockLocalStorage,
+        _setTimeout: mockSetTimeout,
+        _deleteStaleFileChunksFromDb: mockDeleteStale
+      })
+
+      assert.equal(mockDeleteStale.mock.callCount(), 0)
+      assert.equal(mockSetTimeout.mock.callCount(), 1)
+    })
+
+    it('should respect ifAvailable option and skip if lock not acquired', async () => {
+      const mockNavigator = {
+        locks: {
+          request: mock.fn(async (name, options, callback) => {
+            assert.equal(options.ifAvailable, true)
+            return callback(null) // Lock not available
+          })
+        }
+      }
+      const mockDeleteStale = mock.fn()
+
+      await AppUpdater.scheduleCleanup(['app1'], {
+        _navigator: mockNavigator,
+        _deleteStaleFileChunksFromDb: mockDeleteStale,
+        ifAvailable: true
+      })
+
+      assert.equal(mockDeleteStale.mock.callCount(), 0)
+    })
+  })
+
+  describe('initCleanupJob', () => {
+    it('should schedule cleanup after delay', () => {
+      const mockSetTimeout = mock.fn((cb) => cb())
+      const originalScheduleCleanup = AppUpdater.scheduleCleanup
+      const mockScheduleCleanup = mock.fn()
+      AppUpdater.scheduleCleanup = mockScheduleCleanup
+
+      try {
+        AppUpdater.initCleanupJob({ _setTimeout: mockSetTimeout })
+        assert.equal(mockSetTimeout.mock.callCount(), 1)
+        assert.equal(mockScheduleCleanup.mock.callCount(), 1)
+        assert.equal(mockScheduleCleanup.mock.calls[0].arguments[1].ifAvailable, true)
+      } finally {
+        AppUpdater.scheduleCleanup = originalScheduleCleanup
+      }
+    })
+  })
 })

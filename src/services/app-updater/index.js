@@ -64,6 +64,67 @@ export default class AppUpdater {
     return updates
   }
 
+  static isAppOpen (appId, { _localStorage } = {}) {
+    const storage = _localStorage || (typeof localStorage !== 'undefined' ? localStorage : null)
+    if (!storage) return false
+    const workspaceKeys = JSON.parse(storage.getItem('session_workspaceKeys') || '[]')
+    for (const wsKey of workspaceKeys) {
+      const openAppKeys = JSON.parse(storage.getItem(`session_workspaceByKey_${wsKey}_openAppKeys`) || '[]')
+      const appKeys = JSON.parse(storage.getItem(`session_workspaceByKey_${wsKey}_appById_${appId}_appKeys`) || '[]')
+      if (appKeys.some(key => openAppKeys.includes(key))) return true
+    }
+    return false
+  }
+
+  static async scheduleCleanup (appIds = null, {
+    _localStorage,
+    _getBundleFromDb = getBundleFromDb,
+    _deleteStaleFileChunksFromDb = deleteStaleFileChunksFromDb,
+    _navigator = (typeof navigator !== 'undefined' ? navigator : null),
+    _setTimeout = setTimeout,
+    ifAvailable = false
+  } = {}) {
+    if (!_navigator?.locks) return
+
+    // https://developer.mozilla.org/en-US/docs/Web/API/Web_Locks_API#options
+    return _navigator.locks.request('app-cleanup-job', { ifAvailable }, async (lock) => {
+      if (!lock) return
+
+      const idsToCheck = appIds || this.getInstalledAppIds({ _localStorage })
+      const openApps = []
+
+      for (const appId of idsToCheck) {
+        if (this.isAppOpen(appId, { _localStorage })) {
+          openApps.push(appId)
+        } else {
+          const bundle = await _getBundleFromDb(appId)
+          if (bundle) {
+            const fileRootHashes = bundle.tags
+              .filter(t => t[0] === 'file')
+              .map(t => t[1])
+            await _deleteStaleFileChunksFromDb(appId, fileRootHashes)
+          }
+        }
+      }
+
+      if (openApps.length > 0) {
+        _setTimeout(() => {
+          this.scheduleCleanup(openApps, {
+            _localStorage,
+            _getBundleFromDb,
+            _deleteStaleFileChunksFromDb,
+            _navigator,
+            _setTimeout
+          })
+        }, 5 * 60 * 1000)
+      }
+    })
+  }
+
+  static initCleanupJob ({ _setTimeout = setTimeout, ...deps } = {}) {
+    _setTimeout(() => this.scheduleCleanup(null, { ...deps, ifAvailable: true }), 2 * 60 * 1000)
+  }
+
   static async * updateApp (nextBundleEvent, {
     _AppFileDownloader = AppFileDownloader,
     _deleteStaleFileChunksFromDb = deleteStaleFileChunksFromDb,
@@ -71,6 +132,7 @@ export default class AppUpdater {
     _getBundleFromDb = getBundleFromDb,
     _addressObjToAppId = addressObjToAppId,
     _getUserRelays = getUserRelays,
+    _localStorage,
     writeRelays
   } = {}) {
     const dTag = nextBundleEvent.tags.find(t => t[0] === 'd')?.[1]
@@ -117,7 +179,16 @@ export default class AppUpdater {
     }
 
     const fileRootHashes = files.map(f => f.rootHash)
-    await _deleteStaleFileChunksFromDb(appId, fileRootHashes)
+
+    if (this.isAppOpen(appId, { _localStorage })) {
+      await this.scheduleCleanup([appId], {
+        _localStorage,
+        _getBundleFromDb,
+        _deleteStaleFileChunksFromDb
+      })
+    } else {
+      await _deleteStaleFileChunksFromDb(appId, fileRootHashes)
+    }
 
     const localBundle = await _getBundleFromDb(appId)
     const lastOpenedAsSingleNappAt = localBundle?.meta?.lastOpenedAsSingleNappAt || 0

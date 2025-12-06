@@ -1,4 +1,5 @@
-import { f } from '#f'
+import { f, useTask } from '#f'
+import AppUpdater from '#services/app-updater/index.js'
 import useLocation from '#hooks/use-location.js'
 import router from './router.js'
 import '#zones/screen/index.js'
@@ -7,6 +8,8 @@ import '#zones/permission-dialog/index.js'
 import '#zones/confirmation-dialog/index.js'
 
 f('multiNapp', function () {
+  useTask(() => { AppUpdater.initCleanupJob() })
+
   useLocation(router)
   useVaultModalStore(() => ({
     isOpen$: false,
