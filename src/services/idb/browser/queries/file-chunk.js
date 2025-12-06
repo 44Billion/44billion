@@ -23,7 +23,7 @@ export async function deleteStaleFileChunksFromDb (appId, allowedRootHashes, { s
   run('openCursor', [range], 'fileChunks', null, { p })
 
   const getContinueKey = cursor => {
-    const [rootHash] = cursor.key
+    const [, rootHash] = cursor.key
     return [appId, rootHash, Infinity]
   }
   let cursor
