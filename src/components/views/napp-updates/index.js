@@ -1,4 +1,5 @@
 import { f, useComputed, useSignal, useTask } from '#f'
+import '#f/components/f-to-signals.js'
 import { cssVars, jsVars } from '#assets/styles/theme.js'
 import '#shared/back-btn.js'
 import '#shared/app-icon.js'
@@ -7,6 +8,7 @@ import '#shared/icons/icon-reload.js'
 import '#shared/icons/icon-arrow-narrow-right.js'
 import useWebStorage from '#hooks/use-web-storage.js'
 import AppFileManager from '#services/app-file-manager/index.js'
+import AppUpdater from '#services/app-updater/index.js'
 import { getEventsByStrategy } from '#helpers/nostr-queries.js'
 import { base16ToBase62 } from '#helpers/base62.js'
 
@@ -28,19 +30,76 @@ f('napp-updates', function () {
   })
 
   const publisherProfiles$ = useSignal({})
-  const updatesCount$ = useSignal(0)
-  const incrementUpdatesCount = () => updatesCount$(v => v + 1)
+  const availableUpdates$ = useSignal({})
+  const updateStates$ = useSignal({}) // { [appId]: { status: 'idle'|'pending'|'updating'|'done'|'error', progress: 0, error: null } }
+  const isUpdatingAll$ = useSignal(false)
+  const overallProgress$ = useSignal(0)
 
+  const updatesCount$ = useComputed(() => Object.keys(availableUpdates$()).length)
   const checkedAppsCount$ = useSignal(0)
-  const incrementCheckedAppsCount = () => checkedAppsCount$(v => v + 1)
   const isLoading$ = useComputed(() => checkedAppsCount$() < allAppIds$().length)
+  const isSearching$ = useSignal(false)
+
+  const startableUpdateIds$ = useComputed(() => {
+    const updates = availableUpdates$()
+    const states = updateStates$()
+    return Object.keys(updates).filter(id => {
+      const status = states[id]?.status
+      return status !== 'updating' && status !== 'pending' && status !== 'done'
+    })
+  })
+
+  const performSearch = async () => {
+    if (isSearching$()) return
+    isSearching$(true)
+    const appIds = allAppIds$()
+
+    try {
+      const updates = await AppUpdater.searchForUpdates(appIds)
+
+      availableUpdates$(prev => {
+        const next = { ...prev }
+        const states = updateStates$()
+
+        Object.entries(updates).forEach(([id, update]) => {
+          const status = states[id]?.status
+          // Don't overwrite if currently updating
+          if (status === 'updating' || status === 'pending') return
+
+          next[id] = update
+          // Reset error state if found again
+          if (states[id]?.status === 'error') {
+            updateStates$(s => {
+              const ns = { ...s }
+              delete ns[id]
+              return ns
+            })
+          }
+        })
+        return next
+      })
+    } catch (e) {
+      console.error('Error checking for updates', e)
+    } finally {
+      checkedAppsCount$(appIds.length)
+      isSearching$(false)
+    }
+  }
 
   useTask(async () => {
+    await performSearch()
+
+    // 2. Fetch profiles
     const appIds = allAppIds$()
     const managers = await Promise.all(appIds.map(id => AppFileManager.create(id).catch(() => null)))
     const pubkeys = new Set()
     managers.forEach(m => {
       if (m?.bundle?.pubkey) pubkeys.add(m.bundle.pubkey)
+    })
+
+    // Add pubkeys from updates
+    Object.values(availableUpdates$()).forEach(u => {
+      if (u.event?.pubkey) pubkeys.add(u.event.pubkey)
     })
 
     if (pubkeys.size > 0) {
@@ -59,6 +118,92 @@ f('napp-updates', function () {
       }
     }
   })
+
+  const handleUpdateAll = async () => {
+    if (isUpdatingAll$()) return
+
+    const targetIds = startableUpdateIds$()
+    if (targetIds.length === 0) return
+
+    isUpdatingAll$(true)
+    const updates = availableUpdates$()
+    const events = targetIds.map(id => updates[id].event)
+
+    // Initialize states for targets
+    updateStates$(prev => {
+      const next = { ...prev }
+      targetIds.forEach(id => {
+        next[id] = { status: 'pending', progress: 0, error: null }
+      })
+      return next
+    })
+
+    try {
+      for await (const report of AppUpdater.updateApps(events)) {
+        const { appId, appProgress, error, overallProgress } = report
+        overallProgress$(overallProgress)
+
+        updateStates$(prev => ({
+          ...prev,
+          [appId]: {
+            status: error ? 'error' : (appProgress === 100 ? 'done' : 'updating'),
+            progress: appProgress,
+            error
+          }
+        }))
+      }
+
+      // Clear done updates
+      availableUpdates$(prev => {
+        const next = { ...prev }
+        Object.keys(updateStates$()).forEach(id => {
+          if (updateStates$()[id].status === 'done') {
+            delete next[id]
+          }
+        })
+        return next
+      })
+    } catch (e) {
+      console.error('Update all failed', e)
+    } finally {
+      isUpdatingAll$(false)
+      overallProgress$(0)
+    }
+  }
+
+  const handleUpdateSingle = async (appId) => {
+    const update = availableUpdates$()[appId]
+    if (!update) return
+
+    const currentState = updateStates$()[appId]?.status
+    if (currentState === 'updating' || currentState === 'pending') return
+
+    updateStates$(prev => ({ ...prev, [appId]: { status: 'updating', progress: 0, error: null } }))
+
+    try {
+      for await (const report of AppUpdater.updateApp(update.event)) {
+        updateStates$(prev => ({
+          ...prev,
+          [appId]: {
+            status: report.error ? 'error' : 'updating',
+            progress: report.appProgress,
+            error: report.error
+          }
+        }))
+      }
+
+      updateStates$(prev => ({ ...prev, [appId]: { status: 'done', progress: 100, error: null } }))
+
+      // Remove from available updates
+      availableUpdates$(prev => {
+        const next = { ...prev }
+        delete next[appId]
+        return next
+      })
+    } catch (e) {
+      updateStates$(prev => ({ ...prev, [appId]: { status: 'error', error: e, progress: 0 } }))
+    }
+  }
 
   return this.h`
     <style>${/* css */`
@@ -100,6 +245,7 @@ f('napp-updates', function () {
         .actions-wrapper {
           display: flex;
           gap: 8px;
+          align-items: center;
         }
       }
 
@@ -128,6 +274,11 @@ f('napp-updates', function () {
 
         &:hover {
           background-color: ${cssVars.colors.bg3};
+        }
+
+        &:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
         }
       }
 
@@ -178,6 +329,9 @@ f('napp-updates', function () {
           display: flex;
         }
       }
+
+      @keyframes spin { 100% { transform: rotate(360deg); } }
+      .spinning { animation: spin 1s linear infinite; }
     `}</style>
     <div class='header-1kuhvcxd8b'>
       <div class='btn-wrapper-136713'>
@@ -185,18 +339,22 @@ f('napp-updates', function () {
       </div>
       <div class='title-gd7a98'>Napp Updates</div>
       <div class="actions-wrapper">
-        <button class="action-btn">
-          <span class="search-text">Search for Updates</span>
-          <span class="search-icon"><icon-reload props=${{ size: '20px' }} /></span>
+        <button class="action-btn" onclick=${performSearch} disabled=${isSearching$()}>
+          <span class="search-text">${isSearching$() ? 'Searching...' : 'Search for Updates'}</span>
+          <span class=${`search-icon ${isSearching$() ? 'spinning' : ''}`}><icon-reload props=${{ size: '20px' }} /></span>
         </button>
-        ${updatesCount$() > 0 ? this.h`<button class="action-btn update-all-btn desktop-update-all">Update All</button>` : ''}
+        ${updatesCount$() > 0 && !isUpdatingAll$() ? this.h`<button class="action-btn update-all-btn desktop-update-all" onclick=${handleUpdateAll} disabled=${startableUpdateIds$().length === 0}>Update All</button>` : ''}
+        ${isUpdatingAll$() ? this.h`<div class="desktop-update-all" style=${`font-size:14rem;color:${cssVars.colors.fg2}`}>Updating... ${overallProgress$()}%</div>` : ''}
       </div>
     </div>
     ${updatesCount$() > 0
       ? this.h`
       <div class="mobile-updates-bar">
         <div>Updates Available</div>
-        <button class="action-btn update-all-btn">Update All</button>
+        ${!isUpdatingAll$()
+          ? this.h`<button class="action-btn update-all-btn" onclick=${handleUpdateAll} disabled=${startableUpdateIds$().length === 0}>Update All</button>`
+          : this.h`<span>${overallProgress$()}%</span>`
+        }
       </div>
     `
       : (!isLoading$()
@@ -207,17 +365,30 @@ f('napp-updates', function () {
     `
           : '')}
     <div class='body-cydfv983dfff'>
-      ${allAppIds$().map(appId => this.h`
-        <napp-update-card props=${{ appId, publisherProfiles$, onUpdateAvailable: incrementUpdatesCount, onCheckComplete: incrementCheckedAppsCount }} />
+      ${allAppIds$().map(appId => this.h({ key: appId })`
+        <f-to-signals
+          key=${appId}
+          props=${{
+            from: ['updateInfo', 'updateState'],
+            updateInfo: availableUpdates$()[appId],
+            updateState: updateStates$()[appId],
+            appId,
+            publisherProfiles$,
+            onUpdate: () => handleUpdateSingle(appId),
+            render (props) {
+              return this.h`<napp-update-card props=${props} />`
+            }
+          }}
+        />
       `)}
-      ${allAppIds$().length === 0 ? this.h`<div style="padding: 20px; text-align: center; color: ${cssVars.colors.fg2}">No apps found</div>` : ''}
+      ${allAppIds$().length === 0 ? this.h`<div style=${`padding: 20px; text-align: center; color: ${cssVars.colors.fg2}`}>No apps found</div>` : ''}
     </div>
   `
 })
 
 f('napp-update-card', function () {
   const storage = useWebStorage(localStorage)
-  const { appId, publisherProfiles$, onUpdateAvailable, onCheckComplete } = this.props
+  const { appId, publisherProfiles$, updateInfo$, updateState$, onUpdate } = this.props
 
   const appName$ = useComputed(() => {
     return storage[`session_appById_${appId}_name$`]()
@@ -246,26 +417,32 @@ f('napp-update-card', function () {
         const date = new Date(bundle.created_at * 1000).toISOString().split('T')[0]
         const shortId = bundle.id.slice(0, 8)
         version$(`${date}-${shortId}`)
+      }
 
-        // Mock update availability
-        if (Math.random() > 0.7) {
-          nextVersion$(`2025-12-31-${Math.random().toString(36).slice(2, 10)}`)
-          onUpdateAvailable?.()
+      const updateInfo = updateInfo$()
+      if (updateInfo?.event) {
+        const e = updateInfo.event
+        const date = new Date(e.created_at * 1000).toISOString().split('T')[0]
+        const shortId = e.id.slice(0, 8)
+        nextVersion$(`${date}-${shortId}`)
+
+        if (e.pubkey) {
+          publisherPk$(base16ToBase62(e.pubkey))
+          publisherHexPk$(e.pubkey)
         }
-
-        // Fetch publisher profile
-        if (bundle.pubkey) {
-          publisherPk$(base16ToBase62(bundle.pubkey))
-          publisherHexPk$(bundle.pubkey)
+      } else {
+        if (appFileManager.bundle?.pubkey) {
+          publisherPk$(base16ToBase62(appFileManager.bundle.pubkey))
+          publisherHexPk$(appFileManager.bundle.pubkey)
         }
       }
     } catch (e) {
       console.error('Error fetching app info', e)
       version$('Unknown')
-    } finally {
-      onCheckComplete?.()
     }
   })
+
+  const updateState = updateState$()
 
   return this.h`
     <style>${/* css */`
@@ -377,6 +554,43 @@ f('napp-update-card', function () {
         &:hover {
           filter: brightness(1.1);
         }
+
+        &:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+      }
+
+      .progress-container {
+        width: 100px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        align-items: flex-end;
+      }
+
+      .progress-bar {
+        height: 4px;
+        background: ${cssVars.colors.bg3};
+        border-radius: 2px;
+        overflow: hidden;
+        width: 100%;
+      }
+
+      .progress-fill {
+        height: 100%;
+        background: ${cssVars.colors.bgAccentPrimary};
+        transition: width 0.2s;
+      }
+
+      .progress-text {
+        font-size: 12rem;
+        color: ${cssVars.colors.fg2};
+      }
+
+      .error-text {
+        color: ${cssVars.colors.fgError};
+        font-size: 12rem;
       }
     `}</style>
     <div class='card-8d6gfgwh3wl'>
@@ -398,7 +612,23 @@ f('napp-update-card', function () {
           ${nextVersion$() ? this.h`<span class="next-ver"><icon-arrow-narrow-right props=${{ size: '14px' }} /> v${nextVersion$()}</span>` : ''}
         </div>
       </div>
-      ${nextVersion$() ? this.h`<button class="update-btn">Update</button>` : ''}
+      ${(updateState?.status === 'updating' || updateState?.status === 'pending')
+        ? this.h`
+          <div class="progress-container">
+            <div class="progress-text">${updateState.status === 'pending' ? 'Pending...' : `${updateState.progress}%`}</div>
+            <div class="progress-bar">
+              <div class="progress-fill" style=${`width: ${updateState.progress}%`}></div>
+            </div>
+          </div>
+        `
+        : (updateState?.status === 'done'
+            ? this.h`<div style=${`color:${cssVars.colors.fgSuccess};font-weight:500;font-size:14rem`}>Updated</div>`
+            : (updateState?.status === 'error'
+                ? this.h`<div class="error-text">Error</div>`
+                : (nextVersion$() ? this.h`<button class="update-btn" onclick=${onUpdate}>Update</button>` : '')
+              )
+          )
+      }
     </div>
   `
 })
