@@ -6,6 +6,9 @@ import '#shared/app-icon.js'
 import '#shared/avatar.js'
 import '#shared/icons/icon-reload.js'
 import '#shared/icons/icon-arrow-narrow-right.js'
+import '#shared/icons/icon-check.js'
+import '#shared/icons/icon-exclamation-mark.js'
+import '#shared/icons/icon-hourglass-high.js'
 import useWebStorage from '#hooks/use-web-storage.js'
 import AppFileManager from '#services/app-file-manager/index.js'
 import AppUpdater from '#services/app-updater/index.js'
@@ -443,6 +446,21 @@ f('napp-update-card', function () {
   })
 
   const updateState = updateState$()
+  const isErrorVisible$ = useSignal(false)
+
+  useTask(() => {
+    const state = updateState$()
+    if (state?.status === 'error') {
+      if (!isErrorVisible$()) {
+        isErrorVisible$(true)
+        setTimeout(() => {
+          isErrorVisible$(false)
+        }, 7000)
+      }
+    } else {
+      isErrorVisible$(false)
+    }
+  })
 
   return this.h`
     <style>${/* css */`
@@ -561,36 +579,52 @@ f('napp-update-card', function () {
         }
       }
 
-      .progress-container {
-        width: 100px;
+      .progress-circle-container {
+        position: relative;
+        width: 36px;
+        height: 36px;
         display: flex;
-        flex-direction: column;
-        gap: 4px;
-        align-items: flex-end;
+        align-items: center;
+        justify-content: center;
       }
 
-      .progress-bar {
-        height: 4px;
-        background: ${cssVars.colors.bg3};
-        border-radius: 2px;
-        overflow: hidden;
+      .progress-circle-svg {
+        transform: rotate(-90deg);
         width: 100%;
-      }
-
-      .progress-fill {
         height: 100%;
-        background: ${cssVars.colors.bgAccentPrimary};
-        transition: width 0.2s;
       }
 
-      .progress-text {
-        font-size: 12rem;
-        color: ${cssVars.colors.fg2};
+      .progress-circle-bg {
+        stroke: ${cssVars.colors.mg2};
       }
 
-      .error-text {
-        color: ${cssVars.colors.fgError};
+      .progress-circle-fg {
+        stroke: ${cssVars.colors.bgAccentPrimary};
+        transition: stroke-dashoffset 0.3s ease;
+      }
+
+      .progress-circle-fg.done {
+        stroke: ${cssVars.colors.fgSuccess};
+      }
+
+      .progress-circle-fg.error {
+        stroke: ${cssVars.colors.fgError};
+        animation: error-progress 7s linear forwards;
+      }
+
+      @keyframes error-progress {
+        from { stroke-dashoffset: 100; }
+        to { stroke-dashoffset: 0; }
+      }
+
+      .progress-content {
+        position: absolute;
+        display: flex;
+        align-items: center;
+        justify-content: center;
         font-size: 12rem;
+        font-weight: 600;
+        color: ${cssVars.colors.fg};
       }
     `}</style>
     <div class='card-8d6gfgwh3wl'>
@@ -612,22 +646,32 @@ f('napp-update-card', function () {
           ${nextVersion$() ? this.h`<span class="next-ver"><icon-arrow-narrow-right props=${{ size: '14px' }} /> v${nextVersion$()}</span>` : ''}
         </div>
       </div>
-      ${(updateState?.status === 'updating' || updateState?.status === 'pending')
+      ${(updateState?.status === 'updating' || updateState?.status === 'pending' || updateState?.status === 'done' || (updateState?.status === 'error' && isErrorVisible$()))
         ? this.h`
-          <div class="progress-container">
-            <div class="progress-text">${updateState.status === 'pending' ? 'Pending...' : `${updateState.progress}%`}</div>
-            <div class="progress-bar">
-              <div class="progress-fill" style=${`width: ${updateState.progress}%`}></div>
+          <div class="progress-circle-container">
+            <svg class="progress-circle-svg" viewBox="0 0 36 36">
+              <circle cx="18" cy="18" r="15.9155" fill="none" stroke-width="3" class="progress-circle-bg" />
+              <circle cx="18" cy="18" r="15.9155" fill="none" stroke-width="3"
+                class=${`progress-circle-fg ${updateState.status === 'done' ? 'done' : ''} ${updateState.status === 'error' ? 'error' : ''}`}
+                stroke-dasharray="100"
+                stroke-dashoffset=${updateState.status === 'error' ? 100 : (100 - (updateState.status === 'pending' ? 0 : updateState.progress))}
+              />
+            </svg>
+            <div class="progress-content">
+              ${updateState.status === 'done'
+                ? this.h`<icon-check props=${{ size: '20px', style: 'color:' + cssVars.colors.fgSuccess }} />`
+                : (updateState.status === 'error'
+                    ? this.h`<icon-exclamation-mark props=${{ size: '20px', style: 'color:' + cssVars.colors.fgError }} />`
+                    : (updateState.status === 'pending'
+                        ? this.h`<icon-hourglass-high props=${{ size: '20px', style: 'color:' + cssVars.colors.bgAccentSecondary }} />`
+                        : Math.round(updateState.progress)
+                      )
+                  )
+              }
             </div>
           </div>
         `
-        : (updateState?.status === 'done'
-            ? this.h`<div style=${`color:${cssVars.colors.fgSuccess};font-weight:500;font-size:14rem`}>Updated</div>`
-            : (updateState?.status === 'error'
-                ? this.h`<div class="error-text">Error</div>`
-                : (nextVersion$() ? this.h`<button class="update-btn" onclick=${onUpdate}>Update</button>` : '')
-              )
-          )
+        : (nextVersion$() ? this.h`<button class="update-btn" onclick=${onUpdate}>Update</button>` : '')
       }
     </div>
   `

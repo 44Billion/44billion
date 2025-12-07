@@ -45,6 +45,7 @@ const [defaultThemeCssClass, colorCssVarsObj, defaultThemeCssString] = createThe
   fg2AccentPrimary: 'oklch(0.79 0.25 302.32)',
   bgPrimary: 'oklch(0.65 0.20 280)',
   bgSecondary: 'oklch(0.70 0.15 65)',
+  fgSuccess: 'oklch(0.55 0.22 142.32)',
   fgError: 'oklch(0.55 0.22 25)'
   // bgHeader: 'oklch(0.25 0.01 256)',
   // mgHeader: '#101011', // darker than bg
