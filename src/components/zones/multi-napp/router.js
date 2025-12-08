@@ -7,6 +7,12 @@ const router = new Router({
     path: '/napp-updates',
     tag: 'napp-updates',
     loadModule: () => import('#views/napp-updates/index.js')
+  },
+  '/settings': {
+    mount: 'system-views',
+    path: '/settings',
+    tag: 'a-settings',
+    loadModule: () => import('#views/settings/index.js')
   }
 })
 

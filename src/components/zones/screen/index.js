@@ -15,6 +15,7 @@ import {
 import windowsBackgroundImage from '#assets/media/bg-ostrich-stained-glass.webp'
 import useAppRouter from './use-app-router.js'
 import useSystemRouter from './use-system-router.js'
+import '#shared/route.js'
 import { initMessageListener } from '#helpers/window-message/browser/index.js'
 import { base62ToBase36 } from '#helpers/base36.js'
 import { appIdToAppSubdomain } from '#helpers/app.js'
@@ -118,6 +119,7 @@ f('aScreen', function () {
 
 f('system-views', function () {
   return this.h`
+    <a-route props=${{ path: '/settings' }} />
     <a-route props=${{ path: '/napp-updates' }} />
   `
 })
