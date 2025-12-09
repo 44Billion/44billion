@@ -1,4 +1,4 @@
-import { f, useSignal, useTask } from '#f'
+import { f, useSignal, useTask, useCallback } from '#f'
 import useWebStorage from '#hooks/use-web-storage.js'
 import useLocation from '#hooks/use-location.js'
 import { cssVars } from '#assets/styles/theme.js'
@@ -29,17 +29,17 @@ f('a-settings', function () {
     }
   })
 
-  const handleVaultUrlChange = (e) => {
+  const handleVaultUrlChange = useCallback(e => {
     draftVaultUrl$(e.target.value)
-  }
+  })
 
-  const saveVaultUrl = () => {
-    vaultUrl$(draftVaultUrl$())
-  }
+  const saveVaultUrl = useCallback(() => {
+    vaultUrl$(draftVaultUrl$().trim())
+  })
 
-  const cancelVaultUrlChange = () => {
+  const cancelVaultUrlChange = useCallback(() => {
     draftVaultUrl$(vaultUrl$())
-  }
+  })
 
   return this.h`
     <style>${`

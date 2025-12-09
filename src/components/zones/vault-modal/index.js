@@ -1,4 +1,4 @@
-import { f, useGlobalStore, useClosestStore, useStore, useTask, useCallback, useComputed } from '#f'
+import { f, useGlobalStore, useClosestStore, useStore, useTask, useCallback, useComputed, useSignal } from '#f'
 import useWebStorage from '#hooks/use-web-storage.js'
 import { postMessage, requestMessage } from '#helpers/window-message/index.js'
 import { setAccountsState } from '#zones/screen/use-init-or-reset-screen.js'
@@ -20,33 +20,13 @@ f('vaultModal', function () {
     ...upstreamStore,
     shouldAlwaysDisplay$: true,
     render: useCallback(function () {
-      return this.h`<vault-messenger />`
+      return this.h`<vault-messenger-wrapper />`
     })
   }))
   return this.h`<a-modal props=${modalProps} />`
 })
 
-f('vaultMessenger', function () {
-  const {
-    isFirstRun$,
-    vaultPort$,
-    vaultIframeRef$,
-    vaultIframeSrc$,
-    isVaultMessengerReady$,
-    widgetHeight$,
-    isWorkarounEnabled$
-  } = useGlobalStore('vaultMessenger', () => ({
-    isWorkarounEnabled$: true,
-    disableStartAtVaultHomeWorkaroundThisTime () {
-      this.isWorkarounEnabled$(false)
-    },
-    isFirstRun$: true,
-    vaultPort$: null,
-    vaultIframeRef$: null,
-    vaultIframeSrc$: 'about:blank',
-    isVaultMessengerReady$: false,
-    widgetHeight$: 0
-  }))
+f('vault-messenger-wrapper', function () {
   const storage = useWebStorage(localStorage)
   const {
     config_vaultUrl$: vaultUrl$
@@ -63,6 +43,86 @@ f('vaultMessenger', function () {
       // ? `${location.protocol}//vault.${location.host}`
       : 'https://44billion.github.io/44b-vault')
   })
+
+  const isReachable$ = useSignal(false)
+
+  useTask(async ({ track, cleanup }) => {
+    const url = track(() => vaultUrl$())
+    if (!url) {
+      isReachable$(false)
+      return
+    }
+
+    isReachable$(false)
+    let attempt = 0
+    let timeoutId
+    const ac = new AbortController()
+    cleanup(() => {
+      clearTimeout(timeoutId)
+      ac.abort()
+    })
+
+    const check = async () => {
+      try {
+        await fetch(url, { mode: 'no-cors', signal: ac.signal })
+        if (ac.signal.aborted) return
+        isReachable$(true)
+      } catch (_err) {
+        if (ac.signal.aborted) return
+        attempt++
+        const delay = Math.min(30000, 500 * (2 ** attempt))
+        console.warn(`Vault unreachable, retrying in ${delay}ms`)
+        timeoutId = setTimeout(check, delay)
+      }
+    }
+    check()
+  }, { after: 'rendering' })
+
+  const { vaultPort$ } = useVaultMessengerStore({ shouldInit: true })
+  // init it even if vault isn't ready yet cause other components may try to use its methods
+  useRequestVaultMessage(vaultPort$)
+
+  if (!vaultUrl$() || !isReachable$()) return this.h``
+
+  return this.h`${this.h({ key: vaultUrl$() })`<vault-messenger />`}`
+})
+
+function useVaultMessengerStore ({ shouldInit = false } = {}) {
+  if (!shouldInit) return useGlobalStore('vaultMessenger')
+  return useGlobalStore('vaultMessenger', () => ({
+    isWorkarounEnabled$: true,
+    disableStartAtVaultHomeWorkaroundThisTime () {
+      this.isWorkarounEnabled$(false)
+    },
+    isFirstRun$: true,
+    vaultPort$: null,
+    vaultIframeRef$: null,
+    vaultIframeSrc$: 'about:blank',
+    isVaultMessengerReady$: false,
+    widgetHeight$: 0
+  }))
+}
+
+f('vault-messenger', function () {
+  const {
+    isFirstRun$,
+    vaultPort$,
+    vaultIframeRef$,
+    vaultIframeSrc$,
+    isVaultMessengerReady$,
+    widgetHeight$,
+    isWorkarounEnabled$
+  } = useVaultMessengerStore()
+
+  // set vaultPort$ to null on unmount so that if user sets a bogus vault url,
+  // meaning <vault-messenger> won't fully init,
+  // the port won't be stuck to the previous one
+  useTask(({ cleanup }) => cleanup(() => vaultPort$(null)))
+
+  const storage = useWebStorage(localStorage)
+  const {
+    config_vaultUrl$: vaultUrl$
+  } = storage
 
   const { cancelPreviousRequests, postVaultMessage } = useRequestVaultMessage(vaultPort$)
   const { isOpen$ } = useVaultModalStore()
@@ -290,7 +350,7 @@ function startRenderHandshake ({
 }
 
 export function useRequestVaultMessage (vaultPort$) {
-  if (vaultPort$) useRequestVaultMessageInit(vaultPort$)
+  if (vaultPort$ !== undefined) useRequestVaultMessageInit(vaultPort$)
   return useGlobalStore('useRequestVaultMessage')
 }
 
@@ -311,7 +371,7 @@ function useRequestVaultMessageInit (vaultPort$) {
     },
     postVaultMessage (msg) {
       if (!this.vaultPort$()) return Promise.reject(new Error('Vault not connected'))
-      postMessage(vaultPort$(), msg)
+      postMessage(this.vaultPort$(), msg)
     },
     async requestVaultMessage (msg, { timeout, instant = false } = {}) {
       if (instant) {
