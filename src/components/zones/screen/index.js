@@ -31,6 +31,7 @@ import '#shared/icons/icon-stack-front.js'
 import '#shared/icons/icon-remove.js'
 import '#shared/icons/icon-delete.js'
 import '#shared/icons/icon-lock.js'
+import './menus/toolbar-more-menu.js'
 
 f('aScreen', function () {
   useInitOrResetScreen()
@@ -38,6 +39,7 @@ f('aScreen', function () {
   const { isSystemRoute$ } = useSystemRouter()
 
   const isSingleWindow$ = useWebStorage(localStorage).config_isSingleWindow$
+  const { isHidden$: isToolbarHidden$ } = useGlobalStore('toolbarState', { isHidden$: false })
   const style$ = useComputed(() => /* css */`
     /* @scope { */
     #screen {
@@ -47,6 +49,7 @@ f('aScreen', function () {
         display: flex;
         width: 100dvw;
         height: 100dvh;
+        position: relative;
 
         @media (orientation: landscape) {
           flex-direction: row; /* -reverse; */
@@ -87,15 +90,22 @@ f('aScreen', function () {
 
     #unified-toolbar {
       display: flex !important;
+      flex: 0 0 auto;
+      background-color: ${cssVars.colors.bg2};
+      overflow: hidden;
+      transition: min-width 0.3s ease-in-out, width 0.3s ease-in-out, min-height 0.3s ease-in-out, height 0.3s ease-in-out, opacity 0.3s ease-in-out;
+
       @media (orientation: portrait) {
-        min-height: 50px;
+        min-height: ${isToolbarHidden$() ? '0px' : '50px'};
+        height: ${isToolbarHidden$() ? '0px' : '50px'};
+        opacity: ${isToolbarHidden$() ? '0' : '1'};
       }
       @media (orientation: landscape) {
         flex-direction: column;
-        min-width: 50px;
+        min-width: ${isToolbarHidden$() ? '0px' : '50px'};
+        width: ${isToolbarHidden$() ? '0px' : '50px'};
+        opacity: ${isToolbarHidden$() ? '0' : '1'};
       }
-      flex: 0 0 auto;
-      background-color: ${cssVars.colors.bg2};
       /**/
     }
   `)
@@ -113,6 +123,7 @@ f('aScreen', function () {
         <system-views id='system-views' />
       </div>
       <unified-toolbar ref=${unifiedToolbarRef$} id='unified-toolbar' />
+      <toolbar-restore-button />
     </div>
   `
 })
@@ -440,6 +451,7 @@ f('unifiedToolbar', function () {
     `}</style>
     <toolbar-active-avatar />
     <toolbar-app-list />
+    <toolbar-more-menu />
   `
 })
 
@@ -769,10 +781,6 @@ f('toolbarMenu', function () {
       const fallbackCSS = `& {
         position: fixed;
         z-index: 1000;
-        margin: 0 0 6px -5px;
-        @media (orientation: landscape) {
-          margin: -5px 8px 0 0;
-        }
       }`
       return CSS.supports('position-anchor', '--test') ? modernCSS : fallbackCSS
     },
@@ -1223,10 +1231,6 @@ f('appLaunchersMenu', function () {
       const fallbackCSS = `& {
         position: fixed;
         z-index: 1000;
-        margin-bottom: 6px;
-        @media (orientation: landscape) {
-          margin-right: 7px;
-        }
       }`
       const commonCSS = `
         background-color: ${cssVars.colors.bg2};

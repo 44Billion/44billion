@@ -17,7 +17,8 @@ f('aMenu', function () {
     // }`
     style$: this.props.style$ ?? this.props.style ?? '',
     anchorRef$: this.props.anchorRef$, // Reference to anchor element for fallback positioning
-    fallbackPositioningStyle$: ''
+    fallbackPositioningStyle$: '',
+    fallbackOffset$: this.props.fallbackOffset ?? {}
   })
   const interceptorProps = useStore(() => ({
     isOpen$: store.isOpen$,
@@ -57,6 +58,12 @@ f('aMenu', function () {
           const menuHeight = dialogRect.height > 0 ? dialogRect.height : 100 // fallback height
           top = Math.max(margin, anchorRect.top - menuHeight - margin)
         }
+
+        const fallbackOffset = store.fallbackOffset$()
+        const offset = (isLandscape ? fallbackOffset.landscape : fallbackOffset.portrait) || {}
+        left += (offset.x || 0)
+        top += (offset.y || 0)
+
         store.fallbackPositioningStyle$(`
           & {
             left: ${left}px;
@@ -66,7 +73,7 @@ f('aMenu', function () {
           }
         `)
       })
-    }, 50) // or else dialogRect.height may be 0
+    }, 100) // or else dialogRect.height may be 0
   }, { after: 'rendering' })
 
   useTask(({ track }) => {
