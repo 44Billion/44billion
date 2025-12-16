@@ -117,7 +117,10 @@ f('vault-messenger', function () {
   // set vaultPort$ to null on unmount so that if user sets a bogus vault url,
   // meaning <vault-messenger> won't fully init,
   // the port won't be stuck to the previous one
-  useTask(({ cleanup }) => cleanup(() => vaultPort$(null)))
+  useTask(({ cleanup }) => cleanup(() => {
+    vaultPort$(null)
+    vaultIframeSrc$('about:blank')
+  }))
 
   const storage = useWebStorage(localStorage)
   const {
@@ -125,15 +128,18 @@ f('vault-messenger', function () {
   } = storage
 
   const { cancelPreviousRequests, postVaultMessage } = useRequestVaultMessage(vaultPort$)
-  const { isOpen$ } = useVaultModalStore()
+  const vaultModalStore = useVaultModalStore()
+  const { isOpen$ } = vaultModalStore
   useTask(({ track }) => {
     const isOpen = track(() => isOpen$())
     if (isFirstRun$() || isOpen) return
 
-    postVaultMessage(
-      { code: 'CLOSED_VAULT_VIEW', payload: null },
-      { instant: true }
-    )
+    if (vaultPort$()) {
+      postVaultMessage(
+        { code: 'CLOSED_VAULT_VIEW', payload: null },
+        { instant: true }
+      )
+    }
   })
 
   // Temporary workaround for bugged 'CLOSED_VAULT_VIEW' vault msg handling
@@ -144,10 +150,12 @@ f('vault-messenger', function () {
     const isClosed = track(() => !isOpen$())
     if (isFirstRun$() || isClosed || !wasWorkarounEnabled) return
 
-    postVaultMessage(
-      { code: 'OPEN_VAULT_HOME', payload: null },
-      { instant: true }
-    )
+    if (vaultPort$()) {
+      postVaultMessage(
+        { code: 'OPEN_VAULT_HOME', payload: null },
+        { instant: true }
+      )
+    }
   })
 
   useTask(() => { isFirstRun$(false) })
@@ -175,7 +183,6 @@ f('vault-messenger', function () {
         stopRenderHandshake()
         const controller = startRenderHandshake({
           vaultIframe: vaultIframeRef$(),
-          vaultOrigin,
           vaultPort$,
           abortSignal: ac.signal
         })
@@ -189,7 +196,8 @@ f('vault-messenger', function () {
       componentSignal: ac.signal,
       widgetHeight$,
       storage,
-      stopRenderHandshake
+      stopRenderHandshake,
+      vaultModalStore
     })
     isVaultMessengerReady$(true)
   }, { after: 'rendering' })
@@ -230,9 +238,9 @@ function initMessageListener ({
   componentSignal,
   widgetHeight$,
   storage,
-  stopRenderHandshake
+  stopRenderHandshake,
+  vaultModalStore
 }) {
-  const vaultModalStore = useVaultModalStore()
   let currentVaultPort = null
   // Setup cleanup
   componentSignal?.addEventListener('abort', () => {
@@ -301,7 +309,6 @@ function initMessageListener ({
 
 function startRenderHandshake ({
   vaultIframe,
-  vaultOrigin,
   vaultPort$,
   abortSignal
 }) {
@@ -330,7 +337,8 @@ function startRenderHandshake ({
     postMessage(
       targetWindow,
       { code: 'RENDER', payload: null },
-      { targetOrigin: vaultOrigin }
+      // don't set to vaultOrigin here, as it may not be ready yet
+      { targetOrigin: '*' }
     )
     if (vaultPort$()) {
       stop()
