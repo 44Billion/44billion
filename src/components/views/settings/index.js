@@ -18,6 +18,7 @@ f('a-settings', function () {
 
   const updatesCount$ = useSignal(0)
   const draftVaultUrl$ = useSignal(vaultUrl$())
+  const hasVaultUrlError$ = useSignal(false)
 
   useTask(async () => {
     try {
@@ -34,7 +35,28 @@ f('a-settings', function () {
   })
 
   const saveVaultUrl = useCallback(() => {
-    vaultUrl$(draftVaultUrl$().trim())
+    let nextUrl = draftVaultUrl$().trim()
+    if (nextUrl.startsWith('//')) {
+      nextUrl = `${window.location.protocol}${nextUrl}`
+    } else if (!nextUrl.includes('://')) {
+      nextUrl = `${window.location.protocol}//${nextUrl}`
+    }
+
+    try {
+      const url = new URL(nextUrl)
+      if (
+        !['http:', 'https:'].includes(url.protocol) ||
+        // Avoid triple slash like on "https:///localhost:4000"
+        [url.href, url.href.replace(/\/$/, '')].every(v => v !== nextUrl)
+      ) {
+        throw new Error('Invalid URL')
+      }
+      vaultUrl$(nextUrl)
+      draftVaultUrl$(nextUrl)
+    } catch (_e) {
+      hasVaultUrlError$(true)
+      setTimeout(() => hasVaultUrlError$(false), 2000)
+    }
   })
 
   const cancelVaultUrlChange = useCallback(() => {
@@ -165,7 +187,10 @@ f('a-settings', function () {
           <div class="input-group" style="width: 100%;">
             <div class="item-title">Credential Vault URL</div>
             <div style="display: flex; gap: 8px; align-items: center;">
-              <input type="text" style="flex-grow: 1;" value=${draftVaultUrl$()} oninput=${handleVaultUrlChange} />
+              <input type="text" style=${{
+                flexGrow: 1,
+                borderColor: hasVaultUrlError$() ? cssVars.colors.fgError : cssVars.colors.bg3
+              }} value=${draftVaultUrl$()} oninput=${handleVaultUrlChange} />
               ${draftVaultUrl$() !== vaultUrl$()
                 ? this.h`
                   <button onclick=${saveVaultUrl} style=${`
