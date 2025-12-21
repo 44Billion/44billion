@@ -1,5 +1,6 @@
 import { useStore, useMemo, useTask, useGlobalSignal, toSignal } from '#f'
 import WeakValueMap from '#services/weak-value-map.js'
+export { setWebStorageItem, setLocalStorageItem, setSessionStorageItem } from '#helpers/web-storage.js'
 
 function isValidVariableName (str) {
   return /^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(str)
@@ -126,39 +127,4 @@ export default function useWebStorage (storageArea = localStorage, getOrCreateOb
   })
 
   return proxy
-}
-
-// If you aren't using a signal instance from useWebStorage,
-// use this to notify all signal instances on the same tab
-export function setWebStorageItem (storageArea = localStorage, key, value) {
-  const oldValue = storageArea.getItem(key)
-  let newValue
-
-  if (value === undefined) {
-    storageArea.removeItem(key)
-    newValue = null
-  } else {
-    newValue = JSON.stringify(value)
-    storageArea.setItem(key, newValue)
-  }
-
-  // Manually dispatch storage event to trigger same-tab updates
-  const storageEvent = new StorageEvent('storage', {
-    key,
-    oldValue,
-    newValue,
-    storageArea,
-    url: window.location.href
-  })
-
-  window.dispatchEvent(storageEvent)
-  return value
-}
-
-export function setLocalStorageItem (key, value) {
-  setWebStorageItem(localStorage, key, value)
-}
-
-export function setSessionStorageItem (key, value) {
-  setWebStorageItem(sessionStorage, key, value)
 }

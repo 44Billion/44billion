@@ -1,4 +1,4 @@
-import { f, useSignal, useTask, useCallback } from '#f'
+import { f, useSignal, useCallback } from '#f'
 import useWebStorage from '#hooks/use-web-storage.js'
 import useLocation from '#hooks/use-location.js'
 import { cssVars } from '#assets/styles/theme.js'
@@ -6,29 +6,18 @@ import '#shared/back-btn.js'
 import '#shared/toggle-switch.js'
 import '#shared/icons/icon-check.js'
 import '#shared/icons/icon-cancel.js'
-import { run } from '#services/idb/browser/index.js'
 
 f('a-settings', function () {
   const storage = useWebStorage(localStorage)
   const {
     config_isSingleWindow$: isSingleWindow$,
-    config_vaultUrl$: vaultUrl$
+    config_vaultUrl$: vaultUrl$,
+    session_unread_appUpdateCount$: appUpdateCount$
   } = storage
   const location = useLocation()
 
-  const updatesCount$ = useSignal(0)
   const draftVaultUrl$ = useSignal(vaultUrl$())
   const hasVaultUrlError$ = useSignal(false)
-
-  useTask(async () => {
-    try {
-      const bundles = (await run('getAll', [], 'bundles')).result
-      const count = bundles.filter(b => b.u).length // b.u is hasUpdate
-      updatesCount$(count)
-    } catch (e) {
-      console.error('Failed to check updates', e)
-    }
-  })
 
   const handleVaultUrlChange = useCallback(e => {
     draftVaultUrl$(e.target.value)
@@ -165,7 +154,7 @@ f('a-settings', function () {
             <div class="item-title">Napp Updates</div>
             <div class="item-subtitle">Check for updates</div>
           </div>
-          ${updatesCount$() > 0 ? this.h`<div class="badge">${updatesCount$()}</div>` : ''}
+          ${(appUpdateCount$() ?? 0) > 0 ? this.h`<div class="badge">${appUpdateCount$()}</div>` : ''}
         </div>
 
         <div class="item">

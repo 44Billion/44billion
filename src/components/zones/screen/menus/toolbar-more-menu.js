@@ -3,6 +3,9 @@ import { cssVars } from '#assets/styles/theme.js'
 import '#shared/menu.js'
 import '#shared/icons/icon-dots.js'
 import '#shared/icons/icon-eye-closed.js'
+import '#shared/icons/icon-settings.js'
+import useLocation from '#hooks/use-location.js'
+import useWebStorage from '#hooks/use-web-storage.js'
 
 f('toolbar-more-menu', function () {
   const { isHidden$ } = useGlobalStore('toolbarState', { isHidden$: false })
@@ -10,6 +13,8 @@ f('toolbar-more-menu', function () {
     isOpen$: false,
     anchorRef$: null
   })
+  const location = useLocation()
+  const { session_unread_appUpdateCount$: appUpdateCount$ } = useWebStorage(localStorage)
 
   const menuProps = useStore({
     isOpen$,
@@ -63,8 +68,16 @@ f('toolbar-more-menu', function () {
               min-height: 30px;
               padding: 10px 10px 10px 3px;
             }
-            icon-eye-closed {
+            icon-eye-closed, icon-settings {
               color: ${cssVars.colors.fg2};
+            }
+            .badge-dot {
+              width: 8px;
+              height: 8px;
+              border-radius: 50%;
+              background-color: ${cssVars.colors.bgAccentPrimary};
+              margin-left: auto;
+              margin-right: 10px;
             }
           }
         `}</style>
@@ -74,6 +87,14 @@ f('toolbar-more-menu', function () {
         }}>
           <div class='icon-wrapper'><icon-eye-closed props=${{ size: '16px' }} /></div>
           <div class='menu-label'>Hide Toolbar</div>
+        </div>
+        <div onclick=${() => {
+          location.pushState({}, '', '/settings')
+          isOpen$.set(false)
+        }}>
+          <div class='icon-wrapper'><icon-settings props=${{ size: '16px' }} /></div>
+          <div class='menu-label'>Settings</div>
+          ${(appUpdateCount$() ?? 0) > 0 ? this.h`<div class='badge-dot'></div>` : ''}
         </div>
       </div>
     `
@@ -94,22 +115,40 @@ f('toolbar-more-menu', function () {
         transition: color 0.2s;
         flex: 0 0 auto;
         align-self: center;
+        position: relative;
       `}
       onmouseenter=${(e) => { e.target.style.color = cssVars.colors.fg }}
       onmouseleave=${(e) => { e.target.style.color = cssVars.colors.fg2 }}
     >
-      <style>
+      <style>${`
         #toolbar-more-menu-button {
           @media (orientation: portrait) {
             height: 100%;
             icon-dots svg { transform: rotate(90deg); }
+            .more-menu-badge {
+              top: 9px;
+              right: 4px;
+            }
           }
           @media (orientation: landscape) {
             width: 100%;
+            .more-menu-badge {
+              top: 4px;
+              right: 9px;
+            }
+          }
+          .more-menu-badge {
+            position: absolute;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: ${cssVars.colors.bgAccentPrimary};
+            pointer-events: none;
           }
         }
-      </style>
+      `}</style>
       <icon-dots props=${{ size: '24px' }} />
+      ${(appUpdateCount$() ?? 0) > 0 ? this.h`<div class='more-menu-badge'></div>` : ''}
     </div>
     <a-menu props=${menuProps} />
   `

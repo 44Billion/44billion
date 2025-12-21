@@ -74,8 +74,8 @@ export default function useInitOrResetScreen () {
   // fetch and set app metadata if online for those without icon
   // elsewhere think on best way to keep'em updated
   // useTask(({ track }) => {
-  //   add to `appById_${appId}_icon` etc
-  //   storage[`appById_${app.key}_icon$`](...)
+  //   add to `session_appById_${appId}_icon` etc
+  //   storage[`session_appById_${appId}_icon$`](...)
   // })
 
   return storage

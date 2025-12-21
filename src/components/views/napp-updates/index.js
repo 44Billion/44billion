@@ -17,6 +17,11 @@ import { base16ToBase62 } from '#helpers/base62.js'
 
 f('napp-updates', function () {
   const storage = useWebStorage(localStorage)
+  const { session_unread_appUpdateCount$: appUpdateCount$ } = storage
+
+  useTask(() => {
+    appUpdateCount$(undefined)
+  })
 
   const allAppIds$ = useComputed(() => {
     const workspaceKeys = storage.session_workspaceKeys$() || []

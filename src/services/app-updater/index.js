@@ -3,6 +3,7 @@ import { getBundleFromDb, saveBundleToDb } from '#services/idb/browser/queries/b
 import { deleteStaleFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
 import { addressObjToAppId } from '#helpers/app.js'
 import { getUserRelays } from '#helpers/nostr-queries.js'
+import { setWebStorageItem } from '#helpers/web-storage.js'
 
 export default class AppUpdater {
   static getInstalledAppIds ({ _localStorage } = {}) {
@@ -25,9 +26,17 @@ export default class AppUpdater {
     _AppFileDownloader = AppFileDownloader,
     _getBundleFromDb = getBundleFromDb,
     _saveBundleToDb = saveBundleToDb,
+    _setWebStorageItem = setWebStorageItem,
     _localStorage
   } = {}) {
-    const ids = (appIds && appIds.length > 0) ? appIds : this.getInstalledAppIds({ _localStorage })
+    let ids = appIds
+    let allAppIds
+
+    if (!ids || ids.length === 0) {
+      allAppIds = this.getInstalledAppIds({ _localStorage })
+      ids = allAppIds
+    }
+
     if (ids.length === 0) return {}
 
     const remoteResults = await _AppFileDownloader.getBundleEvents(ids)
@@ -63,6 +72,17 @@ export default class AppUpdater {
         await _saveBundleToDb(localBundle, { ...localBundle.meta, hasUpdate: false })
       }
     }
+
+    if (!allAppIds) {
+      allAppIds = this.getInstalledAppIds({ _localStorage })
+    }
+
+    let updateCount = 0
+    for (const id of allAppIds) {
+      const bundle = await _getBundleFromDb(id)
+      if (bundle?.meta?.hasUpdate) updateCount++
+    }
+    _setWebStorageItem(_localStorage || (typeof localStorage !== 'undefined' ? localStorage : null), 'session_unread_appUpdateCount', updateCount)
 
     return updates
   }
