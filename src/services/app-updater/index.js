@@ -58,6 +58,9 @@ export default class AppUpdater {
           // We preserve existing metadata but update 'hasUpdate'
           await _saveBundleToDb(localBundle, { ...localBundle.meta, hasUpdate })
         }
+      } else if (localBundle) {
+        // No remote bundle found, so no update
+        await _saveBundleToDb(localBundle, { ...localBundle.meta, hasUpdate: false })
       }
     }
 

@@ -123,6 +123,31 @@ describe('AppUpdater', () => {
       assert.equal(mockAppFileDownloader.getBundleEvents.mock.callCount(), 1)
       assert.deepEqual(mockAppFileDownloader.getBundleEvents.mock.calls[0].arguments[0], [appId])
     })
+
+    it('should mark hasUpdate=false when local bundle exists but no remote bundle found', async () => {
+      const localBundle = {
+        id: 'local',
+        created_at: 100,
+        meta: { hasUpdate: true }
+      }
+
+      const mockAppFileDownloader = {
+        getBundleEvents: mock.fn(async () => ({}))
+      }
+      const mockGetBundleFromDb = mock.fn(async () => localBundle)
+      const mockSaveBundleToDb = mock.fn(async () => {})
+
+      const updates = await AppUpdater.searchForUpdates([appId], {
+        _AppFileDownloader: mockAppFileDownloader,
+        _getBundleFromDb: mockGetBundleFromDb,
+        _saveBundleToDb: mockSaveBundleToDb
+      })
+
+      assert.equal(mockSaveBundleToDb.mock.callCount(), 1)
+      const [, savedMeta] = mockSaveBundleToDb.mock.calls[0].arguments
+      assert.equal(savedMeta.hasUpdate, false)
+      assert.deepEqual(updates, {})
+    })
   })
 
   describe('updateApp', () => {
