@@ -22,6 +22,8 @@ if (isProduction) {
     .get('/chunks/:name', getChunk)
     .get('/', serveIndex)
     .get('/\\+{1,3}:nappIdWithRoute+', serveIndex)
+    .get('/napp-updates', serveIndex)
+    .get('/settings', serveIndex)
 
   async function serveIndex (req, res) {
     res.setHeader('content-type', 'text/html')
