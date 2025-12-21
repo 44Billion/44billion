@@ -6,6 +6,8 @@ import { getUserRelays } from '#helpers/nostr-queries.js'
 import { setWebStorageItem } from '#helpers/web-storage.js'
 
 export default class AppUpdater {
+  static _pendingSearches = new Map()
+
   static getInstalledAppIds ({ _localStorage } = {}) {
     const storage = _localStorage || localStorage
     const workspaceKeys = JSON.parse(storage.getItem('session_workspaceKeys') || '[]')
@@ -22,7 +24,7 @@ export default class AppUpdater {
   }
 
   // If appIds is empty, search for all apps
-  static async searchForUpdates (appIds, {
+  static searchForUpdates (appIds, {
     _AppFileDownloader = AppFileDownloader,
     _getBundleFromDb = getBundleFromDb,
     _saveBundleToDb = saveBundleToDb,
@@ -30,61 +32,71 @@ export default class AppUpdater {
     _localStorage
   } = {}) {
     let ids = appIds
-    let allAppIds
-
     if (!ids || ids.length === 0) {
-      allAppIds = this.getInstalledAppIds({ _localStorage })
-      ids = allAppIds
+      ids = this.getInstalledAppIds({ _localStorage })
     }
 
-    if (ids.length === 0) return {}
+    const key = JSON.stringify(ids.slice().sort())
 
-    const remoteResults = await _AppFileDownloader.getBundleEvents(ids)
-    const updates = {}
+    if (this._pendingSearches.has(key)) {
+      return this._pendingSearches.get(key)
+    }
 
-    for (const appId of ids) {
-      const localBundle = await _getBundleFromDb(appId)
-      const remoteResult = remoteResults[appId]
+    const promise = (async () => {
+      try {
+        if (ids.length === 0) return {}
 
-      if (remoteResult) {
-        const remoteEvent = remoteResult.event
-        let hasUpdate = false
+        const remoteResults = await _AppFileDownloader.getBundleEvents(ids)
+        const updates = {}
 
-        if (!localBundle) {
-          // "fetched bundle event is the only one"
-          hasUpdate = true
-        } else if (remoteEvent.created_at > localBundle.created_at) {
-          // "or more recent then the one stored on indexeddb"
-          hasUpdate = true
+        for (const appId of ids) {
+          const localBundle = await _getBundleFromDb(appId)
+          const remoteResult = remoteResults[appId]
+
+          if (remoteResult) {
+            const remoteEvent = remoteResult.event
+            let hasUpdate = false
+
+            if (!localBundle) {
+              // "fetched bundle event is the only one"
+              hasUpdate = true
+            } else if (remoteEvent.created_at > localBundle.created_at) {
+              // "or more recent then the one stored on indexeddb"
+              hasUpdate = true
+            }
+
+            if (hasUpdate) {
+              updates[appId] = remoteResult
+            }
+
+            if (localBundle) {
+              // Update the local bundle record to reflect update status
+              // We preserve existing metadata but update 'hasUpdate'
+              await _saveBundleToDb(localBundle, { ...localBundle.meta, hasUpdate })
+            }
+          } else if (localBundle) {
+            // No remote bundle found, so no update
+            await _saveBundleToDb(localBundle, { ...localBundle.meta, hasUpdate: false })
+          }
         }
 
-        if (hasUpdate) {
-          updates[appId] = remoteResult
-        }
+        const allAppIds = this.getInstalledAppIds({ _localStorage })
 
-        if (localBundle) {
-          // Update the local bundle record to reflect update status
-          // We preserve existing metadata but update 'hasUpdate'
-          await _saveBundleToDb(localBundle, { ...localBundle.meta, hasUpdate })
+        let updateCount = 0
+        for (const id of allAppIds) {
+          const bundle = await _getBundleFromDb(id)
+          if (bundle?.meta?.hasUpdate) updateCount++
         }
-      } else if (localBundle) {
-        // No remote bundle found, so no update
-        await _saveBundleToDb(localBundle, { ...localBundle.meta, hasUpdate: false })
+        _setWebStorageItem(_localStorage || (typeof localStorage !== 'undefined' ? localStorage : null), 'session_unread_appUpdateCount', updateCount)
+
+        return updates
+      } finally {
+        this._pendingSearches.delete(key)
       }
-    }
+    })()
 
-    if (!allAppIds) {
-      allAppIds = this.getInstalledAppIds({ _localStorage })
-    }
-
-    let updateCount = 0
-    for (const id of allAppIds) {
-      const bundle = await _getBundleFromDb(id)
-      if (bundle?.meta?.hasUpdate) updateCount++
-    }
-    _setWebStorageItem(_localStorage || (typeof localStorage !== 'undefined' ? localStorage : null), 'session_unread_appUpdateCount', updateCount)
-
-    return updates
+    this._pendingSearches.set(key, promise)
+    return promise
   }
 
   static isAppOpen (appId, { _localStorage } = {}) {
@@ -146,6 +158,45 @@ export default class AppUpdater {
 
   static initCleanupJob ({ _setTimeout = setTimeout, ...deps } = {}) {
     _setTimeout(() => this.scheduleCleanup(null, { ...deps, ifAvailable: true }), 2 * 60 * 1000)
+  }
+
+  static async scheduleUpdateCheck ({
+    _navigator = (typeof navigator !== 'undefined' ? navigator : null),
+    _setTimeout = setTimeout,
+    ifAvailable = false,
+    interval = 15 * 60 * 1000,
+    ...deps
+  } = {}) {
+    if (!_navigator?.locks) return
+
+    const connection = _navigator.connection || _navigator.mozConnection || _navigator.webkitConnection
+    if (connection?.metered) {
+      _setTimeout(() => this.scheduleUpdateCheck({ _navigator, _setTimeout, interval, ...deps }), interval)
+      return
+    }
+
+    return _navigator.locks.request('app-update-check-job', { ifAvailable }, async (lock) => {
+      if (!lock) return
+
+      try {
+        await this.searchForUpdates(null, deps)
+      } catch (err) {
+        console.error('Update check failed', err)
+      }
+
+      _setTimeout(() => {
+        this.scheduleUpdateCheck({
+          _navigator,
+          _setTimeout,
+          interval,
+          ...deps
+        })
+      }, interval)
+    })
+  }
+
+  static initUpdateCheckJob ({ _setTimeout = setTimeout, ...deps } = {}) {
+    _setTimeout(() => this.scheduleUpdateCheck({ ...deps, ifAvailable: true }), 1 * 60 * 1000)
   }
 
   static async * updateApp (nextBundleEvent, {

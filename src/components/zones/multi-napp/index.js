@@ -7,8 +7,11 @@ import { useVaultModalStore } from '#zones/vault-modal/index.js'
 import '#zones/permission-dialog/index.js'
 import '#zones/confirmation-dialog/index.js'
 
-f('multiNapp', function () {
-  useTask(() => { AppUpdater.initCleanupJob() })
+f('multi-napp', function () {
+  useTask(() => {
+    AppUpdater.initCleanupJob()
+    AppUpdater.initUpdateCheckJob()
+  })
 
   useLocation(router)
   useVaultModalStore(() => ({

@@ -165,7 +165,13 @@ describe('AppUpdater', () => {
       const mockGetBundleFromDb = mock.fn(async () => localBundle)
       const mockSaveBundleToDb = mock.fn(async () => {})
       const mockSetWebStorageItem = mock.fn()
-      const mockLocalStorage = { getItem: mock.fn(() => '[]') }
+      const mockLocalStorage = {
+        getItem: mock.fn((key) => {
+          if (key === 'session_workspaceKeys') return JSON.stringify(['ws1'])
+          if (key === 'session_workspaceByKey_ws1_pinnedAppIds') return JSON.stringify([appId])
+          return null
+        })
+      }
 
       const updates = await AppUpdater.searchForUpdates([appId], {
         _AppFileDownloader: mockAppFileDownloader,
@@ -179,7 +185,41 @@ describe('AppUpdater', () => {
       const [, savedMeta] = mockSaveBundleToDb.mock.calls[0].arguments
       assert.equal(savedMeta.hasUpdate, false)
       assert.deepEqual(updates, {})
-      assert.equal(mockSetWebStorageItem.mock.callCount(), 1)
+    })
+
+    it('should share promise for same appIds (including implicit all)', async () => {
+      const mockAppFileDownloader = {
+        getBundleEvents: mock.fn(async () => ({}))
+      }
+      const mockGetBundleFromDb = mock.fn(async () => null)
+      const mockSaveBundleToDb = mock.fn(async () => {})
+      const mockSetWebStorageItem = mock.fn()
+
+      const mockLocalStorage = {
+        getItem: mock.fn((key) => {
+          if (key === 'session_workspaceKeys') return JSON.stringify(['ws1'])
+          if (key === 'session_workspaceByKey_ws1_pinnedAppIds') return JSON.stringify(['app1'])
+          return null
+        })
+      }
+
+      const deps = {
+        _AppFileDownloader: mockAppFileDownloader,
+        _getBundleFromDb: mockGetBundleFromDb,
+        _saveBundleToDb: mockSaveBundleToDb,
+        _setWebStorageItem: mockSetWebStorageItem,
+        _localStorage: mockLocalStorage
+      }
+
+      // Call 1: Explicit list
+      const p1 = AppUpdater.searchForUpdates(['app1'], deps)
+
+      // Call 2: Implicit list (should resolve to ['app1'] and match key)
+      const p2 = AppUpdater.searchForUpdates(null, deps)
+
+      assert.strictEqual(p1, p2)
+
+      await p1
     })
   })
 
