@@ -4,11 +4,13 @@ import '#shared/menu.js'
 import '#shared/icons/icon-dots.js'
 import '#shared/icons/icon-eye-closed.js'
 import '#shared/icons/icon-settings.js'
+import '#shared/icons/icon-square-rounded-letter-n.js'
 import useLocation from '#hooks/use-location.js'
 import useWebStorage from '#hooks/use-web-storage.js'
 
 f('toolbar-more-menu', function () {
   const { isHidden$ } = useGlobalStore('toolbarState', { isHidden$: false })
+  const { openApp } = useGlobalStore('useAppRouter')
   const { isOpen$, anchorRef$ } = useStore({
     isOpen$: false,
     anchorRef$: null
@@ -68,7 +70,7 @@ f('toolbar-more-menu', function () {
               min-height: 30px;
               padding: 10px 10px 10px 3px;
             }
-            icon-eye-closed, icon-settings {
+            icon-eye-closed, icon-settings, icon-square-rounded-letter-n {
               color: ${cssVars.colors.fg2};
             }
             .badge-dot {
@@ -87,6 +89,14 @@ f('toolbar-more-menu', function () {
         }}>
           <div class='icon-wrapper'><icon-eye-closed props=${{ size: '16px' }} /></div>
           <div class='menu-label'>Hide Toolbar</div>
+        </div>
+        <div onclick=${() => {
+          // or location.pushState({}, '', '/+cA99KnC0UCyqHT5oI8fIkoza0jfB1lrvaWKmuh6h2EhTz2nw4R2a5qVNM')
+          openApp('/+cA99KnC0UCyqHT5oI8fIkoza0jfB1lrvaWKmuh6h2EhTz2nw4R2a5qVNM')
+          isOpen$.set(false)
+        }}>
+          <div class='icon-wrapper'><icon-square-rounded-letter-n props=${{ size: '16px' }} /></div>
+          <div class='menu-label'>App Store</div>
         </div>
         <div onclick=${() => {
           location.pushState({}, '', '/settings')
