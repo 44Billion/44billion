@@ -1,14 +1,16 @@
-import nostrRelays, { seedRelays } from '#services/nostr-relays.js'
+import nostrRelays, { seedRelays, nappRelays } from '#services/nostr-relays.js'
+import { shouldIncludeNappRelays } from '#helpers/app.js'
 
 export async function getAppBundle (appIdObj, userRelays) {
   if (!appIdObj.pubkey || !appIdObj.kind || !appIdObj.dTag) throw new Error('Missing args')
 
   userRelays ??= (await getUserRelays(appIdObj.pubkey))[appIdObj.pubkey]
-  if (userRelays.write.length === 0) return
+  // if (userRelays.write.length === 0) return
+  const relays = [...new Set([...userRelays.write, ...nappRelays])]
 
   const bundlesResponse = await nostrRelays.getEvents(
     { authors: [appIdObj.pubkey], kinds: [appIdObj.kind], '#d': [appIdObj.dTag], limit: 1 },
-    userRelays.write
+    relays
   )
   if (!bundlesResponse.success) {
     throw bundlesResponse.errors?.[0]?.reason ||
@@ -35,8 +37,9 @@ export async function getEventsByStrategy (filter, st /*, timeoutMs = 3000 */) {
         .map(([k]) => k)
 
       const maxRelaysPerUser = st.maxRelaysPerUser || 2
-      // pick 2 for each author and split requests,
+      // Pick 2 for each author and split requests,
       // deduplicate and limit number of events
+      // May include napp relays for all authors
       if (filter.authors) {
         const relayPickCountByUser = {}
         const usersByRelay = {}
@@ -51,6 +54,13 @@ export async function getEventsByStrategy (filter, st /*, timeoutMs = 3000 */) {
             usersByRelay[popularRelay].push(user)
           })
         })
+
+        if (shouldIncludeNappRelays(filter)) {
+          nappRelays.forEach(url => {
+            usersByRelay[url] = filter.authors
+          })
+        }
+
         const promises = Object.entries(usersByRelay).map(([pickedRelay, authors]) =>
           nostrRelays.getEventsAsap({ ...filter, authors }, [pickedRelay])
             .then(response => response.result ?? [])
@@ -94,10 +104,15 @@ export async function getEventsByStrategy (filter, st /*, timeoutMs = 3000 */) {
         }
 
         return uniqueEvents
+      // Pick 2 for each author but don't split requests.
+      // it elects the faster relay to get all events from
+      // May include napp relays for all authors
       } else { // st.authors
-        // pick 2 for each author but don't split requests.
-        // it elects the faster relay to get all events from
         const pickedRelays = new Set()
+        if (shouldIncludeNappRelays(filter)) {
+          nappRelays.forEach(url => pickedRelays.add(url))
+        }
+
         userWriteRelays.forEach(v => {
           let pickedCountByAuthor = 0
           for (const r of relaysSortedByPopularity) {

@@ -2,6 +2,21 @@ import { base62ToBase16, base16ToBase62 } from '#helpers/base62.js'
 import { isBase36, bytesToBase36, base36ToBase62, base62ToBase36 } from '#helpers/base36.js'
 import { base16ToBytes } from '#helpers/base16.js'
 
+const nappEventKinds = {
+  // file chunk
+  34600: true,
+  // stall
+  37348: true,
+  37349: true,
+  37350: true,
+  // bundle
+  37448: true,
+  37449: true,
+  37450: true
+}
+export const shouldIncludeNappRelays = filter =>
+  !filter.kinds || filter.kinds.length === 0 || filter.kinds.some(k => nappEventKinds[k])
+
 // 63 - (1<channel> + 5<b36loggeduserpkslug> 50<b36pk>)
 // <b36loggeduserpkslug> pk chars at positions [7][17][27][37][47]
 // to avoid vanity or pow colisions

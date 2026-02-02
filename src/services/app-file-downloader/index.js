@@ -52,6 +52,8 @@ export default class AppFileDownloader {
       if (!filter['#d'].includes(addr.dTag)) filter['#d'].push(addr.dTag)
     }
 
+    // The default getEventsByStrategy already includes napp relays
+    // besides the user's write relays
     const events = await _getEventsByStrategy(filter, {
       code: 'WRITE_RELAYS',
       maxRelaysPerUser: 7,
