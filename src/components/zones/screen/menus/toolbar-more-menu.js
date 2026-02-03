@@ -4,7 +4,7 @@ import '#shared/menu.js'
 import '#shared/icons/icon-dots.js'
 import '#shared/icons/icon-eye-closed.js'
 import '#shared/icons/icon-settings.js'
-import '#shared/icons/icon-square-rounded-letter-n.js'
+import '#shared/icons/icon-shopping-bag.js'
 import useLocation from '#hooks/use-location.js'
 import useWebStorage from '#hooks/use-web-storage.js'
 
@@ -70,7 +70,7 @@ f('toolbar-more-menu', function () {
               min-height: 30px;
               padding: 10px 10px 10px 3px;
             }
-            icon-eye-closed, icon-settings, icon-square-rounded-letter-n {
+            icon-eye-closed, icon-settings, icon-shopping-bag {
               color: ${cssVars.colors.fg2};
             }
             .badge-dot {
@@ -95,7 +95,7 @@ f('toolbar-more-menu', function () {
           openApp('/+cA99KnC0UCyqHT5oI8fIkoza0jfB1lrvaWKmuh6h2EhTz2nw4R2a5qVNM')
           isOpen$.set(false)
         }}>
-          <div class='icon-wrapper'><icon-square-rounded-letter-n props=${{ size: '16px' }} /></div>
+          <div class='icon-wrapper'><icon-shopping-bag props=${{ size: '16px' }} /></div>
           <div class='menu-label'>App Store</div>
         </div>
         <div onclick=${() => {

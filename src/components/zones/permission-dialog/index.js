@@ -164,12 +164,12 @@ f('permissionDialogStack', function () {
       31924: 'calendars',
       31925: 'event RSVPs',
       34600: 'files',
-      37348: 'napp stalls',
-      37349: '(next) napp stalls',
-      37350: '(draft) napp stalls',
-      37448: 'napp bundles',
-      37449: '(next) napp bundles',
-      37450: '(draft) napp bundles'
+      37348: 'app stalls',
+      37349: '(next) app stalls',
+      37350: '(draft) app stalls',
+      37448: 'app bundles',
+      37449: '(next) app bundles',
+      37450: '(draft) app bundles'
     },
     getEKindToText (kind, name) {
       if (name === 'readProfile') return 'your profile'
@@ -218,7 +218,7 @@ f('permissionDialogStack', function () {
         } = storage
         const appName = targetApp.name || cachedTargetAppName$() || targetApp.alias || targetApp.napp
         if (appName == null) throw new Error('Missing app name for openApp permission')
-        dynText = `${this.getNameToText(name)} the ${appName} napp`
+        dynText = `${this.getNameToText(name)} the ${appName} app`
       }
 
       if (!dynText) {
