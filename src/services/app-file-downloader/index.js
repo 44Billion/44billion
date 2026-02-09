@@ -1,6 +1,6 @@
 import { appIdToAddressObj } from '#helpers/app.js'
 import { getUserRelays, getEventsByStrategy } from '#helpers/nostr-queries.js'
-import nostrRelays from '#services/nostr-relays.js'
+import nostrRelays, { nappRelays } from '#services/nostr-relays.js'
 import {
   saveFileChunksToDB,
   countFileChunksFromDb,
@@ -14,7 +14,7 @@ export default class AppFileDownloader {
     if (!writeRelays || writeRelays.length === 0) throw new Error('Write relays cannot be empty')
     this.appId = appId
     this.fileRootHash = fileRootHash
-    this.writeRelays = writeRelays
+    this.writeRelays = [...new Set([...writeRelays, ...nappRelays])]
     this.sharedKey = `${appId}:${fileRootHash}`
   }
 
@@ -92,16 +92,39 @@ export default class AppFileDownloader {
       state = {
         total: null,
         downloaded: new Set(),
-        fetching: new Set(),
+        fetching: new Map(), // index -> Set(relayUrl)
         missingByRelay: new Map(), // relay -> Set(indexes)
         error: null,
         instances: 0,
-        initPromise: null
+        initPromise: null,
+        queue: [],
+        relayBackoffs: new Map(), // relayUrl -> currentDelay
+        resolvers: new Set(),
+        workersStarted: false,
+        version: 0,
+        stopped: false
       }
-      state.initPromise = this._initState(state, deps)
+      state.initPromise = this._initState(state, deps).then(() => {
+        notify()
+      })
       activeDownloads.set(this.sharedKey, state)
     }
     state.instances++
+    notify()
+
+    function notify () {
+      state.version++
+      const resolvers = Array.from(state.resolvers)
+      state.resolvers.clear()
+      resolvers.forEach(resolve => resolve())
+    }
+
+    function wait (knownVersion) {
+      if (state.version !== knownVersion) return Promise.resolve()
+      const { promise, resolve } = Promise.withResolvers()
+      state.resolvers.add(resolve)
+      return promise
+    }
 
     try {
       await state.initPromise
@@ -111,9 +134,111 @@ export default class AppFileDownloader {
         return { progress, error: state.error }
       }
 
+      if (!state.workersStarted) {
+        state.workersStarted = true
+        const batchSize = 20
+
+        const populateQueue = () => {
+          if (state.total === null) {
+            if (!state.downloaded.has(0) && !state.fetching.has(0) && !state.queue.includes(0)) {
+              state.queue.push(0)
+            }
+          } else {
+            for (let i = 0; i < state.total; i++) {
+              if (!state.downloaded.has(i) && !state.fetching.has(i) && !state.queue.includes(i)) {
+                state.queue.push(i)
+              }
+            }
+            state.queue.sort((a, b) => a - b)
+          }
+        }
+
+        this.writeRelays.forEach(relayUrl => {
+          (async () => {
+            try {
+              while (true) {
+                const lastVersion = state.version
+                if (state.error || state.stopped || (state.total !== null && state.downloaded.size >= state.total)) break
+
+                populateQueue()
+                const batch = []
+
+                // 1. Primary work from queue
+                for (let i = 0; i < state.queue.length && batch.length < batchSize; i++) {
+                  const idx = state.queue[i]
+                  if (state.missingByRelay.get(relayUrl)?.has(idx)) continue
+
+                  batch.push(idx)
+                  state.queue.splice(i, 1)
+                  i--
+                  if (!state.fetching.has(idx)) state.fetching.set(idx, new Set())
+                  state.fetching.get(idx).add(relayUrl)
+                }
+
+                // 2. Redundancy / Stealing
+                if (batch.length < batchSize && state.total !== null) {
+                  // Try stealing chunks that are being fetched by others but not by this relay
+                  for (let idx = 0; idx < state.total && batch.length < batchSize; idx++) {
+                    if (state.downloaded.has(idx) || batch.includes(idx)) continue
+                    if (state.missingByRelay.get(relayUrl)?.has(idx)) continue
+                    // Steal even if in state.fetching (by others)
+                    batch.push(idx)
+                    if (!state.fetching.has(idx)) state.fetching.set(idx, new Set())
+                    state.fetching.get(idx).add(relayUrl)
+                  }
+                }
+
+                if (batch.length === 0) {
+                  if (state.total !== null && state.downloaded.size >= state.total) break
+                  if (state.stopped) break
+                  await wait(lastVersion)
+                  continue
+                }
+
+                try {
+                  const foundIndexes = await this._fetchFromRelay(relayUrl, batch, state, deps)
+                  // Success: reset backoff
+                  state.relayBackoffs.set(relayUrl, 1000)
+
+                  // Re-queue chunks that were not found in this relay if no one else is downloading them
+                  for (const idx of batch) {
+                    if (!foundIndexes.has(idx) && !state.downloaded.has(idx)) {
+                      if (!state.queue.includes(idx)) state.queue.unshift(idx)
+                    }
+                  }
+                  notify()
+                } catch (err) {
+                  console.error(`Worker error at ${relayUrl}:`, err)
+                  for (const idx of batch) {
+                    const fetchingRelays = state.fetching.get(idx)
+                    if (fetchingRelays) {
+                      fetchingRelays.delete(relayUrl)
+                      if (fetchingRelays.size === 0) state.fetching.delete(idx)
+                    }
+                    if (!state.downloaded.has(idx) && !state.queue.includes(idx)) {
+                      state.queue.unshift(idx)
+                    }
+                  }
+                  notify()
+
+                  const currentBackoff = state.relayBackoffs.get(relayUrl) || 1000
+                  const nextBackoff = Math.min(currentBackoff * 2, 30000) // Caps at 30 seconds
+                  state.relayBackoffs.set(relayUrl, nextBackoff)
+
+                  await new Promise(resolve => setTimeout(resolve, currentBackoff))
+                }
+              }
+            } finally {
+              notify()
+            }
+          })()
+        })
+      }
+
       yield reportProgress()
 
       while (true) {
+        const lastVersion = state.version
         if (state.error) {
           yield reportProgress()
           return
@@ -124,89 +249,35 @@ export default class AppFileDownloader {
           return
         }
 
-        // Determine what to fetch
-        const needed = []
-        if (state.total === null) {
-          if (!state.downloaded.has(0) && !state.fetching.has(0)) {
-            needed.push(0)
-          }
-        } else {
+        // Connectivity/Availability check
+        if (state.total !== null && state.downloaded.size < state.total && state.fetching.size === 0) {
+          const missingIndexes = []
           for (let i = 0; i < state.total; i++) {
-            if (!state.downloaded.has(i) && !state.fetching.has(i)) {
-              needed.push(i)
+            if (!state.downloaded.has(i)) missingIndexes.push(i)
+          }
+
+          if (missingIndexes.length > 0) {
+            const canAnyRelayTry = missingIndexes.some(idx =>
+              this.writeRelays.some(url => !state.missingByRelay.get(url)?.has(idx))
+            )
+
+            if (!canAnyRelayTry) {
+              state.error = new Error('Chunks missing from all relays')
+              notify()
+              yield reportProgress()
+              return
             }
           }
         }
 
-        if (needed.length === 0) {
-          if (state.total === null && state.fetching.size > 0) {
-            // Waiting for chunk 0 to determine total
-            await new Promise(resolve => setTimeout(resolve, 100))
-            continue
-          }
-          if (state.total !== null && state.downloaded.size < state.total && state.fetching.size > 0) {
-            // Waiting for other fetches
-            await new Promise(resolve => setTimeout(resolve, 100))
-            continue
-          }
-
-          if (state.total === null) {
-            state.error = new Error('Could not find file metadata (chunk 0)')
-            yield reportProgress()
-            return
-          }
-          if (state.downloaded.size < state.total) {
-            // Should be handled by relayAssignments check below, but just in case
-          }
-        }
-
-        // Distribute chunks to relays
-        const batchSize = 20
-        const relayAssignments = new Map() // relay -> [indexes]
-
-        const maxAssignment = this.writeRelays.length * batchSize
-        const chunksToAssign = needed.slice(0, maxAssignment)
-
-        for (const chunkIndex of chunksToAssign) {
-          for (let offset = 0; offset < this.writeRelays.length; offset++) {
-            const relayIdx = (chunkIndex + offset) % this.writeRelays.length
-            const relayUrl = this.writeRelays[relayIdx]
-
-            if (state.missingByRelay.get(relayUrl)?.has(chunkIndex)) continue
-
-            if (!relayAssignments.has(relayUrl)) relayAssignments.set(relayUrl, [])
-            const assignments = relayAssignments.get(relayUrl)
-
-            if (assignments.length < batchSize) {
-              assignments.push(chunkIndex)
-              state.fetching.add(chunkIndex)
-              break
-            }
-          }
-        }
-
-        if (relayAssignments.size === 0) {
-          if (state.fetching.size > 0) {
-            await new Promise(resolve => setTimeout(resolve, 100))
-            continue
-          }
-          state.error = new Error('Chunks missing from all relays')
-          yield reportProgress()
-          return
-        }
-
-        // Execute fetches
-        const promises = []
-        for (const [relayUrl, indexes] of relayAssignments) {
-          promises.push(this._fetchFromRelay(relayUrl, indexes, state, deps))
-        }
-
-        await Promise.all(promises)
+        await wait(lastVersion)
         yield reportProgress()
       }
     } finally {
       state.instances--
       if (state.instances === 0) {
+        state.stopped = true
+        notify()
         activeDownloads.delete(this.sharedKey)
       }
     }
@@ -231,42 +302,42 @@ export default class AppFileDownloader {
       '#c': indexes.map(i => `${this.fileRootHash}:${i}`)
     }
 
-    try {
-      const { result } = await _nostrRelays.getEvents(filter, [relayUrl])
+    const { result } = await _nostrRelays.getEvents(filter, [relayUrl])
 
-      const foundIndexes = new Set()
-      const fakeBundle = { tags: [['file', this.fileRootHash]] }
+    const foundIndexes = new Set()
+    const fakeBundle = { tags: [['file', this.fileRootHash]] }
 
-      if (result && result.length > 0) {
-        await _saveFileChunksToDB(fakeBundle, result, this.appId)
+    if (result && result.length > 0) {
+      await _saveFileChunksToDB(fakeBundle, result, this.appId)
 
-        for (const event of result) {
-          const cTag = event.tags.find(t => t[0] === 'c' && t[1].startsWith(`${this.fileRootHash}:`))
-          if (cTag) {
-            const parts = cTag[1].split(':')
-            const idx = parseInt(parts[1])
-            foundIndexes.add(idx)
-            state.downloaded.add(idx)
+      for (const event of result) {
+        const cTag = event.tags.find(t => t[0] === 'c' && t[1].startsWith(`${this.fileRootHash}:`))
+        if (cTag) {
+          const parts = cTag[1].split(':')
+          const idx = parseInt(parts[1])
+          foundIndexes.add(idx)
+          state.downloaded.add(idx)
 
-            if (state.total === null && cTag[2]) {
-              state.total = parseInt(cTag[2])
-            }
+          if (state.total === null && cTag[2]) {
+            state.total = parseInt(cTag[2])
           }
         }
       }
+    }
 
-      for (const idx of indexes) {
-        state.fetching.delete(idx)
-        if (!foundIndexes.has(idx)) {
-          if (!state.missingByRelay.has(relayUrl)) state.missingByRelay.set(relayUrl, new Set())
-          state.missingByRelay.get(relayUrl).add(idx)
-        }
+    for (const idx of indexes) {
+      const fetchingRelays = state.fetching.get(idx)
+      if (fetchingRelays) {
+        fetchingRelays.delete(relayUrl)
+        if (fetchingRelays.size === 0) state.fetching.delete(idx)
       }
-    } catch (err) {
-      console.error(`Error fetching from ${relayUrl}`, err)
-      for (const idx of indexes) {
-        state.fetching.delete(idx)
+
+      if (!foundIndexes.has(idx)) {
+        if (!state.missingByRelay.has(relayUrl)) state.missingByRelay.set(relayUrl, new Set())
+        state.missingByRelay.get(relayUrl).add(idx)
       }
     }
+
+    return foundIndexes
   }
 }

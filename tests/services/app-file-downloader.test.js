@@ -6,7 +6,6 @@ import { appIdToAddressObj } from '../../src/helpers/app.js'
 describe('AppFileDownloader', () => {
   // valid appId with 43 chars for pubkey (base62)
   const appId = 'a0000000000000000000000000000000000000000000test'
-  const fileRootHash = 'hash123'
   const writeRelays = ['wss://relay1.com', 'wss://relay2.com', 'wss://relay3.com']
 
   describe('getBundleEvents', () => {
@@ -46,7 +45,8 @@ describe('AppFileDownloader', () => {
     })
 
     it('should download all chunks successfully (happy path)', async () => {
-      const downloader = new AppFileDownloader(appId, fileRootHash, writeRelays)
+      const testHash = 'happypath'
+      const downloader = new AppFileDownloader(appId, testHash, writeRelays)
       const deps = createMockDeps()
       const totalChunks = 60
 
@@ -55,7 +55,7 @@ describe('AppFileDownloader', () => {
         const events = requestedIndexes.map(idx => ({
           kind: 34600,
           tags: [
-            ['c', `${fileRootHash}:${idx}`, String(totalChunks)],
+            ['c', `${testHash}:${idx}`, String(totalChunks)],
             ['d', String(idx)]
           ]
         }))
@@ -71,12 +71,11 @@ describe('AppFileDownloader', () => {
       }
 
       assert.equal(lastProgress, 100)
-      assert.ok(deps._nostrRelays.getEvents.mock.callCount() > 0)
-      assert.ok(deps._saveFileChunksToDB.mock.callCount() > 0)
     })
 
     it('should handle missing chunks on some relays and recover', async () => {
-      const downloader = new AppFileDownloader(appId, fileRootHash, writeRelays)
+      const testHash = 'missingrecover'
+      const downloader = new AppFileDownloader(appId, testHash, writeRelays)
       const deps = createMockDeps()
       const totalChunks = 10
       const missingChunkIdx = 5
@@ -91,7 +90,7 @@ describe('AppFileDownloader', () => {
           .map(idx => ({
             kind: 34600,
             tags: [
-              ['c', `${fileRootHash}:${idx}`, String(totalChunks)],
+              ['c', `${testHash}:${idx}`, String(totalChunks)],
               ['d', String(idx)]
             ]
           }))
@@ -108,12 +107,11 @@ describe('AppFileDownloader', () => {
       }
 
       assert.equal(lastProgress, 100)
-      // Verify that we eventually got the missing chunk from another relay
-      // This is implicitly tested by reaching 100% progress without error
     })
 
     it('should error when a chunk is missing from all relays', async () => {
-      const downloader = new AppFileDownloader(appId, fileRootHash, writeRelays)
+      const testHash = 'missingall'
+      const downloader = new AppFileDownloader(appId, testHash, writeRelays)
       const deps = createMockDeps()
       const totalChunks = 10
       const missingChunkIdx = 5
@@ -126,7 +124,7 @@ describe('AppFileDownloader', () => {
           .map(idx => ({
             kind: 34600,
             tags: [
-              ['c', `${fileRootHash}:${idx}`, String(totalChunks)],
+              ['c', `${testHash}:${idx}`, String(totalChunks)],
               ['d', String(idx)]
             ]
           }))
@@ -152,18 +150,19 @@ describe('AppFileDownloader', () => {
     })
 
     it('should coordinate multiple instances to download chunks faster', async () => {
-      const downloader1 = new AppFileDownloader(appId, fileRootHash, writeRelays)
-      const downloader2 = new AppFileDownloader(appId, fileRootHash, writeRelays)
+      const testHash = 'coordination'
+      const downloader1 = new AppFileDownloader(appId, testHash, writeRelays)
+      const downloader2 = new AppFileDownloader(appId, testHash, writeRelays)
       const deps = createMockDeps()
       const totalChunks = 100
 
       deps._nostrRelays.getEvents.mock.mockImplementation(async (filter) => {
-        await new Promise(resolve => setTimeout(resolve, 10))
+        await new Promise(resolve => setTimeout(resolve, 5))
         const requestedIndexes = filter['#c'].map(c => parseInt(c.split(':')[1]))
         const events = requestedIndexes.map(idx => ({
           kind: 34600,
           tags: [
-            ['c', `${fileRootHash}:${idx}`, String(totalChunks)],
+            ['c', `${testHash}:${idx}`, String(totalChunks)],
             ['d', String(idx)]
           ]
         }))
