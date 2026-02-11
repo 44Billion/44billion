@@ -204,7 +204,7 @@ export default class AppFileManager {
     }
 
     const p = Promise.withResolvers()
-    config.subscribers.add(({ progress, error, newlyCachedChunkIndexRanges: _newlyCachedChunkIndexRanges }) => {
+    config.subscribers.add(({ progress, error, newlyCachedChunkIndex: _newlyCachedChunkIndex }) => {
       if (progress >= 100) {
         p.resolve()
         if (!shouldCacheMissingFiles) return
@@ -256,12 +256,11 @@ export default class AppFileManager {
 
         if (report.error) throw report.error
 
-        const { progress, newlyCachedChunkIndexRanges } = report
+        config.result = report
 
-        config.result = { progress, newlyCachedChunkIndexRanges }
         for (const sub of config.subscribers) {
           try {
-            sub({ progress, newlyCachedChunkIndexRanges })
+            sub(report)
           } catch (err) {
             console.log(err)
           }

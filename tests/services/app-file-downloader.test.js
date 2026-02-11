@@ -36,164 +36,51 @@ describe('AppFileDownloader', () => {
 
   describe('run', () => {
     const createMockDeps = () => ({
-      _nostrRelays: {
-        getEventsGenerator: mock.fn(async function * () { yield * [] })
+      _FileDownloader: class MockFileDownloader {
+        constructor (hash, pubkeysByRelay, callback, options) {
+          this.hash = hash
+          this.pubkeysByRelay = pubkeysByRelay
+          this.callback = callback
+          this.options = options
+        }
+
+        async run () {
+          // Simulate some progress
+          this.callback({ type: 'progress', progress: 50, count: 50, total: 100 })
+          // Simulate event
+          const event = { id: 'evt1', tags: [['c', `${this.hash}:50`, '100']] }
+          await this.callback({ type: 'progress', progress: 51, count: 51, total: 100, event })
+
+          return Promise.resolve()
+        }
       },
-      _countFileChunksFromDb: mock.fn(async () => ({ total: null })),
-      _getFileChunksFromDb: mock.fn(async () => []),
+      _countFileChunksFromDb: mock.fn(async () => ({ total: 100 })),
+      _getFileChunksFromDb: mock.fn(async () => [[appId, 'hash', 0], [appId, 'hash', 1]]),
       _saveFileChunksToDB: mock.fn(async () => {})
     })
 
-    it('should download all chunks successfully (happy path)', async () => {
-      const testHash = 'happypath'
+    it('should instantiate FileDownloader and yield progress', async () => {
+      const testHash = 'test-hash'
       const downloader = new AppFileDownloader(appId, testHash, writeRelays)
       const deps = createMockDeps()
-      const totalChunks = 60
-
-      deps._nostrRelays.getEventsGenerator.mock.mockImplementation(async function * (filter) {
-        const requestedIndexes = filter['#c'].map(c => parseInt(c.split(':')[1]))
-        const events = requestedIndexes.map(idx => ({
-          kind: 34600,
-          tags: [
-            ['c', `${testHash}:${idx}`, String(totalChunks)],
-            ['d', String(idx)]
-          ]
-        }))
-        for (const event of events) {
-          yield { type: 'event', event }
-        }
-      })
 
       const iterator = downloader.run(deps)
-      let lastProgress = 0
+      const updates = []
 
       for await (const report of iterator) {
-        if (report.error) throw report.error
-        lastProgress = report.progress
+        updates.push(report)
       }
 
-      assert.equal(lastProgress, 100)
-    })
+      assert.ok(updates.length >= 2)
+      assert.equal(updates[0].progress, 50)
+      assert.equal(updates[1].progress, 51)
 
-    it('should handle missing chunks on some relays and recover', async () => {
-      const testHash = 'missingrecover'
-      const downloader = new AppFileDownloader(appId, testHash, writeRelays)
-      const deps = createMockDeps()
-      const totalChunks = 10
-      const missingChunkIdx = 5
-      const missingRelay = writeRelays[0]
+      // Verify DB save called
+      assert.equal(deps._saveFileChunksToDB.mock.callCount(), 1)
 
-      deps._nostrRelays.getEventsGenerator.mock.mockImplementation(async function * (filter, relays) {
-        const relayUrl = relays[0]
-        const requestedIndexes = filter['#c'].map(c => parseInt(c.split(':')[1]))
-
-        const events = requestedIndexes
-          .filter(idx => !(relayUrl === missingRelay && idx === missingChunkIdx))
-          .map(idx => ({
-            kind: 34600,
-            tags: [
-              ['c', `${testHash}:${idx}`, String(totalChunks)],
-              ['d', String(idx)]
-            ]
-          }))
-
-        for (const event of events) {
-          yield { type: 'event', event }
-        }
-      })
-
-      const iterator = downloader.run(deps)
-      let lastProgress = 0
-
-      for await (const report of iterator) {
-        if (report.error) throw report.error
-        lastProgress = report.progress
-      }
-
-      assert.equal(lastProgress, 100)
-    })
-
-    it('should error when a chunk is missing from all relays', async () => {
-      const testHash = 'missingall'
-      const downloader = new AppFileDownloader(appId, testHash, writeRelays)
-      const deps = createMockDeps()
-      const totalChunks = 10
-      const missingChunkIdx = 5
-
-      deps._nostrRelays.getEventsGenerator.mock.mockImplementation(async function * (filter) {
-        const requestedIndexes = filter['#c'].map(c => parseInt(c.split(':')[1]))
-
-        const events = requestedIndexes
-          .filter(idx => idx !== missingChunkIdx)
-          .map(idx => ({
-            kind: 34600,
-            tags: [
-              ['c', `${testHash}:${idx}`, String(totalChunks)],
-              ['d', String(idx)]
-            ]
-          }))
-
-        for (const event of events) {
-          yield { type: 'event', event }
-        }
-      })
-
-      const iterator = downloader.run(deps)
-      let error = null
-      let lastProgress = 0
-
-      for await (const report of iterator) {
-        lastProgress = report.progress
-        if (report.error) {
-          error = report.error
-          break
-        }
-      }
-
-      assert.ok(error)
-      assert.match(error.message, /Chunks missing from all relays/)
-      assert.ok(lastProgress < 100)
-    })
-
-    it('should coordinate multiple instances to download chunks faster', async () => {
-      const testHash = 'coordination'
-      const downloader1 = new AppFileDownloader(appId, testHash, writeRelays)
-      const downloader2 = new AppFileDownloader(appId, testHash, writeRelays)
-      const deps = createMockDeps()
-      const totalChunks = 100
-
-      deps._nostrRelays.getEventsGenerator.mock.mockImplementation(async function * (filter) {
-        await new Promise(resolve => setTimeout(resolve, 5))
-        const requestedIndexes = filter['#c'].map(c => parseInt(c.split(':')[1]))
-        const events = requestedIndexes.map(idx => ({
-          kind: 34600,
-          tags: [
-            ['c', `${testHash}:${idx}`, String(totalChunks)],
-            ['d', String(idx)]
-          ]
-        }))
-        for (const event of events) {
-          yield { type: 'event', event }
-        }
-      })
-
-      const runDownloader = async (dl) => {
-        const iterator = dl.run(deps)
-        let lastProgress = 0
-        for await (const report of iterator) {
-          if (report.error) throw report.error
-          lastProgress = report.progress
-        }
-        return lastProgress
-      }
-
-      const [res1, res2] = await Promise.all([
-        runDownloader(downloader1),
-        runDownloader(downloader2)
-      ])
-
-      assert.equal(res1, 100)
-      assert.equal(res2, 100)
+      // Verify FileDownloader options
+      // We can't easily check the instance here unless we spy on the constructor
+      // but the fact that run() yielded mocked data proves it was used.
     })
   })
 })

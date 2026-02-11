@@ -65,12 +65,22 @@ export class NostrRelays {
   }
 
   // Get events from a list of relays
-  async getEvents (filter, relays, { timeout = 5000, callback } = {}) {
+  async getEvents (filter, relays, { timeout = 5000, callback, signal } = {}) {
     const events = []
     const promises = relays.map(async (url) => {
       let sub
       let isClosed = false
       const p = Promise.withResolvers()
+
+      // Handle abort signal
+      if (signal?.aborted) return Promise.reject(new Error('Aborted'))
+      const onAbort = () => {
+        isClosed = true
+        sub?.close()
+        p.reject(new Error('Aborted'))
+      }
+      signal?.addEventListener('abort', onAbort, { once: true })
+
       const timer = maybeUnref(setTimeout(() => {
         isClosed = true
         sub?.close()
@@ -78,6 +88,11 @@ export class NostrRelays {
       }, timeout))
       try {
         const relay = await this.#getRelay(url)
+        if (isClosed || signal?.aborted) { // Double check in case of race
+          clearTimeout(timer)
+          return p.promise
+        }
+
         sub = relay.subscribe([filter], {
           onevent: (event) => {
             event.meta = { relay: url }
@@ -87,9 +102,13 @@ export class NostrRelays {
           onclose: err => {
             clearTimeout(timer)
             if (isClosed) return
-            if (callback && err) callback({ type: 'error', error: err, relay: url })
+            let reason
+            if (err !== undefined) {
+              reason = err instanceof Error ? err : new Error(String(err))
+              if (callback) callback({ type: 'error', error: reason, relay: url })
+            }
             // May have closed normally, without error
-            err ? p.reject(err) : p.resolve()
+            reason ? p.reject(reason) : p.resolve()
           },
           oneose: () => {
             clearTimeout(timer)
@@ -104,7 +123,9 @@ export class NostrRelays {
         p.reject(err)
       }
 
-      return p.promise
+      return p.promise.finally(() => {
+        signal?.removeEventListener('abort', onAbort)
+      })
     })
 
     const results = await Promise.allSettled(promises)
@@ -118,7 +139,7 @@ export class NostrRelays {
   }
 
   // First to reply with EOSE and events should trigger a short timeout for the rest
-  async getEventsAsap (filter, relays, { timeout = 5000, timeoutAfterFirstEose = 200, callback } = {}) {
+  async getEventsAsap (filter, relays, { timeout = 5000, timeoutAfterFirstEose = 500, callback, signal } = {}) {
     const subs = new Map()
     const errors = []
     const events = []
@@ -132,6 +153,7 @@ export class NostrRelays {
       isResolved = true
       clearTimeout(timer)
       if (eoseTimer) clearTimeout(eoseTimer)
+      signal?.removeEventListener('abort', onAbort)
       subs.forEach(sub => sub.close())
       p.resolve({
         result: events,
@@ -139,6 +161,19 @@ export class NostrRelays {
         success: events.length > 0 || relays.length !== errors.length
       })
     }
+
+    // Handle abort
+    const onAbort = () => {
+      if (isResolved) return
+      isResolved = true
+      clearTimeout(timer)
+      if (eoseTimer) clearTimeout(eoseTimer)
+      subs.forEach(sub => sub.close())
+      p.reject(new Error('Aborted'))
+    }
+
+    if (signal?.aborted) return Promise.reject(new Error('Aborted'))
+    signal?.addEventListener('abort', onAbort, { once: true })
 
     const timer = maybeUnref(setTimeout(() => {
       finalize()
@@ -166,7 +201,7 @@ export class NostrRelays {
           },
           onclose: (err) => {
             subs.delete(url)
-            if (err) {
+            if (err !== undefined) {
               const reason = err instanceof Error ? err : new Error(String(err))
               errors.push({ reason, relay: url })
               if (callback) callback({ type: 'error', error: reason, relay: url })
@@ -208,6 +243,7 @@ export class NostrRelays {
     }
 
     const methodPromise = this.getEvents(filter, relays, { ...options, callback })
+      .catch(err => { if (err?.message !== 'Aborted') console.error('Error in getEvents:', err) })
       .finally(() => {
         isDone = true
         p.resolve()
@@ -236,6 +272,7 @@ export class NostrRelays {
     }
 
     const methodPromise = this.getEventsAsap(filter, relays, { ...options, callback })
+      .catch(err => { if (err?.message !== 'Aborted') console.error('Error in getEventsAsap:', err) })
       .finally(() => {
         isDone = true
         p.resolve()
@@ -267,12 +304,13 @@ export class NostrRelays {
         await relay.publish(eventToSend)
         p.resolve()
       } catch (err) {
-        if (err.message?.startsWith('duplicate:')) return p.resolve()
-        if (err.message?.startsWith('mute:')) {
-          console.info(`${url} - ${err.message}`)
+        const reason = err instanceof Error ? err : new Error(String(err))
+        if (reason.message.startsWith('duplicate:')) return p.resolve()
+        if (reason.message.startsWith('mute:')) {
+          console.info([url, reason.message].filter(Boolean).join(' - '))
           return p.resolve()
         }
-        p.reject(err)
+        p.reject(reason)
       } finally {
         clearTimeout(timer)
       }

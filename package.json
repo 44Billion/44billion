@@ -45,7 +45,7 @@
     "@scure/base": "^2.0.0",
     "meilisearch": "^0.54.0",
     "mime": "^4.0.7",
-    "nostr-tools": "^2.16.2",
+    "nostr-tools": "^2.23.1",
     "thenameisf": "^1.0.6",
     "url-router": "^13.0.0"
   }

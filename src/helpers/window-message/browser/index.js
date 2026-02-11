@@ -149,11 +149,52 @@ export async function initMessageListener (
                   total: totalChunks // null when no chunks are cached
                 } = cacheStatus
                 let nextChunkIndexToStream = 0
-                let highestCachedIndex = -1
                 let hasErrored = false
                 let hasSentLast = false
+                let isStreaming = false
 
-                const progressCallback = async ({ progress: cachingProgress, newlyCachedChunkIndexRanges, error }) => {
+                const tryStream = async () => {
+                  if (hasErrored || hasSentLast || isStreaming) return
+                  isStreaming = true
+
+                  try {
+                    // eslint-disable-next-line no-unmodified-loop-condition
+                    while (!hasErrored && !hasSentLast) {
+                      const chunks = await getFileChunksFromDb(appId, fileRootHash, {
+                        fromPos: nextChunkIndexToStream,
+                        toPos: nextChunkIndexToStream
+                      })
+
+                      if (chunks.length === 0) break
+
+                      const chunk = chunks[0]
+                      if (totalChunks === null) {
+                        const cTag = chunk.evt.tags.find(t => t[0] === 'c' && t[1].startsWith(`${fileRootHash}:`))
+                        const parsedTotal = parseInt(cTag?.[2])
+                        if (!Number.isNaN(parsedTotal) && parsedTotal > 0) totalChunks = parsedTotal
+                      }
+
+                      const isLast = (totalChunks != null && nextChunkIndexToStream === totalChunks - 1)
+                      replyWithMessage(e, {
+                        payload: {
+                          content: chunk.evt.content,
+                          ...(nextChunkIndexToStream === 0 && { contentType: cacheStatus.contentType })
+                        },
+                        isLast
+                      }, { to: trustedAppPagePort })
+
+                      nextChunkIndexToStream++
+                      if (isLast) hasSentLast = true
+                    }
+                  } catch (err) {
+                    hasErrored = true
+                    handleStreamError(err)
+                  } finally {
+                    isStreaming = false
+                  }
+                }
+
+                const progressCallback = async ({ progress: cachingProgress, chunkIndex, total, error }) => {
                   if (hasErrored || hasSentLast) return
                   if (error) {
                     hasErrored = true
@@ -163,6 +204,8 @@ export async function initMessageListener (
                     cachingProgress$(remaining)
                     return handleStreamError(error)
                   }
+
+                  if (total && totalChunks === null) totalChunks = total
 
                   // Update caching progress in the signal
                   const filename = e.data.payload.pathname
@@ -184,57 +227,19 @@ export async function initMessageListener (
                     }, 1000) // Keep visible for 1 second after completion
                   }
 
-                  if (newlyCachedChunkIndexRanges.length > 0) {
-                    for (const range of newlyCachedChunkIndexRanges) {
-                      highestCachedIndex = Math.max(highestCachedIndex, range[1])
-                    }
-                  } else if (totalChunks !== null) {
-                    highestCachedIndex = totalChunks - 1
-                  } else return handleStreamError(new Error('No cached chunks'))
-
-                  while (nextChunkIndexToStream <= highestCachedIndex && !hasErrored && !hasSentLast) {
-                    try {
-                      const chunks = await getFileChunksFromDb(appId, fileRootHash, {
-                        fromPos: nextChunkIndexToStream,
-                        toPos: nextChunkIndexToStream
-                      })
-
-                      if (chunks.length === 0) {
-                        hasErrored = true
-                        return handleStreamError(new Error(`Missing chunk at index ${nextChunkIndexToStream} for rootHash ${fileRootHash}`))
-                      }
-
-                      const chunk = chunks[0]
-                      if (totalChunks === null) {
-                        const cTag = chunk.evt.tags.find(t => t[0] === 'c' && t[1].startsWith(`${fileRootHash}:`))
-                        const parsedTotal = parseInt(cTag?.[2])
-                        if (!Number.isNaN(parsedTotal) && parsedTotal > 0) totalChunks = parsedTotal
-                      }
-                      if (totalChunks === null) {
-                        hasErrored = true
-                        return handleStreamError(new Error('Unable to determine total chunks.'))
-                      }
-
-                      const isLast = (totalChunks != null && nextChunkIndexToStream === totalChunks - 1)
-                      replyWithMessage(e, {
-                        payload: {
-                          content: chunk.evt.content,
-                          ...(nextChunkIndexToStream === 0 && { contentType: cacheStatus.contentType })
-                        },
-                        isLast
-                      }, { to: trustedAppPagePort })
-
-                      nextChunkIndexToStream++
-                      if (isLast) hasSentLast = true
-                    } catch (streamError) {
-                      hasErrored = true
-                      return handleStreamError(streamError)
-                    }
+                  if (typeof chunkIndex === 'number') {
+                    if (chunkIndex === nextChunkIndexToStream) await tryStream()
+                  } else {
+                    // Initial progress or resumed without specific chunk
+                    await tryStream()
                   }
                 }
 
                 try {
-                  return appFiles.cacheFile(e.data.payload.pathname, cacheStatus.fileTag, progressCallback)
+                  await tryStream()
+                  if (!hasSentLast && !hasErrored) {
+                    return appFiles.cacheFile(e.data.payload.pathname, cacheStatus.fileTag, progressCallback)
+                  }
                 } catch (err) {
                   return handleStreamError(err)
                 }

@@ -1,5 +1,6 @@
 import nostrRelays, { seedRelays, nappRelays } from '#services/nostr-relays.js'
 import { shouldIncludeNappRelays } from '#helpers/app.js'
+import { isValidRelayUrl } from '#helpers/relay.js'
 
 export async function getAppBundle (appIdObj, userRelays) {
   if (!appIdObj.pubkey || !appIdObj.kind || !appIdObj.dTag) throw new Error('Missing args')
@@ -133,7 +134,8 @@ export async function getEventsByStrategy (filter, st /*, timeoutMs = 3000 */) {
 
 export async function getUserRelays (authors) {
   if (!Array.isArray(authors)) authors = [authors]
-  const relayListsResponse = await nostrRelays.getEvents({ authors, kinds: [10002], limit: authors.length }, seedRelays)
+  const relayListsResponse = await nostrRelays.getEventsAsap({ authors, kinds: [10002], limit: authors.length }, seedRelays)
+
   if (!relayListsResponse.success) {
     throw relayListsResponse.errors?.[0]?.reason ||
       new Error('Failed to fetch relay lists')
@@ -154,12 +156,16 @@ export async function getUserRelays (authors) {
       return seenAuthorsObj[v.pubkey]
     })
     .reduce((r, v) => {
-      ;(v.tags ?? []).filter(v2 => v2[0] === 'r' && /^wss?:\/\//.test(v2[1]))
-        .forEach((v3) => {
-          keys = [v3[2]].filter(v2 => keyAllowList[v2])
+      ;(v.tags ?? []).forEach((tag) => {
+        if (tag[0] !== 'r' || typeof tag[1] !== 'string') return
+        const url = tag[1].trim().replace(/\/+$/, '')
+
+        if (isValidRelayUrl(url)) {
+          keys = [tag[2]].filter(v2 => keyAllowList[v2])
           if (keys.length === 0) keys = defaultRelayTypes
-          keys.forEach(k => r[v.pubkey][k].add(v3[1]))
-        })
+          keys.forEach(k => r[v.pubkey][k].add(url))
+        }
+      })
       return r
     }, ret)
 

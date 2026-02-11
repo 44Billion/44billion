@@ -217,7 +217,7 @@ describe('AppUpdater', () => {
       // Call 2: Implicit list (should resolve to ['app1'] and match key)
       const p2 = AppUpdater.searchForUpdates(null, deps)
 
-      assert.strictEqual(p1, p2)
+      assert.equal(p1, p2)
 
       await p1
     })
