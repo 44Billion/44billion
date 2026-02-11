@@ -122,4 +122,12 @@ export async function saveFileChunksToDB (bundle, fileChunks, appId) {
       ret = await run('put', [chunk], 'fileChunks', null, ret)
     }
   }
+
+  if (ret?.tx) {
+    const p = Promise.withResolvers()
+    ret.tx.oncomplete = p.resolve
+    ret.tx.onerror = () => p.reject(ret.tx.error)
+    ret.tx.onabort = () => p.reject(ret.tx.error)
+    await p.promise
+  }
 }
