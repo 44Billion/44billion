@@ -65,7 +65,7 @@ export class NostrRelays {
   }
 
   // Get events from a list of relays
-  async getEvents (filter, relays, timeout = 5000) {
+  async getEvents (filter, relays, { timeout = 5000, callback } = {}) {
     const events = []
     const promises = relays.map(async (url) => {
       let sub
@@ -80,11 +80,14 @@ export class NostrRelays {
         const relay = await this.#getRelay(url)
         sub = relay.subscribe([filter], {
           onevent: (event) => {
+            event.meta = { relay: url }
             events.push(event)
+            if (callback) callback({ type: 'event', event, relay: url })
           },
           onclose: err => {
             clearTimeout(timer)
             if (isClosed) return
+            if (callback && err) callback({ type: 'error', error: err, relay: url })
             // May have closed normally, without error
             err ? p.reject(err) : p.resolve()
           },
@@ -97,6 +100,7 @@ export class NostrRelays {
         })
       } catch (err) {
         clearTimeout(timer)
+        if (callback) callback({ type: 'error', error: err, relay: url })
         p.reject(err)
       }
 
@@ -113,21 +117,21 @@ export class NostrRelays {
     }
   }
 
-  // Considering write relays should be synced, first to reply
-  // should be picked and the rest unsubscribed
-  async getEventsAsap (filter, relays, timeout = 5000) {
+  // First to reply with EOSE and events should trigger a short timeout for the rest
+  async getEventsAsap (filter, relays, { timeout = 5000, timeoutAfterFirstEose = 200, callback } = {}) {
     const subs = new Map()
     const errors = []
-    const winnerEvents = []
-    let winner = null
+    const events = []
     let closedRelaySubs = 0
     let isResolved = false
+    let eoseTimer = null
     const p = Promise.withResolvers()
 
-    const finalize = (events) => {
+    const finalize = () => {
       if (isResolved) return
       isResolved = true
       clearTimeout(timer)
+      if (eoseTimer) clearTimeout(eoseTimer)
       subs.forEach(sub => sub.close())
       p.resolve({
         result: events,
@@ -137,50 +141,51 @@ export class NostrRelays {
     }
 
     const timer = maybeUnref(setTimeout(() => {
-      finalize([])
+      finalize()
     }, timeout))
 
     const markClosedAndMaybeFinish = () => {
       closedRelaySubs += 1
       if (!isResolved && closedRelaySubs >= relays.length) {
-        finalize(winnerEvents)
+        finalize()
       }
     }
 
     for (const url of relays) {
       this.#getRelay(url).then(relay => {
         if (isResolved) return
+        let hasEvents = false
 
         const sub = relay.subscribe([filter], {
           onevent: (event) => {
-            if (!winner) {
-              winner = sub
-              subs.forEach(s => { if (s !== winner) s.close() })
-              clearTimeout(timer)
-            }
-
-            if (sub === winner) {
-              winnerEvents.push(event)
-            }
+            if (isResolved) return
+            hasEvents = true
+            event.meta = { relay: url }
+            events.push(event)
+            if (callback) callback({ type: 'event', event, relay: url })
           },
           onclose: (err) => {
             subs.delete(url)
             if (err) {
               const reason = err instanceof Error ? err : new Error(String(err))
               errors.push({ reason, relay: url })
+              if (callback) callback({ type: 'error', error: reason, relay: url })
             }
             markClosedAndMaybeFinish()
           },
           oneose: () => {
             sub.close()
-            if (sub === winner) {
-              finalize(winnerEvents)
+            if (hasEvents && !eoseTimer && !isResolved) {
+              eoseTimer = maybeUnref(setTimeout(() => {
+                finalize()
+              }, timeoutAfterFirstEose))
             }
           }
         })
         subs.set(url, sub)
       }).catch(error => {
         errors.push({ reason: error, relay: url })
+        if (callback) callback({ type: 'error', error, relay: url })
         console.error(`Nostr relay error at ${url}: ${error}`)
         markClosedAndMaybeFinish()
       })
@@ -189,8 +194,67 @@ export class NostrRelays {
     return p.promise
   }
 
+  async * getEventsGenerator (filter, relays, options = {}) {
+    const queue = []
+    let p = Promise.withResolvers()
+    let isDone = false
+
+    const userCallback = options.callback
+    const callback = item => {
+      queue.push(item)
+      if (userCallback) userCallback(item)
+      p.resolve()
+      p = Promise.withResolvers()
+    }
+
+    const methodPromise = this.getEvents(filter, relays, { ...options, callback })
+      .finally(() => {
+        isDone = true
+        p.resolve()
+      })
+
+    // eslint-disable-next-line no-unmodified-loop-condition
+    while (!isDone || queue.length > 0) {
+      if (queue.length > 0) yield queue.shift()
+      else await p.promise
+    }
+
+    return await methodPromise
+  }
+
+  async * getEventsAsapGenerator (filter, relays, options = {}) {
+    const queue = []
+    let p = Promise.withResolvers()
+    let isDone = false
+
+    const userCallback = options.callback
+    const callback = item => {
+      queue.push(item)
+      if (userCallback) userCallback(item)
+      p.resolve()
+      p = Promise.withResolvers()
+    }
+
+    const methodPromise = this.getEventsAsap(filter, relays, { ...options, callback })
+      .finally(() => {
+        isDone = true
+        p.resolve()
+      })
+
+    // eslint-disable-next-line no-unmodified-loop-condition
+    while (!isDone || queue.length > 0) {
+      if (queue.length > 0) yield queue.shift()
+      else await p.promise
+    }
+
+    return await methodPromise
+  }
+
   // Send an event to a list of relays
   async sendEvent (event, relays, timeout = 3000) {
+    const eventToSend = event.meta ? { ...event } : event
+    if (eventToSend.meta) delete eventToSend.meta
+
     const promises = relays.map(async (url) => {
       let timer
       const p = Promise.withResolvers()
@@ -200,7 +264,7 @@ export class NostrRelays {
         }, timeout))
 
         const relay = await this.#getRelay(url)
-        await relay.publish(event)
+        await relay.publish(eventToSend)
         p.resolve()
       } catch (err) {
         if (err.message?.startsWith('duplicate:')) return p.resolve()

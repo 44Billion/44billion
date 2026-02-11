@@ -37,7 +37,7 @@ describe('AppFileDownloader', () => {
   describe('run', () => {
     const createMockDeps = () => ({
       _nostrRelays: {
-        getEvents: mock.fn(async () => ({ result: [] }))
+        getEventsGenerator: mock.fn(async function * () { yield * [] })
       },
       _countFileChunksFromDb: mock.fn(async () => ({ total: null })),
       _getFileChunksFromDb: mock.fn(async () => []),
@@ -50,7 +50,7 @@ describe('AppFileDownloader', () => {
       const deps = createMockDeps()
       const totalChunks = 60
 
-      deps._nostrRelays.getEvents.mock.mockImplementation(async (filter) => {
+      deps._nostrRelays.getEventsGenerator.mock.mockImplementation(async function * (filter) {
         const requestedIndexes = filter['#c'].map(c => parseInt(c.split(':')[1]))
         const events = requestedIndexes.map(idx => ({
           kind: 34600,
@@ -59,7 +59,9 @@ describe('AppFileDownloader', () => {
             ['d', String(idx)]
           ]
         }))
-        return { result: events }
+        for (const event of events) {
+          yield { type: 'event', event }
+        }
       })
 
       const iterator = downloader.run(deps)
@@ -81,7 +83,7 @@ describe('AppFileDownloader', () => {
       const missingChunkIdx = 5
       const missingRelay = writeRelays[0]
 
-      deps._nostrRelays.getEvents.mock.mockImplementation(async (filter, relays) => {
+      deps._nostrRelays.getEventsGenerator.mock.mockImplementation(async function * (filter, relays) {
         const relayUrl = relays[0]
         const requestedIndexes = filter['#c'].map(c => parseInt(c.split(':')[1]))
 
@@ -95,7 +97,9 @@ describe('AppFileDownloader', () => {
             ]
           }))
 
-        return { result: events }
+        for (const event of events) {
+          yield { type: 'event', event }
+        }
       })
 
       const iterator = downloader.run(deps)
@@ -116,7 +120,7 @@ describe('AppFileDownloader', () => {
       const totalChunks = 10
       const missingChunkIdx = 5
 
-      deps._nostrRelays.getEvents.mock.mockImplementation(async (filter) => {
+      deps._nostrRelays.getEventsGenerator.mock.mockImplementation(async function * (filter) {
         const requestedIndexes = filter['#c'].map(c => parseInt(c.split(':')[1]))
 
         const events = requestedIndexes
@@ -129,7 +133,9 @@ describe('AppFileDownloader', () => {
             ]
           }))
 
-        return { result: events }
+        for (const event of events) {
+          yield { type: 'event', event }
+        }
       })
 
       const iterator = downloader.run(deps)
@@ -156,7 +162,7 @@ describe('AppFileDownloader', () => {
       const deps = createMockDeps()
       const totalChunks = 100
 
-      deps._nostrRelays.getEvents.mock.mockImplementation(async (filter) => {
+      deps._nostrRelays.getEventsGenerator.mock.mockImplementation(async function * (filter) {
         await new Promise(resolve => setTimeout(resolve, 5))
         const requestedIndexes = filter['#c'].map(c => parseInt(c.split(':')[1]))
         const events = requestedIndexes.map(idx => ({
@@ -166,7 +172,9 @@ describe('AppFileDownloader', () => {
             ['d', String(idx)]
           ]
         }))
-        return { result: events }
+        for (const event of events) {
+          yield { type: 'event', event }
+        }
       })
 
       const runDownloader = async (dl) => {

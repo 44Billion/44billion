@@ -102,7 +102,8 @@ export default class AppFileDownloader {
         resolvers: new Set(),
         workersStarted: false,
         version: 0,
-        stopped: false
+        stopped: false,
+        queuePopulatedIndex: 0
       }
       state.initPromise = this._initState(state, deps).then(() => {
         notify()
@@ -138,18 +139,19 @@ export default class AppFileDownloader {
         state.workersStarted = true
         const batchSize = 20
 
-        const populateQueue = () => {
+        const ensureQueueFilled = () => {
           if (state.total === null) {
             if (!state.downloaded.has(0) && !state.fetching.has(0) && !state.queue.includes(0)) {
               state.queue.push(0)
             }
-          } else {
-            for (let i = 0; i < state.total; i++) {
-              if (!state.downloaded.has(i) && !state.fetching.has(i) && !state.queue.includes(i)) {
+          } else if (state.queuePopulatedIndex < state.total) {
+            for (let i = state.queuePopulatedIndex; i < state.total; i++) {
+              if (i === 0 && (state.downloaded.has(0) || state.fetching.has(0) || state.queue.includes(0))) continue
+              if (!state.downloaded.has(i)) {
                 state.queue.push(i)
               }
             }
-            state.queue.sort((a, b) => a - b)
+            state.queuePopulatedIndex = state.total
           }
         }
 
@@ -160,7 +162,7 @@ export default class AppFileDownloader {
                 const lastVersion = state.version
                 if (state.error || state.stopped || (state.total !== null && state.downloaded.size >= state.total)) break
 
-                populateQueue()
+                ensureQueueFilled()
                 const batch = []
 
                 // 1. Primary work from queue
@@ -176,14 +178,14 @@ export default class AppFileDownloader {
                 }
 
                 // 2. Redundancy / Stealing
-                if (batch.length < batchSize && state.total !== null) {
+                if (batch.length < batchSize) {
                   // Try stealing chunks that are being fetched by others but not by this relay
-                  for (let idx = 0; idx < state.total && batch.length < batchSize; idx++) {
+                  for (const idx of state.fetching.keys()) {
+                    if (batch.length >= batchSize) break
                     if (state.downloaded.has(idx) || batch.includes(idx)) continue
                     if (state.missingByRelay.get(relayUrl)?.has(idx)) continue
                     // Steal even if in state.fetching (by others)
                     batch.push(idx)
-                    if (!state.fetching.has(idx)) state.fetching.set(idx, new Set())
                     state.fetching.get(idx).add(relayUrl)
                   }
                 }
@@ -196,7 +198,7 @@ export default class AppFileDownloader {
                 }
 
                 try {
-                  const foundIndexes = await this._fetchFromRelay(relayUrl, batch, state, deps)
+                  const foundIndexes = await this._fetchFromRelay(relayUrl, batch, state, notify, deps)
                   // Success: reset backoff
                   state.relayBackoffs.set(relayUrl, 1000)
 
@@ -294,7 +296,7 @@ export default class AppFileDownloader {
     }
   }
 
-  async _fetchFromRelay (relayUrl, indexes, state, { _nostrRelays, _saveFileChunksToDB }) {
+  async _fetchFromRelay (relayUrl, indexes, state, notify, { _nostrRelays, _saveFileChunksToDB }) {
     const { pubkey } = appIdToAddressObj(this.appId)
     const filter = {
       kinds: [34600],
@@ -302,15 +304,17 @@ export default class AppFileDownloader {
       '#c': indexes.map(i => `${this.fileRootHash}:${i}`)
     }
 
-    const { result } = await _nostrRelays.getEvents(filter, [relayUrl])
+    const generator = _nostrRelays.getEventsGenerator(filter, [relayUrl])
 
     const foundIndexes = new Set()
     const fakeBundle = { tags: [['file', this.fileRootHash]] }
+    let error = null
 
-    if (result && result.length > 0) {
-      await _saveFileChunksToDB(fakeBundle, result, this.appId)
+    for await (const msg of generator) {
+      if (msg.type === 'event') {
+        const event = msg.event
+        await _saveFileChunksToDB(fakeBundle, [event], this.appId)
 
-      for (const event of result) {
         const cTag = event.tags.find(t => t[0] === 'c' && t[1].startsWith(`${this.fileRootHash}:`))
         if (cTag) {
           const parts = cTag[1].split(':')
@@ -321,9 +325,14 @@ export default class AppFileDownloader {
           if (state.total === null && cTag[2]) {
             state.total = parseInt(cTag[2])
           }
+          if (notify) notify()
         }
+      } else if (msg.type === 'error') {
+        error = msg.error
       }
     }
+
+    if (error) throw error
 
     for (const idx of indexes) {
       const fetchingRelays = state.fetching.get(idx)
