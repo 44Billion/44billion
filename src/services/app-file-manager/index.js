@@ -1,6 +1,8 @@
 import { appIdToAddressObj, findRouteFileTag } from '#helpers/app.js'
 import getBundleEvent from './get-bundle-event.js'
-import cacheMissingChunks from './cache-missing-chunks'
+import AppFileDownloader from '#services/app-file-downloader/index.js'
+import { getUserRelays } from '#helpers/nostr-queries.js'
+import { nappRelays } from '#services/nostr-relays.js'
 import { countFileChunksFromDb, deleteFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
 import { saveBundleToDb, deleteBundleFromDb } from '#services/idb/browser/queries/bundle.js'
 import mime from 'mime'
@@ -240,12 +242,21 @@ export default class AppFileManager {
     if (this.#isCacheFileInBackgroundRunning[filename]) return
 
     this.#isCacheFileInBackgroundRunning[filename] = true
-    const iterator = cacheMissingChunks(this.appId, this.bundle, filename, fileTag)
     const config = this.#getCacheFilePubSubConfig(filename)
 
     try {
-      for await (const { progress, newlyCachedChunkIndexRanges } of iterator) {
+      const relays = await getUserRelays([this.bundle.pubkey])
+      const writeRelays = Array.from(relays[this.bundle.pubkey]?.write || [])
+      if (writeRelays.length === 0) writeRelays.push(...nappRelays)
+
+      const downloader = new AppFileDownloader(this.appId, fileTag[1], writeRelays)
+
+      for await (const report of downloader.run()) {
         if (!this.#isCacheFileInBackgroundRunning[filename]) break // poor man's abort controller
+
+        if (report.error) throw report.error
+
+        const { progress, newlyCachedChunkIndexRanges } = report
 
         config.result = { progress, newlyCachedChunkIndexRanges }
         for (const sub of config.subscribers) {

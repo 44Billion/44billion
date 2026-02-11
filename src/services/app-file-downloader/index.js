@@ -103,7 +103,8 @@ export default class AppFileDownloader {
         workersStarted: false,
         version: 0,
         stopped: false,
-        queuePopulatedIndex: 0
+        queuePopulatedIndex: 0,
+        chunkLog: []
       }
       state.initPromise = this._initState(state, deps).then(() => {
         notify()
@@ -127,12 +128,39 @@ export default class AppFileDownloader {
       return promise
     }
 
+    const getContiguousRanges = (indexes) => {
+      if (indexes.length === 0) return []
+      const sorted = [...indexes].sort((a, b) => a - b)
+      const ranges = []
+      let start = sorted[0]
+      let end = sorted[0]
+
+      for (let i = 1; i < sorted.length; i++) {
+        if (sorted[i] === end) continue
+        if (sorted[i] === end + 1) {
+          end = sorted[i]
+        } else {
+          ranges.push([start, end])
+          start = end = sorted[i]
+        }
+      }
+      ranges.push([start, end])
+      return ranges
+    }
+
     try {
       await state.initPromise
+      let localLogIndex = 0
 
       const reportProgress = () => {
         const progress = state.total ? Math.floor((state.downloaded.size / state.total) * 100) : 0
-        return { progress, error: state.error }
+        const newChunks = state.chunkLog.slice(localLogIndex)
+        localLogIndex = state.chunkLog.length
+        return {
+          progress,
+          error: state.error,
+          newlyCachedChunkIndexRanges: getContiguousRanges(newChunks)
+        }
       }
 
       if (!state.workersStarted) {
@@ -290,9 +318,16 @@ export default class AppFileDownloader {
     if (dbInfo.total) state.total = dbInfo.total
 
     const keys = await _getFileChunksFromDb(this.appId, this.fileRootHash, { justKeys: true })
+    const newLogChunk = []
     for (const key of keys) {
       // key is [appId, rootHash, pos]
-      state.downloaded.add(key[2])
+      if (!state.downloaded.has(key[2])) {
+        state.downloaded.add(key[2])
+        newLogChunk.push(key[2])
+      }
+    }
+    if (newLogChunk.length > 0) {
+      state.chunkLog.push(...newLogChunk)
     }
   }
 
@@ -320,7 +355,10 @@ export default class AppFileDownloader {
           const parts = cTag[1].split(':')
           const idx = parseInt(parts[1])
           foundIndexes.add(idx)
-          state.downloaded.add(idx)
+          if (!state.downloaded.has(idx)) {
+            state.downloaded.add(idx)
+            state.chunkLog.push(idx)
+          }
 
           if (state.total === null && cTag[2]) {
             state.total = parseInt(cTag[2])
