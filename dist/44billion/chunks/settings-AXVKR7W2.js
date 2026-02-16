@@ -1,4 +1,4 @@
-import"./chunk-ZKTOLBBN.js";import{a as f}from"./chunk-P6IECSNE.js";import{b as u,e as t}from"./chunk-KN6GOQRR.js";import{h as r,j as c,k as d,p as g}from"./chunk-K2UKPH6Q.js";r("toggle-switch",function(){let{checked:s,onChange:l}=this.props;return this.h`
+import"./chunk-KCE5KYJT.js";import{a as f}from"./chunk-J4SBNWFY.js";import{b as u,e as t}from"./chunk-GVKMMOMV.js";import{g as r,i as c,j as d,o as g}from"./chunk-COJHDCEY.js";r("toggle-switch",function(){let{checked:s,onChange:l}=this.props;return this.h`
     <style>${`
       .switch {
         position: relative;

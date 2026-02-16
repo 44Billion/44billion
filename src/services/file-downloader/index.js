@@ -254,6 +254,7 @@ export default class FileDownloader {
       // but only if there aren't many batches already in flight for this relay to avoid overloading it
       if (
         !halfBatchTriggered &&
+        (indexes.length > 1 || this.batchSize === 1) &&
         relayState.activeBatches < this.maxRelayParallelBatches &&
         rawReceivedCount >= Math.ceil(indexes.length / 2) &&
         this.missingIndexes.size > 0
