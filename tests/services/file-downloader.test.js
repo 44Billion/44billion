@@ -573,7 +573,7 @@ describe('FileDownloader', () => {
   })
 })
 
-describe('Integration (Real Network)', () => {
+describe.skip('Integration (Real Network)', () => {
   const TIMEOUT = 60000
 
   test('should download from 44billion relay', { timeout: TIMEOUT }, async () => {

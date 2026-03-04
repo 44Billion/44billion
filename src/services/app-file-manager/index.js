@@ -249,7 +249,8 @@ export default class AppFileManager {
       const writeRelays = Array.from(relays[this.bundle.pubkey]?.write || [])
       if (writeRelays.length === 0) writeRelays.push(...nappRelays)
 
-      const downloader = new AppFileDownloader(this.appId, fileTag[1], writeRelays)
+      const service = fileTag[4] || 'i'
+      const downloader = new AppFileDownloader(this.appId, fileTag[1], writeRelays, { service })
 
       for await (const report of downloader.run()) {
         if (!this.#isCacheFileInBackgroundRunning[filename]) break // poor man's abort controller

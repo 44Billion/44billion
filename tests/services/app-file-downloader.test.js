@@ -82,5 +82,100 @@ describe('AppFileDownloader', () => {
       // We can't easily check the instance here unless we spy on the constructor
       // but the fact that run() yielded mocked data proves it was used.
     })
+
+    it('should default to IRFS service when no service option provided', () => {
+      const downloader = new AppFileDownloader(appId, 'test-hash', writeRelays)
+      assert.equal(downloader.service, 'i')
+    })
+
+    it('should accept blossom service option', () => {
+      const downloader = new AppFileDownloader(appId, 'abc123', writeRelays, { service: 'b' })
+      assert.equal(downloader.service, 'b')
+    })
+  })
+
+  describe('run with blossom service', () => {
+    it('should use BlossomFileDownloader when service is b and pass blossomFileHash to save', async () => {
+      const blossomSha256Hash = 'abc123sha256hash'
+      const merkleRootHash = 'merkle_root_different_hash'
+      const downloader = new AppFileDownloader(appId, blossomSha256Hash, writeRelays, { service: 'b' })
+
+      let capturedCallback
+      const MockBlossomDownloader = class {
+        constructor (fileHash, pubkey, relays, callback) {
+          this.fileHash = fileHash
+          this.pubkey = pubkey
+          capturedCallback = callback
+        }
+
+        async run () {
+          // Simulate blossom download producing chunk events with merkle root hash in c tag
+          const event1 = { kind: 34600, pubkey: this.pubkey, id: 'id1', tags: [['d', 'chunkhash1'], ['c', `${merkleRootHash}:0`, '2', 'proof1']], content: 'data', created_at: 1000 }
+          const event2 = { kind: 34600, pubkey: this.pubkey, id: 'id2', tags: [['d', 'chunkhash2'], ['c', `${merkleRootHash}:1`, '2', 'proof2']], content: 'data', created_at: 1000 }
+          await capturedCallback({ type: 'progress', progress: 50, count: 1, total: 2, chunkIndex: 0, event: event1 })
+          await capturedCallback({ type: 'progress', progress: 100, count: 2, total: 2, chunkIndex: 1, event: event2 })
+        }
+      }
+
+      const deps = {
+        _BlossomFileDownloader: MockBlossomDownloader,
+        _countFileChunksFromDb: mock.fn(async () => ({ total: null, count: 0 })),
+        _saveFileChunksToDB: mock.fn(async () => {})
+      }
+
+      const updates = []
+      for await (const report of downloader.run(deps)) {
+        updates.push(report)
+      }
+
+      assert.ok(updates.length >= 2)
+      assert.equal(updates[0].progress, 50)
+      assert.equal(updates[1].progress, 100)
+
+      // Verify chunk events were saved to DB
+      assert.equal(deps._saveFileChunksToDB.mock.callCount(), 2)
+
+      // Verify _saveFileChunksToDB was called with { blossomFileHash }
+      const firstSaveCall = deps._saveFileChunksToDB.mock.calls[0]
+      const fakeBundle = firstSaveCall.arguments[0]
+      const savedChunkEvents = firstSaveCall.arguments[1]
+      const savedAppId = firstSaveCall.arguments[2]
+      const saveOptions = firstSaveCall.arguments[3]
+
+      // Fake bundle should reference the sha256 hash
+      assert.equal(fakeBundle.tags[0][1], blossomSha256Hash)
+      // The chunk event's c tag should still have the original merkle root hash (NOT rewritten)
+      const cTag = savedChunkEvents[0].tags.find(t => t[0] === 'c')
+      assert.ok(cTag[1].startsWith(merkleRootHash + ':'), 'c tag should keep original merkle root hash')
+      // The blossomFileHash option should be passed
+      assert.equal(saveOptions.blossomFileHash, blossomSha256Hash)
+      assert.equal(savedAppId, appId)
+    })
+
+    it('should skip download when already fully cached', async () => {
+      const testHash = 'abc123hash'
+      const downloader = new AppFileDownloader(appId, testHash, writeRelays, { service: 'b' })
+
+      let blossomConstructorCalled = false
+      const MockBlossomDownloader = class {
+        constructor () { blossomConstructorCalled = true }
+        async run () {}
+      }
+
+      const deps = {
+        _BlossomFileDownloader: MockBlossomDownloader,
+        _countFileChunksFromDb: mock.fn(async () => ({ total: 5, count: 5 })),
+        _saveFileChunksToDB: mock.fn(async () => {})
+      }
+
+      const updates = []
+      for await (const report of downloader.run(deps)) {
+        updates.push(report)
+      }
+
+      assert.equal(blossomConstructorCalled, false)
+      assert.equal(updates.length, 1)
+      assert.equal(updates[0].progress, 100)
+    })
   })
 })

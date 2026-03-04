@@ -7,13 +7,22 @@ import {
   getFileChunksFromDb
 } from '#services/idb/browser/queries/file-chunk.js'
 import FileDownloader from '#services/file-downloader/index.js'
+import BlossomFileDownloader from '#services/blossom-file-downloader/index.js'
 
 export default class AppFileDownloader {
-  constructor (appId, fileRootHash, writeRelays) {
+  /**
+   * @param {string} appId
+   * @param {string} fileHash - Merkle root hash (IRFS) or sha256 hex hash (Blossom)
+   * @param {string[]} writeRelays
+   * @param {object} [options]
+   * @param {string} [options.service='i'] - 'i' for IRFS (relay), 'b' for Blossom
+   */
+  constructor (appId, fileHash, writeRelays, { service = 'i' } = {}) {
     if (!writeRelays || writeRelays.length === 0) throw new Error('Write relays cannot be empty')
     this.appId = appId
-    this.fileRootHash = fileRootHash
+    this.fileRootHash = fileHash
     this.writeRelays = [...new Set([...writeRelays, ...nappRelays])]
+    this.service = service
   }
 
   static async getBundleEvents (appIds, {
@@ -80,10 +89,95 @@ export default class AppFileDownloader {
 
   async * run ({
     _FileDownloader = FileDownloader,
+    _BlossomFileDownloader = BlossomFileDownloader,
     _countFileChunksFromDb = countFileChunksFromDb,
     _getFileChunksFromDb = getFileChunksFromDb,
     _saveFileChunksToDB = saveFileChunksToDB
   } = {}) {
+    if (this.service === 'b') {
+      yield * this.#runBlossom({ _BlossomFileDownloader, _countFileChunksFromDb, _saveFileChunksToDB })
+    } else {
+      yield * this.#runIrfs({ _FileDownloader, _countFileChunksFromDb, _getFileChunksFromDb, _saveFileChunksToDB })
+    }
+  }
+
+  async * #runBlossom ({
+    _BlossomFileDownloader,
+    _countFileChunksFromDb,
+    _saveFileChunksToDB
+  }) {
+    // Check if already fully cached (chunks are stored under the sha256 hash)
+    const dbInfo = await _countFileChunksFromDb(this.appId, this.fileRootHash)
+    if (dbInfo.total && dbInfo.count >= dbInfo.total) {
+      yield { type: 'progress', progress: 100, count: dbInfo.total, total: dbInfo.total }
+      return
+    }
+
+    const { pubkey } = appIdToAddressObj(this.appId)
+
+    const queue = []
+    let p = Promise.withResolvers()
+    let isDone = false
+
+    const push = (item) => {
+      queue.push(item)
+      p.resolve()
+      p = Promise.withResolvers()
+    }
+
+    const pendingOperations = new Set()
+    const trackOperation = (operation) => {
+      pendingOperations.add(operation)
+      operation.finally(() => pendingOperations.delete(operation))
+    }
+
+    const downloader = new _BlossomFileDownloader(
+      this.fileRootHash,
+      pubkey,
+      this.writeRelays,
+      async data => {
+        const op = (async () => {
+          const { event, ...rest } = data
+
+          if (event) {
+            const fakeBundle = { tags: [['file', this.fileRootHash]] }
+            await _saveFileChunksToDB(fakeBundle, [event], this.appId, { blossomFileHash: this.fileRootHash })
+          }
+          push(rest)
+        })()
+        trackOperation(op)
+        await op
+      }
+    )
+
+    downloader.run().finally(async () => {
+      await Promise.all(pendingOperations)
+      isDone = true
+      p.resolve()
+    })
+
+    try {
+      // eslint-disable-next-line no-unmodified-loop-condition
+      while (!isDone || queue.length > 0) {
+        if (queue.length > 0) {
+          const item = queue.shift()
+          yield item
+          if (item.error) return
+        } else {
+          await p.promise
+        }
+      }
+    } finally {
+      // nothing to clean for blossom downloader
+    }
+  }
+
+  async * #runIrfs ({
+    _FileDownloader,
+    _countFileChunksFromDb,
+    _getFileChunksFromDb,
+    _saveFileChunksToDB
+  }) {
     const dbInfo = await _countFileChunksFromDb(this.appId, this.fileRootHash)
     const keys = await _getFileChunksFromDb(this.appId, this.fileRootHash, { justKeys: true })
     const downloadedChunkIndexes = new Set(keys.map(k => k[2])) // k is [appId, rootHash, pos]

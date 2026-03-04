@@ -6,13 +6,13 @@ const nappEventKinds = {
   // file chunk
   34600: true,
   // stall
-  37348: true,
-  37349: true,
-  37350: true,
+  37348: true, // stable
+  37349: true, // insider
+  37350: true, // vibe coded preview
   // bundle
-  37448: true,
-  37449: true,
-  37450: true
+  37448: true, // stable
+  37449: true, // insider
+  37450: true  // vibe coded preview
 }
 export const shouldIncludeNappRelays = filter =>
   !filter.kinds || filter.kinds.length === 0 || filter.kinds.some(k => nappEventKinds[k])
