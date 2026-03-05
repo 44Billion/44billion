@@ -203,7 +203,7 @@ export async function setAccountsState (nextAccountState, storage) {
     storage[`session_workspaceByKey_${defaultWorkspaceKey}_userPk$`](newUserPk)
 
     // Schedule re-opening apps on next tick
-    await new Promise(resolve => window.requestIdleCallback(() => window.requestIdleCallback(resolve, { timeout: 50 }), { timeout: 100 }))
+    await new Promise(resolve => setTimeout(resolve, 0))
     appsToOpen.forEach(appToOpen => {
       storage[`session_appByKey_${appToOpen}_visibility$`]('open')
     })

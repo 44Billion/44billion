@@ -918,10 +918,10 @@ f('toolbarAppList', function () {
         this.isOpen$(v => !v)
       } else {
         this.close()
-        window.requestIdleCallback(() => {
+        Promise.resolve().then(() => {
           this.app$(nextApp)
           this.open()
-        }, { timeout: 150 })
+        })
       }
     }
   }), { isStatic: false })
