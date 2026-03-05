@@ -97,7 +97,6 @@ describe('AppFileDownloader', () => {
   describe('run with blossom service', () => {
     it('should use BlossomFileDownloader when service is b and pass blossomFileHash to save', async () => {
       const blossomSha256Hash = 'abc123sha256hash'
-      const merkleRootHash = 'merkle_root_different_hash'
       const downloader = new AppFileDownloader(appId, blossomSha256Hash, writeRelays, { service: 'b' })
 
       let capturedCallback
@@ -109,9 +108,9 @@ describe('AppFileDownloader', () => {
         }
 
         async run () {
-          // Simulate blossom download producing chunk events with merkle root hash in c tag
-          const event1 = { kind: 34600, pubkey: this.pubkey, id: 'id1', tags: [['d', 'chunkhash1'], ['c', `${merkleRootHash}:0`, '2', 'proof1']], content: 'data', created_at: 1000 }
-          const event2 = { kind: 34600, pubkey: this.pubkey, id: 'id2', tags: [['d', 'chunkhash2'], ['c', `${merkleRootHash}:1`, '2', 'proof2']], content: 'data', created_at: 1000 }
+          // Simulate blossom download producing chunk events with fileHash in c tag (no merkle tree)
+          const event1 = { kind: 34600, pubkey: this.pubkey, id: 'id1', tags: [['d', `${blossomSha256Hash}:0`], ['c', `${blossomSha256Hash}:0`, '2']], content: 'data', created_at: 1000 }
+          const event2 = { kind: 34600, pubkey: this.pubkey, id: 'id2', tags: [['d', `${blossomSha256Hash}:1`], ['c', `${blossomSha256Hash}:1`, '2']], content: 'data', created_at: 1000 }
           await capturedCallback({ type: 'progress', progress: 50, count: 1, total: 2, chunkIndex: 0, event: event1 })
           await capturedCallback({ type: 'progress', progress: 100, count: 2, total: 2, chunkIndex: 1, event: event2 })
         }
@@ -135,20 +134,17 @@ describe('AppFileDownloader', () => {
       // Verify chunk events were saved to DB
       assert.equal(deps._saveFileChunksToDB.mock.callCount(), 2)
 
-      // Verify _saveFileChunksToDB was called with { blossomFileHash }
+      // Verify _saveFileChunksToDB was called with the sha256 hash in fakeBundle
       const firstSaveCall = deps._saveFileChunksToDB.mock.calls[0]
       const fakeBundle = firstSaveCall.arguments[0]
       const savedChunkEvents = firstSaveCall.arguments[1]
       const savedAppId = firstSaveCall.arguments[2]
-      const saveOptions = firstSaveCall.arguments[3]
 
       // Fake bundle should reference the sha256 hash
       assert.equal(fakeBundle.tags[0][1], blossomSha256Hash)
-      // The chunk event's c tag should still have the original merkle root hash (NOT rewritten)
+      // The chunk event's c tag should use fileHash as root (no merkle hash)
       const cTag = savedChunkEvents[0].tags.find(t => t[0] === 'c')
-      assert.ok(cTag[1].startsWith(merkleRootHash + ':'), 'c tag should keep original merkle root hash')
-      // The blossomFileHash option should be passed
-      assert.equal(saveOptions.blossomFileHash, blossomSha256Hash)
+      assert.ok(cTag[1].startsWith(blossomSha256Hash + ':'), 'c tag should use blossom sha256 hash as root')
       assert.equal(savedAppId, appId)
     })
 

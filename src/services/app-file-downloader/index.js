@@ -141,7 +141,7 @@ export default class AppFileDownloader {
 
           if (event) {
             const fakeBundle = { tags: [['file', this.fileRootHash]] }
-            await _saveFileChunksToDB(fakeBundle, [event], this.appId, { blossomFileHash: this.fileRootHash })
+            await _saveFileChunksToDB(fakeBundle, [event], this.appId)
           }
           push(rest)
         })()
@@ -229,7 +229,7 @@ export default class AppFileDownloader {
     )
 
     downloader.run().finally(async () => {
-      // Without this, the `downloader` finishes ans sets `isDone=true`
+      // Without this, the `downloader` finishes and sets `isDone=true`
       // before some of our `_saveFileChunksToDB` calls are done
       // which prevents some yields
       await Promise.all(pendingOperations)

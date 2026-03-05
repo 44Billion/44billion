@@ -4,15 +4,7 @@ import { addressObjToAppId } from '#helpers/app.js'
 export async function countFileChunksFromDb (appId, rootHash) {
   let total = null
   for await (const storedChunk of streamFileChunksFromDb(appId, rootHash)) {
-    // For IRFS chunks, the c tag prefix matches rootHash.
-    // For blossom chunks, fx=blossomHash but the c tag has the NMMR merkle root,
-    // so we fall back to any c tag with a position separator.
-    // Blossom files are represented by synthetic chunk events that won't
-    // have c tags with rootHash from other files (for now it has a single c tag
-    // and may produce multiple events with same d tag - the x field),
-    // so this won't cause issues with counting.
-    const cTag = storedChunk.evt.tags.find(t => t[0] === 'c' && t[1].startsWith(`${rootHash}:`)) ??
-      storedChunk.evt.tags.find(t => t[0] === 'c' && t[1].includes(':'))
+    const cTag = storedChunk.evt.tags.find(t => t[0] === 'c' && t[1].startsWith(`${rootHash}:`))
     if (!cTag) continue
     const parsedTotal = parseInt(cTag[2])
     if (Number.isNaN(parsedTotal)) continue
@@ -84,7 +76,7 @@ export async function * streamFileChunksFromDb (appId, rootHash, { fromPos, toPo
   }
 }
 
-export async function saveFileChunksToDB (bundle, fileChunks, appId, { blossomFileHash } = {}) {
+export async function saveFileChunksToDB (bundle, fileChunks, appId) {
   const bundleRootHashesObj = bundle.tags
     .filter(t => t[0] === 'file' && !!t[1])
     .map(t => t[1])
@@ -103,14 +95,8 @@ export async function saveFileChunksToDB (bundle, fileChunks, appId, { blossomFi
       // or appears twice+ on same file at different positions
       if (tag[0] === 'c') {
         const [fileRootHash, chunkPosition] = tag[1].split(':')
-        if (chunkPosition !== undefined) {
-          // When blossomFileHash is provided, the c tag contains the NMMR merkle root
-          // which differs from the blossom sha256 hash. We store under blossomFileHash instead.
-          if (blossomFileHash) {
-            formatedCTags.push([blossomFileHash, parseInt(chunkPosition)])
-          } else if (bundleRootHashesObj[fileRootHash]) {
-            formatedCTags.push([fileRootHash, parseInt(chunkPosition)])
-          }
+        if (chunkPosition !== undefined && bundleRootHashesObj[fileRootHash]) {
+          formatedCTags.push([fileRootHash, parseInt(chunkPosition)])
         }
       }
     }

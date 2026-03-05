@@ -7,20 +7,25 @@ describe('BlossomFileDownloader', () => {
   // We test the logic by constructing a downloader-like flow manually
   // since the module has static imports that are hard to mock in Node.js test runner.
   // The core concepts we test:
-  // 1. Streaming file bytes into NMMR chunks
-  // 2. Creating kind 34600 events from chunks
-  // 3. Progress reporting
+  // 1. Streaming file bytes into fixed-size chunks (no NMMR, no merkle tree)
+  // 2. Creating kind 34600 events with fileHash as root in c tags
+  // 3. Progress reporting with immediate chunk emission (no buffering)
   // 4. Blossom server discovery from kind 10063 events
-  // 5. Fallback across multiple servers
+  // 5. Parallel HEAD requests with 500ms timeout and majority vote for totalChunks
+  // 6. Fallback across multiple servers
 
   describe('chunk event creation', () => {
-    function createChunkEvent (chunk, totalChunks, pubkey) {
+    const CHUNK_SIZE = 51000
+
+    function createChunkEvent (bytes, chunkIndex, totalChunks, fileHash, pubkey) {
+      const dTagValue = `${fileHash}:${chunkIndex}`
+
       const event = {
         kind: 34600,
         pubkey: pubkey || '',
         tags: [
-          ['d', chunk.x],
-          ['c', `${chunk.rootX}:${chunk.index}`, String(totalChunks), ...chunk.proof]
+          ['d', dTagValue],
+          ['c', `${fileHash}:${chunkIndex}`, String(totalChunks)]
         ],
         content: 'encoded-content',
         created_at: Math.floor(Date.now() / 1000)
@@ -30,41 +35,33 @@ describe('BlossomFileDownloader', () => {
       return event
     }
 
-    it('should create a valid kind 34600 event from an NMMR chunk', () => {
-      const chunk = {
-        x: 'deadbeef1234',
-        rootX: 'abc123rootdef456',
-        index: 0,
-        proof: ['proofhash1', 'proofhash2'],
-        contentBytes: new Uint8Array([1, 2, 3, 4, 5])
-      }
+    it('should create a valid kind 34600 event from a byte slice', () => {
+      const fileHash = 'abc123sha256filehashabcdef'
       const pubkey = 'aabbccdd'
+      const bytes = new Uint8Array([1, 2, 3, 4, 5])
 
-      const event = createChunkEvent(chunk, 3, pubkey)
+      const event = createChunkEvent(bytes, 0, 3, fileHash, pubkey)
 
       assert.equal(event.kind, 34600)
       assert.equal(event.pubkey, 'aabbccdd')
+      // d tag should be fileHash:index
       assert.equal(event.tags[0][0], 'd')
-      assert.equal(event.tags[0][1], 'deadbeef1234')
+      assert.equal(event.tags[0][1], `${fileHash}:0`)
+      // c tag uses fileHash as root, not a merkle root
       assert.equal(event.tags[1][0], 'c')
-      assert.equal(event.tags[1][1], 'abc123rootdef456:0')
+      assert.equal(event.tags[1][1], `${fileHash}:0`)
       assert.equal(event.tags[1][2], '3')
-      assert.equal(event.tags[1][3], 'proofhash1')
-      assert.equal(event.tags[1][4], 'proofhash2')
+      // No merkle proof elements
+      assert.equal(event.tags[1][3], undefined)
       assert.ok(event.created_at > 0)
     })
 
     it('should compute a valid NIP-01 event id', () => {
-      const chunk = {
-        x: 'deadbeef1234',
-        rootX: 'abc123rootdef456',
-        index: 0,
-        proof: ['proofhash1'],
-        contentBytes: new Uint8Array([1])
-      }
+      const fileHash = 'deadbeefsha256hash'
       const pubkey = 'aabbccdd'
+      const bytes = new Uint8Array([1])
 
-      const event = createChunkEvent(chunk, 1, pubkey)
+      const event = createChunkEvent(bytes, 0, 1, fileHash, pubkey)
 
       // Verify id is a 64-char hex string
       assert.equal(event.id.length, 64)
@@ -77,33 +74,94 @@ describe('BlossomFileDownloader', () => {
     })
 
     it('should not include a sig field (unsigned event)', () => {
-      const chunk = {
-        x: 'deadbeef1234',
-        rootX: 'abc123rootdef456',
-        index: 0,
-        proof: [],
-        contentBytes: new Uint8Array([1])
-      }
-
-      const event = createChunkEvent(chunk, 1, 'pubkey123')
-
+      const event = createChunkEvent(new Uint8Array([1]), 0, 1, 'filehash123', 'pubkey123')
       assert.equal(event.sig, undefined)
     })
 
-    it('should include all proof elements in the c tag', () => {
-      const chunk = {
-        x: 'hash1',
-        rootX: 'rootHash',
-        index: 5,
-        proof: ['p1', 'p2', 'p3'],
-        contentBytes: new Uint8Array([10, 20, 30])
+    it('should use fileHash:chunkIndex as d tag value', () => {
+      const fileHash = 'myhash'
+      const event = createChunkEvent(new Uint8Array([1]), 5, 10, fileHash, 'pub1')
+
+      assert.equal(event.tags[0][1], `${fileHash}:5`)
+      assert.equal(event.tags[1][1], `${fileHash}:5`)
+      assert.equal(event.tags[1][2], '10')
+    })
+
+    it('should compute correct total chunks from Content-Length', () => {
+      // Simulate calculating total chunks from HEAD Content-Length
+      const testCases = [
+        { byteLength: 0, expected: 1 },         // Math.max(1, ceil(0/51000)) = 1
+        { byteLength: 100, expected: 1 },        // ceil(100/51000) = 1
+        { byteLength: 51000, expected: 1 },      // ceil(51000/51000) = 1
+        { byteLength: 51001, expected: 2 },      // ceil(51001/51000) = 2
+        { byteLength: 102000, expected: 2 },     // ceil(102000/51000) = 2
+        { byteLength: 102001, expected: 3 }      // ceil(102001/51000) = 3
+      ]
+
+      for (const { byteLength, expected } of testCases) {
+        const total = Math.max(1, Math.ceil(byteLength / CHUNK_SIZE))
+        assert.equal(total, expected, `byteLength=${byteLength}: expected ${expected}, got ${total}`)
+      }
+    })
+  })
+
+  describe('HEAD majority vote logic', () => {
+    it('should pick the most common Content-Length among server results', () => {
+      // Simulate majority vote among server HEAD results
+      const results = [
+        { serverUrl: 'https://server1.com', byteLength: 102000 },
+        { serverUrl: 'https://server2.com', byteLength: 102000 },
+        { serverUrl: 'https://server3.com', byteLength: 51000 }
+      ]
+
+      const counts = new Map()
+      for (const { byteLength } of results) {
+        counts.set(byteLength, (counts.get(byteLength) ?? 0) + 1)
+      }
+      let bestByteLength = results[0].byteLength
+      let bestCount = 1
+      for (const [byteLength, count] of counts) {
+        if (count > bestCount || (count === bestCount && byteLength === results[0].byteLength)) {
+          bestByteLength = byteLength
+          bestCount = count
+        }
       }
 
-      const event = createChunkEvent(chunk, 10, 'pub1')
+      assert.equal(bestByteLength, 102000)
+      assert.equal(bestCount, 2)
+    })
 
-      assert.equal(event.tags[1][1], 'rootHash:5')
-      assert.equal(event.tags[1][2], '10')
-      assert.deepEqual(event.tags[1].slice(3), ['p1', 'p2', 'p3'])
+    it('should fallback to first result when all disagree', () => {
+      const results = [
+        { serverUrl: 'https://server1.com', byteLength: 51000 },
+        { serverUrl: 'https://server2.com', byteLength: 102000 },
+        { serverUrl: 'https://server3.com', byteLength: 153000 }
+      ]
+
+      const counts = new Map()
+      for (const { byteLength } of results) {
+        counts.set(byteLength, (counts.get(byteLength) ?? 0) + 1)
+      }
+      let bestByteLength = results[0].byteLength
+      let bestCount = 1
+      for (const [byteLength, count] of counts) {
+        if (count > bestCount || (count === bestCount && byteLength === results[0].byteLength)) {
+          bestByteLength = byteLength
+          bestCount = count
+        }
+      }
+
+      // All have count=1 and none match results[0].byteLength better than the first iteration
+      assert.equal(bestByteLength, 51000) // first result wins on tie
+    })
+
+    it('should return null chosen server when no HEAD responses', () => {
+      const results = []
+      const totalChunks = results.length === 0 ? null : 1
+      const chosenServer = results.length === 0 ? null : results[0].serverUrl
+
+      assert.equal(totalChunks, null)
+      assert.equal(chosenServer, null)
     })
   })
 
@@ -164,16 +222,16 @@ describe('BlossomFileDownloader', () => {
     })
   })
 
-  describe('streaming chunking logic', () => {
+  describe('streaming chunking logic (immediate emission)', () => {
     it('should split a buffer into chunks of the correct size', () => {
       const CHUNK_SIZE = 10
       const data = new Uint8Array(25)
       for (let i = 0; i < 25; i++) data[i] = i
 
       let buffer = new Uint8Array(0)
-      const chunks = []
+      const emittedChunks = []
 
-      // Simulate receiving the data in one go
+      // Simulate receiving the data in one go and emitting immediately
       const newBuffer = new Uint8Array(buffer.length + data.length)
       newBuffer.set(buffer)
       newBuffer.set(data, buffer.length)
@@ -182,15 +240,15 @@ describe('BlossomFileDownloader', () => {
       while (buffer.length >= CHUNK_SIZE) {
         const chunk = buffer.slice(0, CHUNK_SIZE)
         buffer = buffer.slice(CHUNK_SIZE)
-        chunks.push(chunk)
+        emittedChunks.push(chunk) // emit immediately, no pendingSlices
       }
-      // Remaining
-      if (buffer.length > 0) chunks.push(buffer)
+      // Emit remaining immediately after loop
+      if (buffer.length > 0) emittedChunks.push(buffer)
 
-      assert.equal(chunks.length, 3)
-      assert.equal(chunks[0].length, 10)
-      assert.equal(chunks[1].length, 10)
-      assert.equal(chunks[2].length, 5)
+      assert.equal(emittedChunks.length, 3)
+      assert.equal(emittedChunks[0].length, 10)
+      assert.equal(emittedChunks[1].length, 10)
+      assert.equal(emittedChunks[2].length, 5)
     })
 
     it('should handle empty data', () => {
@@ -204,17 +262,45 @@ describe('BlossomFileDownloader', () => {
     it('should handle data smaller than chunk size', () => {
       const CHUNK_SIZE = 51000
       const data = new Uint8Array(100)
-      const chunks = []
+      const emittedChunks = []
 
       let buffer = data
       while (buffer.length >= CHUNK_SIZE) {
-        chunks.push(buffer.slice(0, CHUNK_SIZE))
+        emittedChunks.push(buffer.slice(0, CHUNK_SIZE))
         buffer = buffer.slice(CHUNK_SIZE)
       }
-      if (buffer.length > 0) chunks.push(buffer)
+      if (buffer.length > 0) emittedChunks.push(buffer)
 
-      assert.equal(chunks.length, 1)
-      assert.equal(chunks[0].length, 100)
+      assert.equal(emittedChunks.length, 1)
+      assert.equal(emittedChunks[0].length, 100)
+    })
+
+    it('should emit chunks immediately without buffering in pendingSlices array', () => {
+      // Verify that the streaming logic does not accumulate all chunks before emitting
+      const CHUNK_SIZE = 10
+      const totalData = new Uint8Array(30) // 3 chunks of 10
+
+      let emittedCount = 0
+      const callbacks = []
+
+      let buffer = new Uint8Array(0)
+      const newBuf = new Uint8Array(buffer.length + totalData.length)
+      newBuf.set(buffer)
+      newBuf.set(totalData, buffer.length)
+      buffer = newBuf
+
+      while (buffer.length >= CHUNK_SIZE) {
+        buffer = buffer.slice(CHUNK_SIZE)
+        emittedCount++
+        callbacks.push(emittedCount) // simulating immediate callback
+      }
+      if (buffer.length > 0) {
+        emittedCount++
+        callbacks.push(emittedCount)
+      }
+
+      // All 3 chunks emitted individually, not batched
+      assert.deepEqual(callbacks, [1, 2, 3])
     })
   })
 
@@ -241,14 +327,22 @@ describe('BlossomFileDownloader', () => {
       assert.equal(progressReports[3].progress, 100)
     })
 
-    it('should include chunk index in progress reports', () => {
+    it('should include chunk index in progress reports (no merkleRootHash)', () => {
+      const fileHash = 'sha256filehashabc'
       const report = {
         type: 'progress',
         progress: 50,
         count: 1,
         total: 2,
         chunkIndex: 0,
-        event: { kind: 34600, pubkey: 'aabb', id: 'deadbeef', tags: [['d', 'hash'], ['c', 'root:0', '2']], content: 'data', created_at: 1000 }
+        event: {
+          kind: 34600,
+          pubkey: 'aabb',
+          id: 'deadbeef',
+          tags: [['d', `${fileHash}:0`], ['c', `${fileHash}:0`, '2']],
+          content: 'data',
+          created_at: 1000
+        }
       }
 
       assert.equal(report.type, 'progress')
@@ -256,6 +350,80 @@ describe('BlossomFileDownloader', () => {
       assert.equal(report.event.pubkey, 'aabb')
       assert.ok(report.event.id)
       assert.equal(report.chunkIndex, 0)
+      // No merkleRootHash in blossom progress reports
+      assert.equal(report.merkleRootHash, undefined)
+    })
+  })
+
+  describe('missing chunks detection', () => {
+    it('should report missing chunk indexes when stream ends before totalChunks', () => {
+      // Simulate: totalChunks=3 but only 2 chunks were streamed
+      const totalChunks = 3
+      const CHUNK_SIZE = 51000
+      let buffer = new Uint8Array(CHUNK_SIZE * 2) // exactly 2 chunks
+      let chunkIndex = 0
+      const callbacks = []
+
+      while (buffer.length >= CHUNK_SIZE) {
+        buffer = buffer.slice(CHUNK_SIZE)
+        callbacks.push({ chunkIndex })
+        chunkIndex++
+      }
+
+      // Detect missing chunks after stream ends
+      if (chunkIndex < totalChunks) {
+        const missingIndexes = []
+        for (let i = chunkIndex; i < totalChunks; i++) missingIndexes.push(i)
+        callbacks.push({ error: 'Missing file chunks', chunkIndexes: missingIndexes })
+      }
+
+      assert.equal(callbacks.length, 3) // 2 normal + 1 error callback
+      assert.equal(callbacks[0].chunkIndex, 0)
+      assert.equal(callbacks[1].chunkIndex, 1)
+      assert.deepEqual(callbacks[2].chunkIndexes, [2])
+      assert.equal(callbacks[2].error, 'Missing file chunks')
+    })
+
+    it('should not report missing chunks when all chunks received', () => {
+      const totalChunks = 2
+      const CHUNK_SIZE = 51000
+      let buffer = new Uint8Array(CHUNK_SIZE * 2) // exactly 2 full chunks
+      let chunkIndex = 0
+      const missingCallbacks = []
+
+      while (buffer.length >= CHUNK_SIZE) {
+        buffer = buffer.slice(CHUNK_SIZE)
+        chunkIndex++
+      }
+
+      if (chunkIndex < totalChunks) {
+        const missing = []
+        for (let i = chunkIndex; i < totalChunks; i++) missing.push(i)
+        missingCallbacks.push({ error: 'Missing file chunks', chunkIndexes: missing })
+      }
+
+      assert.equal(missingCallbacks.length, 0)
+      assert.equal(chunkIndex, totalChunks)
+    })
+
+    it('should report all missing indexes when file download is truncated', () => {
+      const totalChunks = 5
+      const CHUNK_SIZE = 51000
+      // Only 1 chunk received
+      let buffer = new Uint8Array(CHUNK_SIZE)
+      let chunkIndex = 0
+
+      while (buffer.length >= CHUNK_SIZE) {
+        buffer = buffer.slice(CHUNK_SIZE)
+        chunkIndex++
+      }
+
+      const missingIndexes = []
+      if (chunkIndex < totalChunks) {
+        for (let i = chunkIndex; i < totalChunks; i++) missingIndexes.push(i)
+      }
+
+      assert.deepEqual(missingIndexes, [1, 2, 3, 4])
     })
   })
 
