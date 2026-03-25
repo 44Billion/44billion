@@ -2,23 +2,23 @@ import nostrRelays, { seedRelays, nappRelays } from '#services/nostr-relays.js'
 import { shouldIncludeNappRelays } from '#helpers/app.js'
 import { isValidRelayUrl } from '#helpers/relay.js'
 
-export async function getAppBundle (appIdObj, userRelays) {
+export async function getSiteManifest (appIdObj, userRelays) {
   if (!appIdObj.pubkey || !appIdObj.kind || !appIdObj.dTag) throw new Error('Missing args')
 
   userRelays ??= (await getUserRelays(appIdObj.pubkey))[appIdObj.pubkey]
   // if (userRelays.write.length === 0) return
   const relays = [...new Set([...userRelays.write, ...nappRelays])]
 
-  const bundlesResponse = await nostrRelays.getEvents(
+  const response = await nostrRelays.getEvents(
     { authors: [appIdObj.pubkey], kinds: [appIdObj.kind], '#d': [appIdObj.dTag], limit: 1 },
     relays
   )
-  if (!bundlesResponse.success) {
-    throw bundlesResponse.errors?.[0]?.reason ||
-      new Error('Failed to fetch app bundle events')
+  if (!response.success) {
+    throw response.errors?.[0]?.reason ||
+      new Error('Failed to fetch site manifest events')
   }
-  const bundles = bundlesResponse.result ?? []
-  return bundles.sort((a, b) => b.created_at - a.created_at)[0]
+  const manifests = response.result ?? []
+  return manifests.sort((a, b) => b.created_at - a.created_at)[0]
 }
 
 export async function getEventsByStrategy (filter, st /*, timeoutMs = 3000 */) {

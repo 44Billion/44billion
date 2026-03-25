@@ -35,7 +35,7 @@ describe('AppUpdater', () => {
     const appId = 'app1'
 
     it('should check for updates and mark hasUpdate=true when remote is newer', async () => {
-      const localBundle = {
+      const localManifest = {
         id: 'local',
         created_at: 100,
         meta: { hasUpdate: false }
@@ -46,16 +46,16 @@ describe('AppUpdater', () => {
       }
 
       const mockAppFileDownloader = {
-        getBundleEvents: mock.fn(async () => ({
+        getSiteManifestEvents: mock.fn(async () => ({
           [appId]: { event: remoteEvent }
         }))
       }
 
       // Stateful mock to simulate DB updates
-      let storedBundle = localBundle
-      const mockGetBundleFromDb = mock.fn(async () => storedBundle)
-      const mockSaveBundleToDb = mock.fn(async (bundle, meta) => {
-        storedBundle = { ...bundle, meta }
+      let storedManifest = localManifest
+      const mockGetManifestFromDb = mock.fn(async () => storedManifest)
+      const mockSaveManifestToDb = mock.fn(async (manifest, meta) => {
+        storedManifest = { ...manifest, meta }
       })
 
       const mockSetWebStorageItem = mock.fn()
@@ -69,17 +69,17 @@ describe('AppUpdater', () => {
 
       const updates = await AppUpdater.searchForUpdates([appId], {
         _AppFileDownloader: mockAppFileDownloader,
-        _getBundleFromDb: mockGetBundleFromDb,
-        _saveBundleToDb: mockSaveBundleToDb,
+        _getSiteManifestFromDb: mockGetManifestFromDb,
+        _saveSiteManifestToDb: mockSaveManifestToDb,
         _setWebStorageItem: mockSetWebStorageItem,
         _localStorage: mockLocalStorage
       })
 
-      assert.equal(mockAppFileDownloader.getBundleEvents.mock.callCount(), 1)
-      assert.equal(mockGetBundleFromDb.mock.callCount(), 2) // 1 for check, 1 for count
-      assert.equal(mockSaveBundleToDb.mock.callCount(), 1)
+      assert.equal(mockAppFileDownloader.getSiteManifestEvents.mock.callCount(), 1)
+      assert.equal(mockGetManifestFromDb.mock.callCount(), 2) // 1 for check, 1 for count
+      assert.equal(mockSaveManifestToDb.mock.callCount(), 1)
 
-      const [, savedMeta] = mockSaveBundleToDb.mock.calls[0].arguments
+      const [, savedMeta] = mockSaveManifestToDb.mock.calls[0].arguments
       assert.equal(savedMeta.hasUpdate, true)
       assert.deepEqual(updates[appId].event, remoteEvent)
 
@@ -89,7 +89,7 @@ describe('AppUpdater', () => {
     })
 
     it('should mark hasUpdate=false when remote is older or same', async () => {
-      const localBundle = {
+      const localManifest = {
         id: 'local',
         created_at: 200,
         meta: { hasUpdate: true } // currently marked as having update
@@ -100,24 +100,24 @@ describe('AppUpdater', () => {
       }
 
       const mockAppFileDownloader = {
-        getBundleEvents: mock.fn(async () => ({
+        getSiteManifestEvents: mock.fn(async () => ({
           [appId]: { event: remoteEvent }
         }))
       }
-      const mockGetBundleFromDb = mock.fn(async () => localBundle)
-      const mockSaveBundleToDb = mock.fn(async () => {})
+      const mockGetManifestFromDb = mock.fn(async () => localManifest)
+      const mockSaveManifestToDb = mock.fn(async () => {})
       const mockSetWebStorageItem = mock.fn()
       const mockLocalStorage = { getItem: mock.fn(() => '[]') }
 
       const updates = await AppUpdater.searchForUpdates([appId], {
         _AppFileDownloader: mockAppFileDownloader,
-        _getBundleFromDb: mockGetBundleFromDb,
-        _saveBundleToDb: mockSaveBundleToDb,
+        _getSiteManifestFromDb: mockGetManifestFromDb,
+        _saveSiteManifestToDb: mockSaveManifestToDb,
         _setWebStorageItem: mockSetWebStorageItem,
         _localStorage: mockLocalStorage
       })
 
-      const [, savedMeta] = mockSaveBundleToDb.mock.calls[0].arguments
+      const [, savedMeta] = mockSaveManifestToDb.mock.calls[0].arguments
       assert.equal(savedMeta.hasUpdate, false)
       assert.equal(updates[appId], undefined)
       assert.equal(mockSetWebStorageItem.mock.callCount(), 1)
@@ -133,37 +133,37 @@ describe('AppUpdater', () => {
       }
 
       const mockAppFileDownloader = {
-        getBundleEvents: mock.fn(async () => ({}))
+        getSiteManifestEvents: mock.fn(async () => ({}))
       }
-      const mockGetBundleFromDb = mock.fn(async () => null)
-      const mockSaveBundleToDb = mock.fn(async () => {})
+      const mockGetManifestFromDb = mock.fn(async () => null)
+      const mockSaveManifestToDb = mock.fn(async () => {})
       const mockSetWebStorageItem = mock.fn()
 
       await AppUpdater.searchForUpdates(undefined, {
         _AppFileDownloader: mockAppFileDownloader,
-        _getBundleFromDb: mockGetBundleFromDb,
-        _saveBundleToDb: mockSaveBundleToDb,
+        _getSiteManifestFromDb: mockGetManifestFromDb,
+        _saveSiteManifestToDb: mockSaveManifestToDb,
         _localStorage: mockLocalStorage,
         _setWebStorageItem: mockSetWebStorageItem
       })
 
-      assert.equal(mockAppFileDownloader.getBundleEvents.mock.callCount(), 1)
-      assert.deepEqual(mockAppFileDownloader.getBundleEvents.mock.calls[0].arguments[0], [appId])
+      assert.equal(mockAppFileDownloader.getSiteManifestEvents.mock.callCount(), 1)
+      assert.deepEqual(mockAppFileDownloader.getSiteManifestEvents.mock.calls[0].arguments[0], [appId])
       assert.equal(mockSetWebStorageItem.mock.callCount(), 1)
     })
 
-    it('should mark hasUpdate=false when local bundle exists but no remote bundle found', async () => {
-      const localBundle = {
+    it('should mark hasUpdate=false when local manifest exists but no remote manifest found', async () => {
+      const localManifest = {
         id: 'local',
         created_at: 100,
         meta: { hasUpdate: true }
       }
 
       const mockAppFileDownloader = {
-        getBundleEvents: mock.fn(async () => ({}))
+        getSiteManifestEvents: mock.fn(async () => ({}))
       }
-      const mockGetBundleFromDb = mock.fn(async () => localBundle)
-      const mockSaveBundleToDb = mock.fn(async () => {})
+      const mockGetManifestFromDb = mock.fn(async () => localManifest)
+      const mockSaveManifestToDb = mock.fn(async () => {})
       const mockSetWebStorageItem = mock.fn()
       const mockLocalStorage = {
         getItem: mock.fn((key) => {
@@ -175,24 +175,24 @@ describe('AppUpdater', () => {
 
       const updates = await AppUpdater.searchForUpdates([appId], {
         _AppFileDownloader: mockAppFileDownloader,
-        _getBundleFromDb: mockGetBundleFromDb,
-        _saveBundleToDb: mockSaveBundleToDb,
+        _getSiteManifestFromDb: mockGetManifestFromDb,
+        _saveSiteManifestToDb: mockSaveManifestToDb,
         _setWebStorageItem: mockSetWebStorageItem,
         _localStorage: mockLocalStorage
       })
 
-      assert.equal(mockSaveBundleToDb.mock.callCount(), 1)
-      const [, savedMeta] = mockSaveBundleToDb.mock.calls[0].arguments
+      assert.equal(mockSaveManifestToDb.mock.callCount(), 1)
+      const [, savedMeta] = mockSaveManifestToDb.mock.calls[0].arguments
       assert.equal(savedMeta.hasUpdate, false)
       assert.deepEqual(updates, {})
     })
 
     it('should share promise for same appIds (including implicit all)', async () => {
       const mockAppFileDownloader = {
-        getBundleEvents: mock.fn(async () => ({}))
+        getSiteManifestEvents: mock.fn(async () => ({}))
       }
-      const mockGetBundleFromDb = mock.fn(async () => null)
-      const mockSaveBundleToDb = mock.fn(async () => {})
+      const mockGetManifestFromDb = mock.fn(async () => null)
+      const mockSaveManifestToDb = mock.fn(async () => {})
       const mockSetWebStorageItem = mock.fn()
 
       const mockLocalStorage = {
@@ -205,8 +205,8 @@ describe('AppUpdater', () => {
 
       const deps = {
         _AppFileDownloader: mockAppFileDownloader,
-        _getBundleFromDb: mockGetBundleFromDb,
-        _saveBundleToDb: mockSaveBundleToDb,
+        _getSiteManifestFromDb: mockGetManifestFromDb,
+        _saveSiteManifestToDb: mockSaveManifestToDb,
         _setWebStorageItem: mockSetWebStorageItem,
         _localStorage: mockLocalStorage
       }
@@ -224,13 +224,13 @@ describe('AppUpdater', () => {
   })
 
   describe('updateApp', () => {
-    const nextBundleEvent = {
-      kind: 37448,
+    const nextSiteManifestEvent = {
+      kind: 35128,
       pubkey: 'pubkey1',
       tags: [
         ['d', 'app1'],
-        ['file', 'hash1', 'file1.js'],
-        ['file', 'hash2', 'file2.css']
+        ['path', 'file1.js', 'hash1'],
+        ['path', 'file2.css', 'hash2']
       ]
     }
     const appId = 'app1_id'
@@ -248,15 +248,15 @@ describe('AppUpdater', () => {
       }
 
       const mockDeleteStale = mock.fn(async () => {})
-      const mockSaveBundle = mock.fn(async () => {})
-      const mockGetBundle = mock.fn(async () => ({ meta: { lastOpenedAsSingleNappAt: 123 } }))
+      const mockSaveManifest = mock.fn(async () => {})
+      const mockGetManifest = mock.fn(async () => ({ meta: { lastOpenedAsSingleNappAt: 123 } }))
       const mockAddressToId = mock.fn(() => appId)
 
-      const iterator = AppUpdater.updateApp(nextBundleEvent, {
+      const iterator = AppUpdater.updateApp(nextSiteManifestEvent, {
         _AppFileDownloader: MockAppFileDownloader,
         _deleteStaleFileChunksFromDb: mockDeleteStale,
-        _saveBundleToDb: mockSaveBundle,
-        _getBundleFromDb: mockGetBundle,
+        _saveSiteManifestToDb: mockSaveManifest,
+        _getSiteManifestFromDb: mockGetManifest,
         _addressObjToAppId: mockAddressToId,
         writeRelays
       })
@@ -279,9 +279,9 @@ describe('AppUpdater', () => {
       assert.equal(mockDeleteStale.mock.callCount(), 1)
       assert.deepEqual(mockDeleteStale.mock.calls[0].arguments, [appId, ['hash1', 'hash2']])
 
-      assert.equal(mockSaveBundle.mock.callCount(), 1)
-      const [savedEvent, savedMeta] = mockSaveBundle.mock.calls[0].arguments
-      assert.deepEqual(savedEvent, nextBundleEvent)
+      assert.equal(mockSaveManifest.mock.callCount(), 1)
+      const [savedEvent, savedMeta] = mockSaveManifest.mock.calls[0].arguments
+      assert.deepEqual(savedEvent, nextSiteManifestEvent)
       assert.equal(savedMeta.hasUpdate, false)
       assert.equal(savedMeta.lastOpenedAsSingleNappAt, 123)
     })
@@ -298,13 +298,13 @@ describe('AppUpdater', () => {
       }
 
       const mockDeleteStale = mock.fn(async () => {})
-      const mockSaveBundle = mock.fn(async () => {})
+      const mockSaveManifest = mock.fn(async () => {})
       const mockAddressToId = mock.fn(() => appId)
 
-      const iterator = AppUpdater.updateApp(nextBundleEvent, {
+      const iterator = AppUpdater.updateApp(nextSiteManifestEvent, {
         _AppFileDownloader: MockAppFileDownloader,
         _deleteStaleFileChunksFromDb: mockDeleteStale,
-        _saveBundleToDb: mockSaveBundle,
+        _saveSiteManifestToDb: mockSaveManifest,
         _addressObjToAppId: mockAddressToId,
         writeRelays
       })
@@ -317,7 +317,7 @@ describe('AppUpdater', () => {
       assert.equal(reports.length, 1)
       assert.equal(reports[0].error, error)
       assert.equal(mockDeleteStale.mock.callCount(), 0)
-      assert.equal(mockSaveBundle.mock.callCount(), 0)
+      assert.equal(mockSaveManifest.mock.callCount(), 0)
     })
 
     it('should fetch relays if not provided', async () => {
@@ -328,20 +328,20 @@ describe('AppUpdater', () => {
         constructor () { return mockDownloaderInstance }
       }
       const mockGetUserRelays = mock.fn(async () => ({
-        [nextBundleEvent.pubkey]: { write: new Set(['wss://fetched-relay.com']) }
+        [nextSiteManifestEvent.pubkey]: { write: new Set(['wss://fetched-relay.com']) }
       }))
       const mockAddressToId = mock.fn(() => appId)
       const mockDeleteStale = mock.fn(async () => {})
-      const mockSaveBundle = mock.fn(async () => {})
-      const mockGetBundle = mock.fn(async () => ({}))
+      const mockSaveManifest = mock.fn(async () => {})
+      const mockGetManifest = mock.fn(async () => ({}))
 
-      const iterator = AppUpdater.updateApp(nextBundleEvent, {
+      const iterator = AppUpdater.updateApp(nextSiteManifestEvent, {
         _AppFileDownloader: MockAppFileDownloader,
         _getUserRelays: mockGetUserRelays,
         _addressObjToAppId: mockAddressToId,
         _deleteStaleFileChunksFromDb: mockDeleteStale,
-        _saveBundleToDb: mockSaveBundle,
-        _getBundleFromDb: mockGetBundle
+        _saveSiteManifestToDb: mockSaveManifest,
+        _getSiteManifestFromDb: mockGetManifest
       })
 
       for await (const _ of iterator) {
@@ -478,13 +478,13 @@ describe('AppUpdater', () => {
       const mockLocalStorage = {
         getItem: mock.fn(() => JSON.stringify([]))
       }
-      const mockGetBundle = mock.fn(async () => ({ tags: [['file', 'hash1']] }))
+      const mockGetManifest = mock.fn(async () => ({ tags: [['path', 'file1.js', 'hash1']] }))
       const mockDeleteStale = mock.fn(async () => {})
 
       await AppUpdater.scheduleCleanup(['app1'], {
         _navigator: mockNavigator,
         _localStorage: mockLocalStorage,
-        _getBundleFromDb: mockGetBundle,
+        _getSiteManifestFromDb: mockGetManifest,
         _deleteStaleFileChunksFromDb: mockDeleteStale
       })
 

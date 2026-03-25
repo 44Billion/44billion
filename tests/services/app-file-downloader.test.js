@@ -8,9 +8,9 @@ describe('AppFileDownloader', () => {
   const appId = 'a0000000000000000000000000000000000000000000test'
   const writeRelays = ['wss://relay1.com', 'wss://relay2.com', 'wss://relay3.com']
 
-  describe('getBundleEvents', () => {
-    it('should fetch bundle events and return them grouped by appId', async () => {
-      const mockEvent = { id: 'bundle1', kind: 37448, tags: [['d', 'test']], pubkey: 'pubkey1' }
+  describe('getSiteManifestEvents', () => {
+    it('should fetch site manifest events and return them grouped by appId', async () => {
+      const mockEvent = { id: 'manifest1', kind: 35128, tags: [['d', 'test']], pubkey: 'pubkey1' }
       const { pubkey } = appIdToAddressObj(appId)
       // Override pubkey in mockEvent to match appId derived pubkey for the test to work
       mockEvent.pubkey = pubkey
@@ -22,7 +22,7 @@ describe('AppFileDownloader', () => {
       }))
       const mockGetEventsByStrategy = mock.fn(async () => [mockEvent])
 
-      const result = await AppFileDownloader.getBundleEvents([appId], {
+      const result = await AppFileDownloader.getSiteManifestEvents([appId], {
         _getUserRelays: mockGetUserRelays,
         _getEventsByStrategy: mockGetEventsByStrategy
       })
@@ -59,9 +59,9 @@ describe('AppFileDownloader', () => {
       _saveFileChunksToDB: mock.fn(async () => {})
     })
 
-    it('should instantiate FileDownloader and yield progress', async () => {
+    it('should instantiate FileDownloader and yield progress (IRFS)', async () => {
       const testHash = 'test-hash'
-      const downloader = new AppFileDownloader(appId, testHash, writeRelays)
+      const downloader = new AppFileDownloader(appId, testHash, writeRelays, { service: 'irfs' })
       const deps = createMockDeps()
 
       const iterator = downloader.run(deps)
@@ -83,21 +83,21 @@ describe('AppFileDownloader', () => {
       // but the fact that run() yielded mocked data proves it was used.
     })
 
-    it('should default to IRFS service when no service option provided', () => {
+    it('should default to blossom service when no service option provided', () => {
       const downloader = new AppFileDownloader(appId, 'test-hash', writeRelays)
-      assert.equal(downloader.service, 'i')
+      assert.equal(downloader.service, 'blossom')
     })
 
-    it('should accept blossom service option', () => {
-      const downloader = new AppFileDownloader(appId, 'abc123', writeRelays, { service: 'b' })
-      assert.equal(downloader.service, 'b')
+    it('should accept blossom service option explicitly', () => {
+      const downloader = new AppFileDownloader(appId, 'abc123', writeRelays, { service: 'blossom' })
+      assert.equal(downloader.service, 'blossom')
     })
   })
 
   describe('run with blossom service', () => {
-    it('should use BlossomFileDownloader when service is b and pass blossomFileHash to save', async () => {
+    it('should use BlossomFileDownloader when service is blossom and pass blossomFileHash to save', async () => {
       const blossomSha256Hash = 'abc123sha256hash'
-      const downloader = new AppFileDownloader(appId, blossomSha256Hash, writeRelays, { service: 'b' })
+      const downloader = new AppFileDownloader(appId, blossomSha256Hash, writeRelays, { service: 'blossom' })
 
       let capturedCallback
       const MockBlossomDownloader = class {
@@ -134,14 +134,14 @@ describe('AppFileDownloader', () => {
       // Verify chunk events were saved to DB
       assert.equal(deps._saveFileChunksToDB.mock.callCount(), 2)
 
-      // Verify _saveFileChunksToDB was called with the sha256 hash in fakeBundle
+      // Verify _saveFileChunksToDB was called with the sha256 hash in fakeManifest
       const firstSaveCall = deps._saveFileChunksToDB.mock.calls[0]
-      const fakeBundle = firstSaveCall.arguments[0]
+      const fakeManifest = firstSaveCall.arguments[0]
       const savedChunkEvents = firstSaveCall.arguments[1]
       const savedAppId = firstSaveCall.arguments[2]
 
-      // Fake bundle should reference the sha256 hash
-      assert.equal(fakeBundle.tags[0][1], blossomSha256Hash)
+      // Fake manifest should reference the sha256 hash (path tag: ['path', '', hash])
+      assert.equal(fakeManifest.tags[0][2], blossomSha256Hash)
       // The chunk event's c tag should use fileHash as root (no merkle hash)
       const cTag = savedChunkEvents[0].tags.find(t => t[0] === 'c')
       assert.ok(cTag[1].startsWith(blossomSha256Hash + ':'), 'c tag should use blossom sha256 hash as root')
@@ -150,7 +150,7 @@ describe('AppFileDownloader', () => {
 
     it('should skip download when already fully cached', async () => {
       const testHash = 'abc123hash'
-      const downloader = new AppFileDownloader(appId, testHash, writeRelays, { service: 'b' })
+      const downloader = new AppFileDownloader(appId, testHash, writeRelays, { service: 'blossom' })
 
       let blossomConstructorCalled = false
       const MockBlossomDownloader = class {

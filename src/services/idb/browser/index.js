@@ -1,7 +1,7 @@
 export const getDb = (db => async () => (db ??= await initDb()))()
 const initDb = () => {
   const p = Promise.withResolvers()
-  const req = indexedDB.open('44billion_browser', 1)
+  const req = indexedDB.open('44billion_browser', 2)
   req.onerror = () => p.reject(req.error)
   req.onsuccess = () => {
     const db = req.result
@@ -24,10 +24,15 @@ const initDb = () => {
       store = tx.objectStore('fileChunks')
     }
     console.log(`[${db.name}DB v${db.version}] ${store.name} store is ready`)
-    if (!db.objectStoreNames.contains('bundles')) {
-      store = db.createObjectStore('bundles', { keyPath: ['c', 'p', 'd'] })
+    // Migration: delete old 'bundles' store
+    if (db.objectStoreNames.contains('bundles')) {
+      db.deleteObjectStore('bundles')
+      console.log(`[${db.name}DB v${db.version}] deleted old 'bundles' store`)
+    }
+    if (!db.objectStoreNames.contains('siteManifests')) {
+      store = db.createObjectStore('siteManifests', { keyPath: ['c', 'p', 'd'] })
     } else {
-      store = tx.objectStore('bundles')
+      store = tx.objectStore('siteManifests')
     }
     console.log(`[${db.name}DB v${db.version}] ${store.name} store is ready`)
     if (!db.objectStoreNames.contains('permissions')) {

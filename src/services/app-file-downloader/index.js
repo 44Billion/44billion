@@ -15,9 +15,9 @@ export default class AppFileDownloader {
    * @param {string} fileHash - Merkle root hash (IRFS) or sha256 hex hash (Blossom)
    * @param {string[]} writeRelays
    * @param {object} [options]
-   * @param {string} [options.service='i'] - 'i' for IRFS (relay), 'b' for Blossom
+   * @param {string} [options.service='blossom'] - 'blossom' or 'irfs'
    */
-  constructor (appId, fileHash, writeRelays, { service = 'i' } = {}) {
+  constructor (appId, fileHash, writeRelays, { service = 'blossom' } = {}) {
     if (!writeRelays || writeRelays.length === 0) throw new Error('Write relays cannot be empty')
     this.appId = appId
     this.fileRootHash = fileHash
@@ -25,7 +25,7 @@ export default class AppFileDownloader {
     this.service = service
   }
 
-  static async getBundleEvents (appIds, {
+  static async getSiteManifestEvents (appIds, {
     _getUserRelays = getUserRelays,
     _getEventsByStrategy = getEventsByStrategy
   } = {}) {
@@ -73,7 +73,7 @@ export default class AppFileDownloader {
       const event = events.find(e =>
         e.kind === addr.kind &&
         e.pubkey === addr.pubkey &&
-        e.tags.find(t => t[0] === 'd')?.[1] === addr.dTag
+        (e.tags.find(t => t[0] === 'd')?.[1] ?? '') === addr.dTag
       )
 
       if (event) {
@@ -94,7 +94,7 @@ export default class AppFileDownloader {
     _getFileChunksFromDb = getFileChunksFromDb,
     _saveFileChunksToDB = saveFileChunksToDB
   } = {}) {
-    if (this.service === 'b') {
+    if (this.service === 'blossom') {
       yield * this.#runBlossom({ _BlossomFileDownloader, _countFileChunksFromDb, _saveFileChunksToDB })
     } else {
       yield * this.#runIrfs({ _FileDownloader, _countFileChunksFromDb, _getFileChunksFromDb, _saveFileChunksToDB })
@@ -140,8 +140,8 @@ export default class AppFileDownloader {
           const { event, ...rest } = data
 
           if (event) {
-            const fakeBundle = { tags: [['file', this.fileRootHash]] }
-            await _saveFileChunksToDB(fakeBundle, [event], this.appId)
+            const fakeManifest = { tags: [['path', '', this.fileRootHash]] }
+            await _saveFileChunksToDB(fakeManifest, [event], this.appId)
           }
           push(rest)
         })()
@@ -212,9 +212,8 @@ export default class AppFileDownloader {
           // Remove event to save memory
           const { event, ...rest } = data
           if (event) {
-            // console.log('Saving chunk to DB', { eventId: event.id, chunkIndex: event.tags.find(t => t[0] === 'c')?.[1] })
-            const fakeBundle = { tags: [['file', this.fileRootHash]] }
-            await _saveFileChunksToDB(fakeBundle, [event], this.appId)
+            const fakeManifest = { tags: [['path', '', this.fileRootHash]] }
+            await _saveFileChunksToDB(fakeManifest, [event], this.appId)
           }
           push(rest)
         })()

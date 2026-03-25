@@ -51,7 +51,7 @@ export async function initMessageListener (
 
   const appAddress = appIdToAddressObj(appId)
   const appFiles = await AppFileManager.create(appId, appAddress)
-  if (isSingleNapp) appFiles.updateBundleMetadata({ lastOpenedAsSingleNappAt: Date.now() })
+  if (isSingleNapp) appFiles.updateSiteManifestMetadata({ lastOpenedAsSingleNappAt: Date.now() })
 
   let currentTrustedAppPagePort = null
   let currentAppPagePort = null
@@ -238,7 +238,7 @@ export async function initMessageListener (
                 try {
                   await tryStream()
                   if (!hasSentLast && !hasErrored) {
-                    return appFiles.cacheFile(e.data.payload.pathname, cacheStatus.fileTag, progressCallback)
+                    return appFiles.cacheFile(e.data.payload.pathname, cacheStatus.pathTag, progressCallback)
                   }
                 } catch (err) {
                   return handleStreamError(err)

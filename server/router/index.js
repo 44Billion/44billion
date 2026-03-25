@@ -11,19 +11,11 @@ async function handleRequest (req, res) {
     return browserRouter.fetch(req, res)
   }
 
-  switch (req.subdomain[0]) {
-    case 'a':
-    case 'b':
-    case 'c': {
-      console.log('app router:', req.url)
-      await appRouter.fetch(req, res)
-      break
-    }
-    case 'v': {
-      if (req.subdomain !== 'vault') return
-      console.log('vault router:', req.url)
-      await vaultRouter.fetch(req, res)
-      break
-    }
+  if (/^\d+$/.test(req.subdomain)) {
+    console.log('app router:', req.url)
+    await appRouter.fetch(req, res)
+  } else if (req.subdomain === 'vault') {
+    console.log('vault router:', req.url)
+    await vaultRouter.fetch(req, res)
   }
 }

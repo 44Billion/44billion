@@ -45,7 +45,7 @@ export async function deleteStaleFileChunksFromDb (appId, allowedRootHashes, { s
 
 // Caution: when there's no rootHash arg, use this only when no user has the app installed anymore
 export async function deleteFileChunksFromDb (appId, rootHash) {
-  if (!appId) throw new Error('Missing bundle id')
+  if (!appId) throw new Error('Missing app id')
 
   const range = IDBKeyRange.bound([appId, rootHash ?? '\u0000', -Infinity], [appId, rootHash ?? '\uffff', Infinity])
   return run('delete', [range], 'fileChunks').then(v => v.result)
@@ -76,10 +76,10 @@ export async function * streamFileChunksFromDb (appId, rootHash, { fromPos, toPo
   }
 }
 
-export async function saveFileChunksToDB (bundle, fileChunks, appId) {
-  const bundleRootHashesObj = bundle.tags
-    .filter(t => t[0] === 'file' && !!t[1])
-    .map(t => t[1])
+export async function saveFileChunksToDB (siteManifest, fileChunks, appId) {
+  const manifestRootHashesObj = siteManifest.tags
+    .filter(t => t[0] === 'path' && !!t[2])
+    .map(t => t[2])
     .reduce((r, v) => ({ ...r, [v]: true }), {})
 
   let ret
@@ -95,16 +95,16 @@ export async function saveFileChunksToDB (bundle, fileChunks, appId) {
       // or appears twice+ on same file at different positions
       if (tag[0] === 'c') {
         const [fileRootHash, chunkPosition] = tag[1].split(':')
-        if (chunkPosition !== undefined && bundleRootHashesObj[fileRootHash]) {
+        if (chunkPosition !== undefined && manifestRootHashesObj[fileRootHash]) {
           formatedCTags.push([fileRootHash, parseInt(chunkPosition)])
         }
       }
     }
 
     appId ??= addressObjToAppId({
-      kind: bundle.kind,
-      pubkey: bundle.pubkey,
-      dTag: bundle.tags.find(t => t[0] === 'd')[1]
+      kind: siteManifest.kind,
+      pubkey: siteManifest.pubkey,
+      dTag: siteManifest.tags.find(t => t[0] === 'd')?.[1] ?? ''
     })
 
     for (const [fileRootHash, chunkPosition] of formatedCTags) {

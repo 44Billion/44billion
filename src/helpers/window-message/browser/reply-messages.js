@@ -1,13 +1,13 @@
 import { getEventsByStrategy } from '#helpers/nostr-queries.js'
-import { getBundleEvent } from '#services/app-file-manager/get-bundle-event.js'
+import getSiteManifestEvent from '#services/app-file-manager/get-site-manifest-event.js'
 import { appIdToAddressObj } from '#helpers/app.js'
 import nostrRelays from '#services/nostr-relays.js'
 
-export async function getAppBundleResponse (appId) {
+export async function getSiteManifestResponse (appId) {
   try {
     const appAddressObj = appIdToAddressObj(appId)
 
-    return { payload: (await getBundleEvent(appId, appAddressObj)) || null }
+    return { payload: (await getSiteManifestEvent(appId, appAddressObj)) || null }
   } catch (error) {
     return { error }
   }

@@ -1,10 +1,10 @@
 import { appIdToAddressObj, findRouteFileTag } from '#helpers/app.js'
-import getBundleEvent from './get-bundle-event.js'
+import getSiteManifestEvent from './get-site-manifest-event.js'
 import AppFileDownloader from '#services/app-file-downloader/index.js'
 import { getUserRelays } from '#helpers/nostr-queries.js'
 import { nappRelays } from '#services/nostr-relays.js'
 import { countFileChunksFromDb, deleteFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
-import { saveBundleToDb, deleteBundleFromDb } from '#services/idb/browser/queries/bundle.js'
+import { saveSiteManifestToDb, deleteSiteManifestFromDb } from '#services/idb/browser/queries/site-manifest.js'
 import mime from 'mime'
 import { setWebStorageItem } from '#hooks/use-web-storage.js'
 import { getIcon, getName, getDescription } from './get-metadata.js'
@@ -62,21 +62,21 @@ export default class AppFileManager {
     this.#instancePromisesByAppId[appId] = p.promise
 
     addressObj ??= appIdToAddressObj(appId)
-    let bundle, attempts
+    let siteManifest, attempts
     do {
-      bundle = await getBundleEvent(appId, addressObj)
-      if (!bundle) {
+      siteManifest = await getSiteManifestEvent(appId, addressObj)
+      if (!siteManifest) {
         attempts++
-        console.log('Retrying bundle fetching')
+        console.log('Retrying site manifest fetching')
         await new Promise(resolve => setTimeout(resolve, Math.pow(2, Math.min(10, attempts)) * 1000))
       }
-    } while (!bundle && attempts < 20)
+    } while (!siteManifest && attempts < 20)
 
-    if (!bundle) {
+    if (!siteManifest) {
       delete this.#instancePromisesByAppId[appId]
-      p.reject(new Error(`Couldn't find bundle after ${attempts} attempts`))
+      p.reject(new Error(`Couldn't find site manifest after ${attempts} attempts`))
     }
-    const ret = new this(createToken, { appId, addressObj, bundle, cacheMetadata, getCachedMetadata })
+    const ret = new this(createToken, { appId, addressObj, siteManifest, cacheMetadata, getCachedMetadata })
     p.resolve(ret)
     return p.promise
   }
@@ -96,7 +96,7 @@ export default class AppFileManager {
   async clearAppFiles () {
     await this.#abortCaching()
     await deleteFileChunksFromDb(this.appId)
-    await deleteBundleFromDb(this.appId)
+    await deleteSiteManifestFromDb(this.appId)
   }
 
   async #abortCaching () {
@@ -122,52 +122,46 @@ export default class AppFileManager {
     this.#isCacheFileInBackgroundRunning = {}
   }
 
-  updateBundleMetadata (metadata) {
+  updateSiteManifestMetadata (metadata) {
     if (!metadata) throw new Error('Missing metadata arg')
 
-    return saveBundleToDb(this.bundle, { ...this.bundle.meta, ...metadata })
+    return saveSiteManifestToDb(this.siteManifest, { ...this.siteManifest.meta, ...metadata })
   }
 
   #faviconMetadata
   getFaviconMetadata () {
     if (this.#faviconMetadata) return this.#faviconMetadata
     let mimeType
-    const tag = this.bundle.tags.find(t =>
-      t[0] === 'file' &&
-      /^favicon\.\w{3,}$/.test(t[2]) && (
-        (!!t[3] && t[3].startsWith('image/') && (mimeType = t[3])) ||
-        ((mimeType = mime.getType(t[2])) || '').startsWith('image/')
-      )
+    const tag = this.siteManifest.tags.find(t =>
+      t[0] === 'path' &&
+      /^favicon\.\w{3,}$/.test(t[1]) &&
+      ((mimeType = mime.getType(t[1])) || '').startsWith('image/')
     )
     if (!tag) return
 
     return (this.#faviconMetadata = {
-      rootHash: tag[1],
-      filename: tag[2],
+      rootHash: tag[2],
+      filename: tag[1],
       mimeType,
       contentType: getContentType(mimeType),
-      relayHints: [tag[4]].filter(Boolean),
       tag
     })
   }
 
-  getFileRootHash (pathname, fileTag) {
-    fileTag ??= findRouteFileTag(pathname, this.bundle.tags)
-    if (!fileTag) throw new Error(`No matching file tag found for path: ${pathname}`)
-    return fileTag[1]
+  getFileRootHash (pathname, pathTag) {
+    pathTag ??= findRouteFileTag(pathname, this.siteManifest.tags)
+    if (!pathTag) throw new Error(`No matching path tag found for path: ${pathname}`)
+    return pathTag[2]
   }
 
-  async getFileCacheStatus (pathname, fileTag, { withMeta = false } = {}) {
-    fileTag ??= findRouteFileTag(pathname, this.bundle.tags)
-    if (!fileTag) throw new Error(`No matching file tag found for path: ${pathname}`)
-    const fileRootHash = this.getFileRootHash(null, fileTag)
+  async getFileCacheStatus (pathname, pathTag, { withMeta = false } = {}) {
+    pathTag ??= findRouteFileTag(pathname, this.siteManifest.tags)
+    if (!pathTag) throw new Error(`No matching path tag found for path: ${pathname}`)
+    const fileRootHash = this.getFileRootHash(null, pathTag)
     const chunkStatus = await countFileChunksFromDb(this.appId, fileRootHash)
     if (!withMeta) return { isCached: chunkStatus.count === chunkStatus.total }
 
-    const mimeType =
-      !!fileTag[3] && fileTag[3].startsWith('image/')
-        ? fileTag[3]
-        : mime.getType(fileTag[2])
+    const mimeType = mime.getType(pathTag[1])
 
     return {
       ...chunkStatus,
@@ -176,7 +170,7 @@ export default class AppFileManager {
       contentType: getContentType(mimeType),
       isHtml: /^text\/html\b/.test(mimeType),
       fileRootHash,
-      fileTag
+      pathTag
     }
   }
 
@@ -191,10 +185,10 @@ export default class AppFileManager {
   }
   // runs caching process and calls progressCallback with { progress: 0-100 } or { error }
   // !navigator.connection?.metered is true if user is on cheap internet
-  async cacheFile (pathname, fileTag, progressCallback, { shouldCacheMissingFiles = !navigator.connection?.metered } = {}) {
-    fileTag ??= findRouteFileTag(pathname, this.bundle.tags)
-    if (!fileTag) throw new Error(`No matching file tag found for path: ${pathname}`)
-    const filename = fileTag[2]
+  async cacheFile (pathname, pathTag, progressCallback, { shouldCacheMissingFiles = !navigator.connection?.metered } = {}) {
+    pathTag ??= findRouteFileTag(pathname, this.siteManifest.tags)
+    if (!pathTag) throw new Error(`No matching path tag found for path: ${pathname}`)
+    const filename = pathTag[1]
     const config = this.#getCacheFilePubSubConfig(filename)
 
     if (progressCallback) {
@@ -211,7 +205,7 @@ export default class AppFileManager {
         this.cacheMissingAppFiles(filename) // does nothing if already running
       } else if (error) p.reject(error)
     })
-    this.#cacheFileInBackground(filename, fileTag)
+    this.#cacheFileInBackground(filename, pathTag)
     return p.promise
   }
 
@@ -222,15 +216,15 @@ export default class AppFileManager {
     this.#isCacheMissingAppFilesRunning = true
     try {
       const seenFilenames = { ...(lastCachedFilename && { [lastCachedFilename]: true }) }
-      const fileTags = this.bundle.tags
+      const pathTags = this.siteManifest.tags
         .filter(t => {
-          if (t[0] !== 'file' || !t[1] || !t[2] || seenFilenames[t[2]]) return false
-          return (seenFilenames[t[2]] = true)
+          if (t[0] !== 'path' || !t[1] || !t[2] || seenFilenames[t[1]]) return false
+          return (seenFilenames[t[1]] = true)
         })
 
-      for (const fileTag of fileTags) {
+      for (const pathTag of pathTags) {
         if (!this.#isCacheMissingAppFilesRunning) break // poor man's abort controller
-        await this.cacheFile(`/${fileTag[2]}`, fileTag, null, { shouldCacheMissingFiles: false })
+        await this.cacheFile(pathTag[1], pathTag, null, { shouldCacheMissingFiles: false })
       }
     } finally {
       this.#isCacheMissingAppFilesRunning = false
@@ -238,19 +232,20 @@ export default class AppFileManager {
   }
 
   #isCacheFileInBackgroundRunning = {} // { [filename]: true }
-  async #cacheFileInBackground (filename, fileTag) {
+  async #cacheFileInBackground (filename, pathTag) {
     if (this.#isCacheFileInBackgroundRunning[filename]) return
 
     this.#isCacheFileInBackgroundRunning[filename] = true
     const config = this.#getCacheFilePubSubConfig(filename)
 
     try {
-      const relays = await getUserRelays([this.bundle.pubkey])
-      const writeRelays = Array.from(relays[this.bundle.pubkey]?.write || [])
+      const relays = await getUserRelays([this.siteManifest.pubkey])
+      const writeRelays = Array.from(relays[this.siteManifest.pubkey]?.write || [])
       if (writeRelays.length === 0) writeRelays.push(...nappRelays)
 
-      const service = fileTag[4] || 'i'
-      const downloader = new AppFileDownloader(this.appId, fileTag[1], writeRelays, { service })
+      const serviceTag = this.siteManifest.tags.find(t => t[0] === 'service')
+      const service = serviceTag?.[1] || 'blossom'
+      const downloader = new AppFileDownloader(this.appId, pathTag[2], writeRelays, { service })
 
       for await (const report of downloader.run()) {
         if (!this.#isCacheFileInBackgroundRunning[filename]) break // poor man's abort controller

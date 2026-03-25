@@ -164,12 +164,12 @@ f('permissionDialogStack', function () {
       31924: 'calendars',
       31925: 'event RSVPs',
       34600: 'files',
-      37348: 'app stalls',
-      37349: '(next) app stalls',
-      37350: '(draft) app stalls',
-      37448: 'app bundles',
-      37449: '(next) app bundles',
-      37450: '(draft) app bundles'
+      37348: 'app listings',
+      37349: '(next) app listings',
+      37350: '(draft) app listings',
+      35128: 'site manifests',
+      35129: '(next) site manifests',
+      35130: '(draft) site manifests'
     },
     getEKindToText (kind, name) {
       if (name === 'readProfile') return 'your profile'

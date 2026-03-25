@@ -1,5 +1,5 @@
 import AppFileDownloader from '#services/app-file-downloader/index.js'
-import { getBundleFromDb, saveBundleToDb } from '#services/idb/browser/queries/bundle.js'
+import { getSiteManifestFromDb, saveSiteManifestToDb } from '#services/idb/browser/queries/site-manifest.js'
 import { deleteStaleFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
 import { addressObjToAppId } from '#helpers/app.js'
 import { getUserRelays } from '#helpers/nostr-queries.js'
@@ -26,8 +26,8 @@ export default class AppUpdater {
   // If appIds is empty, search for all apps
   static searchForUpdates (appIds, {
     _AppFileDownloader = AppFileDownloader,
-    _getBundleFromDb = getBundleFromDb,
-    _saveBundleToDb = saveBundleToDb,
+    _getSiteManifestFromDb = getSiteManifestFromDb,
+    _saveSiteManifestToDb = saveSiteManifestToDb,
     _setWebStorageItem = setWebStorageItem,
     _localStorage
   } = {}) {
@@ -46,22 +46,20 @@ export default class AppUpdater {
       try {
         if (ids.length === 0) return {}
 
-        const remoteResults = await _AppFileDownloader.getBundleEvents(ids)
+        const remoteResults = await _AppFileDownloader.getSiteManifestEvents(ids)
         const updates = {}
 
         for (const appId of ids) {
-          const localBundle = await _getBundleFromDb(appId)
+          const localManifest = await _getSiteManifestFromDb(appId)
           const remoteResult = remoteResults[appId]
 
           if (remoteResult) {
             const remoteEvent = remoteResult.event
             let hasUpdate = false
 
-            if (!localBundle) {
-              // "fetched bundle event is the only one"
+            if (!localManifest) {
               hasUpdate = true
-            } else if (remoteEvent.created_at > localBundle.created_at) {
-              // "or more recent then the one stored on indexeddb"
+            } else if (remoteEvent.created_at > localManifest.created_at) {
               hasUpdate = true
             }
 
@@ -69,14 +67,11 @@ export default class AppUpdater {
               updates[appId] = remoteResult
             }
 
-            if (localBundle) {
-              // Update the local bundle record to reflect update status
-              // We preserve existing metadata but update 'hasUpdate'
-              await _saveBundleToDb(localBundle, { ...localBundle.meta, hasUpdate })
+            if (localManifest) {
+              await _saveSiteManifestToDb(localManifest, { ...localManifest.meta, hasUpdate })
             }
-          } else if (localBundle) {
-            // No remote bundle found, so no update
-            await _saveBundleToDb(localBundle, { ...localBundle.meta, hasUpdate: false })
+          } else if (localManifest) {
+            await _saveSiteManifestToDb(localManifest, { ...localManifest.meta, hasUpdate: false })
           }
         }
 
@@ -84,8 +79,8 @@ export default class AppUpdater {
 
         let updateCount = 0
         for (const id of allAppIds) {
-          const bundle = await _getBundleFromDb(id)
-          if (bundle?.meta?.hasUpdate) updateCount++
+          const manifest = await _getSiteManifestFromDb(id)
+          if (manifest?.meta?.hasUpdate) updateCount++
         }
         _setWebStorageItem(_localStorage || (typeof localStorage !== 'undefined' ? localStorage : null), 'session_unread_appUpdateCount', updateCount)
 
@@ -113,7 +108,7 @@ export default class AppUpdater {
 
   static async scheduleCleanup (appIds = null, {
     _localStorage,
-    _getBundleFromDb = getBundleFromDb,
+    _getSiteManifestFromDb = getSiteManifestFromDb,
     _deleteStaleFileChunksFromDb = deleteStaleFileChunksFromDb,
     _navigator = (typeof navigator !== 'undefined' ? navigator : null),
     _setTimeout = setTimeout,
@@ -132,11 +127,11 @@ export default class AppUpdater {
         if (this.isAppOpen(appId, { _localStorage })) {
           openApps.push(appId)
         } else {
-          const bundle = await _getBundleFromDb(appId)
-          if (bundle) {
-            const fileRootHashes = bundle.tags
-              .filter(t => t[0] === 'file')
-              .map(t => t[1])
+          const manifest = await _getSiteManifestFromDb(appId)
+          if (manifest) {
+            const fileRootHashes = manifest.tags
+              .filter(t => t[0] === 'path')
+              .map(t => t[2])
             await _deleteStaleFileChunksFromDb(appId, fileRootHashes)
           }
         }
@@ -146,7 +141,7 @@ export default class AppUpdater {
         _setTimeout(() => {
           this.scheduleCleanup(openApps, {
             _localStorage,
-            _getBundleFromDb,
+            _getSiteManifestFromDb,
             _deleteStaleFileChunksFromDb,
             _navigator,
             _setTimeout
@@ -199,31 +194,31 @@ export default class AppUpdater {
     _setTimeout(() => this.scheduleUpdateCheck({ ...deps, ifAvailable: true }), 1 * 60 * 1000)
   }
 
-  static async * updateApp (nextBundleEvent, {
+  static async * updateApp (nextSiteManifestEvent, {
     _AppFileDownloader = AppFileDownloader,
     _deleteStaleFileChunksFromDb = deleteStaleFileChunksFromDb,
-    _saveBundleToDb = saveBundleToDb,
-    _getBundleFromDb = getBundleFromDb,
+    _saveSiteManifestToDb = saveSiteManifestToDb,
+    _getSiteManifestFromDb = getSiteManifestFromDb,
     _addressObjToAppId = addressObjToAppId,
     _getUserRelays = getUserRelays,
     _localStorage,
     writeRelays
   } = {}) {
-    const dTag = nextBundleEvent.tags.find(t => t[0] === 'd')?.[1]
+    const dTag = nextSiteManifestEvent.tags.find(t => t[0] === 'd')?.[1] ?? ''
     const appId = _addressObjToAppId({
-      kind: nextBundleEvent.kind,
-      pubkey: nextBundleEvent.pubkey,
+      kind: nextSiteManifestEvent.kind,
+      pubkey: nextSiteManifestEvent.pubkey,
       dTag
     })
 
     if (!writeRelays) {
-      const relays = await _getUserRelays([nextBundleEvent.pubkey])
-      writeRelays = Array.from(relays[nextBundleEvent.pubkey].write)
+      const relays = await _getUserRelays([nextSiteManifestEvent.pubkey])
+      writeRelays = Array.from(relays[nextSiteManifestEvent.pubkey].write)
     }
 
-    const files = nextBundleEvent.tags
-      .filter(t => t[0] === 'file')
-      .map(t => ({ rootHash: t[1], filename: t[2] }))
+    const files = nextSiteManifestEvent.tags
+      .filter(t => t[0] === 'path')
+      .map(t => ({ rootHash: t[2], filename: t[1] }))
 
     const totalFiles = files.length
 
@@ -257,29 +252,29 @@ export default class AppUpdater {
     if (this.isAppOpen(appId, { _localStorage })) {
       await this.scheduleCleanup([appId], {
         _localStorage,
-        _getBundleFromDb,
+        _getSiteManifestFromDb,
         _deleteStaleFileChunksFromDb
       })
     } else {
       await _deleteStaleFileChunksFromDb(appId, fileRootHashes)
     }
 
-    const localBundle = await _getBundleFromDb(appId)
-    const lastOpenedAsSingleNappAt = localBundle?.meta?.lastOpenedAsSingleNappAt || 0
+    const localManifest = await _getSiteManifestFromDb(appId)
+    const lastOpenedAsSingleNappAt = localManifest?.meta?.lastOpenedAsSingleNappAt || 0
 
-    await _saveBundleToDb(nextBundleEvent, { hasUpdate: false, lastOpenedAsSingleNappAt })
+    await _saveSiteManifestToDb(nextSiteManifestEvent, { hasUpdate: false, lastOpenedAsSingleNappAt })
   }
 
-  static async * updateApps (nextBundleEvents, {
+  static async * updateApps (nextSiteManifestEvents, {
     _updateApp = this.updateApp,
     _addressObjToAppId = addressObjToAppId,
     ...deps
   } = {}) {
-    const totalApps = nextBundleEvents.length
+    const totalApps = nextSiteManifestEvents.length
 
     for (let i = 0; i < totalApps; i++) {
-      const event = nextBundleEvents[i]
-      const dTag = event.tags.find(t => t[0] === 'd')?.[1]
+      const event = nextSiteManifestEvents[i]
+      const dTag = event.tags.find(t => t[0] === 'd')?.[1] ?? ''
       const appId = _addressObjToAppId({
         kind: event.kind,
         pubkey: event.pubkey,

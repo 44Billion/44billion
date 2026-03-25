@@ -18,7 +18,6 @@ import useSystemRouter from './use-system-router.js'
 import '#shared/route.js'
 import { initMessageListener } from '#helpers/window-message/browser/index.js'
 import { base62ToBase36 } from '#helpers/base36.js'
-import { appIdToAppSubdomain } from '#helpers/app.js'
 import { useVaultModalStore, useRequestVaultMessage } from '#zones/vault-modal/index.js'
 import { base62ToBase16 } from '#helpers/base62.js'
 import '#shared/napp-assets-caching-progress-bar.js'
@@ -233,7 +232,12 @@ f('appWindow', function () {
     [`session_workspaceByKey_${this.props.wsKey}_userPk$`]: userPk$
   } = storage
   const userPkB36$ = useComputed(() => (userPk$() || '') && base62ToBase36(userPk$(), 50))
-  const appSubdomain$ = useComputed(() => appIdToAppSubdomain(appId$(), userPkB36$()))
+  const appSubdomain$ = useComputed(() => {
+    const userPk = userPk$()
+    const appId = appId$()
+    if (!userPk || !appId) return null
+    return storage[`session_subdomainByUserAndApp_${userPk}_${appId}$`]()
+  })
   const isClosed$ = useComputed(() => appVisibility$() === 'closed')
   const trustedAppIframeRef$ = useSignal(null)
   const trustedAppIframeSrc$ = useSignal('about:blank')
@@ -273,6 +277,13 @@ f('appWindow', function () {
       // runs before rendering on subsequent calls ({ after: 'rendering' }
       // useTask's config is just for the first call)
       if (!iframeRef) return
+
+      // Allocate numeric subdomain if needed
+      if (appSubdomain$() == null) {
+        const nextId = storage.session_subdomainNextId$() ?? 0
+        storage.session_subdomainNextId$(nextId + 1)
+        storage[`session_subdomainByUserAndApp_${userPk$()}_${appId$()}$`](String(nextId))
+      }
 
       const initialRoute = initialRoute$() || ''
       if (initialRoute) initialRoute$('') // reset
@@ -1068,7 +1079,7 @@ f('appLaunchersMenu', function () {
       storage[`session_appById_${appId}_relayHints$`](undefined)
     },
     // open iframe at /~~napp#clear to let it clear its idb/localStorage
-    // and listen for postMessage to close it and remove bundle and file chunks
+    // and listen for postMessage to close it and remove site manifest and file chunks
     async maybeClearAppStorage () {
       const { id: appId, workspaceKey } = this.app$()
       const userPk = storage[`session_workspaceByKey_${workspaceKey}_userPk$`]()
@@ -1089,9 +1100,11 @@ f('appLaunchersMenu', function () {
       }
 
       if (shouldClearAppData) {
-        const userPkB36 = base62ToBase36(userPk, 50)
-        const appSubdomain = appIdToAppSubdomain(appId, userPkB36)
-        await askAppToClearData(appSubdomain)
+        const appSubdomain = storage[`session_subdomainByUserAndApp_${userPk}_${appId}$`]()
+        if (appSubdomain != null) {
+          await askAppToClearData(appSubdomain)
+          storage[`session_subdomainByUserAndApp_${userPk}_${appId}$`](undefined)
+        }
       }
       if (shouldClearAppFiles) {
         const appFiles = await AppFileManager.create(appId)

@@ -1,7 +1,7 @@
 import { f, useClosestStore, useSignal, useTask, useComputed } from '#f'
 import useWebStorage from '#hooks/use-web-storage.js'
 import { appDecode } from '#helpers/nip19.js'
-import { addressObjToAppId, appIdToAppSubdomain } from '#helpers/app.js'
+import { addressObjToAppId } from '#helpers/app.js'
 import { base62ToBase36 } from '#helpers/base36.js'
 import { initMessageListener } from '#helpers/window-message/browser/index.js'
 import { useVaultModalStore, useRequestVaultMessage } from '#zones/vault-modal/index.js'
@@ -56,7 +56,11 @@ f('singleNappLauncher', function () {
     [`session_workspaceByKey_${wsKey}_userPk$`]: userPk$
   } = storage
   const userPkB36$ = useComputed(() => base62ToBase36(userPk$(), 50))
-  const appSubdomain$ = useComputed(() => appIdToAppSubdomain(appId, userPkB36$()))
+  const appSubdomain$ = useComputed(() => {
+    const userPk = userPk$()
+    if (!userPk) return null
+    return storage[`session_subdomainByUserAndApp_${userPk}_${appId}$`]()
+  })
   const trustedAppIframeRef$ = useSignal()
   const trustedAppIframeSrc$ = useSignal('about:blank')
   const appIframeRef$ = useSignal()
@@ -74,6 +78,13 @@ f('singleNappLauncher', function () {
 
   useTask(
     async ({ cleanup }) => {
+      // Allocate numeric subdomain if needed
+      if (appSubdomain$() == null) {
+        const nextId = storage.session_subdomainNextId$() ?? 0
+        storage.session_subdomainNextId$(nextId + 1)
+        storage[`session_subdomainByUserAndApp_${userPk$()}_${appId}$`](String(nextId))
+      }
+
       const ac = new AbortController()
       cleanup(() => ac.abort())
       await initMessageListener(
