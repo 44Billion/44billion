@@ -26,7 +26,7 @@ import { base16ToBase62, base62ToBase16 } from '#helpers/base62.js'
 
 const coreAppIds = [
   '+32Wp7Qdz5XIbjlzHht7GdEP8IDxk6CC90ee8lRxYjx0stjsVD8yzTguF', // jumble fork w/ window.nostr.peekPublicKey() support
-  '+cA99KnC0UCyqHT5oI8fIkoza0jfB1lrvaWKmuh6h2EhTz2nw4R2a5qVNM' // nappstore
+  '+3swFhu23QNl8er5yOtc8bf9ueHCdwF8CzoDUiSSwwKIWoS8Ki5TwMyeA3Js1' // nappstore
 ].map(appDecode).map(addressObjToAppId) // ['44b', 'minimoon', 'nappstore']
 
 export default function useInitOrResetScreen () {
