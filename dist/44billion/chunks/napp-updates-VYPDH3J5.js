@@ -1,4 +1,4 @@
-import"./chunk-LV6RTFVQ.js";import{a as M}from"./chunk-CQB4VKJ4.js";import{f as T,l as O}from"./chunk-FNRD6YAI.js";import{e as j}from"./chunk-NID4PPA7.js";import"./chunk-NYBCEV4T.js";import{b as I,e as r,f as w}from"./chunk-TBF35Z4Q.js";import{g,j as d,n as k,o as m,v as E}from"./chunk-EOHNSKYH.js";g("iconReload",function(){let p=m({path$:["M19.933 13.041a8 8 0 1 1 -9.925 -8.788c3.899 -1 7.935 1.007 9.425 4.747","M20 4v5h-5"],viewBox$:"2 2 20 20"});return this.h`<a-svg
+import"./chunk-LV6RTFVQ.js";import{a as _}from"./chunk-HLZR5TBW.js";import{f as T,l as O}from"./chunk-OZWG23JC.js";import{e as j}from"./chunk-4YEM5IRY.js";import"./chunk-NYBCEV4T.js";import{b as I,e as s,f as w}from"./chunk-TBF35Z4Q.js";import{g,j as d,n as k,o as m,v as E}from"./chunk-EOHNSKYH.js";g("iconReload",function(){let p=m({path$:["M19.933 13.041a8 8 0 1 1 -9.925 -8.788c3.899 -1 7.935 1.007 9.425 4.747","M20 4v5h-5"],viewBox$:"2 2 20 20"});return this.h`<a-svg
     props=${{...p,...this.props}}
   />`});g("icon-arrow-narrow-right",function(){let p=m({path$:["M5 12l14 0","M15 16l4 -4","M15 8l4 4"],viewBox$:"2 2 20 20"});return this.h`<a-svg
     props=${{...p,...this.props}}
@@ -6,7 +6,7 @@ import"./chunk-LV6RTFVQ.js";import{a as M}from"./chunk-CQB4VKJ4.js";import{f as 
     props=${{...p,...this.props}}
   />`});g("icon-hourglass-high",function(){let p=m({path$:["M6 20v-2a6 6 0 1 1 12 0v2a1 1 0 0 1 -1 1h-10a1 1 0 0 1 -1 -1z","M6 4v2a6 6 0 1 0 12 0v-2a1 1 0 0 0 -1 -1h-10a1 1 0 0 0 -1 1z"],viewBox$:"2 2 20 20"});return this.h`<a-svg
     props=${{...p,...this.props}}
-  />`});g("napp-updates",function(){let p=I(localStorage),{session_unread_appUpdateCount$:S}=p;E(()=>{S(void 0)});let v=k(()=>{let t=p.session_workspaceKeys$()||[],s=new Set;return t.forEach(a=>{let e=p[`session_workspaceByKey_${a}_pinnedAppIds$`]()||[],o=p[`session_workspaceByKey_${a}_unpinnedAppIds$`]()||[];e.forEach(n=>s.add(n)),o.forEach(n=>s.add(n))}),Array.from(s)}),z=d({}),u=d({}),c=d({}),f=d(!1),h=d(0),x=k(()=>Object.keys(u()).length),y=d(0),A=k(()=>y()<v().length),b=d(!1),i=k(()=>{let t=u(),s=c();return Object.keys(t).filter(a=>{let e=s[a]?.status;return e!=="updating"&&e!=="pending"&&e!=="done"})}),$=async()=>{if(b())return;b(!0);let t=v();try{let s=await M.searchForUpdates(t);u(a=>{let e={...a},o=c();return Object.entries(s).forEach(([n,P])=>{let _=o[n]?.status;_==="updating"||_==="pending"||(e[n]=P,o[n]?.status==="error"&&c(B=>{let N={...B};return delete N[n],N}))}),e})}catch(s){console.error("Error checking for updates",s)}finally{y(t.length),b(!1)}};E(async()=>{await $();let t=v(),s=await Promise.all(t.map(e=>O.create(e).catch(()=>null))),a=new Set;if(s.forEach(e=>{e?.bundle?.pubkey&&a.add(e.bundle.pubkey)}),Object.values(u()).forEach(e=>{e.event?.pubkey&&a.add(e.event.pubkey)}),a.size>0)try{let e=await T({kinds:[0],authors:Array.from(a)},{code:"WRITE_RELAYS"}),o={};e.forEach(n=>{try{o[n.pubkey]=JSON.parse(n.content)}catch{}}),z(o)}catch(e){console.error("Bulk fetch failed",e)}});let l=async()=>{if(f())return;let t=i();if(t.length===0)return;f(!0);let s=u(),a=t.map(e=>s[e].event);c(e=>{let o={...e};return t.forEach(n=>{o[n]={status:"pending",progress:0,error:null}}),o});try{for await(let e of M.updateApps(a)){let{appId:o,appProgress:n,error:P,overallProgress:_}=e;h(_),c(B=>({...B,[o]:{status:P?"error":n===100?"done":"updating",progress:n,error:P}}))}u(e=>{let o={...e};return Object.keys(c()).forEach(n=>{c()[n].status==="done"&&delete o[n]}),o})}catch(e){console.error("Update all failed",e)}finally{f(!1),h(0)}},U=async t=>{let s=u()[t];if(!s)return;let a=c()[t]?.status;if(!(a==="updating"||a==="pending")){c(e=>({...e,[t]:{status:"updating",progress:0,error:null}}));try{for await(let e of M.updateApp(s.event))c(o=>({...o,[t]:{status:e.error?"error":"updating",progress:e.appProgress,error:e.error}}));c(e=>({...e,[t]:{status:"done",progress:100,error:null}})),u(e=>{let o={...e};return delete o[t],o})}catch(e){c(o=>({...o,[t]:{status:"error",error:e,progress:0}}))}}};return this.h`
+  />`});g("napp-updates",function(){let p=I(localStorage),{session_unread_appUpdateCount$:S}=p;E(()=>{S(void 0)});let v=k(()=>{let t=p.session_workspaceKeys$()||[],r=new Set;return t.forEach(a=>{let e=p[`session_workspaceByKey_${a}_pinnedAppIds$`]()||[],o=p[`session_workspaceByKey_${a}_unpinnedAppIds$`]()||[];e.forEach(n=>r.add(n)),o.forEach(n=>r.add(n))}),Array.from(r)}),z=d({}),u=d({}),c=d({}),f=d(!1),h=d(0),x=k(()=>Object.keys(u()).length),y=d(0),A=k(()=>y()<v().length),b=d(!1),i=k(()=>{let t=u(),r=c();return Object.keys(t).filter(a=>{let e=r[a]?.status;return e!=="updating"&&e!=="pending"&&e!=="done"})}),$=async()=>{if(b())return;b(!0);let t=v();try{let r=await _.searchForUpdates(t);u(a=>{let e={...a},o=c();return Object.entries(r).forEach(([n,M])=>{let P=o[n]?.status;P==="updating"||P==="pending"||(e[n]=M,o[n]?.status==="error"&&c(B=>{let N={...B};return delete N[n],N}))}),e})}catch(r){console.error("Error checking for updates",r)}finally{y(t.length),b(!1)}};E(async()=>{await $();let t=v(),r=await Promise.all(t.map(e=>O.create(e).catch(()=>null))),a=new Set;if(r.forEach(e=>{e?.siteManifest?.pubkey&&a.add(e.bundle.pubkey)}),Object.values(u()).forEach(e=>{e.event?.pubkey&&a.add(e.event.pubkey)}),a.size>0)try{let e=await T({kinds:[0],authors:Array.from(a)},{code:"WRITE_RELAYS"}),o={};e.forEach(n=>{try{o[n.pubkey]=JSON.parse(n.content)}catch{}}),z(o)}catch(e){console.error("Bulk fetch failed",e)}});let l=async()=>{if(f())return;let t=i();if(t.length===0)return;f(!0);let r=u(),a=t.map(e=>r[e].event);c(e=>{let o={...e};return t.forEach(n=>{o[n]={status:"pending",progress:0,error:null}}),o});try{for await(let e of _.updateApps(a)){let{appId:o,appProgress:n,error:M,overallProgress:P}=e;h(P),c(B=>({...B,[o]:{status:M?"error":n===100?"done":"updating",progress:n,error:M}}))}u(e=>{let o={...e};return Object.keys(c()).forEach(n=>{c()[n].status==="done"&&delete o[n]}),o})}catch(e){console.error("Update all failed",e)}finally{f(!1),h(0)}},U=async t=>{let r=u()[t];if(!r)return;let a=c()[t]?.status;if(!(a==="updating"||a==="pending")){c(e=>({...e,[t]:{status:"updating",progress:0,error:null}}));try{for await(let e of _.updateApp(r.event))c(o=>({...o,[t]:{status:e.error?"error":"updating",progress:e.appProgress,error:e.error}}));c(e=>({...e,[t]:{status:"done",progress:100,error:null}})),u(e=>{let o={...e};return delete o[t],o})}catch(e){c(o=>({...o,[t]:{status:"error",error:e,progress:0}}))}}};return this.h`
     <style>${`
       napp-updates {
         flex-grow: 1; /* use max width available */
@@ -17,8 +17,8 @@ import"./chunk-LV6RTFVQ.js";import{a as M}from"./chunk-CQB4VKJ4.js";import{f as 
       }
 
       .header-1kuhvcxd8b {
-        background-color: ${r.colors.bg};
-        color: ${r.colors.fg};
+        background-color: ${s.colors.bg};
+        color: ${s.colors.fg};
         height: 55px;
         display: flex;
         align-items: center;
@@ -67,14 +67,14 @@ import"./chunk-LV6RTFVQ.js";import{a as M}from"./chunk-CQB4VKJ4.js";import{f as 
         cursor: pointer;
         transition: background-color 0.2s, opacity 0.2s;
         border: none;
-        background-color: ${r.colors.bg2};
-        color: ${r.colors.fg};
+        background-color: ${s.colors.bg2};
+        color: ${s.colors.fg};
         display: flex;
         align-items: center;
         justify-content: center;
 
         &:hover {
-          background-color: ${r.colors.bg3};
+          background-color: ${s.colors.bg3};
         }
 
         &:disabled {
@@ -84,12 +84,12 @@ import"./chunk-LV6RTFVQ.js";import{a as M}from"./chunk-CQB4VKJ4.js";import{f as 
       }
 
       .update-all-btn {
-        background-color: ${r.colors.bgAccentPrimary};
-        color: ${r.colors.fgAccent};
+        background-color: ${s.colors.bgAccentPrimary};
+        color: ${s.colors.fgAccent};
 
         &:hover {
           filter: brightness(1.1);
-          background-color: ${r.colors.bgAccentPrimary};
+          background-color: ${s.colors.bgAccentPrimary};
         }
       }
 
@@ -107,7 +107,7 @@ import"./chunk-LV6RTFVQ.js";import{a as M}from"./chunk-CQB4VKJ4.js";import{f as 
           align-items: center;
           padding: 10px 20px;
           font-weight: 500;
-          color: ${r.colors.fg};
+          color: ${s.colors.fg};
         }
       }
 
@@ -115,7 +115,7 @@ import"./chunk-LV6RTFVQ.js";import{a as M}from"./chunk-CQB4VKJ4.js";import{f as 
         display: flex;
         padding: 10px 20px;
         font-style: italic;
-        color: ${r.colors.fg2};
+        color: ${s.colors.fg2};
       }
 
       .search-text {
@@ -145,7 +145,7 @@ import"./chunk-LV6RTFVQ.js";import{a as M}from"./chunk-CQB4VKJ4.js";import{f as 
           <span class=${`search-icon ${b()?"spinning":""}`}><icon-reload props=${{size:"20px"}} /></span>
         </button>
         ${x()>0&&!f()?this.h`<button class="action-btn update-all-btn desktop-update-all" onclick=${l} disabled=${i().length===0}>Update All</button>`:""}
-        ${f()?this.h`<div class="desktop-update-all" style=${`font-size:14rem;color:${r.colors.fg2}`}>Updating... ${h()}%</div>`:""}
+        ${f()?this.h`<div class="desktop-update-all" style=${`font-size:14rem;color:${s.colors.fg2}`}>Updating... ${h()}%</div>`:""}
       </div>
     </div>
     ${x()>0?this.h`
@@ -162,12 +162,12 @@ import"./chunk-LV6RTFVQ.js";import{a as M}from"./chunk-CQB4VKJ4.js";import{f as 
       ${v().map(t=>this.h({key:t})`
         <f-to-signals
           key=${t}
-          props=${{from:["updateInfo","updateState"],updateInfo:u()[t],updateState:c()[t],appId:t,publisherProfiles$:z,onUpdate:()=>U(t),render(s){return this.h`<napp-update-card props=${s} />`}}}
+          props=${{from:["updateInfo","updateState"],updateInfo:u()[t],updateState:c()[t],appId:t,publisherProfiles$:z,onUpdate:()=>U(t),render(r){return this.h`<napp-update-card props=${r} />`}}}
         />
       `)}
-      ${v().length===0?this.h`<div style=${`padding: 20px; text-align: center; color: ${r.colors.fg2}`}>No apps found</div>`:""}
+      ${v().length===0?this.h`<div style=${`padding: 20px; text-align: center; color: ${s.colors.fg2}`}>No apps found</div>`:""}
     </div>
-  `});g("napp-update-card",function(){let p=I(localStorage),{appId:S,publisherProfiles$:v,updateInfo$:z,updateState$:u,onUpdate:c}=this.props,f=k(()=>p[`session_appById_${S}_name$`]()),h=d("..."),x=d(null),y=d(null),A=d(null),b=k(()=>{let l=A();return l?v()[l]?.picture:null});E(async()=>{try{let l=await O.create(S);f()||l.getName();let U=l.bundle;if(U){let s=new Date(U.created_at*1e3).toISOString().split("T")[0],a=U.id.slice(0,8);h(`${s}-${a}`)}let t=z();if(t?.event){let s=t.event,a=new Date(s.created_at*1e3).toISOString().split("T")[0],e=s.id.slice(0,8);x(`${a}-${e}`),s.pubkey&&(y(j(s.pubkey)),A(s.pubkey))}else l.bundle?.pubkey&&(y(j(l.bundle.pubkey)),A(l.bundle.pubkey))}catch(l){console.error("Error fetching app info",l),h("Unknown")}});let i=u(),$=d(!1);return E(()=>{u()?.status==="error"?$()||($(!0),setTimeout(()=>{$(!1)},7e3)):$(!1)}),this.h`
+  `});g("napp-update-card",function(){let p=I(localStorage),{appId:S,publisherProfiles$:v,updateInfo$:z,updateState$:u,onUpdate:c}=this.props,f=k(()=>p[`session_appById_${S}_name$`]()),h=d("..."),x=d(null),y=d(null),A=d(null),b=k(()=>{let l=A();return l?v()[l]?.picture:null});E(async()=>{try{let l=await O.create(S);f()||l.getName();let U=l.siteManifest;if(U){let r=new Date(U.created_at*1e3).toISOString().split("T")[0],a=U.id.slice(0,8);h(`${r}-${a}`)}let t=z();if(t?.event){let r=t.event,a=new Date(r.created_at*1e3).toISOString().split("T")[0],e=r.id.slice(0,8);x(`${a}-${e}`),r.pubkey&&(y(j(r.pubkey)),A(r.pubkey))}else l.siteManifest?.pubkey&&(y(j(l.bundle.pubkey)),A(l.bundle.pubkey))}catch(l){console.error("Error fetching app info",l),h("Unknown")}});let i=u(),$=d(!1);return E(()=>{u()?.status==="error"?$()||($(!0),setTimeout(()=>{$(!1)},7e3)):$(!1)}),this.h`
     <style>${`
       .card-8d6gfgwh3wl {
         @media ${w.breakpoints.mobile} {
@@ -176,7 +176,7 @@ import"./chunk-LV6RTFVQ.js";import{a as M}from"./chunk-CQB4VKJ4.js";import{f as 
         margin: 0 20px;
 
         padding: 16px;
-        background-color: ${r.colors.bg2};
+        background-color: ${s.colors.bg2};
         border-radius: 16px;
         display: flex;
         align-items: center;
@@ -188,7 +188,7 @@ import"./chunk-LV6RTFVQ.js";import{a as M}from"./chunk-CQB4VKJ4.js";import{f as 
         height: 48px;
         border-radius: 10px;
         overflow: hidden;
-        background-color: ${r.colors.bgAvatar};
+        background-color: ${s.colors.bgAvatar};
         flex-shrink: 0;
       }
 
@@ -212,14 +212,14 @@ import"./chunk-LV6RTFVQ.js";import{a as M}from"./chunk-CQB4VKJ4.js";import{f as 
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-        color: ${r.colors.fg};
+        color: ${s.colors.fg};
       }
 
       .name-placeholder {
         height: 16rem;
         width: 150px;
         border-radius: 4px;
-        background-color: ${r.colors.bg3};
+        background-color: ${s.colors.bg3};
         margin-bottom: 4px;
       }
 
@@ -232,7 +232,7 @@ import"./chunk-LV6RTFVQ.js";import{a as M}from"./chunk-CQB4VKJ4.js";import{f as 
 
       .version-info {
         font-size: 13rem;
-        color: ${r.colors.fg2};
+        color: ${s.colors.fg2};
         display: flex;
         flex-direction: column;
         gap: 2px;
@@ -249,13 +249,13 @@ import"./chunk-LV6RTFVQ.js";import{a as M}from"./chunk-CQB4VKJ4.js";import{f as 
         width: 16px;
         height: 16px;
         border-radius: 50%;
-        background-color: ${r.colors.bgAvatar};
+        background-color: ${s.colors.bgAvatar};
         display: inline-block;
         overflow: hidden;
       }
 
       .next-ver {
-        color: ${r.colors.fg2AccentPrimary};
+        color: ${s.colors.fg2AccentPrimary};
         font-weight: 500;
         display: flex;
         align-items: center;
@@ -269,8 +269,8 @@ import"./chunk-LV6RTFVQ.js";import{a as M}from"./chunk-CQB4VKJ4.js";import{f as 
         font-weight: 600;
         cursor: pointer;
         border: none;
-        background-color: ${r.colors.bgAccentPrimary};
-        color: ${r.colors.fgAccent};
+        background-color: ${s.colors.bgAccentPrimary};
+        color: ${s.colors.fgAccent};
         transition: filter 0.2s;
         white-space: nowrap;
 
@@ -300,20 +300,20 @@ import"./chunk-LV6RTFVQ.js";import{a as M}from"./chunk-CQB4VKJ4.js";import{f as 
       }
 
       .progress-circle-bg {
-        stroke: ${r.colors.mg2};
+        stroke: ${s.colors.mg2};
       }
 
       .progress-circle-fg {
-        stroke: ${r.colors.bgAccentPrimary};
+        stroke: ${s.colors.bgAccentPrimary};
         transition: stroke-dashoffset 0.3s ease;
       }
 
       .progress-circle-fg.done {
-        stroke: ${r.colors.fgSuccess};
+        stroke: ${s.colors.fgSuccess};
       }
 
       .progress-circle-fg.error {
-        stroke: ${r.colors.fgError};
+        stroke: ${s.colors.fgError};
         animation: error-progress 7s linear forwards;
       }
 
@@ -329,7 +329,7 @@ import"./chunk-LV6RTFVQ.js";import{a as M}from"./chunk-CQB4VKJ4.js";import{f as 
         justify-content: center;
         font-size: 12rem;
         font-weight: 600;
-        color: ${r.colors.fg};
+        color: ${s.colors.fg};
       }
     `}</style>
     <div class='card-8d6gfgwh3wl'>
@@ -359,7 +359,7 @@ import"./chunk-LV6RTFVQ.js";import{a as M}from"./chunk-CQB4VKJ4.js";import{f as 
               />
             </svg>
             <div class="progress-content">
-              ${i.status==="done"?this.h`<icon-check props=${{size:"20px",style:"color:"+r.colors.fgSuccess}} />`:i.status==="error"?this.h`<icon-exclamation-mark props=${{size:"20px",style:"color:"+r.colors.fgError}} />`:i.status==="pending"?this.h`<icon-hourglass-high props=${{size:"20px",style:"color:"+r.colors.bgAccentSecondary}} />`:Math.round(i.progress)}
+              ${i.status==="done"?this.h`<icon-check props=${{size:"20px",style:"color:"+s.colors.fgSuccess}} />`:i.status==="error"?this.h`<icon-exclamation-mark props=${{size:"20px",style:"color:"+s.colors.fgError}} />`:i.status==="pending"?this.h`<icon-hourglass-high props=${{size:"20px",style:"color:"+s.colors.bgAccentSecondary}} />`:Math.round(i.progress)}
             </div>
           </div>
         `:x()?this.h`<button class="update-btn" onclick=${c}>Update</button>`:""}
