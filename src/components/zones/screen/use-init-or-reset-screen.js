@@ -31,6 +31,7 @@ const coreAppIds = [
 
 export default function useInitOrResetScreen () {
   const storage = useWebStorage(localStorage)
+  const tabStorage = useWebStorage(sessionStorage)
   useGlobalSignal('hardcoded_newAppIdsObj', {}) // { [+...]: true }) <- minimoon
 
   // init
@@ -39,7 +40,7 @@ export default function useInitOrResetScreen () {
 
     const defaultUserPk = getB62PublicKeyStub()
     storage.session_defaultUserPk$(defaultUserPk)
-    addUser({ userPk: defaultUserPk, storage, isFirstTimeUser: true })
+    addUser({ userPk: defaultUserPk, storage, tabStorage, isFirstTimeUser: true })
   })
   // first run only
   useTask(() => {
@@ -67,7 +68,7 @@ export default function useInitOrResetScreen () {
 
     const defaultUserPk = getB62PublicKeyStub()
     storage.session_defaultUserPk$(defaultUserPk)
-    addUser({ userPk: defaultUserPk, storage, isFirstTimeUser: true }) // false })
+    addUser({ userPk: defaultUserPk, storage, tabStorage, isFirstTimeUser: true }) // false })
   })
 
   // do we need a signal that watches for online status?
@@ -83,7 +84,7 @@ export default function useInitOrResetScreen () {
 
 // what happens when app crashed before this finishes? we should add a task that is removed
 // from stack only when finished and re-run if app restarts and it's still on the stack
-function addUser ({ userPk, storage, isFirstTimeUser: _ }) {
+function addUser ({ userPk, storage, tabStorage, isFirstTimeUser: _ }) {
   const defaultPinnedApps = coreAppIds.map((id, _i) => ({
     id,
     // many apps with same id within same ws may be open at once
@@ -102,7 +103,7 @@ function addUser ({ userPk, storage, isFirstTimeUser: _ }) {
 
   // order of iframes on DOM must be stable or else they reload their content
   // dom order is now calculated at runtime, we only store css order (visual order)
-  storage[`session_workspaceByKey_${wsKey}_openAppKeys$`](openAppKeys) // order of windows
+  tabStorage[`session_workspaceByKey_${wsKey}_openAppKeys$`](openAppKeys) // order of windows
   storage[`session_workspaceByKey_${wsKey}_userPk$`](userPk) // base62
   defaultPinnedApps.forEach(app => {
     storage[`session_workspaceByKey_${wsKey}_appById_${app.id}_appKeys$`]([app.key])
@@ -110,7 +111,7 @@ function addUser ({ userPk, storage, isFirstTimeUser: _ }) {
     // also, the +<appname> on path upon app selection if from us or
     // +<appname>.<host>.<example>? hmm better naddr1
     storage[`session_appByKey_${app.key}_id$`](app.id)
-    storage[`session_appByKey_${app.key}_visibility$`](app.visibility) // open|minimized|closed
+    tabStorage[`session_appByKey_${app.key}_visibility$`](app.visibility) // open|minimized|closed
     storage[`session_appByKey_${app.key}_route$`]('')
   })
 
@@ -151,7 +152,7 @@ function addUser ({ userPk, storage, isFirstTimeUser: _ }) {
 //     }
 //   }
 // ]
-export async function setAccountsState (nextAccountState, storage) {
+export async function setAccountsState (nextAccountState, storage, tabStorage) {
   const currentWorkspaceKeys = storage.session_workspaceKeys$() || []
   const currentOpenWorkspaceKeys = storage.session_openWorkspaceKeys$() || []
   const defaultUserPk = storage.session_defaultUserPk$()
@@ -185,19 +186,19 @@ export async function setAccountsState (nextAccountState, storage) {
     const newUserPk = nextUserPks[0]
 
     // Close all open apps and schedule their re-opening
-    const openAppKeys = storage[`session_workspaceByKey_${defaultWorkspaceKey}_openAppKeys$`]() || []
+    const openAppKeys = tabStorage[`session_workspaceByKey_${defaultWorkspaceKey}_openAppKeys$`]() || []
 
     const appsToOpen = []
     // Close all currently open apps
     openAppKeys.forEach(appKey => {
-      storage[`session_appByKey_${appKey}_visibility$`](v => {
+      tabStorage[`session_appByKey_${appKey}_visibility$`](v => {
         if (v === 'open') appsToOpen.push(appKey) // ignore minimized apps
         return 'closed'
       })
     })
 
     // Clear open apps list
-    storage[`session_workspaceByKey_${defaultWorkspaceKey}_openAppKeys$`]([])
+    tabStorage[`session_workspaceByKey_${defaultWorkspaceKey}_openAppKeys$`]([])
 
     // Transfer ownership of the workspace to the new user
     storage[`session_workspaceByKey_${defaultWorkspaceKey}_userPk$`](newUserPk)
@@ -205,9 +206,9 @@ export async function setAccountsState (nextAccountState, storage) {
     // Schedule re-opening apps on next tick
     await new Promise(resolve => setTimeout(resolve, 0))
     appsToOpen.forEach(appToOpen => {
-      storage[`session_appByKey_${appToOpen}_visibility$`]('open')
+      tabStorage[`session_appByKey_${appToOpen}_visibility$`]('open')
     })
-    storage[`session_workspaceByKey_${defaultWorkspaceKey}_openAppKeys$`](appsToOpen)
+    tabStorage[`session_workspaceByKey_${defaultWorkspaceKey}_openAppKeys$`](appsToOpen)
 
     storage.session_defaultUserPk$(undefined)
   } else {
@@ -244,14 +245,14 @@ export async function setAccountsState (nextAccountState, storage) {
       newWorkspaceKeys.push(wsKey)
 
       // Setup workspace with no open apps
-      storage[`session_workspaceByKey_${wsKey}_openAppKeys$`]([])
+      tabStorage[`session_workspaceByKey_${wsKey}_openAppKeys$`]([])
       storage[`session_workspaceByKey_${wsKey}_userPk$`](userPk)
 
       // Setup pinned apps (all closed)
       defaultPinnedApps.forEach(app => {
         storage[`session_workspaceByKey_${wsKey}_appById_${app.id}_appKeys$`]([app.key])
         storage[`session_appByKey_${app.key}_id$`](app.id)
-        storage[`session_appByKey_${app.key}_visibility$`](app.visibility)
+        tabStorage[`session_appByKey_${app.key}_visibility$`](app.visibility)
         storage[`session_appByKey_${app.key}_route$`]('')
       })
 
@@ -295,14 +296,14 @@ export async function setAccountsState (nextAccountState, storage) {
       storage[`session_workspaceByKey_${wsKey}_pinnedAppIds$`](undefined)
       storage[`session_workspaceByKey_${wsKey}_unpinnedAppIds$`](undefined)
       storage[`session_workspaceByKey_${wsKey}_userPk$`](undefined)
-      storage[`session_workspaceByKey_${wsKey}_openAppKeys$`](undefined)
+      tabStorage[`session_workspaceByKey_${wsKey}_openAppKeys$`](undefined)
 
       // Remove all apps
       allAppIds.forEach(appId => {
         const appKeys = storage[`session_workspaceByKey_${wsKey}_appById_${appId}_appKeys$`]() || []
         appKeys.forEach(appKey => {
           storage[`session_appByKey_${appKey}_id$`](undefined)
-          storage[`session_appByKey_${appKey}_visibility$`](undefined)
+          tabStorage[`session_appByKey_${appKey}_visibility$`](undefined)
           storage[`session_appByKey_${appKey}_route$`](undefined)
         })
         storage[`session_workspaceByKey_${wsKey}_appById_${appId}_appKeys$`](undefined)

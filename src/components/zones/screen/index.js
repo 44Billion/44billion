@@ -192,17 +192,17 @@ f('windowsBackground', function () {
   `
 })
 f('workspaceWindow', function () {
-  const storage = useWebStorage(localStorage)
+  const tabStorage = useWebStorage(sessionStorage)
   // App instances are useful for grouping app icons, but windows are not grouped by app
   // That's why we have openAppKeys$ instead of openAppIds$
   const {
     [`session_workspaceByKey_${this.props.workspaceKey}_openAppKeys$`]: openAppKeys$
-  } = storage
+  } = tabStorage
 
   // Calculate stable DOM order at runtime (similar to workspace windows)
   const stableDomOrderAppKeys$ = useSignal([])
   useTask(({ track }) => {
-    const nextKeys = track(() => openAppKeys$())
+    const nextKeys = track(() => openAppKeys$()) ?? []
     stableDomOrderAppKeys$(v => {
       return v.concat(nextKeys.filter(k => !v.includes(k)))
     })
@@ -225,12 +225,15 @@ f('workspaceWindow', function () {
 })
 f('appWindow', function () {
   const storage = useWebStorage(localStorage)
+  const tabStorage = useWebStorage(sessionStorage)
   const {
     [`session_appByKey_${this.props.appKey}_id$`]: appId$,
-    [`session_appByKey_${this.props.appKey}_visibility$`]: appVisibility$,
     [`session_appByKey_${this.props.appKey}_route$`]: initialRoute$,
     [`session_workspaceByKey_${this.props.wsKey}_userPk$`]: userPk$
   } = storage
+  const {
+    [`session_appByKey_${this.props.appKey}_visibility$`]: appVisibility$
+  } = tabStorage
   const userPkB36$ = useComputed(() => (userPk$() || '') && base62ToBase36(userPk$(), 50))
   const appSubdomain$ = useComputed(() => {
     const userPk = userPk$()
@@ -979,6 +982,7 @@ f('toolbarUnpinnedApps', function () {
 f('appLaunchersMenu', function () {
   const store = useClosestStore('<a-menu>')
   const storage = useWebStorage(localStorage)
+  const tabStorage = useWebStorage(sessionStorage)
   const { requestConfirmation } = useGlobalStore('<confirmation-dialog>')
   const menuProps = useStore(() => ({
     ...store,
@@ -987,8 +991,8 @@ f('appLaunchersMenu', function () {
       if (visibility === 'open') throw new Error('App is already open')
 
       this.close() // close menu
-      storage[`session_appByKey_${appKey}_visibility$`]('open')
-      storage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]((v, eqKey) => {
+      tabStorage[`session_appByKey_${appKey}_visibility$`]('open')
+      tabStorage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]((v, eqKey) => {
         const i = v.indexOf(appKey)
         if (i !== -1) v.splice(i, 1) // remove
         v.unshift(appKey) // place at beginning
@@ -998,13 +1002,13 @@ f('appLaunchersMenu', function () {
     },
     bringToFirst () {
       const { visibility, key: appKey, workspaceKey } = this.app$()
-      const openAppKeys = storage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]()
+      const openAppKeys = tabStorage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]() ?? []
       if (visibility !== 'open') throw new Error('Can only bring to first when app is open')
       if (openAppKeys[0] === appKey) throw new Error('App is already first')
 
       this.close() // close menu
       let i
-      storage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]((v, eqKey) => {
+      tabStorage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]((v, eqKey) => {
         i = v.indexOf(appKey)
         if (i > -1) {
           v.splice(i, 1) // remove
@@ -1020,8 +1024,8 @@ f('appLaunchersMenu', function () {
 
       this.close() // close menu
       let i
-      storage[`session_appByKey_${appKey}_visibility$`]('minimized')
-      storage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]((v, eqKey) => {
+      tabStorage[`session_appByKey_${appKey}_visibility$`]('minimized')
+      tabStorage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]((v, eqKey) => {
         i = v.indexOf(appKey)
         if (i > -1) {
           v.splice(i, 1) // remove (to e.g. let 3rd app become 2nd)
@@ -1035,8 +1039,8 @@ f('appLaunchersMenu', function () {
       if (visibility === 'closed') throw new Error('App is already closed')
 
       this.close() // close menu
-      storage[`session_appByKey_${appKey}_visibility$`]('closed')
-      storage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]((v, eqKey) => {
+      tabStorage[`session_appByKey_${appKey}_visibility$`]('closed')
+      tabStorage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]((v, eqKey) => {
         const i = v.indexOf(appKey)
         if (i !== -1) {
           v.splice(i, 1) // remove
@@ -1051,7 +1055,8 @@ f('appLaunchersMenu', function () {
       if (!isDeleteStep && appKeys.length <= 1) throw new Error('Cannot remove the last instance of an app')
       if (!isDeleteStep) this.close() // close menu
 
-      storage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]((v, eqKey) => {
+      tabStorage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]((v, eqKey) => {
+        if (!v) return v
         const i = v.indexOf(appKey)
         if (i !== -1) {
           v.splice(i, 1) // remove
@@ -1062,7 +1067,7 @@ f('appLaunchersMenu', function () {
       const newAppKeys = appKeys.filter(v => v !== appKey)
       storage[`session_workspaceByKey_${workspaceKey}_appById_${appId}_appKeys$`](newAppKeys)
       storage[`session_appByKey_${appKey}_id$`](undefined)
-      storage[`session_appByKey_${appKey}_visibility$`](undefined)
+      tabStorage[`session_appByKey_${appKey}_visibility$`](undefined)
       storage[`session_appByKey_${appKey}_route$`](undefined)
 
       let hasOtherInstances = false
@@ -1183,7 +1188,7 @@ f('appLaunchersMenu', function () {
         visibility,
         workspaceKey
       } = app$()
-      const openAppKeys = storage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]()
+      const openAppKeys = tabStorage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]() ?? []
       const appKeys = storage[`session_workspaceByKey_${workspaceKey}_appById_${appId}_appKeys$`]()
       return this.h`<div id='scope_pfgf892'>
         <style>${`
@@ -1262,6 +1267,7 @@ f('appLaunchersMenu', function () {
 })
 f('toolbarAppLauncher', function () {
   const storage = useWebStorage(localStorage)
+  const tabStorage = useWebStorage(sessionStorage)
   const newAppIdsObj$ = useGlobalSignal('hardcoded_newAppIdsObj')
   const appIndex$ = useStateSignal(this.props.appIndex)
   const appRef$ = useSignal()
@@ -1271,7 +1277,7 @@ f('toolbarAppLauncher', function () {
     key: this.props.appKey,
     workspaceKey: storage.session_openWorkspaceKeys$()[0],
     index: appIndex$(),
-    visibility: storage[`session_appByKey_${this.props.appKey}_visibility$`](),
+    visibility: tabStorage[`session_appByKey_${this.props.appKey}_visibility$`]() ?? 'closed',
     icon: storage[`session_appByKey_${this.props.appKey}_icon$`](),
     isNew: !!newAppIdsObj$()[this.props.appId],
     ref: appRef$()

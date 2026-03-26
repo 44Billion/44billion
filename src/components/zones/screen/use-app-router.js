@@ -9,6 +9,7 @@ import router from '#zones/multi-napp/router.js'
 export default function useAppRouter () {
   const loc = useLocation()
   const storage = useWebStorage(localStorage)
+  const tabStorage = useWebStorage(sessionStorage)
   const {
     session_openWorkspaceKeys$: openWorkspaceKeys$
   } = storage
@@ -28,15 +29,15 @@ export default function useAppRouter () {
 
     function getScore (vis) { return { closed: 3, minimized: 2, open: 1 }[vis] }
     const app = appKeys$()
-      .map(key => ({ key, wsKey, vis: storage[`session_appByKey_${key}_visibility$`]() }))
+      .map(key => ({ key, wsKey, vis: tabStorage[`session_appByKey_${key}_visibility$`]() ?? 'closed' }))
       .sort((a, b) => getScore(b.vis) - getScore(a.vis))[0]
     if (!app) throw new Error('App install error')
 
     switch (app.vis) {
       case 'closed': {
         // open
-        storage[`session_appByKey_${app.key}_visibility$`]('open')
-        storage[`session_workspaceByKey_${app.wsKey}_openAppKeys$`]((v, eqKey) => {
+        tabStorage[`session_appByKey_${app.key}_visibility$`]('open')
+        tabStorage[`session_workspaceByKey_${app.wsKey}_openAppKeys$`]((v, eqKey) => {
           const i = v.indexOf(app.key)
           if (i !== -1) v.splice(i, 1) // remove
           v.unshift(app.key) // place at beginning
@@ -50,8 +51,8 @@ export default function useAppRouter () {
       case 'minimized': {
         // maximize
         const appKey = app.key
-        storage[`session_appByKey_${appKey}_visibility$`]('open')
-        storage[`session_workspaceByKey_${app.wsKey}_openAppKeys$`]((v, eqKey) => {
+        tabStorage[`session_appByKey_${appKey}_visibility$`]('open')
+        tabStorage[`session_workspaceByKey_${app.wsKey}_openAppKeys$`]((v, eqKey) => {
           const i = v.indexOf(appKey)
           if (i !== -1) v.splice(i, 1) // remove
           v.unshift(appKey) // place at beginning
@@ -101,8 +102,8 @@ export default function useAppRouter () {
     })
     storage[`session_appByKey_${app.key}_id$`](app.id)
     storage[`session_appByKey_${app.key}_route$`](appRoute) // initial route
-    storage[`session_appByKey_${app.key}_visibility$`](app.visibility)
-    storage[`session_workspaceByKey_${wsKey}_openAppKeys$`]((v, eqKey) => {
+    tabStorage[`session_appByKey_${app.key}_visibility$`](app.visibility)
+    tabStorage[`session_workspaceByKey_${wsKey}_openAppKeys$`]((v, eqKey) => {
       const i = v.indexOf(app.key)
       if (i !== -1) v.splice(i, 1) // remove
       v.unshift(app.key) // place at beginning

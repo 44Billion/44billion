@@ -440,28 +440,38 @@ describe('AppUpdater', () => {
       const mockLocalStorage = {
         getItem: mock.fn((key) => {
           if (key === 'session_workspaceKeys') return JSON.stringify(['ws1'])
-          if (key === 'session_workspaceByKey_ws1_openAppKeys') return JSON.stringify(['key1'])
           if (key === 'session_workspaceByKey_ws1_appById_app1_appKeys') return JSON.stringify(['key1'])
           return null
         })
       }
-      assert.equal(AppUpdater.isAppOpen('app1', { _localStorage: mockLocalStorage }), true)
+      const mockSessionStorage = {
+        getItem: mock.fn((key) => {
+          if (key === 'session_workspaceByKey_ws1_openAppKeys') return JSON.stringify(['key1'])
+          return null
+        })
+      }
+      assert.equal(AppUpdater.isAppOpen('app1', { _localStorage: mockLocalStorage, _sessionStorage: mockSessionStorage }), true)
     })
 
     it('should return false if app is not open', () => {
       const mockLocalStorage = {
         getItem: mock.fn((key) => {
           if (key === 'session_workspaceKeys') return JSON.stringify(['ws1'])
-          if (key === 'session_workspaceByKey_ws1_openAppKeys') return JSON.stringify(['key2'])
           if (key === 'session_workspaceByKey_ws1_appById_app1_appKeys') return JSON.stringify(['key1'])
           return null
         })
       }
-      assert.equal(AppUpdater.isAppOpen('app1', { _localStorage: mockLocalStorage }), false)
+      const mockSessionStorage = {
+        getItem: mock.fn((key) => {
+          if (key === 'session_workspaceByKey_ws1_openAppKeys') return JSON.stringify(['key2'])
+          return null
+        })
+      }
+      assert.equal(AppUpdater.isAppOpen('app1', { _localStorage: mockLocalStorage, _sessionStorage: mockSessionStorage }), false)
     })
 
     it('should return false if storage is missing', () => {
-      assert.equal(AppUpdater.isAppOpen('app1', { _localStorage: null }), false)
+      assert.equal(AppUpdater.isAppOpen('app1', { _sessionStorage: null, _localStorage: null }), false)
     })
   })
 
@@ -478,12 +488,16 @@ describe('AppUpdater', () => {
       const mockLocalStorage = {
         getItem: mock.fn(() => JSON.stringify([]))
       }
+      const mockSessionStorage = {
+        getItem: mock.fn(() => JSON.stringify([]))
+      }
       const mockGetManifest = mock.fn(async () => ({ tags: [['path', 'file1.js', 'hash1']] }))
       const mockDeleteStale = mock.fn(async () => {})
 
       await AppUpdater.scheduleCleanup(['app1'], {
         _navigator: mockNavigator,
         _localStorage: mockLocalStorage,
+        _sessionStorage: mockSessionStorage,
         _getSiteManifestFromDb: mockGetManifest,
         _deleteStaleFileChunksFromDb: mockDeleteStale
       })
@@ -505,8 +519,13 @@ describe('AppUpdater', () => {
       const mockLocalStorage = {
         getItem: mock.fn((key) => {
           if (key === 'session_workspaceKeys') return JSON.stringify(['ws1'])
-          if (key.includes('openAppKeys')) return JSON.stringify(['key1'])
           if (key.includes('appById_app1_appKeys')) return JSON.stringify(['key1'])
+          return null
+        })
+      }
+      const mockSessionStorage = {
+        getItem: mock.fn((key) => {
+          if (key.includes('openAppKeys')) return JSON.stringify(['key1'])
           return null
         })
       }
@@ -516,6 +535,7 @@ describe('AppUpdater', () => {
       await AppUpdater.scheduleCleanup(['app1'], {
         _navigator: mockNavigator,
         _localStorage: mockLocalStorage,
+        _sessionStorage: mockSessionStorage,
         _setTimeout: mockSetTimeout,
         _deleteStaleFileChunksFromDb: mockDeleteStale
       })

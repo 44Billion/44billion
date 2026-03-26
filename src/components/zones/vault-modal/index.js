@@ -123,6 +123,7 @@ f('vault-messenger', function () {
   }))
 
   const storage = useWebStorage(localStorage)
+  const tabStorage = useWebStorage(sessionStorage)
   const {
     config_vaultUrl$: vaultUrl$
   } = storage
@@ -196,6 +197,7 @@ f('vault-messenger', function () {
       componentSignal: ac.signal,
       widgetHeight$,
       storage,
+      tabStorage,
       stopRenderHandshake,
       vaultModalStore
     })
@@ -238,6 +240,7 @@ function initMessageListener ({
   componentSignal,
   widgetHeight$,
   storage,
+  tabStorage,
   stopRenderHandshake,
   vaultModalStore
 }) {
@@ -260,7 +263,7 @@ function initMessageListener ({
     ) return
 
     if (!e.data.payload.accounts) console.log('Missing account data on vault startup')
-    else setAccountsState(e.data.payload.accounts, storage)
+    else setAccountsState(e.data.payload.accounts, storage, tabStorage)
 
     // vault iframe's page may reload on sw controller change (and send a new 'VAULT_READY' msg)
     ac?.abort()
@@ -290,7 +293,7 @@ function initMessageListener ({
             console.log('Missing account data on vault message')
             break
           }
-          setAccountsState(e.data.payload.accounts, storage)
+          setAccountsState(e.data.payload.accounts, storage, tabStorage)
           break
         }
       }

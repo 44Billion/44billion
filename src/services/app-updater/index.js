@@ -94,13 +94,14 @@ export default class AppUpdater {
     return promise
   }
 
-  static isAppOpen (appId, { _localStorage } = {}) {
-    const storage = _localStorage || (typeof localStorage !== 'undefined' ? localStorage : null)
-    if (!storage) return false
-    const workspaceKeys = JSON.parse(storage.getItem('session_workspaceKeys') || '[]')
+  static isAppOpen (appId, { _sessionStorage, _localStorage } = {}) {
+    const session = _sessionStorage || (typeof sessionStorage !== 'undefined' ? sessionStorage : null)
+    const local = _localStorage || (typeof localStorage !== 'undefined' ? localStorage : null)
+    if (!session || !local) return false
+    const workspaceKeys = JSON.parse(local.getItem('session_workspaceKeys') || '[]')
     for (const wsKey of workspaceKeys) {
-      const openAppKeys = JSON.parse(storage.getItem(`session_workspaceByKey_${wsKey}_openAppKeys`) || '[]')
-      const appKeys = JSON.parse(storage.getItem(`session_workspaceByKey_${wsKey}_appById_${appId}_appKeys`) || '[]')
+      const openAppKeys = JSON.parse(session.getItem(`session_workspaceByKey_${wsKey}_openAppKeys`) || '[]')
+      const appKeys = JSON.parse(local.getItem(`session_workspaceByKey_${wsKey}_appById_${appId}_appKeys`) || '[]')
       if (appKeys.some(key => openAppKeys.includes(key))) return true
     }
     return false
@@ -108,6 +109,7 @@ export default class AppUpdater {
 
   static async scheduleCleanup (appIds = null, {
     _localStorage,
+    _sessionStorage,
     _getSiteManifestFromDb = getSiteManifestFromDb,
     _deleteStaleFileChunksFromDb = deleteStaleFileChunksFromDb,
     _navigator = (typeof navigator !== 'undefined' ? navigator : null),
@@ -124,7 +126,7 @@ export default class AppUpdater {
       const openApps = []
 
       for (const appId of idsToCheck) {
-        if (this.isAppOpen(appId, { _localStorage })) {
+        if (this.isAppOpen(appId, { _sessionStorage, _localStorage })) {
           openApps.push(appId)
         } else {
           const manifest = await _getSiteManifestFromDb(appId)
@@ -141,6 +143,7 @@ export default class AppUpdater {
         _setTimeout(() => {
           this.scheduleCleanup(openApps, {
             _localStorage,
+            _sessionStorage,
             _getSiteManifestFromDb,
             _deleteStaleFileChunksFromDb,
             _navigator,
@@ -202,6 +205,7 @@ export default class AppUpdater {
     _addressObjToAppId = addressObjToAppId,
     _getUserRelays = getUserRelays,
     _localStorage,
+    _sessionStorage,
     writeRelays
   } = {}) {
     const dTag = nextSiteManifestEvent.tags.find(t => t[0] === 'd')?.[1] ?? ''
@@ -249,9 +253,10 @@ export default class AppUpdater {
 
     const fileRootHashes = files.map(f => f.rootHash)
 
-    if (this.isAppOpen(appId, { _localStorage })) {
+    if (this.isAppOpen(appId, { _sessionStorage, _localStorage })) {
       await this.scheduleCleanup([appId], {
         _localStorage,
+        _sessionStorage,
         _getSiteManifestFromDb,
         _deleteStaleFileChunksFromDb
       })
