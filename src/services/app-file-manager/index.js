@@ -62,7 +62,7 @@ export default class AppFileManager {
     this.#instancePromisesByAppId[appId] = p.promise
 
     addressObj ??= appIdToAddressObj(appId)
-    let siteManifest, attempts
+    let siteManifest, attempts = 0
     do {
       siteManifest = await getSiteManifestEvent(appId, addressObj)
       if (!siteManifest) {
