@@ -37,7 +37,7 @@ export default function useAppRouter () {
       case 'closed': {
         // open
         tabStorage[`session_appByKey_${app.key}_visibility$`]('open')
-        tabStorage[`session_workspaceByKey_${app.wsKey}_openAppKeys$`]((v, eqKey) => {
+        tabStorage[`session_workspaceByKey_${app.wsKey}_openAppKeys$`]((v = [], eqKey) => {
           const i = v.indexOf(app.key)
           if (i !== -1) v.splice(i, 1) // remove
           v.unshift(app.key) // place at beginning
@@ -52,7 +52,7 @@ export default function useAppRouter () {
         // maximize
         const appKey = app.key
         tabStorage[`session_appByKey_${appKey}_visibility$`]('open')
-        tabStorage[`session_workspaceByKey_${app.wsKey}_openAppKeys$`]((v, eqKey) => {
+        tabStorage[`session_workspaceByKey_${app.wsKey}_openAppKeys$`]((v = [], eqKey) => {
           const i = v.indexOf(appKey)
           if (i !== -1) v.splice(i, 1) // remove
           v.unshift(appKey) // place at beginning
@@ -103,7 +103,7 @@ export default function useAppRouter () {
     storage[`session_appByKey_${app.key}_id$`](app.id)
     storage[`session_appByKey_${app.key}_route$`](appRoute) // initial route
     tabStorage[`session_appByKey_${app.key}_visibility$`](app.visibility)
-    tabStorage[`session_workspaceByKey_${wsKey}_openAppKeys$`]((v, eqKey) => {
+    tabStorage[`session_workspaceByKey_${wsKey}_openAppKeys$`]((v = [], eqKey) => {
       const i = v.indexOf(app.key)
       if (i !== -1) v.splice(i, 1) // remove
       v.unshift(app.key) // place at beginning

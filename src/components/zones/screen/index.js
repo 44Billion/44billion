@@ -992,7 +992,7 @@ f('appLaunchersMenu', function () {
 
       this.close() // close menu
       tabStorage[`session_appByKey_${appKey}_visibility$`]('open')
-      tabStorage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]((v, eqKey) => {
+      tabStorage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]((v = [], eqKey) => {
         const i = v.indexOf(appKey)
         if (i !== -1) v.splice(i, 1) // remove
         v.unshift(appKey) // place at beginning

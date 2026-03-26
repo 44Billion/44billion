@@ -91,8 +91,8 @@ f('toolbar-more-menu', function () {
           <div class='menu-label'>Hide Toolbar</div>
         </div>
         <div onclick=${() => {
-          // or location.pushState({}, '', '/+cA99KnC0UCyqHT5oI8fIkoza0jfB1lrvaWKmuh6h2EhTz2nw4R2a5qVNM')
-          openApp('/+cA99KnC0UCyqHT5oI8fIkoza0jfB1lrvaWKmuh6h2EhTz2nw4R2a5qVNM')
+          // or location.pushState({}, '', '/+3swFhu23QNl8er5yOtc8bf9ueHCdwF8CzoDUiSSwwKIWoS8Ki5TwMyeA3Js1')
+          openApp('/+3swFhu23QNl8er5yOtc8bf9ueHCdwF8CzoDUiSSwwKIWoS8Ki5TwMyeA3Js1')
           isOpen$.set(false)
         }}>
           <div class='icon-wrapper'><icon-shopping-bag props=${{ size: '16px' }} /></div>
