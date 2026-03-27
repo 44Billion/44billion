@@ -149,9 +149,9 @@ f('a-settings', function () {
       <div class="section">
         <div class="section-title">General</div>
 
-        <div class="item" onclick=${() => location.pushState({}, '', '/napp-updates')}>
+        <div class="item" onclick=${() => location.pushState({}, '', '/app-updates')}>
           <div class="item-content">
-            <div class="item-title">Napp Updates</div>
+            <div class="item-title">App Updates</div>
             <div class="item-subtitle">Check for updates</div>
           </div>
           ${(appUpdateCount$() ?? 0) > 0 ? this.h`<div class="badge">${appUpdateCount$()}</div>` : ''}

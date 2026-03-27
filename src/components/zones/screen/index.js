@@ -130,7 +130,7 @@ f('aScreen', function () {
 f('system-views', function () {
   return this.h`
     <a-route props=${{ path: '/settings' }} />
-    <a-route props=${{ path: '/napp-updates' }} />
+    <a-route props=${{ path: '/app-updates' }} />
   `
 })
 
@@ -187,7 +187,7 @@ f('windowsBackground', function () {
           }
         }
       `}</style>
-      Please open a napp
+      Please open an app
     </div>
   `
 })

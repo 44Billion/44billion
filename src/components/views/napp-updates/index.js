@@ -360,7 +360,7 @@ f('napp-updates', function () {
       <div class='btn-wrapper-136713'>
         <back-btn />
       </div>
-      <div class='title-gd7a98'>Napp Updates</div>
+      <div class='title-gd7a98'>App Updates</div>
       <div class="actions-wrapper">
         <button class="action-btn" onclick=${performSearch} disabled=${isSearching$()}>
           <span class="search-text">${isSearching$() ? 'Searching...' : 'Search for Updates'}</span>

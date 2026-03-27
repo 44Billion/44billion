@@ -22,7 +22,7 @@ if (isProduction) {
     .get('/chunks/:name', getChunk)
     .get('/', serveIndex)
     .get('/\\+{1,3}:nappIdWithRoute+', serveIndex)
-    .get('/napp-updates', serveIndex)
+    .get('/app-updates', serveIndex)
     .get('/settings', serveIndex)
 
   async function serveIndex (req, res) {
