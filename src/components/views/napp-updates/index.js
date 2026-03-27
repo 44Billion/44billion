@@ -102,7 +102,7 @@ f('napp-updates', function () {
     const managers = await Promise.all(appIds.map(id => AppFileManager.create(id).catch(() => null)))
     const pubkeys = new Set()
     managers.forEach(m => {
-      if (m?.siteManifest?.pubkey) pubkeys.add(m.bundle.pubkey)
+      if (m?.siteManifest?.pubkey) pubkeys.add(m.siteManifest.pubkey)
     })
 
     // Add pubkeys from updates
@@ -420,10 +420,10 @@ f('napp-update-card', function () {
         appFileManager.getName()
       }
 
-      const bundle = appFileManager.siteManifest
-      if (bundle) {
-        const date = new Date(bundle.created_at * 1000).toISOString().split('T')[0]
-        const shortId = bundle.id.slice(0, 8)
+      const manifest = appFileManager.siteManifest
+      if (manifest) {
+        const date = new Date(manifest.created_at * 1000).toISOString().split('T')[0]
+        const shortId = manifest.id.slice(0, 8)
         version$(`${date}-${shortId}`)
       }
 
@@ -440,8 +440,8 @@ f('napp-update-card', function () {
         }
       } else {
         if (appFileManager.siteManifest?.pubkey) {
-          publisherPk$(base16ToBase62(appFileManager.bundle.pubkey))
-          publisherHexPk$(appFileManager.bundle.pubkey)
+          publisherPk$(base16ToBase62(appFileManager.siteManifest.pubkey))
+          publisherHexPk$(appFileManager.siteManifest.pubkey)
         }
       }
     } catch (e) {

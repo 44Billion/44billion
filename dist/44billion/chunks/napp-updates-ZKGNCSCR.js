@@ -1,4 +1,4 @@
-import"./chunk-LV6RTFVQ.js";import{a as _}from"./chunk-HVK2I4BU.js";import{f as T,l as O}from"./chunk-CUCTXUW3.js";import{e as j}from"./chunk-4YEM5IRY.js";import"./chunk-NYBCEV4T.js";import{b as I,e as s,f as w}from"./chunk-TBF35Z4Q.js";import{g,j as d,n as k,o as m,v as E}from"./chunk-EOHNSKYH.js";g("iconReload",function(){let p=m({path$:["M19.933 13.041a8 8 0 1 1 -9.925 -8.788c3.899 -1 7.935 1.007 9.425 4.747","M20 4v5h-5"],viewBox$:"2 2 20 20"});return this.h`<a-svg
+import"./chunk-LV6RTFVQ.js";import{a as _}from"./chunk-HVK2I4BU.js";import{f as T,l as O}from"./chunk-CUCTXUW3.js";import{e as j}from"./chunk-4YEM5IRY.js";import"./chunk-NYBCEV4T.js";import{b as I,e as s,f as w}from"./chunk-TBF35Z4Q.js";import{g,j as d,n as k,o as m,v as M}from"./chunk-EOHNSKYH.js";g("iconReload",function(){let p=m({path$:["M19.933 13.041a8 8 0 1 1 -9.925 -8.788c3.899 -1 7.935 1.007 9.425 4.747","M20 4v5h-5"],viewBox$:"2 2 20 20"});return this.h`<a-svg
     props=${{...p,...this.props}}
   />`});g("icon-arrow-narrow-right",function(){let p=m({path$:["M5 12l14 0","M15 16l4 -4","M15 8l4 4"],viewBox$:"2 2 20 20"});return this.h`<a-svg
     props=${{...p,...this.props}}
@@ -6,7 +6,7 @@ import"./chunk-LV6RTFVQ.js";import{a as _}from"./chunk-HVK2I4BU.js";import{f as 
     props=${{...p,...this.props}}
   />`});g("icon-hourglass-high",function(){let p=m({path$:["M6 20v-2a6 6 0 1 1 12 0v2a1 1 0 0 1 -1 1h-10a1 1 0 0 1 -1 -1z","M6 4v2a6 6 0 1 0 12 0v-2a1 1 0 0 0 -1 -1h-10a1 1 0 0 0 -1 1z"],viewBox$:"2 2 20 20"});return this.h`<a-svg
     props=${{...p,...this.props}}
-  />`});g("napp-updates",function(){let p=I(localStorage),{session_unread_appUpdateCount$:S}=p;E(()=>{S(void 0)});let v=k(()=>{let t=p.session_workspaceKeys$()||[],r=new Set;return t.forEach(a=>{let e=p[`session_workspaceByKey_${a}_pinnedAppIds$`]()||[],o=p[`session_workspaceByKey_${a}_unpinnedAppIds$`]()||[];e.forEach(n=>r.add(n)),o.forEach(n=>r.add(n))}),Array.from(r)}),z=d({}),u=d({}),c=d({}),f=d(!1),h=d(0),x=k(()=>Object.keys(u()).length),y=d(0),A=k(()=>y()<v().length),b=d(!1),i=k(()=>{let t=u(),r=c();return Object.keys(t).filter(a=>{let e=r[a]?.status;return e!=="updating"&&e!=="pending"&&e!=="done"})}),$=async()=>{if(b())return;b(!0);let t=v();try{let r=await _.searchForUpdates(t);u(a=>{let e={...a},o=c();return Object.entries(r).forEach(([n,M])=>{let P=o[n]?.status;P==="updating"||P==="pending"||(e[n]=M,o[n]?.status==="error"&&c(B=>{let N={...B};return delete N[n],N}))}),e})}catch(r){console.error("Error checking for updates",r)}finally{y(t.length),b(!1)}};E(async()=>{await $();let t=v(),r=await Promise.all(t.map(e=>O.create(e).catch(()=>null))),a=new Set;if(r.forEach(e=>{e?.siteManifest?.pubkey&&a.add(e.bundle.pubkey)}),Object.values(u()).forEach(e=>{e.event?.pubkey&&a.add(e.event.pubkey)}),a.size>0)try{let e=await T({kinds:[0],authors:Array.from(a)},{code:"WRITE_RELAYS"}),o={};e.forEach(n=>{try{o[n.pubkey]=JSON.parse(n.content)}catch{}}),z(o)}catch(e){console.error("Bulk fetch failed",e)}});let l=async()=>{if(f())return;let t=i();if(t.length===0)return;f(!0);let r=u(),a=t.map(e=>r[e].event);c(e=>{let o={...e};return t.forEach(n=>{o[n]={status:"pending",progress:0,error:null}}),o});try{for await(let e of _.updateApps(a)){let{appId:o,appProgress:n,error:M,overallProgress:P}=e;h(P),c(B=>({...B,[o]:{status:M?"error":n===100?"done":"updating",progress:n,error:M}}))}u(e=>{let o={...e};return Object.keys(c()).forEach(n=>{c()[n].status==="done"&&delete o[n]}),o})}catch(e){console.error("Update all failed",e)}finally{f(!1),h(0)}},U=async t=>{let r=u()[t];if(!r)return;let a=c()[t]?.status;if(!(a==="updating"||a==="pending")){c(e=>({...e,[t]:{status:"updating",progress:0,error:null}}));try{for await(let e of _.updateApp(r.event))c(o=>({...o,[t]:{status:e.error?"error":"updating",progress:e.appProgress,error:e.error}}));c(e=>({...e,[t]:{status:"done",progress:100,error:null}})),u(e=>{let o={...e};return delete o[t],o})}catch(e){c(o=>({...o,[t]:{status:"error",error:e,progress:0}}))}}};return this.h`
+  />`});g("napp-updates",function(){let p=I(localStorage),{session_unread_appUpdateCount$:S}=p;M(()=>{S(void 0)});let v=k(()=>{let t=p.session_workspaceKeys$()||[],r=new Set;return t.forEach(a=>{let e=p[`session_workspaceByKey_${a}_pinnedAppIds$`]()||[],o=p[`session_workspaceByKey_${a}_unpinnedAppIds$`]()||[];e.forEach(n=>r.add(n)),o.forEach(n=>r.add(n))}),Array.from(r)}),E=d({}),u=d({}),c=d({}),f=d(!1),h=d(0),x=k(()=>Object.keys(u()).length),y=d(0),A=k(()=>y()<v().length),$=d(!1),i=k(()=>{let t=u(),r=c();return Object.keys(t).filter(a=>{let e=r[a]?.status;return e!=="updating"&&e!=="pending"&&e!=="done"})}),b=async()=>{if($())return;$(!0);let t=v();try{let r=await _.searchForUpdates(t);u(a=>{let e={...a},o=c();return Object.entries(r).forEach(([n,z])=>{let P=o[n]?.status;P==="updating"||P==="pending"||(e[n]=z,o[n]?.status==="error"&&c(B=>{let N={...B};return delete N[n],N}))}),e})}catch(r){console.error("Error checking for updates",r)}finally{y(t.length),$(!1)}};M(async()=>{await b();let t=v(),r=await Promise.all(t.map(e=>O.create(e).catch(()=>null))),a=new Set;if(r.forEach(e=>{e?.siteManifest?.pubkey&&a.add(e.siteManifest.pubkey)}),Object.values(u()).forEach(e=>{e.event?.pubkey&&a.add(e.event.pubkey)}),a.size>0)try{let e=await T({kinds:[0],authors:Array.from(a)},{code:"WRITE_RELAYS"}),o={};e.forEach(n=>{try{o[n.pubkey]=JSON.parse(n.content)}catch{}}),E(o)}catch(e){console.error("Bulk fetch failed",e)}});let l=async()=>{if(f())return;let t=i();if(t.length===0)return;f(!0);let r=u(),a=t.map(e=>r[e].event);c(e=>{let o={...e};return t.forEach(n=>{o[n]={status:"pending",progress:0,error:null}}),o});try{for await(let e of _.updateApps(a)){let{appId:o,appProgress:n,error:z,overallProgress:P}=e;h(P),c(B=>({...B,[o]:{status:z?"error":n===100?"done":"updating",progress:n,error:z}}))}u(e=>{let o={...e};return Object.keys(c()).forEach(n=>{c()[n].status==="done"&&delete o[n]}),o})}catch(e){console.error("Update all failed",e)}finally{f(!1),h(0)}},U=async t=>{let r=u()[t];if(!r)return;let a=c()[t]?.status;if(!(a==="updating"||a==="pending")){c(e=>({...e,[t]:{status:"updating",progress:0,error:null}}));try{for await(let e of _.updateApp(r.event))c(o=>({...o,[t]:{status:e.error?"error":"updating",progress:e.appProgress,error:e.error}}));c(e=>({...e,[t]:{status:"done",progress:100,error:null}})),u(e=>{let o={...e};return delete o[t],o})}catch(e){c(o=>({...o,[t]:{status:"error",error:e,progress:0}}))}}};return this.h`
     <style>${`
       napp-updates {
         flex-grow: 1; /* use max width available */
@@ -140,9 +140,9 @@ import"./chunk-LV6RTFVQ.js";import{a as _}from"./chunk-HVK2I4BU.js";import{f as 
       </div>
       <div class='title-gd7a98'>Napp Updates</div>
       <div class="actions-wrapper">
-        <button class="action-btn" onclick=${$} disabled=${b()}>
-          <span class="search-text">${b()?"Searching...":"Search for Updates"}</span>
-          <span class=${`search-icon ${b()?"spinning":""}`}><icon-reload props=${{size:"20px"}} /></span>
+        <button class="action-btn" onclick=${b} disabled=${$()}>
+          <span class="search-text">${$()?"Searching...":"Search for Updates"}</span>
+          <span class=${`search-icon ${$()?"spinning":""}`}><icon-reload props=${{size:"20px"}} /></span>
         </button>
         ${x()>0&&!f()?this.h`<button class="action-btn update-all-btn desktop-update-all" onclick=${l} disabled=${i().length===0}>Update All</button>`:""}
         ${f()?this.h`<div class="desktop-update-all" style=${`font-size:14rem;color:${s.colors.fg2}`}>Updating... ${h()}%</div>`:""}
@@ -162,12 +162,12 @@ import"./chunk-LV6RTFVQ.js";import{a as _}from"./chunk-HVK2I4BU.js";import{f as 
       ${v().map(t=>this.h({key:t})`
         <f-to-signals
           key=${t}
-          props=${{from:["updateInfo","updateState"],updateInfo:u()[t],updateState:c()[t],appId:t,publisherProfiles$:z,onUpdate:()=>U(t),render(r){return this.h`<napp-update-card props=${r} />`}}}
+          props=${{from:["updateInfo","updateState"],updateInfo:u()[t],updateState:c()[t],appId:t,publisherProfiles$:E,onUpdate:()=>U(t),render(r){return this.h`<napp-update-card props=${r} />`}}}
         />
       `)}
       ${v().length===0?this.h`<div style=${`padding: 20px; text-align: center; color: ${s.colors.fg2}`}>No apps found</div>`:""}
     </div>
-  `});g("napp-update-card",function(){let p=I(localStorage),{appId:S,publisherProfiles$:v,updateInfo$:z,updateState$:u,onUpdate:c}=this.props,f=k(()=>p[`session_appById_${S}_name$`]()),h=d("..."),x=d(null),y=d(null),A=d(null),b=k(()=>{let l=A();return l?v()[l]?.picture:null});E(async()=>{try{let l=await O.create(S);f()||l.getName();let U=l.siteManifest;if(U){let r=new Date(U.created_at*1e3).toISOString().split("T")[0],a=U.id.slice(0,8);h(`${r}-${a}`)}let t=z();if(t?.event){let r=t.event,a=new Date(r.created_at*1e3).toISOString().split("T")[0],e=r.id.slice(0,8);x(`${a}-${e}`),r.pubkey&&(y(j(r.pubkey)),A(r.pubkey))}else l.siteManifest?.pubkey&&(y(j(l.bundle.pubkey)),A(l.bundle.pubkey))}catch(l){console.error("Error fetching app info",l),h("Unknown")}});let i=u(),$=d(!1);return E(()=>{u()?.status==="error"?$()||($(!0),setTimeout(()=>{$(!1)},7e3)):$(!1)}),this.h`
+  `});g("napp-update-card",function(){let p=I(localStorage),{appId:S,publisherProfiles$:v,updateInfo$:E,updateState$:u,onUpdate:c}=this.props,f=k(()=>p[`session_appById_${S}_name$`]()),h=d("..."),x=d(null),y=d(null),A=d(null),$=k(()=>{let l=A();return l?v()[l]?.picture:null});M(async()=>{try{let l=await O.create(S);f()||l.getName();let U=l.siteManifest;if(U){let r=new Date(U.created_at*1e3).toISOString().split("T")[0],a=U.id.slice(0,8);h(`${r}-${a}`)}let t=E();if(t?.event){let r=t.event,a=new Date(r.created_at*1e3).toISOString().split("T")[0],e=r.id.slice(0,8);x(`${a}-${e}`),r.pubkey&&(y(j(r.pubkey)),A(r.pubkey))}else l.siteManifest?.pubkey&&(y(j(l.siteManifest.pubkey)),A(l.siteManifest.pubkey))}catch(l){console.error("Error fetching app info",l),h("Unknown")}});let i=u(),b=d(!1);return M(()=>{u()?.status==="error"?b()||(b(!0),setTimeout(()=>{b(!1)},7e3)):b(!1)}),this.h`
     <style>${`
       .card-8d6gfgwh3wl {
         @media ${w.breakpoints.mobile} {
@@ -338,7 +338,7 @@ import"./chunk-LV6RTFVQ.js";import{a as _}from"./chunk-HVK2I4BU.js";import{f as 
       </div>
       <div class="info">
         <div class="name-row">
-          ${y()?this.h`<div class="publisher-avatar"><a-avatar props=${{usePlaceholder:!0,pk$:y,picture$:b}} /></div>`:""}
+          ${y()?this.h`<div class="publisher-avatar"><a-avatar props=${{usePlaceholder:!0,pk$:y,picture$:$}} /></div>`:""}
           ${f()?this.h`<div class="name">${f()}</div>`:this.h`<div class="name-placeholder animate-background"></div>`}
         </div>
         <div class="version-info">
@@ -348,7 +348,7 @@ import"./chunk-LV6RTFVQ.js";import{a as _}from"./chunk-HVK2I4BU.js";import{f as 
           ${x()?this.h`<span class="next-ver"><icon-arrow-narrow-right props=${{size:"14px"}} /> v${x()}</span>`:""}
         </div>
       </div>
-      ${i?.status==="updating"||i?.status==="pending"||i?.status==="done"||i?.status==="error"&&$()?this.h`
+      ${i?.status==="updating"||i?.status==="pending"||i?.status==="done"||i?.status==="error"&&b()?this.h`
           <div class="progress-circle-container">
             <svg class="progress-circle-svg" viewBox="0 0 36 36">
               <circle cx="18" cy="18" r="15.9155" fill="none" stroke-width="3" class="progress-circle-bg" />
