@@ -161,6 +161,17 @@ f('napp-updates', function () {
         }))
       }
 
+      // Mark all completed (non-error) target apps as done
+      updateStates$(prev => {
+        const next = { ...prev }
+        targetIds.forEach(id => {
+          if (next[id] && next[id].status !== 'error') {
+            next[id] = { ...next[id], status: 'done', progress: 100 }
+          }
+        })
+        return next
+      })
+
       // Clear done updates
       availableUpdates$(prev => {
         const next = { ...prev }
@@ -171,6 +182,8 @@ f('napp-updates', function () {
         })
         return next
       })
+
+      appUpdateCount$(Object.keys(availableUpdates$()).length || undefined)
     } catch (e) {
       console.error('Update all failed', e)
     } finally {
@@ -208,6 +221,8 @@ f('napp-updates', function () {
         delete next[appId]
         return next
       })
+
+      appUpdateCount$(Object.keys(availableUpdates$()).length || undefined)
     } catch (e) {
       updateStates$(prev => ({ ...prev, [appId]: { status: 'error', error: e, progress: 0 } }))
     }
@@ -425,28 +440,30 @@ f('napp-update-card', function () {
         const date = new Date(manifest.created_at * 1000).toISOString().split('T')[0]
         const shortId = manifest.id.slice(0, 8)
         version$(`${date}-${shortId}`)
-      }
-
-      const updateInfo = updateInfo$()
-      if (updateInfo?.event) {
-        const e = updateInfo.event
-        const date = new Date(e.created_at * 1000).toISOString().split('T')[0]
-        const shortId = e.id.slice(0, 8)
-        nextVersion$(`${date}-${shortId}`)
-
-        if (e.pubkey) {
-          publisherPk$(base16ToBase62(e.pubkey))
-          publisherHexPk$(e.pubkey)
-        }
-      } else {
-        if (appFileManager.siteManifest?.pubkey) {
-          publisherPk$(base16ToBase62(appFileManager.siteManifest.pubkey))
-          publisherHexPk$(appFileManager.siteManifest.pubkey)
+        if (manifest.pubkey) {
+          publisherPk$(base16ToBase62(manifest.pubkey))
+          publisherHexPk$(manifest.pubkey)
         }
       }
     } catch (e) {
       console.error('Error fetching app info', e)
       version$('Unknown')
+    }
+  })
+
+  useTask(({ track }) => {
+    const updateInfo = track(() => updateInfo$())
+    if (!updateInfo?.event) {
+      nextVersion$(null)
+      return
+    }
+    const e = updateInfo.event
+    const date = new Date(e.created_at * 1000).toISOString().split('T')[0]
+    const shortId = e.id.slice(0, 8)
+    nextVersion$(`${date}-${shortId}`)
+    if (e.pubkey) {
+      publisherPk$(base16ToBase62(e.pubkey))
+      publisherHexPk$(e.pubkey)
     }
   })
 
