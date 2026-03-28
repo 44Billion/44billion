@@ -37,7 +37,30 @@ f('aScreen', function () {
   useAppRouter()
   const { isSystemRoute$ } = useSystemRouter()
 
-  const isSingleWindow$ = useWebStorage(localStorage).config_isSingleWindow$
+  const storage = useWebStorage(localStorage)
+
+  // Listen for subdomain redirect requests from other tabs
+  useTask(({ cleanup }) => {
+    const bc = new BroadcastChannel('44billion_subdomain_nav')
+    cleanup(() => bc.close())
+    bc.onmessage = (e) => {
+      const { href, userPk } = e.data
+      if (!href) return
+      // Find the workspace for the target user without switching active workspace
+      let wsKey
+      if (userPk) {
+        wsKey = (storage.session_openWorkspaceKeys$() || []).find(
+          k => storage[`session_workspaceByKey_${k}_userPk$`]() === userPk
+        )
+      }
+      try {
+        const { openApp } = useGlobalStore('useAppRouter')
+        openApp(href, wsKey)
+      } catch (err) { console.error('Subdomain nav failed', err) }
+    }
+  })
+
+  const isSingleWindow$ = storage.config_isSingleWindow$
   const { isHidden$: isToolbarHidden$ } = useGlobalStore('toolbarState', { isHidden$: false })
   const style$ = useComputed(() => /* css */`
     /* @scope { */
@@ -286,6 +309,7 @@ f('appWindow', function () {
         const nextId = storage.session_subdomainNextId$() ?? 0
         storage.session_subdomainNextId$(nextId + 1)
         storage[`session_subdomainByUserAndApp_${userPk$()}_${appId$()}$`](String(nextId))
+        storage[`session_subdomainToApp_${nextId}$`]({ appId: appId$(), userPk: userPk$() })
       }
 
       const initialRoute = initialRoute$() || ''
@@ -1109,6 +1133,7 @@ f('appLaunchersMenu', function () {
         if (appSubdomain != null) {
           await askAppToClearData(appSubdomain)
           storage[`session_subdomainByUserAndApp_${userPk}_${appId}$`](undefined)
+          storage[`session_subdomainToApp_${appSubdomain}$`](undefined)
         }
       }
       if (shouldClearAppFiles) {

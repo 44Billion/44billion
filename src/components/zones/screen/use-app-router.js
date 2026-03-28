@@ -14,8 +14,8 @@ export default function useAppRouter () {
     session_openWorkspaceKeys$: openWorkspaceKeys$
   } = storage
 
-  const maybeOpenInstalledApp = useCallback((appId, appRoute) => {
-    const wsKey = openWorkspaceKeys$()[0]
+  const maybeOpenInstalledApp = useCallback((appId, appRoute, wsKey) => {
+    wsKey ??= openWorkspaceKeys$()[0]
     if (!wsKey) throw new Error('User n/a')
 
     const {
@@ -72,7 +72,7 @@ export default function useAppRouter () {
     return { hasOpened: true, isInstalled: true }
   })
 
-  const openApp = useCallback((napp, appRoute) => {
+  const openApp = useCallback((napp, appRoute, wsKey) => {
     if (!openWorkspaceKeys$().length) throw new Error()
     const decodedApp = appDecode(napp)
     const appId = addressObjToAppId(decodedApp)
@@ -83,7 +83,7 @@ export default function useAppRouter () {
     if (decodedAppRelays.length > 0) {
       storage[`session_appById_${appId}_relayHints$`](decodedAppRelays)
     }
-    const { hasOpened, isInstalled } = maybeOpenInstalledApp(appId, appRoute)
+    const { hasOpened, isInstalled } = maybeOpenInstalledApp(appId, appRoute, wsKey)
 
     if (hasOpened) return
 
@@ -94,7 +94,7 @@ export default function useAppRouter () {
       route: appRoute,
       isNew: false
     }
-    const wsKey = openWorkspaceKeys$()[0]
+    wsKey ??= openWorkspaceKeys$()[0]
     storage[`session_workspaceByKey_${wsKey}_appById_${app.id}_appKeys$`](v => {
       if (!isInstalled) v = []
       v.push(app.key)
@@ -131,13 +131,23 @@ export default function useAppRouter () {
       appRoute = appPath + search + hash
     } else appRoute = ''
 
-    try { openApp(napp, appRoute) } catch (err) { console.log(err) } finally {
+    // Check if a subdomain redirect stashed a target user
+    let targetWsKey
+    const navUserPk = sessionStorage.getItem('_subdomain_nav_userPk')
+    if (navUserPk) {
+      sessionStorage.removeItem('_subdomain_nav_userPk')
+      targetWsKey = openWorkspaceKeys$().find(
+        k => storage[`session_workspaceByKey_${k}_userPk$`]() === navUserPk
+      )
+    }
+
+    try { openApp(napp, appRoute, targetWsKey) } catch (err) { console.log(err) } finally {
       loc.replaceState(history.state, '', '/') // TODO: replace with previous url if available
     }
   })
 
   useGlobalStore('useAppRouter', () => ({
-    openApp (href) {
+    openApp (href, wsKey) {
       const url = new URL(href, window.location.origin)
       let appRoute
       let { napp, appPath } = router.find(url.pathname.replace(/\/+$/, '')).params
@@ -147,7 +157,7 @@ export default function useAppRouter () {
         appRoute = appPath + search + hash
       } else appRoute = ''
 
-      openApp(napp, appRoute)
+      openApp(napp, appRoute, wsKey)
     }
   }))
 }

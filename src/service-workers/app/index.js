@@ -57,6 +57,20 @@ self.addEventListener('fetch', e => {
   ;({ pathname: e.request.pathname, origin } = new URL(e.request.url))
   if (origin !== self.location.origin) return
 
+  // Top-level browser navigation to numeric subdomain - redirect to main domain
+  // Uses client-side redirect (not 302) so location.hash is preserved
+  if (e.request.destination === 'document') {
+    const subdomain = self.location.host.split('.')[0]
+    const mainHost = self.location.host.replace(/^\d+\./, '')
+    const url = new URL(e.request.url)
+    const basePath = url.pathname + url.search
+    e.respondWith(new Response(
+      `<!doctype html><script>location.replace("${self.location.protocol}//${mainHost}/?subdomain=${subdomain}&path="+encodeURIComponent(${JSON.stringify(basePath)}+location.hash))</script>`,
+      { headers: { 'content-type': 'text/html', 'cache-control': 'no-cache' } }
+    ))
+    return
+  }
+
   e.respondWith((async function () {
     if (e.request.pathname === '/~~napp') {
       return new Response(

@@ -83,6 +83,7 @@ f('singleNappLauncher', function () {
         const nextId = storage.session_subdomainNextId$() ?? 0
         storage.session_subdomainNextId$(nextId + 1)
         storage[`session_subdomainByUserAndApp_${userPk$()}_${appId}$`](String(nextId))
+        storage[`session_subdomainToApp_${nextId}$`]({ appId, userPk: userPk$() })
       }
 
       const ac = new AbortController()

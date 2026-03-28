@@ -50,18 +50,28 @@ export const appRouter = IttyRouter()
             }
           </style>
           <script>
-            (async function () {
-              // no-op during subsequent visits
-              await navigator.serviceWorker.register('/sw.js')
-              const registration = await navigator.serviceWorker.ready
-              if (registration.active && registration.active.state === 'activated') {
-                window.location.reload()
-              } else {
-                registration.active.addEventListener('statechange', e => {
-                  if (e.target.state === 'activated') window.location.reload()
-                })
-              }
-            })()
+            if (window === window.top) {
+              // Top-level navigation to numeric subdomain - redirect to main domain
+              var subdomain = window.location.host.split('.')[0]
+              var mainHost = window.location.host.replace(/^\\d+\\./, '')
+              var appPath = window.location.pathname + window.location.search + window.location.hash
+              window.location.replace(
+                window.location.protocol + '//' + mainHost + '/?subdomain=' + subdomain + '&path=' + encodeURIComponent(appPath)
+              )
+            } else {
+              (async function () {
+                // no-op during subsequent visits
+                await navigator.serviceWorker.register('/sw.js')
+                const registration = await navigator.serviceWorker.ready
+                if (registration.active && registration.active.state === 'activated') {
+                  window.location.reload()
+                } else {
+                  registration.active.addEventListener('statechange', e => {
+                    if (e.target.state === 'activated') window.location.reload()
+                  })
+                }
+              })()
+            }
           </script>
         </head>
         <body>
