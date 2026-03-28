@@ -286,7 +286,7 @@ export default class AppUpdater {
         dTag
       })
 
-      const iterator = _updateApp(event, { _addressObjToAppId, ...deps })
+      const iterator = _updateApp.call(this, event, { _addressObjToAppId, ...deps })
 
       try {
         for await (const report of iterator) {

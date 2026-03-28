@@ -468,18 +468,23 @@ f('napp-update-card', function () {
   })
 
   const updateState = updateState$()
+  const isDoneVisible$ = useSignal(false)
   const isErrorVisible$ = useSignal(false)
 
-  useTask(() => {
-    const state = updateState$()
-    if (state?.status === 'error') {
+  useTask(({ track }) => {
+    const state = track(() => updateState$())
+    if (state?.status === 'done') {
+      isDoneVisible$(true)
+      setTimeout(() => isDoneVisible$(false), 3600)
+      isErrorVisible$(false)
+    } else if (state?.status === 'error') {
+      isDoneVisible$(false)
       if (!isErrorVisible$()) {
         isErrorVisible$(true)
-        setTimeout(() => {
-          isErrorVisible$(false)
-        }, 7000)
+        setTimeout(() => isErrorVisible$(false), 7000)
       }
     } else {
+      isDoneVisible$(false)
       isErrorVisible$(false)
     }
   })
@@ -610,6 +615,15 @@ f('napp-update-card', function () {
         justify-content: center;
       }
 
+      .progress-circle-container.done-fadeout {
+        animation: done-fade-out 3.5s forwards;
+      }
+
+      @keyframes done-fade-out {
+        0%, 85% { opacity: 1; }
+        100% { opacity: 0; }
+      }
+
       .progress-circle-svg {
         transform: rotate(-90deg);
         width: 100%;
@@ -668,9 +682,9 @@ f('napp-update-card', function () {
           ${nextVersion$() ? this.h`<span class="next-ver"><icon-arrow-narrow-right props=${{ size: '14px' }} /> v${nextVersion$()}</span>` : ''}
         </div>
       </div>
-      ${(updateState?.status === 'updating' || updateState?.status === 'pending' || updateState?.status === 'done' || (updateState?.status === 'error' && isErrorVisible$()))
+      ${(updateState?.status === 'updating' || updateState?.status === 'pending' || (updateState?.status === 'done' && isDoneVisible$()) || (updateState?.status === 'error' && isErrorVisible$()))
         ? this.h`
-          <div class="progress-circle-container">
+          <div class=${`progress-circle-container${updateState.status === 'done' ? ' done-fadeout' : ''}`}>
             <svg class="progress-circle-svg" viewBox="0 0 36 36">
               <circle cx="18" cy="18" r="15.9155" fill="none" stroke-width="3" class="progress-circle-bg" />
               <circle cx="18" cy="18" r="15.9155" fill="none" stroke-width="3"
