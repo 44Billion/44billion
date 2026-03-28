@@ -143,9 +143,9 @@ import"./chunk-LV6RTFVQ.js";import{a as f}from"./chunk-NYBCEV4T.js";import{b as 
       <div class="section">
         <div class="section-title">General</div>
 
-        <div class="item" onclick=${()=>h.pushState({},"","/napp-updates")}>
+        <div class="item" onclick=${()=>h.pushState({},"","/app-updates")}>
           <div class="item-content">
-            <div class="item-title">Napp Updates</div>
+            <div class="item-title">App Updates</div>
             <div class="item-subtitle">Check for updates</div>
           </div>
           ${(p()??0)>0?this.h`<div class="badge">${p()}</div>`:""}
