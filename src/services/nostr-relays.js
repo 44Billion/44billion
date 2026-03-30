@@ -322,11 +322,13 @@ export class NostrRelays {
   //    event seen, with exponential backoff (1s → 5 min cap).
   //
   // Events that could overlap between the gap-fill and live subs are deduplicated.
-  async * getLiveEventsGenerator (filter, relays, { signal } = {}) {
+  async * getLiveEventsGenerator (filter, relays, { signal, timeoutAfterFirstEose = 500 } = {}) {
     const queue = []
     let p = Promise.withResolvers()
     let isDone = false
     const subs = new Map()
+    const activeGapSubs = new Set()
+    let gapEoseTimer = null
 
     // Strip time-range fields — we manage them internally
     const baseFilter = { ...filter }
@@ -339,8 +341,16 @@ export class NostrRelays {
     // Bounded dedup set to handle events that could arrive from both gap-fill and live subs
     const seenIds = new Set()
 
+    const closeAllGapSubs = () => {
+      clearTimeout(gapEoseTimer)
+      gapEoseTimer = null
+      activeGapSubs.forEach(sub => sub.close())
+      activeGapSubs.clear()
+    }
+
     const teardown = () => {
       isDone = true
+      closeAllGapSubs()
       subs.forEach(sub => sub.close())
       subs.clear()
       p.resolve()
@@ -383,13 +393,30 @@ export class NostrRelays {
         if (isDone) { liveSub.close(); return }
         subs.set(url, liveSub)
 
-        // Gap-fill sub: fetches stored events in [gapSince, now], closes after EOSE
+        // Gap-fill sub: fetches stored events in [gapSince, now], closes after EOSE.
+        // If timeoutAfterFirstEose is set, the first relay to EOSE with events starts a
+        // short timer that closes all still-open gap subs (asap behaviour); null waits
+        // for every relay to EOSE naturally.
         if (gapSince !== null && gapSince > 0) {
+          let gapHadEvents = false
           const gapSub = relay.subscribe([{ ...baseFilter, since: gapSince, until: now }], {
-            onevent: (event) => pushEvent(event, url),
-            oneose: () => { gapSub?.close() },
-            onclose: () => {}
+            onevent: (event) => {
+              gapHadEvents = true
+              pushEvent(event, url)
+            },
+            oneose: () => {
+              activeGapSubs.delete(gapSub)
+              gapSub.close()
+              if (gapHadEvents && timeoutAfterFirstEose !== null && !gapEoseTimer && activeGapSubs.size > 0) {
+                gapEoseTimer = setTimeout(closeAllGapSubs, timeoutAfterFirstEose)
+              } else if (activeGapSubs.size === 0) {
+                clearTimeout(gapEoseTimer)
+                gapEoseTimer = null
+              }
+            },
+            onclose: () => { activeGapSubs.delete(gapSub) }
           })
+          activeGapSubs.add(gapSub)
         }
       }).catch(err => {
         if (isDone) return
