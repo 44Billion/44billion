@@ -6,7 +6,6 @@ import { base62ToBase16 } from '#helpers/base62.js'
 import useWebStorage from '#hooks/use-web-storage.js'
 import { cssVars } from '#assets/styles/theme.js'
 
-// todo: if there's kind 0 picture, use it
 f('aAvatar', function () {
   const storage = useWebStorage(localStorage)
   const { props } = this

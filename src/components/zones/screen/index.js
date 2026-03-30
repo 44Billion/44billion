@@ -1,6 +1,7 @@
 import { f, useCallback, useComputed, useStore, useGlobalStore, useGlobalSignal, useStateSignal, useSignal, useClosestSignal, useClosestStore, useTask } from '#f'
 import AppFileManager from '#services/app-file-manager/index.js'
 import useInitOrResetScreen from './use-init-or-reset-screen.js'
+import useTrackAccountEvents from './use-track-account-events.js'
 import useWebStorage from '#hooks/use-web-storage.js'
 // import useLongPress from '#hooks/use-long-press.js'
 import useScrollbarConfig from '#hooks/use-scrollbar-config.js'
@@ -34,6 +35,7 @@ import './menus/toolbar-more-menu.js'
 
 f('aScreen', function () {
   useInitOrResetScreen()
+  useTrackAccountEvents()
   useAppRouter()
   const { isSystemRoute$ } = useSystemRouter()
 

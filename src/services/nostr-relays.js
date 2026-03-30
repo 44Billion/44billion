@@ -285,6 +285,62 @@ export class NostrRelays {
     return await methodPromise
   }
 
+  // Subscribe to live (future) events only. Uses limit=0 so relay sends EOSE immediately
+  // then keeps the subscription open. Yields events until the signal is aborted or
+  // the caller exits the for-await loop.
+  async * getLiveEventsGenerator (filter, relays, { signal } = {}) {
+    const queue = []
+    let p = Promise.withResolvers()
+    let isDone = false
+    const subs = new Map()
+
+    const since = Math.floor(Date.now() / 1000)
+    const liveFilter = { ...filter, since, limit: 0 }
+
+    const teardown = () => {
+      isDone = true
+      subs.forEach(sub => sub.close())
+      subs.clear()
+      p.resolve()
+    }
+
+    if (signal?.aborted) return
+    signal?.addEventListener('abort', teardown, { once: true })
+
+    for (const url of relays) {
+      this.#getRelay(url).then(relay => {
+        if (isDone) return
+        const sub = relay.subscribe([liveFilter], {
+          onevent: (event) => {
+            if (isDone) return
+            event.meta = { relay: url }
+            queue.push(event)
+            p.resolve()
+            p = Promise.withResolvers()
+          },
+          onclose: () => { subs.delete(url) },
+          oneose: () => { /* don't close — we want live events after EOSE */ }
+        })
+        if (isDone) { sub.close(); return }
+        subs.set(url, sub)
+      }).catch(err => {
+        console.error(`Live subscription error at ${url}:`, err)
+      })
+    }
+
+    try {
+      // eslint-disable-next-line no-unmodified-loop-condition
+      while (!isDone || queue.length > 0) {
+        if (queue.length > 0) yield queue.shift()
+        else await p.promise
+      }
+    } finally {
+      // Handles early exit via break/return from caller
+      signal?.removeEventListener('abort', teardown)
+      teardown()
+    }
+  }
+
   // Send an event to a list of relays
   async sendEvent (event, relays, timeout = 3000) {
     const eventToSend = event.meta ? { ...event } : event
