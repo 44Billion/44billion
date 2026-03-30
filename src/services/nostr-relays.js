@@ -21,13 +21,17 @@ export const nappRelays = [
 export class NostrRelays {
   #relays = new Map()
   #relayTimeouts = new Map()
+  #liveSubCounts = new Map() // url -> number of active live subscriptions
   #timeout = 30000 // 30 seconds
 
   // Get a relay connection, creating one if it doesn't exist
   async #getRelay (url) {
     if (this.#relays.has(url)) {
-      clearTimeout(this.#relayTimeouts.get(url))
-      this.#relayTimeouts.set(url, maybeUnref(setTimeout(() => this.disconnect(url), this.#timeout)))
+      // Only reset idle timeout when no live subscriptions are holding this relay open
+      if (!this.#liveSubCounts.get(url)) {
+        clearTimeout(this.#relayTimeouts.get(url))
+        this.#relayTimeouts.set(url, maybeUnref(setTimeout(() => this.disconnect(url), this.#timeout)))
+      }
       const relay = this.#relays.get(url)
       // Reconnect if needed to avoid SendingOnClosedConnection errors
       await relay.connect()
@@ -39,9 +43,31 @@ export class NostrRelays {
 
     await relay.connect()
 
-    this.#relayTimeouts.set(url, maybeUnref(setTimeout(() => this.disconnect(url), this.#timeout)))
+    if (!this.#liveSubCounts.get(url)) {
+      this.#relayTimeouts.set(url, maybeUnref(setTimeout(() => this.disconnect(url), this.#timeout)))
+    }
 
     return relay
+  }
+
+  #incrementLiveSub (url) {
+    this.#liveSubCounts.set(url, (this.#liveSubCounts.get(url) ?? 0) + 1)
+    // Cancel any pending idle timeout — this relay must stay open
+    clearTimeout(this.#relayTimeouts.get(url))
+    this.#relayTimeouts.delete(url)
+  }
+
+  #decrementLiveSub (url) {
+    const next = (this.#liveSubCounts.get(url) ?? 1) - 1
+    if (next <= 0) {
+      this.#liveSubCounts.delete(url)
+      // No more live subscriptions — start the idle timer if the relay is still pooled
+      if (this.#relays.has(url)) {
+        this.#relayTimeouts.set(url, maybeUnref(setTimeout(() => this.disconnect(url), this.#timeout)))
+      }
+    } else {
+      this.#liveSubCounts.set(url, next)
+    }
   }
 
   // Disconnect from a relay
@@ -287,15 +313,12 @@ export class NostrRelays {
 
   // Subscribe to live (future) events only. Uses limit=0 so relay sends EOSE immediately
   // then keeps the subscription open. Yields events until the signal is aborted or
-  // the caller exits the for-await loop.
+  // the caller exits the for-await loop. Reconnects with exponential backoff on drop.
   async * getLiveEventsGenerator (filter, relays, { signal } = {}) {
     const queue = []
     let p = Promise.withResolvers()
     let isDone = false
     const subs = new Map()
-
-    const since = Math.floor(Date.now() / 1000)
-    const liveFilter = { ...filter, since, limit: 0 }
 
     const teardown = () => {
       isDone = true
@@ -307,7 +330,11 @@ export class NostrRelays {
     if (signal?.aborted) return
     signal?.addEventListener('abort', teardown, { once: true })
 
-    for (const url of relays) {
+    // Each relay gets its own reconnecting subscription loop with exponential backoff.
+    // A fresh `since` is computed on every (re)connect so we only ask for events
+    // from that moment forward, not a replay of the entire gap.
+    const subscribeToRelay = (url, reconnectDelay = 1000) => {
+      const liveFilter = { ...filter, since: Math.floor(Date.now() / 1000), limit: 0 }
       this.#getRelay(url).then(relay => {
         if (isDone) return
         const sub = relay.subscribe([liveFilter], {
@@ -318,14 +345,27 @@ export class NostrRelays {
             p.resolve()
             p = Promise.withResolvers()
           },
-          onclose: () => { subs.delete(url) },
+          onclose: () => {
+            subs.delete(url)
+            if (isDone) return
+            const delay = reconnectDelay
+            setTimeout(() => subscribeToRelay(url, Math.min(reconnectDelay * 2, 5 * 60_000)), delay)
+          },
           oneose: () => { /* don't close — we want live events after EOSE */ }
         })
         if (isDone) { sub.close(); return }
         subs.set(url, sub)
       }).catch(err => {
+        if (isDone) return
         console.error(`Live subscription error at ${url}:`, err)
+        const delay = reconnectDelay
+        setTimeout(() => subscribeToRelay(url, Math.min(reconnectDelay * 2, 5 * 60_000)), delay)
       })
+    }
+
+    for (const url of relays) {
+      this.#incrementLiveSub(url)
+      subscribeToRelay(url)
     }
 
     try {
@@ -337,6 +377,7 @@ export class NostrRelays {
     } finally {
       // Handles early exit via break/return from caller
       signal?.removeEventListener('abort', teardown)
+      for (const url of relays) this.#decrementLiveSub(url)
       teardown()
     }
   }
