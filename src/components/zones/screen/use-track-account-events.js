@@ -1,7 +1,7 @@
 import { useTask } from '#f'
 import useWebStorage from '#hooks/use-web-storage.js'
 import nostrRelays, { seedRelays } from '#services/nostr-relays.js'
-import { useRequestVaultMessage } from '#zones/vault-modal/index.js'
+import { postToVault } from '#zones/vault-modal/index.js'
 import { base62ToBase16 } from '#helpers/base62.js'
 import { isValidRelayUrl } from '#helpers/relay.js'
 
@@ -10,11 +10,14 @@ const activeSubscriptions = new Map()
 
 export default function useTrackAccountEvents () {
   const storage = useWebStorage(localStorage)
-  const vaultMsg = useRequestVaultMessage()
 
   useTask(({ track }) => {
     const userPks = track(() => storage.session_accountUserPks$()) ?? []
-    const pkSet = new Set(userPks)
+    const defaultUserPk = storage.session_defaultUserPk$()
+
+    // Only track real (post-VAULT_READY) accounts — skip the default placeholder user
+    const realPks = userPks.filter(pk => pk !== defaultUserPk)
+    const pkSet = new Set(realPks)
 
     // Stop tracking pubkeys that are no longer in account state
     for (const [pk, controller] of activeSubscriptions) {
@@ -29,12 +32,12 @@ export default function useTrackAccountEvents () {
       if (activeSubscriptions.has(pk)) continue
       const controller = new AbortController()
       activeSubscriptions.set(pk, controller)
-      trackEventsForAccount(pk, controller.signal, storage, vaultMsg)
+      trackEventsForAccount(pk, controller.signal, storage)
     }
   })
 }
 
-async function trackEventsForAccount (pk, signal, storage, vaultMsg) {
+async function trackEventsForAccount (pk, signal, storage) {
   const pkBase16 = base62ToBase16(pk)
 
   const getStoredEventAt = (kind) => {
@@ -51,12 +54,10 @@ async function trackEventsForAccount (pk, signal, storage, vaultMsg) {
 
   const maybeSendToVault = (event) => {
     if (event.created_at <= getStoredEventAt(event.kind)) return
-    Promise.resolve(
-      vaultMsg.postVaultMessage({
-        code: 'UPDATE_ACCOUNT_EVENTS',
-        payload: { pubkey: pkBase16, events: [event] }
-      })
-    ).catch(() => {})
+    postToVault({
+      code: 'UPDATE_ACCOUNT_EVENTS',
+      payload: { pubkey: pkBase16, events: [event] }
+    })
   }
 
   const subscribeLive = (kinds, relays) => {
@@ -74,10 +75,10 @@ async function trackEventsForAccount (pk, signal, storage, vaultMsg) {
 
     // --- kind 10002 (relay list) — always from seed relays ---
 
-    // Start live subscription first so no events are missed
+    // Start live subscription first so no events are missed during one-off fetch
     subscribeLive([10002], seedRelays)
 
-    // One-off fetch to get current relay list and write relays for kind 0
+    // One-off fetch to get current relay list and extract write relays for kind 0
     const relayListResponse = await nostrRelays.getEventsAsap(
       { kinds: [10002], authors: [pkBase16], limit: 1, until: now },
       seedRelays,
@@ -105,6 +106,7 @@ async function trackEventsForAccount (pk, signal, storage, vaultMsg) {
 
     // --- kind 0 (user metadata) — from write relays ---
 
+    // Start live subscription before one-off fetch
     subscribeLive([0], writeRelays)
 
     const profileResponse = await nostrRelays.getEventsAsap(

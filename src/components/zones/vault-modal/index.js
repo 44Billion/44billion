@@ -233,6 +233,22 @@ f('vault-messenger', function () {
   `
 })
 
+// Module-level reference to the active vault port, kept in sync by initMessageListener.
+// Allows non-hook code (e.g. async tracking functions) to fire-and-forget messages to the vault.
+let _activeVaultPort = null
+const _pendingVaultMessages = []
+const MAX_PENDING_VAULT_MESSAGES = 50
+
+export function postToVault (msg) {
+  if (!_activeVaultPort) {
+    if (_pendingVaultMessages.length < MAX_PENDING_VAULT_MESSAGES) {
+      _pendingVaultMessages.push(msg)
+    }
+    return
+  }
+  postMessage(_activeVaultPort, msg)
+}
+
 function initMessageListener ({
   vaultIframe,
   vaultOrigin,
@@ -250,6 +266,8 @@ function initMessageListener ({
     if (currentVaultPort) {
       currentVaultPort.close()
       currentVaultPort = null
+      _activeVaultPort = null
+      _pendingVaultMessages.length = 0
     }
   }, { once: true })
 
@@ -270,6 +288,8 @@ function initMessageListener ({
     ac = new AbortController()
     if (currentVaultPort) currentVaultPort.close()
     currentVaultPort = e.ports[0]
+    _activeVaultPort = currentVaultPort
+    _pendingVaultMessages.splice(0).forEach(msg => postMessage(_activeVaultPort, msg))
     listenToVaultMessages({ vaultPort: currentVaultPort, signal: AbortSignal.any([componentSignal, ac.signal]) })
     // before setting vaultPort$, which could trigger other messages to vault
     stopRenderHandshake?.()
