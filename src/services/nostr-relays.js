@@ -311,14 +311,33 @@ export class NostrRelays {
     return await methodPromise
   }
 
-  // Subscribe to live (future) events only. Uses limit=0 so relay sends EOSE immediately
-  // then keeps the subscription open. Yields events until the signal is aborted or
-  // the caller exits the for-await loop. Reconnects with exponential backoff on drop.
+  // Yields nostr events from the given relays indefinitely until the signal is aborted
+  // or the caller exits the for-await loop. Handles three concerns internally:
+  //
+  // 1. Initial gap fill: if filter.since is a positive timestamp, fetches stored events
+  //    from that point up to now before the live stream starts (dual-sub pattern).
+  // 2. Live stream: a limit:0 sub keeps the relay connection open after EOSE so future
+  //    events are delivered in real time.
+  // 3. Reconnect gap fill: on each reconnect, fetches events missed since the last
+  //    event seen, with exponential backoff (1s → 5 min cap).
+  //
+  // Events that could overlap between the gap-fill and live subs are deduplicated.
   async * getLiveEventsGenerator (filter, relays, { signal } = {}) {
     const queue = []
     let p = Promise.withResolvers()
     let isDone = false
     const subs = new Map()
+
+    // Strip time-range fields — we manage them internally
+    const baseFilter = { ...filter }
+    delete baseFilter.since
+    delete baseFilter.until
+
+    // lastSeenAt: the highest created_at received so far; used as gapSince on reconnect
+    let lastSeenAt = (filter.since > 0) ? filter.since : null
+
+    // Bounded dedup set to handle events that could arrive from both gap-fill and live subs
+    const seenIds = new Set()
 
     const teardown = () => {
       isDone = true
@@ -327,45 +346,65 @@ export class NostrRelays {
       p.resolve()
     }
 
+    const pushEvent = (event, url) => {
+      if (isDone || seenIds.has(event.id)) return
+      if (seenIds.size >= 500) seenIds.delete(seenIds.values().next().value) // evict oldest
+      seenIds.add(event.id)
+      if (event.created_at > (lastSeenAt ?? 0)) lastSeenAt = event.created_at
+      event.meta = { relay: url }
+      queue.push(event)
+      p.resolve()
+      p = Promise.withResolvers()
+    }
+
     if (signal?.aborted) return
     signal?.addEventListener('abort', teardown, { once: true })
 
-    // Each relay gets its own reconnecting subscription loop with exponential backoff.
-    // A fresh `since` is computed on every (re)connect so we only ask for events
-    // from that moment forward, not a replay of the entire gap.
-    const subscribeToRelay = (url, reconnectDelay = 1000) => {
-      const liveFilter = { ...filter, since: Math.floor(Date.now() / 1000), limit: 0 }
+    const subscribeToRelay = (url, gapSince, reconnectDelay = 1000) => {
+      const now = Math.floor(Date.now() / 1000)
       this.#getRelay(url).then(relay => {
         if (isDone) return
-        const sub = relay.subscribe([liveFilter], {
-          onevent: (event) => {
-            if (isDone) return
-            event.meta = { relay: url }
-            queue.push(event)
-            p.resolve()
-            p = Promise.withResolvers()
-          },
+
+        // Open the live sub first so the relay starts buffering future events
+        // before we ask it to scan its database for the gap fill
+        const liveSub = relay.subscribe([{ ...baseFilter, since: now, limit: 0 }], {
+          onevent: (event) => pushEvent(event, url),
           onclose: () => {
             subs.delete(url)
             if (isDone) return
             const delay = reconnectDelay
-            setTimeout(() => subscribeToRelay(url, Math.min(reconnectDelay * 2, 5 * 60_000)), delay)
+            setTimeout(
+              () => subscribeToRelay(url, lastSeenAt, Math.min(reconnectDelay * 2, 5 * 60_000)),
+              delay
+            )
           },
-          oneose: () => { /* don't close — we want live events after EOSE */ }
+          oneose: () => { /* keep open for live events */ }
         })
-        if (isDone) { sub.close(); return }
-        subs.set(url, sub)
+        if (isDone) { liveSub.close(); return }
+        subs.set(url, liveSub)
+
+        // Gap-fill sub: fetches stored events in [gapSince, now], closes after EOSE
+        if (gapSince !== null && gapSince > 0) {
+          const gapSub = relay.subscribe([{ ...baseFilter, since: gapSince, until: now }], {
+            onevent: (event) => pushEvent(event, url),
+            oneose: () => { gapSub?.close() },
+            onclose: () => {}
+          })
+        }
       }).catch(err => {
         if (isDone) return
         console.error(`Live subscription error at ${url}:`, err)
         const delay = reconnectDelay
-        setTimeout(() => subscribeToRelay(url, Math.min(reconnectDelay * 2, 5 * 60_000)), delay)
+        setTimeout(
+          () => subscribeToRelay(url, lastSeenAt, Math.min(reconnectDelay * 2, 5 * 60_000)),
+          delay
+        )
       })
     }
 
     for (const url of relays) {
       this.#incrementLiveSub(url)
-      subscribeToRelay(url)
+      subscribeToRelay(url, (filter.since > 0) ? filter.since : null)
     }
 
     try {
@@ -375,7 +414,6 @@ export class NostrRelays {
         else await p.promise
       }
     } finally {
-      // Handles early exit via break/return from caller
       signal?.removeEventListener('abort', teardown)
       for (const url of relays) this.#decrementLiveSub(url)
       teardown()

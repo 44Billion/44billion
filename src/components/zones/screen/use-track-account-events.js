@@ -37,6 +37,18 @@ export default function useTrackAccountEvents () {
   })
 }
 
+function extractWriteRelays (event) {
+  const relays = []
+  for (const tag of event.tags ?? []) {
+    if (tag[0] !== 'r' || typeof tag[1] !== 'string') continue
+    const type = tag[2]
+    if (type && type !== 'write') continue // skip read-only relays
+    const url = tag[1].trim().replace(/\/+$/, '')
+    if (isValidRelayUrl(url)) relays.push(url)
+  }
+  return relays
+}
+
 async function trackEventsForAccount (pk, signal, storage) {
   const pkBase16 = base62ToBase16(pk)
 
@@ -60,65 +72,37 @@ async function trackEventsForAccount (pk, signal, storage) {
     })
   }
 
-  const subscribeLive = (kinds, relays) => {
-    ;(async () => {
-      for await (const event of nostrRelays.getLiveEventsGenerator({ kinds, authors: [pkBase16] }, relays, { signal })) {
-        maybeSendToVault(event)
-      }
-    })().catch(err => {
-      if (!signal.aborted) console.error('Live subscription error:', err)
-    })
-  }
+  // Stream kind 10002 (relay list) from seed relays — initial gap fill + live.
+  // The first event tells us the user's write relays, which we use to start
+  // a concurrent kind 0 (profile) stream on those relays.
+  let kind0Started = false
 
   try {
-    const now = Math.floor(Date.now() / 1000)
-
-    // --- kind 10002 (relay list) — always from seed relays ---
-
-    // Start live subscription first so no events are missed during one-off fetch
-    subscribeLive([10002], seedRelays)
-
-    // One-off fetch to get current relay list and extract write relays for kind 0
-    const relayListResponse = await nostrRelays.getEventsAsap(
-      { kinds: [10002], authors: [pkBase16], limit: 1, until: now },
+    for await (const event of nostrRelays.getLiveEventsGenerator(
+      { kinds: [10002], authors: [pkBase16], since: getStoredEventAt(10002), limit: 1 },
       seedRelays,
       { signal }
-    )
-    if (signal.aborted) return
+    )) {
+      maybeSendToVault(event)
 
-    const relayEvents = (relayListResponse.result ?? []).sort((a, b) => b.created_at - a.created_at)
-    const latestRelayEvent = relayEvents[0]
-
-    // Extract write relays from kind 10002 tags
-    const writeRelays = []
-    if (latestRelayEvent) {
-      maybeSendToVault(latestRelayEvent)
-      for (const tag of latestRelayEvent.tags ?? []) {
-        if (tag[0] !== 'r' || typeof tag[1] !== 'string') continue
-        const type = tag[2]
-        if (type && type !== 'write') continue // skip read-only relays
-        const url = tag[1].trim().replace(/\/+$/, '')
-        if (isValidRelayUrl(url)) writeRelays.push(url)
+      if (!kind0Started) {
+        kind0Started = true
+        const writeRelays = extractWriteRelays(event)
+        if (writeRelays.length > 0) {
+          ;(async () => {
+            for await (const e of nostrRelays.getLiveEventsGenerator(
+              { kinds: [0], authors: [pkBase16], since: getStoredEventAt(0), limit: 1 },
+              writeRelays,
+              { signal }
+            )) {
+              maybeSendToVault(e)
+            }
+          })().catch(err => {
+            if (!signal.aborted) console.error('Kind 0 tracking error for', pk, err)
+          })
+        }
       }
     }
-
-    if (!writeRelays.length || signal.aborted) return
-
-    // --- kind 0 (user metadata) — from write relays ---
-
-    // Start live subscription before one-off fetch
-    subscribeLive([0], writeRelays)
-
-    const profileResponse = await nostrRelays.getEventsAsap(
-      { kinds: [0], authors: [pkBase16], limit: 1, until: now },
-      writeRelays,
-      { signal }
-    )
-    if (signal.aborted) return
-
-    const profileEvents = (profileResponse.result ?? []).sort((a, b) => b.created_at - a.created_at)
-    const latestProfileEvent = profileEvents[0]
-    if (latestProfileEvent) maybeSendToVault(latestProfileEvent)
   } catch (err) {
     if (!signal.aborted) console.error('Error tracking account events for', pk, err)
   }
