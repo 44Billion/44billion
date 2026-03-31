@@ -17,6 +17,29 @@ export const nappRelays = [
   'wss://relay.44billion.net'
 ]
 
+// Returns a function that should be called for each received event (valid or invalid).
+// Calls onSatisfied() and stops counting once the filter is fully satisfied per relay:
+//   - limit: close after that many events have been received (counting invalid ones too,
+//     since the relay counts them toward its own limit)
+//   - ids: close once all requested ids have been seen
+// Both conditions are independent; whichever triggers first wins.
+function makeEarlyCloseChecker (filter, onSatisfied) {
+  let count = 0
+  const remainingIds = (filter.ids?.length > 0) ? new Set(filter.ids) : null
+  const limit = filter.limit > 0 ? filter.limit : null
+  let satisfied = false
+
+  return (event) => {
+    if (satisfied) return
+    count++
+    if (remainingIds && event?.id) remainingIds.delete(event.id)
+    if ((limit !== null && count >= limit) || (remainingIds !== null && remainingIds.size === 0)) {
+      satisfied = true
+      onSatisfied()
+    }
+  }
+}
+
 // Interacts with Nostr relays
 export class NostrRelays {
   #relays = new Map()
@@ -117,11 +140,26 @@ export class NostrRelays {
           return p.promise
         }
 
+        // Shared resolve path: EOSE, early close (limit/ids satisfied), or normal close
+        const resolveRelay = () => {
+          if (isClosed) return
+          clearTimeout(timer)
+          isClosed = true
+          sub?.close()
+          p.resolve()
+        }
+
+        const checkEarlyClose = makeEarlyCloseChecker(filter, resolveRelay)
+
         sub = relay.subscribe([filter], {
           onevent: (event) => {
             event.meta = { relay: url }
             events.push(event)
             if (callback) callback({ type: 'event', event, relay: url })
+            checkEarlyClose(event)
+          },
+          oninvalidevent: (event) => {
+            checkEarlyClose(event)
           },
           onclose: err => {
             clearTimeout(timer)
@@ -134,12 +172,7 @@ export class NostrRelays {
             // May have closed normally, without error
             reason ? p.reject(reason) : p.resolve()
           },
-          oneose: () => {
-            clearTimeout(timer)
-            isClosed = true
-            sub.close()
-            p.resolve()
-          }
+          oneose: resolveRelay
         })
       } catch (err) {
         clearTimeout(timer)
@@ -215,6 +248,17 @@ export class NostrRelays {
         if (isResolved) return
         let hasEvents = false
 
+        // Shared EOSE path: actual EOSE or early close (limit/ids satisfied)
+        const handleEose = () => {
+          if (!subs.has(url)) return // already closed
+          sub.close()
+          if (hasEvents && !eoseTimer && !isResolved) {
+            eoseTimer = maybeUnref(setTimeout(finalize, timeoutAfterFirstEose))
+          }
+        }
+
+        const checkEarlyClose = makeEarlyCloseChecker(filter, handleEose)
+
         const sub = relay.subscribe([filter], {
           onevent: (event) => {
             if (isResolved) return
@@ -222,6 +266,11 @@ export class NostrRelays {
             event.meta = { relay: url }
             events.push(event)
             if (callback) callback({ type: 'event', event, relay: url })
+            checkEarlyClose(event)
+          },
+          oninvalidevent: (event) => {
+            if (isResolved) return
+            checkEarlyClose(event)
           },
           onclose: (err) => {
             subs.delete(url)
@@ -232,14 +281,7 @@ export class NostrRelays {
             }
             markClosedAndMaybeFinish()
           },
-          oneose: () => {
-            sub.close()
-            if (hasEvents && !eoseTimer && !isResolved) {
-              eoseTimer = maybeUnref(setTimeout(() => {
-                finalize()
-              }, timeoutAfterFirstEose))
-            }
-          }
+          oneose: handleEose
         })
         subs.set(url, sub)
       }).catch(error => {
@@ -311,64 +353,60 @@ export class NostrRelays {
     return await methodPromise
   }
 
-  // Yields nostr events from the given relays. Handles three concerns internally:
+  // Yields live nostr events from the given relays. Stops naturally when filter.until
+  // is set and the wall clock reaches that timestamp. Also stops on signal abort or
+  // for-await loop exit (break/return/throw — all trigger the finally block).
   //
-  // 1. Initial gap fill: if filter.since is a positive timestamp, fetches stored events
-  //    from that point up to now before the live stream starts (dual-sub pattern).
-  // 2. Live stream (live:true, default): a limit:0 sub keeps the relay connection open
-  //    after EOSE so future events are delivered in real time. The generator runs
-  //    indefinitely until the signal is aborted or the caller exits the for-await loop.
-  //    On disconnect, reconnects with exponential backoff (1s → 5 min cap) and re-fills
-  //    any gap since the last event seen.
-  // 3. One-shot (live:false): only the gap-fill fetch runs; the generator ends naturally
-  //    once all relays have finished. No reconnection. A per-relay `timeout` (default 5s)
-  //    caps how long to wait for connection + EOSE; set to null to disable. Combine with
-  //    `timeoutAfterFirstEose` to short-circuit slow relays (asap behaviour), or set it
-  //    to null to wait for every relay to EOSE naturally.
+  // Handles two concerns:
+  // 1. Live stream: a limit:0 sub keeps the relay connection open so future events are
+  //    delivered in real time. filter.until is forwarded to the relay so it can enforce
+  //    the boundary server-side too.
+  // 2. Reconnect gap fill: on each disconnect, fetches events missed since the last event
+  //    seen, with exponential backoff (1s → 5 min cap). filter.since is used as the
+  //    initial gap boundary if no events have been seen yet.
   //
-  // Events that could overlap between the gap-fill and live subs are deduplicated.
+  // Initial fetching of stored events is the responsibility of getEventsFeedGenerator.
+  // Reconnect gap fills delegate to getEventsAsapGenerator (when gapTimeoutAfterFirstEose
+  // is set, default 500ms) or getEventsGenerator (when null). Both are injectable.
+  // Reconnect gap events are deduplicated against live events.
   async * getLiveEventsGenerator (filter, relays, {
     signal,
-    live = true,
-    timeout = 5000,
-    timeoutAfterFirstEose = 500
+    gapTimeout = 5000,
+    gapTimeoutAfterFirstEose = 500,
+    _gapAsapGenerator = (...args) => this.getEventsAsapGenerator(...args),
+    _gapFetchGenerator = (...args) => this.getEventsGenerator(...args)
   } = {}) {
     const queue = []
     let p = Promise.withResolvers()
     let isDone = false
-    const liveSubs = new Map()  // url → live sub (live:true only)
-    const fetchSubs = new Set() // currently open gap/fetch subs
-    let fetchEoseTimer = null
-    let nonLiveSettled = 0      // relays fully done (live:false only)
+    const liveSubs = new Map() // url → live sub
+
+    // Internal abort controller to cancel any in-flight reconnect gap fills on teardown
+    const gapAc = new AbortController()
 
     // Strip time-range fields — we manage them internally
     const baseFilter = { ...filter }
     delete baseFilter.since
     delete baseFilter.until
 
-    // lastSeenAt: the highest created_at received so far; used as gapSince on reconnect
+    // Preserve until for forwarding to the live sub filter and the teardown timer
+    const filterUntil = filter.until > 0 ? filter.until : null
+
+    // lastSeenAt: the highest created_at received so far; used as since on reconnect gap fill
     let lastSeenAt = (filter.since > 0) ? filter.since : null
 
-    // Bounded dedup set to handle events that could arrive from both gap-fill and live subs
+    // Bounded dedup set to handle overlap between reconnect gap fill and live sub
     const seenIds = new Set()
 
+    let untilTimer = null
     const teardown = () => {
       if (isDone) return
       isDone = true
-      clearTimeout(fetchEoseTimer)
-      fetchEoseTimer = null
-      fetchSubs.forEach(sub => sub.close())
-      fetchSubs.clear()
+      clearTimeout(untilTimer)
+      gapAc.abort()
       liveSubs.forEach(sub => sub.close())
       liveSubs.clear()
       p.resolve()
-    }
-
-    const closeAllFetchSubs = () => {
-      clearTimeout(fetchEoseTimer)
-      fetchEoseTimer = null
-      fetchSubs.forEach(sub => sub.close())
-      fetchSubs.clear()
     }
 
     const pushEvent = (event, url) => {
@@ -382,117 +420,90 @@ export class NostrRelays {
       p = Promise.withResolvers()
     }
 
-    const onNonLiveRelaySettled = () => {
-      nonLiveSettled++
-      if (nonLiveSettled >= relays.length) teardown()
-    }
-
     if (signal?.aborted) return
     signal?.addEventListener('abort', teardown, { once: true })
 
+    // Schedule teardown when the wall clock reaches filter.until
+    if (filterUntil !== null) {
+      const msUntil = filterUntil * 1000 - Date.now()
+      untilTimer = maybeUnref(setTimeout(teardown, msUntil))
+    }
+
+    // Runs a reconnect gap fill for a single relay and returns a promise that resolves
+    // when it completes. now is shared with the live sub so both use the same boundary.
+    const runReconnectGapFill = (url, gapSince, now) => {
+      const gapUntil = filterUntil !== null ? Math.min(now, filterUntil) : now
+      const gapFilter = { ...baseFilter, since: gapSince, until: gapUntil }
+      const gapGen = gapTimeoutAfterFirstEose !== null
+        ? _gapAsapGenerator(gapFilter, [url], { timeout: gapTimeout, timeoutAfterFirstEose: gapTimeoutAfterFirstEose, signal: gapAc.signal })
+        : _gapFetchGenerator(gapFilter, [url], { timeout: gapTimeout, signal: gapAc.signal })
+      return (async () => {
+        for await (const item of gapGen) {
+          if (item?.type === 'event') pushEvent(item.event, url)
+        }
+      })().catch(err => {
+        if (!isDone) console.error(`Reconnect gap fill error for ${url}:`, err)
+      })
+    }
+
     const subscribeToRelay = (url, gapSince, reconnectDelay = 1000) => {
       const now = Math.floor(Date.now() / 1000)
-
-      // Per-relay settle: idempotent, clears the timeout, notifies the generator.
-      // Only used for live:false — live:true reconnects instead of settling.
-      let relaySettled = false
-      let relayTimer = null
-      const settleRelay = () => {
-        if (relaySettled) return
-        relaySettled = true
-        clearTimeout(relayTimer)
-        if (!isDone) onNonLiveRelaySettled()
-      }
-      if (!live && timeout != null) {
-        relayTimer = maybeUnref(setTimeout(settleRelay, timeout))
-      }
-
+      // Don't reconnect if we're past the until boundary
+      if (filterUntil !== null && now >= filterUntil) return
       this.#getRelay(url).then(relay => {
         if (isDone) return
 
-        if (live) {
-          // Open the live sub first so the relay starts buffering future events
-          // before we ask it to scan its database for the gap fill
-          const liveSub = relay.subscribe([{ ...baseFilter, since: now, limit: 0 }], {
-            onevent: (event) => pushEvent(event, url),
-            onclose: () => {
-              liveSubs.delete(url)
-              if (isDone) return
-              const delay = reconnectDelay
-              setTimeout(
-                () => subscribeToRelay(url, lastSeenAt, Math.min(reconnectDelay * 2, 5 * 60_000)),
-                delay
-              )
-            },
-            oneose: () => { /* keep open for live events */ }
-          })
-          if (isDone) { liveSub.close(); return }
-          liveSubs.set(url, liveSub)
-        }
+        // Buffer live events while a reconnect gap fill is running so stored events
+        // are yielded first. Flushed (with dedup) once gap fill completes.
+        let liveBuffer = (gapSince !== null && gapSince > 0) ? [] : null
 
-        // Gap/fetch sub: for live:true, fetches [gapSince, now] and closes at EOSE.
-        // For live:false, always opens (using until:now as upper bound).
-        // If timeoutAfterFirstEose is set, the first relay to EOSE with events starts a
-        // short timer that closes all still-open fetch subs (asap behaviour); null waits
-        // for every relay to EOSE naturally.
-        const shouldOpenFetchSub = live ? (gapSince !== null && gapSince > 0) : true
-        if (shouldOpenFetchSub) {
-          const fetchFilter = (gapSince !== null && gapSince > 0)
-            ? { ...baseFilter, since: gapSince, until: now }
-            : { ...baseFilter, until: now }
-          let fetchHadEvents = false
-          let fetchDone = false
-          const onFetchDone = () => {
-            if (fetchDone) return
-            fetchDone = true
-            if (!live) settleRelay()
-          }
-          const fetchSub = relay.subscribe([fetchFilter], {
-            onevent: (event) => {
-              fetchHadEvents = true
-              pushEvent(event, url)
-            },
-            oneose: () => {
-              fetchSubs.delete(fetchSub)
-              fetchSub.close()
-              if (fetchHadEvents && timeoutAfterFirstEose !== null && !fetchEoseTimer && fetchSubs.size > 0) {
-                fetchEoseTimer = setTimeout(closeAllFetchSubs, timeoutAfterFirstEose)
-              } else if (fetchSubs.size === 0) {
-                clearTimeout(fetchEoseTimer)
-                fetchEoseTimer = null
-              }
-              onFetchDone()
-            },
-            onclose: () => {
-              fetchSubs.delete(fetchSub)
-              onFetchDone()
-            }
+        // Open the live sub first so the relay starts buffering incoming events
+        // before we scan its database for the reconnect gap fill.
+        // Forward until to the relay so it can enforce the boundary server-side.
+        const liveFilter = { ...baseFilter, since: now, limit: 0 }
+        if (filterUntil !== null) liveFilter.until = filterUntil
+        const liveSub = relay.subscribe([liveFilter], {
+          onevent: (event) => {
+            if (liveBuffer) liveBuffer.push(event)
+            else pushEvent(event, url)
+          },
+          onclose: () => {
+            liveSubs.delete(url)
+            if (isDone) return
+            const delay = reconnectDelay
+            setTimeout(
+              () => subscribeToRelay(url, lastSeenAt, Math.min(reconnectDelay * 2, 5 * 60_000)),
+              delay
+            )
+          },
+          oneose: () => { /* keep open for live events */ }
+        })
+        if (isDone) { liveSub.close(); return }
+        liveSubs.set(url, liveSub)
+
+        if (gapSince !== null && gapSince > 0) {
+          runReconnectGapFill(url, gapSince, now).then(() => {
+            if (isDone) return
+            const buf = liveBuffer
+            liveBuffer = null
+            for (const event of buf) pushEvent(event, url)
           })
-          fetchSubs.add(fetchSub)
-        } else if (!live) {
-          settleRelay()
         }
       }).catch(err => {
         if (isDone) return
-        if (live) {
-          console.error(`Live subscription error at ${url}:`, err)
-          const delay = reconnectDelay
-          setTimeout(
-            () => subscribeToRelay(url, lastSeenAt, Math.min(reconnectDelay * 2, 5 * 60_000)),
-            delay
-          )
-        } else {
-          console.error(`Subscription error at ${url}:`, err)
-          settleRelay()
-        }
+        console.error(`Live subscription error at ${url}:`, err)
+        const delay = reconnectDelay
+        setTimeout(
+          () => subscribeToRelay(url, lastSeenAt, Math.min(reconnectDelay * 2, 5 * 60_000)),
+          delay
+        )
       })
     }
 
     for (const url of relays) {
-      if (live) this.#incrementLiveSub(url)
-      subscribeToRelay(url, (filter.since > 0) ? filter.since : null)
+      this.#incrementLiveSub(url)
+      subscribeToRelay(url, null) // no initial gap fill — that's getEventsFeedGenerator's job
     }
-    if (!live && relays.length === 0) teardown()
 
     try {
       // eslint-disable-next-line no-unmodified-loop-condition
@@ -502,8 +513,106 @@ export class NostrRelays {
       }
     } finally {
       signal?.removeEventListener('abort', teardown)
-      if (live) for (const url of relays) this.#decrementLiveSub(url)
+      for (const url of relays) this.#decrementLiveSub(url)
       teardown()
+    }
+  }
+
+  // All-in-one event feed generator. For live:true, handles the full sequence:
+  //
+  // - live:true (default): unless filter.limit === 0, starts the live sub immediately
+  //   (so no incoming events are missed), runs an initial one-shot fetch of stored events
+  //   concurrently, yields stored events first, then flushes buffered live events (deduped
+  //   against stored ones), then yields live events indefinitely. With limit:0 the relay
+  //   sends no stored events, so the fetch is skipped and only the live sub runs.
+  // - live:false + timeoutAfterFirstEose set: one-shot fetch via getEventsAsapGenerator —
+  //   short-circuits once the fastest relay with events has EOSEd.
+  // - live:false + timeoutAfterFirstEose:null: one-shot fetch via getEventsGenerator —
+  //   waits for all relays to EOSE naturally.
+  //
+  // All underlying generators are injectable for testing.
+  async * getEventsFeedGenerator (filter, relays, {
+    signal,
+    live = true,
+    timeout = 5000,
+    timeoutAfterFirstEose = 500,
+    _liveGenerator = (...args) => this.getLiveEventsGenerator(...args),
+    _asapGenerator = (...args) => this.getEventsAsapGenerator(...args),
+    _fetchGenerator = (...args) => this.getEventsGenerator(...args)
+  } = {}) {
+    if (!live) {
+      const gen = timeoutAfterFirstEose !== null
+        ? _asapGenerator(filter, relays, { timeout, timeoutAfterFirstEose, signal })
+        : _fetchGenerator(filter, relays, { timeout, signal })
+      for await (const item of gen) {
+        if (item?.type === 'event') yield item.event
+      }
+      return
+    }
+
+    // limit:0 means "no stored events, live only" — skip the initial fetch.
+    if (filter.limit === 0) {
+      for await (const event of _liveGenerator(filter, relays, { signal })) {
+        yield event
+      }
+      return
+    }
+
+    // Start live generator immediately so the relay opens the live sub and starts
+    // buffering incoming events before we query stored ones.
+    // Relays always send stored matching events before EOSE (unless limit:0),
+    // so the initial fetch + buffering is always needed.
+    const liveGen = _liveGenerator(filter, relays, { signal })
+    const liveBuffer = []
+    let liveDone = false
+    let liveWake = Promise.withResolvers()
+
+    const bgLoop = (async () => {
+      try {
+        for await (const event of liveGen) {
+          liveBuffer.push(event)
+          liveWake.resolve()
+          liveWake = Promise.withResolvers()
+        }
+      } finally {
+        liveDone = true
+        liveWake.resolve()
+      }
+    })()
+
+    try {
+      // Yield stored events from the initial one-shot fetch
+      const fetchGen = timeoutAfterFirstEose !== null
+        ? _asapGenerator(filter, relays, { timeout, timeoutAfterFirstEose, signal })
+        : _fetchGenerator(filter, relays, { timeout, signal })
+
+      const seenIds = new Set()
+      for await (const item of fetchGen) {
+        if (item?.type === 'event' && !seenIds.has(item.event.id)) {
+          seenIds.add(item.event.id)
+          yield item.event
+        }
+      }
+
+      // Flush buffered live events that arrived during the initial fetch, deduping
+      // against stored ones (overlap is possible around the fetch's until boundary)
+      while (liveBuffer.length > 0) {
+        const event = liveBuffer.shift()
+        if (!seenIds.has(event.id)) {
+          seenIds.add(event.id)
+          yield event
+        }
+      }
+
+      // Yield subsequent live events directly — no more overlap with stored events
+      // eslint-disable-next-line no-unmodified-loop-condition
+      while (!liveDone || liveBuffer.length > 0) {
+        while (liveBuffer.length > 0) yield liveBuffer.shift()
+        if (!liveDone) await liveWake.promise
+      }
+    } finally {
+      liveGen.return()
+      await bgLoop
     }
   }
 

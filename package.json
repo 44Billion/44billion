@@ -10,8 +10,8 @@
     "start": "cd ../44b-vault && npm run start & npm run _start",
     "build": "NODE_ENV=production npm run _build",
     "_build": "node bin/build.js",
-    "test": "node --test 'tests/**/*.test.js'",
-    "test:only": "node --test --test-only 'tests/**/*.test.js'"
+    "test": "node --test --experimental-test-module-mocks 'tests/**/*.test.js'",
+    "test:only": "node --test --test-only --experimental-test-module-mocks 'tests/**/*.test.js'"
   },
   "devDependencies": {
     "core-js": "^3.46.0",

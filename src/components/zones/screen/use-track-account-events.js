@@ -78,7 +78,7 @@ async function trackEventsForAccount (pk, signal, storage) {
   let kind0Started = false
 
   try {
-    for await (const event of nostrRelays.getLiveEventsGenerator(
+    for await (const event of nostrRelays.getEventsFeedGenerator(
       { kinds: [10002], authors: [pkBase16], since: getStoredEventAt(10002), limit: 1 },
       seedRelays,
       { signal }
@@ -90,7 +90,7 @@ async function trackEventsForAccount (pk, signal, storage) {
         const writeRelays = extractWriteRelays(event)
         if (writeRelays.length > 0) {
           ;(async () => {
-            for await (const e of nostrRelays.getLiveEventsGenerator(
+            for await (const e of nostrRelays.getEventsFeedGenerator(
               { kinds: [0], authors: [pkBase16], since: getStoredEventAt(0), limit: 1 },
               writeRelays,
               { signal }
