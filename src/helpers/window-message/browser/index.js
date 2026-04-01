@@ -52,7 +52,25 @@ export async function initMessageListener (
   if (!vaultIframe) console.warn('Vault iframe not found')
 
   const appAddress = appIdToAddressObj(appId)
-  const appFiles = await AppFileManager.create(appId, appAddress)
+  const appFilesPromise = AppFileManager.create(appId, appAddress)
+  appFilesPromise.catch(() => {}) // prevent unhandled rejection if we bail out early via signal
+
+  let appFiles
+  try {
+    appFiles = componentSignal
+      ? await Promise.race([
+        appFilesPromise,
+        new Promise((_resolve, reject) => {
+          if (componentSignal.aborted) return reject(new Error('aborted'))
+          componentSignal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+        })
+      ])
+      : await appFilesPromise
+  } catch (_error) {
+    if (componentSignal?.aborted) return // app was closed while waiting, no dialog
+    if (onFileNotCached) onFileNotCached()
+    return
+  }
   if (isSingleNapp) appFiles.updateSiteManifestMetadata({ lastOpenedAsSingleNappAt: Date.now() })
 
   let currentTrustedAppPagePort = null

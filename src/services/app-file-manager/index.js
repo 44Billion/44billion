@@ -71,7 +71,7 @@ export default class AppFileManager {
         console.log('Retrying site manifest fetching')
         await new Promise(resolve => setTimeout(resolve, Math.pow(2, Math.min(10, attempts)) * 1000))
       }
-    } while (!siteManifest && attempts < 20)
+    } while (!siteManifest && attempts < 2)
 
     if (!siteManifest) {
       delete this.#instancePromisesByAppId[appId]
