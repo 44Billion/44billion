@@ -289,11 +289,12 @@ function initMessageListener ({
     if (currentVaultPort) currentVaultPort.close()
     currentVaultPort = e.ports[0]
     _activeVaultPort = currentVaultPort
-    _pendingVaultMessages.splice(0).forEach(msg => postMessage(_activeVaultPort, msg))
     listenToVaultMessages({ vaultPort: currentVaultPort, signal: AbortSignal.any([componentSignal, ac.signal]) })
     // before setting vaultPort$, which could trigger other messages to vault
     stopRenderHandshake?.()
+    // BROWSER_READY must be the first message the vault receives
     tellVaultImReady(currentVaultPort)
+    _pendingVaultMessages.splice(0).forEach(msg => postMessage(_activeVaultPort, msg))
     vaultPort$(currentVaultPort)
   }, { signal: componentSignal })
 
