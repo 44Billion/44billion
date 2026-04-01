@@ -16,13 +16,15 @@ export default class AppFileDownloader {
    * @param {string[]} writeRelays
    * @param {object} [options]
    * @param {string} [options.service='blossom'] - 'blossom' or 'irfs'
+   * @param {string|null} [options.mimeType=null] - expected MIME type of the file
    */
-  constructor (appId, fileHash, writeRelays, { service = 'blossom' } = {}) {
+  constructor (appId, fileHash, writeRelays, { service = 'blossom', mimeType = null } = {}) {
     if (!writeRelays || writeRelays.length === 0) throw new Error('Write relays cannot be empty')
     this.appId = appId
     this.fileRootHash = fileHash
     this.writeRelays = [...new Set([...writeRelays, ...nappRelays])]
     this.service = service
+    this.mimeType = mimeType
   }
 
   static async getSiteManifestEvents (appIds, {
@@ -147,7 +149,8 @@ export default class AppFileDownloader {
         })()
         trackOperation(op)
         await op
-      }
+      },
+      { mimeType: this.mimeType }
     )
 
     downloader.run().finally(async () => {

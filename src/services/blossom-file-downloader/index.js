@@ -25,6 +25,7 @@ export default class BlossomFileDownloader {
     this.writeRelays = writeRelays
     this.callback = callback
     this.signal = options.signal ?? null
+    this.mimeType = options.mimeType ?? null
     this.isRunning = false
   }
 
@@ -83,6 +84,13 @@ export default class BlossomFileDownloader {
           signal: this.signal
         })
         if (res.ok && res.body) {
+          if (this.mimeType) {
+            const contentType = res.headers.get('Content-Type') || ''
+            const serverMediaType = contentType.split(';')[0].trim().toLowerCase()
+            if (serverMediaType && serverMediaType !== 'application/octet-stream' && serverMediaType !== this.mimeType.toLowerCase()) {
+              continue
+            }
+          }
           response = res
           break
         }

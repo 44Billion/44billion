@@ -427,6 +427,58 @@ describe('BlossomFileDownloader', () => {
     })
   })
 
+  describe('MIME type validation', () => {
+    // Replicates the content-type check in #download()
+    function isMimeTypeAccepted (expectedMimeType, contentTypeHeader) {
+      if (!expectedMimeType) return true
+      const serverMediaType = (contentTypeHeader || '').split(';')[0].trim().toLowerCase()
+      if (serverMediaType && serverMediaType !== 'application/octet-stream' && serverMediaType !== expectedMimeType.toLowerCase()) {
+        return false
+      }
+      return true
+    }
+
+    it('should accept response when content-type matches expected mime type', () => {
+      assert.equal(isMimeTypeAccepted('image/vnd.microsoft.icon', 'image/vnd.microsoft.icon'), true)
+      assert.equal(isMimeTypeAccepted('image/png', 'image/png'), true)
+    })
+
+    it('should reject response when content-type is text/html', () => {
+      assert.equal(isMimeTypeAccepted('image/vnd.microsoft.icon', 'text/html'), false)
+      assert.equal(isMimeTypeAccepted('image/png', 'text/html; charset=utf-8'), false)
+    })
+
+    it('should strip charset and extra params before comparing', () => {
+      assert.equal(isMimeTypeAccepted('image/png', 'image/png; charset=utf-8'), true)
+      assert.equal(isMimeTypeAccepted('image/svg+xml', 'image/svg+xml; charset=utf-8'), true)
+    })
+
+    it('should accept application/octet-stream regardless of expected mime type', () => {
+      assert.equal(isMimeTypeAccepted('image/vnd.microsoft.icon', 'application/octet-stream'), true)
+      assert.equal(isMimeTypeAccepted('image/png', 'application/octet-stream'), true)
+    })
+
+    it('should accept when content-type header is absent', () => {
+      assert.equal(isMimeTypeAccepted('image/png', ''), true)
+      assert.equal(isMimeTypeAccepted('image/png', null), true)
+    })
+
+    it('should skip validation when no expected mime type is set', () => {
+      assert.equal(isMimeTypeAccepted(null, 'text/html'), true)
+      assert.equal(isMimeTypeAccepted(null, 'application/json'), true)
+    })
+
+    it('should be case-insensitive', () => {
+      assert.equal(isMimeTypeAccepted('image/png', 'Image/PNG'), true)
+      assert.equal(isMimeTypeAccepted('IMAGE/PNG', 'image/png'), true)
+    })
+
+    it('should reject mismatched image types', () => {
+      assert.equal(isMimeTypeAccepted('image/png', 'image/jpeg'), false)
+      assert.equal(isMimeTypeAccepted('image/vnd.microsoft.icon', 'image/png'), false)
+    })
+  })
+
   describe('error handling', () => {
     it('should report an error when no blossom servers are found', () => {
       const blossomServers = []

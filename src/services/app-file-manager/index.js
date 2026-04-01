@@ -62,7 +62,8 @@ export default class AppFileManager {
     this.#instancePromisesByAppId[appId] = p.promise
 
     addressObj ??= appIdToAddressObj(appId)
-    let siteManifest, attempts = 0
+    let siteManifest
+    let attempts = 0
     do {
       siteManifest = await getSiteManifestEvent(appId, addressObj)
       if (!siteManifest) {
@@ -245,7 +246,8 @@ export default class AppFileManager {
 
       const serviceTag = this.siteManifest.tags.find(t => t[0] === 'service')
       const service = serviceTag?.[1] || 'blossom'
-      const downloader = new AppFileDownloader(this.appId, pathTag[2], writeRelays, { service })
+      const mimeType = mime.getType(pathTag[1])
+      const downloader = new AppFileDownloader(this.appId, pathTag[2], writeRelays, { service, mimeType })
 
       for await (const report of downloader.run()) {
         if (!this.#isCacheFileInBackgroundRunning[filename]) break // poor man's abort controller

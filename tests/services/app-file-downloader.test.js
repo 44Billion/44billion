@@ -92,6 +92,16 @@ describe('AppFileDownloader', () => {
       const downloader = new AppFileDownloader(appId, 'abc123', writeRelays, { service: 'blossom' })
       assert.equal(downloader.service, 'blossom')
     })
+
+    it('should default mimeType to null', () => {
+      const downloader = new AppFileDownloader(appId, 'abc123', writeRelays)
+      assert.equal(downloader.mimeType, null)
+    })
+
+    it('should store mimeType option', () => {
+      const downloader = new AppFileDownloader(appId, 'abc123', writeRelays, { mimeType: 'image/png' })
+      assert.equal(downloader.mimeType, 'image/png')
+    })
   })
 
   describe('run with blossom service', () => {
@@ -99,12 +109,13 @@ describe('AppFileDownloader', () => {
       const blossomSha256Hash = 'abc123sha256hash'
       const downloader = new AppFileDownloader(appId, blossomSha256Hash, writeRelays, { service: 'blossom' })
 
-      let capturedCallback
+      let capturedCallback, capturedOptions
       const MockBlossomDownloader = class {
-        constructor (fileHash, pubkey, relays, callback) {
+        constructor (fileHash, pubkey, relays, callback, options) {
           this.fileHash = fileHash
           this.pubkey = pubkey
           capturedCallback = callback
+          capturedOptions = options
         }
 
         async run () {
@@ -146,6 +157,8 @@ describe('AppFileDownloader', () => {
       const cTag = savedChunkEvents[0].tags.find(t => t[0] === 'c')
       assert.ok(cTag[1].startsWith(blossomSha256Hash + ':'), 'c tag should use blossom sha256 hash as root')
       assert.equal(savedAppId, appId)
+      // Verify mimeType option is forwarded to BlossomFileDownloader
+      assert.deepEqual(capturedOptions, { mimeType: null })
     })
 
     it('should skip download when already fully cached', async () => {
