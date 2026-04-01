@@ -129,6 +129,10 @@ export default class AppFileManager {
     return saveSiteManifestToDb(this.siteManifest, { ...this.siteManifest.meta, ...metadata })
   }
 
+  get service () {
+    return this.siteManifest.tags.find(t => t[0] === 'service')?.[1] || 'blossom'
+  }
+
   #faviconMetadata
   getFaviconMetadata () {
     if (this.#faviconMetadata) return this.#faviconMetadata
@@ -244,8 +248,7 @@ export default class AppFileManager {
       const writeRelays = Array.from(relays[this.siteManifest.pubkey]?.write || [])
       if (writeRelays.length === 0) writeRelays.push(...nappRelays)
 
-      const serviceTag = this.siteManifest.tags.find(t => t[0] === 'service')
-      const service = serviceTag?.[1] || 'blossom'
+      const service = this.service
       const mimeType = mime.getType(pathTag[1])
       const downloader = new AppFileDownloader(this.appId, pathTag[2], writeRelays, { service, mimeType })
 

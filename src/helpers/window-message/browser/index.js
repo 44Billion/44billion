@@ -3,10 +3,12 @@ import { appIdToAddressObj, addressObjToAppId } from '#helpers/app.js'
 import { base36ToBase16 } from '#helpers/base36.js'
 import { base16ToBase62 } from '#helpers/base62.js'
 import { appEncode, appDecode } from '#helpers/nip19.js'
-import { streamFileChunksFromDb, getFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
+import { streamFileChunksFromDb, getFileChunksFromDb, deleteFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
 import AppFileManager from '#services/app-file-manager/index.js'
 import { setWebStorageItem } from '#hooks/use-web-storage.js'
 import { decode } from '#services/base93-decoder.js'
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToBase16 } from '#helpers/base16.js'
 
 // Update icon storage with data URL from streamed chunks
 async function updateIconStorage (appId, favicon, chunks) {
@@ -429,6 +431,19 @@ export async function initMessageListener (
               await appFiles.cacheFile(null, favicon.tag)
               cacheStatus = (await appFiles.getFileCacheStatus(null, favicon.tag, { withMeta: true }))
             }
+
+            if (appFiles.service === 'blossom') {
+              const hasher = sha256.create()
+              for await (const chunk of streamFileChunksFromDb(appId, favicon.rootHash)) {
+                hasher.update(decode(chunk.evt.content))
+              }
+              if (bytesToBase16(hasher.digest()) !== favicon.rootHash) {
+                if (favicon.rootHash) await deleteFileChunksFromDb(appId, favicon.rootHash)
+                replyWithMessage(e, { error: new Error('Icon hash mismatch'), isLast: true }, { to: appPagePort })
+                break
+              }
+            }
+
             const currentlyCachedAppIconFxOnLs = JSON.parse(localStorage.getItem(`session_appById_${appId}_icon`))?.fx
             const shouldCacheIconOnLs = currentlyCachedAppIconFxOnLs !== favicon.rootHash
 

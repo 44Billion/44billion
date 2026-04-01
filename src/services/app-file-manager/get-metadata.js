@@ -1,5 +1,7 @@
-import { streamFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
+import { streamFileChunksFromDb, deleteFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
 import { decode } from '#services/base93-decoder.js'
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToBase16 } from '#helpers/base16.js'
 
 export async function getIcon (appFileManager, staleWhileRevalidate = false) {
   const metadata = appFileManager.getCachedMetadata(appFileManager.appId, ['icon'])
@@ -85,6 +87,16 @@ async function fetchAndCacheIcon (appFileManager, cachedIcon = null) {
 
     // Process chunks to create data URL
     const binaryChunks = allChunks.map(chunk => decode(chunk))
+
+    if (appFileManager.service === 'blossom') {
+      const hasher = sha256.create()
+      for (const bytes of binaryChunks) hasher.update(bytes)
+      if (bytesToBase16(hasher.digest()) !== favicon.rootHash) {
+        if (favicon.rootHash) await deleteFileChunksFromDb(appFileManager.appId, favicon.rootHash)
+        return null
+      }
+    }
+
     const blob = new Blob(binaryChunks, { type: favicon.contentType })
 
     const reader = new FileReader()
