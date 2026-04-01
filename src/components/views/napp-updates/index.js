@@ -151,36 +151,48 @@ f('napp-updates', function () {
         const { appId, appProgress, error, overallProgress } = report
         overallProgress$(overallProgress)
 
+        const newStatus = error ? 'error' : (appProgress === 100 ? 'done' : 'updating')
         updateStates$(prev => ({
           ...prev,
-          [appId]: {
-            status: error ? 'error' : (appProgress === 100 ? 'done' : 'updating'),
-            progress: appProgress,
-            error
-          }
+          [appId]: { status: newStatus, progress: appProgress, error }
         }))
+
+        // Clear each app from available updates as soon as it finishes,
+        // so its "Update" button doesn't re-appear while other apps are still downloading
+        if (newStatus === 'done') {
+          availableUpdates$(prev => {
+            if (!prev[appId]) return prev
+            const next = { ...prev }
+            delete next[appId]
+            return next
+          })
+        }
       }
 
-      // Mark all completed (non-error) target apps as done
+      // Mark any apps that are still pending/updating (progress never reached 100%) as done,
+      // then clear them — but skip apps already marked done above to avoid re-triggering their cards
       updateStates$(prev => {
         const next = { ...prev }
+        let changed = false
         targetIds.forEach(id => {
-          if (next[id] && next[id].status !== 'error') {
+          if (next[id] && next[id].status !== 'done' && next[id].status !== 'error') {
             next[id] = { ...next[id], status: 'done', progress: 100 }
+            changed = true
           }
         })
-        return next
+        return changed ? next : prev
       })
 
-      // Clear done updates
       availableUpdates$(prev => {
         const next = { ...prev }
-        Object.keys(updateStates$()).forEach(id => {
-          if (updateStates$()[id].status === 'done') {
+        let changed = false
+        targetIds.forEach(id => {
+          if (next[id] && updateStates$()[id]?.status === 'done') {
             delete next[id]
+            changed = true
           }
         })
-        return next
+        return changed ? next : prev
       })
 
       appUpdateCount$(Object.keys(availableUpdates$()).length || undefined)
@@ -474,8 +486,10 @@ f('napp-update-card', function () {
   useTask(({ track }) => {
     const state = track(() => updateState$())
     if (state?.status === 'done') {
-      isDoneVisible$(true)
-      setTimeout(() => isDoneVisible$(false), 3600)
+      if (!isDoneVisible$()) {
+        isDoneVisible$(true)
+        setTimeout(() => isDoneVisible$(false), 3600)
+      }
       isErrorVisible$(false)
     } else if (state?.status === 'error') {
       isDoneVisible$(false)
