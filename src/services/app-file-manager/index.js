@@ -56,6 +56,21 @@ export default class AppFileManager {
   }
 
   static #instancePromisesByAppId = {}
+  // Clears cached files for an app without requiring the site manifest to be fetchable.
+  // If a resolved instance is already in cache (manifest was downloaded), uses it to
+  // also abort any running cache operations. Otherwise falls back to direct DB deletion.
+  static async clearCachedFilesById (appId) {
+    const existing = this.#instancePromisesByAppId[appId]
+      ? await this.#instancePromisesByAppId[appId].catch(() => null)
+      : null
+    if (existing) {
+      await existing.clearAppFiles()
+    } else {
+      await deleteFileChunksFromDb(appId)
+      await deleteSiteManifestFromDb(appId)
+    }
+  }
+
   static async create (appId, addressObj, { cacheMetadata = cacheAppMetadata, getCachedMetadata = getCachedAppMetadata } = {}) {
     if (this.#instancePromisesByAppId[appId]) return this.#instancePromisesByAppId[appId]
     const p = Promise.withResolvers()

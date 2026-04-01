@@ -380,8 +380,7 @@ f('appWindow', function () {
               storage[`session_subdomainToApp_${appSubdomain}$`](undefined)
             }
             try {
-              const appFiles = await AppFileManager.create(appId)
-              await appFiles.clearAppFiles()
+              await AppFileManager.clearCachedFilesById(appId)
             } catch (err) {
               console.error('Failed to clear app files:', err)
             }
