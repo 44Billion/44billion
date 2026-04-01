@@ -43,7 +43,7 @@ export async function initMessageListener (
   userPkB36, appId, appSubdomain, initialRoute,
   trustedAppPageIframe, appPageIframe, appPageIframeSrc$,
   cachingProgress$, requestVaultMessage, requestPermission, openApp,
-  { signal: componentSignal, isSingleNapp = false } = {}
+  { signal: componentSignal, isSingleNapp = false, onFileNotCached = null } = {}
 ) {
   const userPkB16 = base36ToBase16(userPkB36)
   const isDefaultUser = base16ToBase62(userPkB16) === JSON.parse(localStorage.getItem('session_defaultUserPk'))
@@ -130,6 +130,9 @@ export async function initMessageListener (
         case 'STREAM_APP_FILE': {
           const handleStreamError = (originalError, errorToSend = new Error('FILE_NOT_CACHED')) => {
             if (originalError) console.log(originalError)
+            if (onFileNotCached && errorToSend.message !== 'HTML_FILE_NOT_CACHED') {
+              onFileNotCached(e.data.payload.pathname)
+            }
             return replyWithMessage(e, { error: errorToSend, isLast: true }, { to: trustedAppPagePort })
           }
 
@@ -482,6 +485,7 @@ export async function initMessageListener (
           try {
             const progressCallback = ({ progress, error }) => {
               if (error) {
+                if (onFileNotCached) onFileNotCached(e.data.payload.pathname)
                 replyWithMessage(e, { error, isLast: true }, { to: appPagePort })
               } else {
                 const isLast = progress >= 100
@@ -491,6 +495,7 @@ export async function initMessageListener (
             appFiles.cacheFile(e.data.payload.pathname, null, progressCallback)
           } catch (error) {
             console.log(e.data.payload.pathname, 'error:', error.stack)
+            if (onFileNotCached) onFileNotCached(e.data.payload.pathname)
             replyWithMessage(e, { error, isLast: true }, { to: appPagePort })
           }
           break

@@ -284,6 +284,9 @@ f('appWindow', function () {
   const pdStore = useGlobalStore('<permission-dialog>')
   const { requestPermission } = pdStore
   const { openApp } = useGlobalStore('useAppRouter')
+  const { requestAction: requestFileNotCachedAction } = useGlobalStore('<file-not-cached-dialog>')
+  const appKey = this.props.appKey
+  const wsKey = this.props.wsKey
 
   useTask(
     async ({ track, cleanup }) => {
@@ -318,11 +321,79 @@ f('appWindow', function () {
       if (initialRoute) initialRoute$('') // reset
       const ac = new AbortController()
       cleanup(() => ac.abort())
+
+      let hasShownFileNotCachedError = false
+      const onFileNotCached = async () => {
+        if (ac.signal.aborted || hasShownFileNotCachedError) return
+        hasShownFileNotCachedError = true
+
+        const appId = appId$()
+        if (!appId) return
+        const appName = storage[`session_appById_${appId}_name$`]() || 'this app'
+
+        let shouldRetry = false
+        try {
+          await requestFileNotCachedAction({ appName })
+          shouldRetry = true
+        } catch { /* cancel */ }
+
+        if (shouldRetry) {
+          tabStorage[`session_appByKey_${appKey}_visibility$`]('closed')
+          await new Promise(resolve => setTimeout(resolve, 0))
+          tabStorage[`session_appByKey_${appKey}_visibility$`]('open')
+          tabStorage[`session_workspaceByKey_${wsKey}_openAppKeys$`]((v = [], eqKey) => {
+            if (!v.includes(appKey)) { v.unshift(appKey); v[eqKey] = Math.random() }
+            return v
+          })
+        } else {
+          // Cancel: delete the app (mirrors _deleteApp + simplified maybeClearAppStorage)
+          const appSubdomain = appSubdomain$()
+          const userPk = userPk$()
+
+          tabStorage[`session_workspaceByKey_${wsKey}_openAppKeys$`]((v, eqKey) => {
+            if (!v) return v
+            const i = v.indexOf(appKey)
+            if (i !== -1) { v.splice(i, 1); v[eqKey] = Math.random() }
+            return v
+          })
+          storage[`session_appByKey_${appKey}_id$`](undefined)
+          tabStorage[`session_appByKey_${appKey}_visibility$`](undefined)
+          storage[`session_appByKey_${appKey}_route$`](undefined)
+          storage[`session_workspaceByKey_${wsKey}_pinnedAppIds$`](v => (v ?? []).filter(v2 => v2 !== appId))
+          storage[`session_workspaceByKey_${wsKey}_unpinnedAppIds$`](v => (v ?? []).filter(v2 => v2 !== appId))
+          storage[`session_workspaceByKey_${wsKey}_appById_${appId}_appKeys$`](undefined)
+
+          let hasOtherInstances = false
+          for (const k of storage.session_workspaceKeys$()) {
+            if (k === wsKey) continue
+            hasOtherInstances = (storage[`session_workspaceByKey_${k}_appById_${appId}_appKeys$`]() ?? []).length > 0
+            if (hasOtherInstances) break
+          }
+
+          if (!hasOtherInstances) {
+            storage[`session_appById_${appId}_icon$`](undefined)
+            storage[`session_appById_${appId}_name$`](undefined)
+            storage[`session_appById_${appId}_description$`](undefined)
+            storage[`session_appById_${appId}_relayHints$`](undefined)
+            if (appSubdomain != null) {
+              storage[`session_subdomainByUserAndApp_${userPk}_${appId}$`](undefined)
+              storage[`session_subdomainToApp_${appSubdomain}$`](undefined)
+            }
+            try {
+              const appFiles = await AppFileManager.create(appId)
+              await appFiles.clearAppFiles()
+            } catch (err) {
+              console.error('Failed to clear app files:', err)
+            }
+          }
+        }
+      }
+
       await initMessageListener(
         userPkB36$(), appId$(), appSubdomain$(), initialRoute,
         trustedAppIframeRef$(), appIframeRef$(), appIframeSrc$,
         cachingProgress$, requestVaultMessage, requestPermission, openApp,
-        { signal: ac.signal, isSingleNapp: false }
+        { signal: ac.signal, isSingleNapp: false, onFileNotCached }
       )
       trustedAppIframeSrc$(`//${appSubdomain$()}.${window.location.host}/~~napp`)
     },

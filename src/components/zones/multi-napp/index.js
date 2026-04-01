@@ -6,6 +6,7 @@ import '#zones/screen/index.js'
 import { useVaultModalStore } from '#zones/vault-modal/index.js'
 import '#zones/permission-dialog/index.js'
 import '#zones/confirmation-dialog/index.js'
+import '#zones/file-not-cached-dialog/index.js'
 
 f('multi-napp', function () {
   useTask(() => {
@@ -24,6 +25,7 @@ f('multi-napp', function () {
     <vault-modal />
     <permission-dialog />
     <confirmation-dialog />
+    <file-not-cached-dialog />
     <a-screen />
   `
 })
