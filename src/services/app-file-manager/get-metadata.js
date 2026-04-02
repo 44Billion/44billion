@@ -1,7 +1,10 @@
-import { streamFileChunksFromDb, deleteFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
+import { streamFileChunksFromDb, deleteFileChunksFromDb, countFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
 import { decode } from '#services/base93-decoder.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToBase16 } from '#helpers/base16.js'
+import { getSiteManifest, getUserRelays } from '#helpers/nostr-queries.js'
+import { nappRelays } from '#services/nostr-relays.js'
+import AppFileDownloader from '#services/app-file-downloader/index.js'
 
 export async function getIcon (appFileManager, staleWhileRevalidate = false) {
   const metadata = appFileManager.getCachedMetadata(appFileManager.appId, ['icon'])
@@ -59,10 +62,12 @@ export async function getDescription (appFileManager, staleWhileRevalidate = fal
   return result?.description?.trim() || null
 }
 
+const MANIFEST_TO_LISTING_KIND = { 35128: 37348, 35129: 37349, 35130: 37350 }
+
 async function fetchAndCacheIcon (appFileManager, cachedIcon = null) {
   // Get current favicon metadata
   const favicon = appFileManager.getFaviconMetadata()
-  if (!favicon) return null
+  if (!favicon) return fetchAndCacheIconFromListing(appFileManager, cachedIcon)
 
   // If we have a cached icon and the hash hasn't changed, return the cached one
   if (cachedIcon && cachedIcon.fx === favicon.rootHash) {
@@ -122,6 +127,79 @@ async function fetchAndCacheIcon (appFileManager, cachedIcon = null) {
     console.log('Failed to fetch icon:', error)
     return null
   }
+}
+
+async function fetchAndCacheIconFromListing (appFileManager, cachedIcon = null) {
+  const listingKind = MANIFEST_TO_LISTING_KIND[appFileManager.addressObj.kind]
+  if (!listingKind) return null
+
+  const { pubkey, dTag } = appFileManager.addressObj
+
+  let listingEvent
+  try {
+    listingEvent = await getSiteManifest({ kind: listingKind, pubkey, dTag })
+  } catch (err) {
+    console.log('Failed to fetch app listing event for icon:', err)
+    return null
+  }
+  if (!listingEvent) return null
+
+  const iconTag = listingEvent.tags.find(t => t[0] === 'icon')
+  if (!iconTag?.[1]) return null
+
+  const iconHash = iconTag[1]
+  const mimeType = iconTag[2] || null
+
+  if (cachedIcon?.fx === iconHash) return cachedIcon
+
+  const listingService = listingEvent.tags.find(t => t[0] === 'service')?.[1] || 'blossom'
+
+  const relaysInfo = await getUserRelays([pubkey])
+  const writeRelays = Array.from(relaysInfo[pubkey]?.write || [])
+  if (writeRelays.length === 0) writeRelays.push(...nappRelays)
+
+  const chunkStatus = await countFileChunksFromDb(appFileManager.appId, iconHash)
+  if (!chunkStatus.total || chunkStatus.count < chunkStatus.total) {
+    const downloader = new AppFileDownloader(appFileManager.appId, iconHash, writeRelays, { service: listingService, mimeType })
+    for await (const report of downloader.run()) {
+      if (report.error) {
+        console.log('Failed to download app listing icon:', report.error)
+        return null
+      }
+    }
+  }
+
+  const allChunks = []
+  for await (const chunk of streamFileChunksFromDb(appFileManager.appId, iconHash)) {
+    allChunks.push(chunk.evt.content)
+  }
+  if (allChunks.length === 0) return null
+
+  const binaryChunks = allChunks.map(chunk => decode(chunk))
+
+  if (listingService === 'blossom') {
+    const hasher = sha256.create()
+    for (const bytes of binaryChunks) hasher.update(bytes)
+    if (bytesToBase16(hasher.digest()) !== iconHash) {
+      await deleteFileChunksFromDb(appFileManager.appId, iconHash)
+      return null
+    }
+  }
+
+  const contentType = mimeType
+    ? (/^(?:text\/|application\/json)[^;]*$/.test(mimeType) ? `${mimeType}; charset=utf-8` : mimeType)
+    : 'application/octet-stream'
+  const blob = new Blob(binaryChunks, { type: contentType })
+  const reader = new FileReader()
+  const dataUrl = await new Promise((resolve, reject) => {
+    reader.onload = () => resolve(reader.result)
+    reader.onerror = reject
+    reader.readAsDataURL(blob)
+  })
+
+  const icon = { fx: iconHash, url: dataUrl }
+  appFileManager.cacheMetadata(appFileManager.appId, { icon })
+  return icon
 }
 
 async function fetchAndCacheHtmlMetadata (appFileManager) {
