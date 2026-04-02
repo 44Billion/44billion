@@ -21,7 +21,8 @@ f('fileNotCachedDialog', function () {
     currentRequest$: null,
     lastRequest$: null,
     isOpen$ () { return Boolean(this.currentRequest$()) },
-    appName$ () { return (this.currentRequest$() ?? this.lastRequest$())?.appName ?? 'this app' },
+    appName$ () { return (this.currentRequest$() ?? this.lastRequest$())?.appName ?? 'App Download' },
+    message$ () { return (this.currentRequest$() ?? this.lastRequest$())?.message ?? 'Failed to load app. Retry or remove it?' },
     resolveRetry () {
       const req = this.currentRequest$()
       if (!req) return
@@ -37,12 +38,12 @@ f('fileNotCachedDialog', function () {
       req.reject(error)
     },
     close () { this.rejectCancel(closedError()) },
-    requestAction ({ appName }) {
+    requestAction ({ appName, message }) {
       const pending = this.currentRequest$()
       if (pending) pending.reject(supersededError())
 
       const { promise, resolve, reject } = Promise.withResolvers()
-      this.currentRequest$({ appName, resolve, reject })
+      this.currentRequest$({ appName, message, resolve, reject })
       return promise
     }
   }))
@@ -62,6 +63,7 @@ f('fileNotCachedDialogCard', function () {
   const local = useStore(() => ({
     isButtonsDisabled$: false,
     appName$: store.appName$,
+    message$: store.message$,
     retry () {
       if (this.isButtonsDisabled$()) return
       this.isButtonsDisabled$(true)
@@ -197,7 +199,7 @@ f('fileNotCachedDialogCard', function () {
       </div>
       <div class='info-area'>
         <div class='title'>${local.appName$()}</div>
-        <div class='message'>Failed to load app. Retry or remove it?</div>
+        <div class='message'>${local.message$()}</div>
       </div>
       <div class='actions'>
         <button

@@ -18,6 +18,7 @@ import useAppRouter from './use-app-router.js'
 import useSystemRouter from './use-system-router.js'
 import '#shared/route.js'
 import { initMessageListener } from '#helpers/window-message/browser/index.js'
+import { isOnline } from '#helpers/network.js'
 import { base62ToBase36 } from '#helpers/base36.js'
 import { useVaultModalStore, useRequestVaultMessage } from '#zones/vault-modal/index.js'
 import { base62ToBase16 } from '#helpers/base62.js'
@@ -323,17 +324,28 @@ f('appWindow', function () {
       cleanup(() => ac.abort())
 
       let hasShownFileNotCachedError = false
-      const onFileNotCached = async () => {
+      const onFileNotCached = async (pathname) => {
         if (ac.signal.aborted || hasShownFileNotCachedError) return
         hasShownFileNotCachedError = true
 
         const appId = appId$()
         if (!appId) return
-        const appName = storage[`session_appById_${appId}_name$`]() || 'this app'
+        const appName = storage[`session_appById_${appId}_name$`]() || 'App Download'
+
+        // pathname === undefined means the site manifest failed to download.
+        // A bare filename without leading slash is the canonical form in manifest path tags,
+        // but accept a leading slash too just in case.
+        const isCriticalFile = pathname === undefined || /^\/?index\.html?$/.test(pathname)
+        // Start connectivity check in parallel while the user reads the dialog
+        const onlinePromise = isCriticalFile ? isOnline() : Promise.resolve(false)
+
+        const message = isCriticalFile
+          ? 'Failed to load app. Retry or remove it?'
+          : 'Failed to load app. Retry or close it?'
 
         let shouldRetry = false
         try {
-          await requestFileNotCachedAction({ appName })
+          await requestFileNotCachedAction({ appName, message })
           shouldRetry = true
         } catch { /* cancel */ }
 
@@ -345,8 +357,14 @@ f('appWindow', function () {
             if (!v.includes(appKey)) { v.unshift(appKey); v[eqKey] = Math.random() }
             return v
           })
-        } else {
-          // Cancel: delete the app (mirrors _deleteApp + simplified maybeClearAppStorage)
+          return
+        }
+
+        const online = await onlinePromise
+
+        if (online) {
+          // Online + critical file failed: the file is genuinely missing on the publisher's
+          // servers, so remove the app entirely. (mirrors _deleteApp + simplified maybeClearAppStorage)
           const appSubdomain = appSubdomain$()
           const userPk = userPk$()
 
@@ -385,6 +403,16 @@ f('appWindow', function () {
               console.error('Failed to clear app files:', err)
             }
           }
+        } else {
+          // Offline, or a non-critical secondary asset failed: just close the window so
+          // the user can retry by opening the app again later.
+          tabStorage[`session_appByKey_${appKey}_visibility$`]('closed')
+          tabStorage[`session_workspaceByKey_${wsKey}_openAppKeys$`]((v, eqKey) => {
+            if (!v) return v
+            const i = v.indexOf(appKey)
+            if (i !== -1) { v.splice(i, 1); v[eqKey] = Math.random() }
+            return v
+          })
         }
       }
 
