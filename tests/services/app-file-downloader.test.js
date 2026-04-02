@@ -186,5 +186,39 @@ describe('AppFileDownloader', () => {
       assert.equal(updates.length, 1)
       assert.equal(updates[0].progress, 100)
     })
+
+    it('skipDb: true skips DB check/save and includes event in yielded items (blossom)', async () => {
+      const blossomHash = 'deadbeef1234'
+      const downloader = new AppFileDownloader(appId, blossomHash, writeRelays, { service: 'blossom' })
+
+      let capturedCallback
+      const MockBlossomDownloader = class {
+        constructor (_hash, _pubkey, _relays, callback) { capturedCallback = callback }
+        async run () {
+          const event = { kind: 34600, pubkey: 'pk', id: 'id1', tags: [['c', `${blossomHash}:0`, '1']], content: 'data', created_at: 1000 }
+          await capturedCallback({ type: 'progress', progress: 100, count: 1, total: 1, chunkIndex: 0, event })
+        }
+      }
+
+      const saveToDb = mock.fn(async () => {})
+      const countFromDb = mock.fn(async () => ({ total: null, count: 0 }))
+
+      const updates = []
+      for await (const report of downloader.run({
+        _BlossomFileDownloader: MockBlossomDownloader,
+        _countFileChunksFromDb: countFromDb,
+        _saveFileChunksToDB: saveToDb,
+        skipDb: true
+      })) {
+        updates.push(report)
+      }
+
+      // DB should not be checked or written
+      assert.equal(countFromDb.mock.callCount(), 0)
+      assert.equal(saveToDb.mock.callCount(), 0)
+
+      // event should be present in yielded item
+      assert.ok(updates.some(r => r.event?.id === 'id1'))
+    })
   })
 })

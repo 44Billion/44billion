@@ -20,6 +20,8 @@ export async function getSiteManifest (appIdObj, userRelays) {
   const manifests = response.result ?? []
   return manifests.sort((a, b) => b.created_at - a.created_at)[0]
 }
+// Generic alias for fetching any parameterized replaceable event from relays by { kind, pubkey, dTag }
+export const getEventByAddress = getSiteManifest
 
 export async function getEventsByStrategy (filter, st /*, timeoutMs = 3000 */) {
   switch (st.code) {

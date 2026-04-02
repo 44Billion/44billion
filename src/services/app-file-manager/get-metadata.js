@@ -1,8 +1,8 @@
-import { streamFileChunksFromDb, deleteFileChunksFromDb, countFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
+import { streamFileChunksFromDb, deleteFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
 import { decode } from '#services/base93-decoder.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToBase16 } from '#helpers/base16.js'
-import { getSiteManifest, getUserRelays } from '#helpers/nostr-queries.js'
+import { getEventByAddress, getUserRelays } from '#helpers/nostr-queries.js'
 import { nappRelays } from '#services/nostr-relays.js'
 import AppFileDownloader from '#services/app-file-downloader/index.js'
 
@@ -129,7 +129,9 @@ async function fetchAndCacheIcon (appFileManager, cachedIcon = null) {
   }
 }
 
-async function fetchAndCacheIconFromListing (appFileManager, cachedIcon = null) {
+// Returns { iconHash, mimeType, contentType, chunks } where chunks are sorted base93 strings,
+// or null if unavailable. Downloads without persisting to IDB.
+export async function getListingIconData (appFileManager) {
   const listingKind = MANIFEST_TO_LISTING_KIND[appFileManager.addressObj.kind]
   if (!listingKind) return null
 
@@ -137,7 +139,7 @@ async function fetchAndCacheIconFromListing (appFileManager, cachedIcon = null) 
 
   let listingEvent
   try {
-    listingEvent = await getSiteManifest({ kind: listingKind, pubkey, dTag })
+    listingEvent = await getEventByAddress({ kind: listingKind, pubkey, dTag })
   } catch (err) {
     console.log('Failed to fetch app listing event for icon:', err)
     return null
@@ -149,47 +151,52 @@ async function fetchAndCacheIconFromListing (appFileManager, cachedIcon = null) 
 
   const iconHash = iconTag[1]
   const mimeType = iconTag[2] || null
-
-  if (cachedIcon?.fx === iconHash) return cachedIcon
-
   const listingService = listingEvent.tags.find(t => t[0] === 'service')?.[1] || 'blossom'
+  const contentType = mimeType
+    ? (/^(?:text\/|application\/json)[^;]*$/.test(mimeType) ? `${mimeType}; charset=utf-8` : mimeType)
+    : 'application/octet-stream'
 
   const relaysInfo = await getUserRelays([pubkey])
   const writeRelays = Array.from(relaysInfo[pubkey]?.write || [])
   if (writeRelays.length === 0) writeRelays.push(...nappRelays)
 
-  const chunkStatus = await countFileChunksFromDb(appFileManager.appId, iconHash)
-  if (!chunkStatus.total || chunkStatus.count < chunkStatus.total) {
-    const downloader = new AppFileDownloader(appFileManager.appId, iconHash, writeRelays, { service: listingService, mimeType })
-    for await (const report of downloader.run()) {
-      if (report.error) {
-        console.log('Failed to download app listing icon:', report.error)
-        return null
-      }
+  const chunksByIndex = new Map()
+  const downloader = new AppFileDownloader(appFileManager.appId, iconHash, writeRelays, { service: listingService, mimeType })
+  for await (const report of downloader.run({ skipDb: true })) {
+    if (report.error) {
+      console.log('Failed to download app listing icon:', report.error)
+      return null
+    }
+    if (report.event) {
+      const cTag = report.event.tags?.find(t => t[0] === 'c')
+      const chunkIdx = cTag ? parseInt(cTag[1].split(':').pop()) : 0
+      if (!Number.isNaN(chunkIdx)) chunksByIndex.set(chunkIdx, report.event.content)
     }
   }
 
-  const allChunks = []
-  for await (const chunk of streamFileChunksFromDb(appFileManager.appId, iconHash)) {
-    allChunks.push(chunk.evt.content)
-  }
-  if (allChunks.length === 0) return null
+  if (chunksByIndex.size === 0) return null
 
-  const binaryChunks = allChunks.map(chunk => decode(chunk))
+  const chunks = Array.from(chunksByIndex.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([, content]) => content)
 
   if (listingService === 'blossom') {
     const hasher = sha256.create()
-    for (const bytes of binaryChunks) hasher.update(bytes)
-    if (bytesToBase16(hasher.digest()) !== iconHash) {
-      await deleteFileChunksFromDb(appFileManager.appId, iconHash)
-      return null
-    }
+    for (const content of chunks) hasher.update(decode(content))
+    if (bytesToBase16(hasher.digest()) !== iconHash) return null
   }
 
-  const contentType = mimeType
-    ? (/^(?:text\/|application\/json)[^;]*$/.test(mimeType) ? `${mimeType}; charset=utf-8` : mimeType)
-    : 'application/octet-stream'
-  const blob = new Blob(binaryChunks, { type: contentType })
+  return { iconHash, mimeType, contentType, chunks }
+}
+
+async function fetchAndCacheIconFromListing (appFileManager, cachedIcon = null) {
+  const data = await getListingIconData(appFileManager)
+  if (!data) return null
+
+  if (cachedIcon?.fx === data.iconHash) return cachedIcon
+
+  const binaryChunks = data.chunks.map(content => decode(content))
+  const blob = new Blob(binaryChunks, { type: data.contentType })
   const reader = new FileReader()
   const dataUrl = await new Promise((resolve, reject) => {
     reader.onload = () => resolve(reader.result)
@@ -197,7 +204,7 @@ async function fetchAndCacheIconFromListing (appFileManager, cachedIcon = null) 
     reader.readAsDataURL(blob)
   })
 
-  const icon = { fx: iconHash, url: dataUrl }
+  const icon = { fx: data.iconHash, url: dataUrl }
   appFileManager.cacheMetadata(appFileManager.appId, { icon })
   return icon
 }

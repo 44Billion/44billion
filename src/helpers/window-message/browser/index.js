@@ -7,6 +7,7 @@ import { streamFileChunksFromDb, getFileChunksFromDb, deleteFileChunksFromDb } f
 import AppFileManager from '#services/app-file-manager/index.js'
 import { setWebStorageItem } from '#hooks/use-web-storage.js'
 import { decode } from '#services/base93-decoder.js'
+import Base93Encoder from '#services/base93-encoder.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToBase16 } from '#helpers/base16.js'
 
@@ -443,7 +444,28 @@ export async function initMessageListener (
             // and if not cached, cache it completly, only then stream chunks
             const favicon = appFiles.getFaviconMetadata()
             if (!favicon) {
-              replyWithMessage(e, { error: new Error('No favicon'), isLast: true }, { to: appPagePort })
+              // Fallback: getIcon() handles listing event fetching and localStorage caching,
+              // so subsequent calls are served from cache without re-downloading.
+              const icon = await appFiles.getIcon()
+              if (!icon?.url) {
+                replyWithMessage(e, { error: new Error('No icon'), isLast: true }, { to: appPagePort })
+                break
+              }
+
+              // Decode data URL → bytes → base93 chunks for streaming
+              const commaIdx = icon.url.indexOf(',')
+              const mimeType = icon.url.slice(5, commaIdx).split(';')[0] || null
+              const contentType = mimeType || 'application/octet-stream'
+              const bytes = Uint8Array.from(atob(icon.url.slice(commaIdx + 1)), c => c.charCodeAt(0))
+              const CHUNK_SIZE = 51000
+              const numChunks = Math.max(1, Math.ceil(bytes.length / CHUNK_SIZE))
+              for (let i = 0; i < numChunks; i++) {
+                const content = new Base93Encoder().update(bytes.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE)).getEncoded()
+                replyWithMessage(e, {
+                  payload: { content, ...(i === 0 && { mimeType, contentType }) },
+                  isLast: i === numChunks - 1
+                }, { to: appPagePort })
+              }
               break
             }
 

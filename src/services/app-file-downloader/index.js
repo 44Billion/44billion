@@ -94,25 +94,29 @@ export default class AppFileDownloader {
     _BlossomFileDownloader = BlossomFileDownloader,
     _countFileChunksFromDb = countFileChunksFromDb,
     _getFileChunksFromDb = getFileChunksFromDb,
-    _saveFileChunksToDB = saveFileChunksToDB
+    _saveFileChunksToDB = saveFileChunksToDB,
+    skipDb = false
   } = {}) {
     if (this.service === 'blossom') {
-      yield * this.#runBlossom({ _BlossomFileDownloader, _countFileChunksFromDb, _saveFileChunksToDB })
+      yield * this.#runBlossom({ _BlossomFileDownloader, _countFileChunksFromDb, _saveFileChunksToDB, skipDb })
     } else {
-      yield * this.#runIrfs({ _FileDownloader, _countFileChunksFromDb, _getFileChunksFromDb, _saveFileChunksToDB })
+      yield * this.#runIrfs({ _FileDownloader, _countFileChunksFromDb, _getFileChunksFromDb, _saveFileChunksToDB, skipDb })
     }
   }
 
   async * #runBlossom ({
     _BlossomFileDownloader,
     _countFileChunksFromDb,
-    _saveFileChunksToDB
+    _saveFileChunksToDB,
+    skipDb = false
   }) {
     // Check if already fully cached (chunks are stored under the sha256 hash)
-    const dbInfo = await _countFileChunksFromDb(this.appId, this.fileRootHash)
-    if (dbInfo.total && dbInfo.count >= dbInfo.total) {
-      yield { type: 'progress', progress: 100, count: dbInfo.total, total: dbInfo.total }
-      return
+    if (!skipDb) {
+      const dbInfo = await _countFileChunksFromDb(this.appId, this.fileRootHash)
+      if (dbInfo.total && dbInfo.count >= dbInfo.total) {
+        yield { type: 'progress', progress: 100, count: dbInfo.total, total: dbInfo.total }
+        return
+      }
     }
 
     const { pubkey } = appIdToAddressObj(this.appId)
@@ -141,11 +145,11 @@ export default class AppFileDownloader {
         const op = (async () => {
           const { event, ...rest } = data
 
-          if (event) {
+          if (event && !skipDb) {
             const fakeManifest = { tags: [['path', '', this.fileRootHash]] }
             await _saveFileChunksToDB(fakeManifest, [event], this.appId)
           }
-          push(rest)
+          push({ ...rest, ...(skipDb && event ? { event } : {}) })
         })()
         trackOperation(op)
         await op
@@ -179,11 +183,17 @@ export default class AppFileDownloader {
     _FileDownloader,
     _countFileChunksFromDb,
     _getFileChunksFromDb,
-    _saveFileChunksToDB
+    _saveFileChunksToDB,
+    skipDb = false
   }) {
-    const dbInfo = await _countFileChunksFromDb(this.appId, this.fileRootHash)
-    const keys = await _getFileChunksFromDb(this.appId, this.fileRootHash, { justKeys: true })
-    const downloadedChunkIndexes = new Set(keys.map(k => k[2])) // k is [appId, rootHash, pos]
+    let dbInfo = { total: null }
+    const downloadedChunkIndexes = new Set()
+
+    if (!skipDb) {
+      dbInfo = await _countFileChunksFromDb(this.appId, this.fileRootHash)
+      const keys = await _getFileChunksFromDb(this.appId, this.fileRootHash, { justKeys: true })
+      keys.forEach(k => downloadedChunkIndexes.add(k[2])) // k is [appId, rootHash, pos]
+    }
 
     const { pubkey } = appIdToAddressObj(this.appId)
     const pubkeysByRelay = {}
@@ -212,13 +222,12 @@ export default class AppFileDownloader {
       pubkeysByRelay,
       async data => {
         const op = (async () => {
-          // Remove event to save memory
           const { event, ...rest } = data
-          if (event) {
+          if (event && !skipDb) {
             const fakeManifest = { tags: [['path', '', this.fileRootHash]] }
             await _saveFileChunksToDB(fakeManifest, [event], this.appId)
           }
-          push(rest)
+          push({ ...rest, ...(skipDb && event ? { event } : {}) })
         })()
         trackOperation(op)
         await op
