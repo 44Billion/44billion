@@ -350,13 +350,24 @@ f('appWindow', function () {
         } catch { /* cancel */ }
 
         if (shouldRetry) {
-          tabStorage[`session_appByKey_${appKey}_visibility$`]('closed')
-          await new Promise(resolve => setTimeout(resolve, 0))
-          tabStorage[`session_appByKey_${appKey}_visibility$`]('open')
-          tabStorage[`session_workspaceByKey_${wsKey}_openAppKeys$`]((v = [], eqKey) => {
-            if (!v.includes(appKey)) { v.unshift(appKey); v[eqKey] = Math.random() }
-            return v
-          })
+          if (isCriticalFile) {
+            // Critical (manifest or index.html): restart initMessageListener completely
+            tabStorage[`session_appByKey_${appKey}_visibility$`]('closed')
+            await new Promise(resolve => setTimeout(resolve, 0))
+            tabStorage[`session_appByKey_${appKey}_visibility$`]('open')
+            tabStorage[`session_workspaceByKey_${wsKey}_openAppKeys$`]((v = [], eqKey) => {
+              if (!v.includes(appKey)) { v.unshift(appKey); v[eqKey] = Math.random() }
+              return v
+            })
+          } else {
+            // Non-critical asset: trusted page and message ports are fine, just reload the
+            // app iframe so it re-requests the failed asset. Reset the flag so the dialog
+            // can show again if the retry also fails.
+            hasShownFileNotCachedError = false
+            appIframeSrc$('about:blank')
+            await new Promise(resolve => setTimeout(resolve, 0))
+            appIframeSrc$(`//${appSubdomain$()}.${window.location.host}/`)
+          }
           return
         }
 
