@@ -2,6 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToBase16 } from '../../src/helpers/base16.js'
+import { isMimeTypeAccepted } from '../../src/services/blossom-file-downloader/index.js'
 
 describe('BlossomFileDownloader', () => {
   // We test the logic by constructing a downloader-like flow manually
@@ -428,16 +429,6 @@ describe('BlossomFileDownloader', () => {
   })
 
   describe('MIME type validation', () => {
-    // Replicates the content-type check in #download()
-    function isMimeTypeAccepted (expectedMimeType, contentTypeHeader) {
-      if (!expectedMimeType) return true
-      const serverMediaType = (contentTypeHeader || '').split(';')[0].trim().toLowerCase()
-      if (serverMediaType && serverMediaType !== 'application/octet-stream' && serverMediaType !== expectedMimeType.toLowerCase()) {
-        return false
-      }
-      return true
-    }
-
     it('should accept response when content-type matches expected mime type', () => {
       assert.equal(isMimeTypeAccepted('image/vnd.microsoft.icon', 'image/vnd.microsoft.icon'), true)
       assert.equal(isMimeTypeAccepted('image/png', 'image/png'), true)
@@ -476,6 +467,11 @@ describe('BlossomFileDownloader', () => {
     it('should reject mismatched image types', () => {
       assert.equal(isMimeTypeAccepted('image/png', 'image/jpeg'), false)
       assert.equal(isMimeTypeAccepted('image/vnd.microsoft.icon', 'image/png'), false)
+    })
+
+    it('should accept aliased mime types that map to the same extension', () => {
+      assert.equal(isMimeTypeAccepted('text/javascript', 'application/javascript'), true)
+      assert.equal(isMimeTypeAccepted('application/javascript', 'text/javascript'), true)
     })
   })
 

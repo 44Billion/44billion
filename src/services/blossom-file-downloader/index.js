@@ -1,10 +1,25 @@
 import { sha256 } from '@noble/hashes/sha2.js'
+import mime from 'mime'
 import Base93Encoder from '#services/base93-encoder.js'
 import { bytesToBase16 } from '#helpers/base16.js'
 import nostrRelays from '#services/nostr-relays.js'
 
 const CHUNK_SIZE = 51000
 const HEAD_TIMEOUT_AFTER_FIRST_MS = 500
+
+export function isMimeTypeAccepted (expectedMimeType, contentTypeHeader) {
+  if (!expectedMimeType) return true
+  const serverMediaType = (contentTypeHeader || '').split(';')[0].trim().toLowerCase()
+  if (serverMediaType && serverMediaType !== 'application/octet-stream') {
+    const serverExt = mime.getExtension(serverMediaType)
+    const expectedExt = mime.getExtension(expectedMimeType)
+    const mimesDiffer = serverExt && expectedExt
+      ? serverExt !== expectedExt
+      : serverMediaType !== expectedMimeType.toLowerCase()
+    if (mimesDiffer) return false
+  }
+  return true
+}
 
 /**
  * Downloads a file from Blossom servers and produces kind 34600 (unsigned)
@@ -84,13 +99,7 @@ export default class BlossomFileDownloader {
           signal: this.signal
         })
         if (res.ok && res.body) {
-          if (this.mimeType) {
-            const contentType = res.headers.get('Content-Type') || ''
-            const serverMediaType = contentType.split(';')[0].trim().toLowerCase()
-            if (serverMediaType && serverMediaType !== 'application/octet-stream' && serverMediaType !== this.mimeType.toLowerCase()) {
-              continue
-            }
-          }
+          if (!isMimeTypeAccepted(this.mimeType, res.headers.get('Content-Type'))) continue
           response = res
           break
         }
