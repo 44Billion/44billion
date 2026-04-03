@@ -10,15 +10,11 @@ const HEAD_TIMEOUT_AFTER_FIRST_MS = 500
 export function isMimeTypeAccepted (expectedMimeType, contentTypeHeader) {
   if (!expectedMimeType) return true
   const serverMediaType = (contentTypeHeader || '').split(';')[0].trim().toLowerCase()
-  if (serverMediaType && serverMediaType !== 'application/octet-stream') {
-    const serverExt = mime.getExtension(serverMediaType)
-    const expectedExt = mime.getExtension(expectedMimeType)
-    const mimesDiffer = serverExt && expectedExt
-      ? serverExt !== expectedExt
-      : serverMediaType !== expectedMimeType.toLowerCase()
-    if (mimesDiffer) return false
-  }
-  return true
+  if (!serverMediaType || serverMediaType === 'application/octet-stream') return true
+  const serverExt = mime.getExtension(serverMediaType)
+  const expectedExt = mime.getExtension(expectedMimeType)
+  if (serverExt && expectedExt && serverExt === expectedExt) return true
+  return serverMediaType.split('/')[0] === expectedMimeType.split('/')[0]
 }
 
 /**

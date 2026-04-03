@@ -464,9 +464,16 @@ describe('BlossomFileDownloader', () => {
       assert.equal(isMimeTypeAccepted('IMAGE/PNG', 'image/png'), true)
     })
 
-    it('should reject mismatched image types', () => {
-      assert.equal(isMimeTypeAccepted('image/png', 'image/jpeg'), false)
-      assert.equal(isMimeTypeAccepted('image/vnd.microsoft.icon', 'image/png'), false)
+    it('should reject mismatched type families', () => {
+      assert.equal(isMimeTypeAccepted('image/png', 'text/html'), false)
+      assert.equal(isMimeTypeAccepted('text/javascript', 'image/png'), false)
+    })
+
+    it('should accept same-family types (server may report imprecise type)', () => {
+      assert.equal(isMimeTypeAccepted('image/png', 'image/jpeg'), true)
+      assert.equal(isMimeTypeAccepted('image/vnd.microsoft.icon', 'image/png'), true)
+      assert.equal(isMimeTypeAccepted('text/javascript', 'text/plain'), true)
+      assert.equal(isMimeTypeAccepted('text/css', 'text/plain'), true)
     })
 
     it('should accept aliased mime types that map to the same extension', () => {
