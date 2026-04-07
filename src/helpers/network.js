@@ -15,12 +15,12 @@ const CONNECTIVITY_PROBE_URLS = [
 
 async function hasInternetConnectivity () {
   const candidates = shuffleConnectivityProbes(CONNECTIVITY_PROBE_URLS)
-  for (const url of candidates) {
+  for (const candidate of candidates) {
     try {
-      await ping(url, { method: url.method })
+      await ping(candidate.url, { method: candidate.method })
       return true
     } catch (err) {
-      console.warn('connectivity probe failed', url, err?.message ?? err)
+      console.warn('connectivity probe failed', candidate.url, err?.message ?? err)
     }
   }
   return false
