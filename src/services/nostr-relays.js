@@ -119,71 +119,75 @@ export class NostrRelays {
       let sub
       let isClosed = false
       const p = Promise.withResolvers()
+      const t = Promise.withResolvers()
 
       // Handle abort signal
-      if (signal?.aborted) return Promise.reject(new Error('Aborted'))
+      if (signal?.aborted) throw new Error('Aborted')
       const onAbort = () => {
+        if (isClosed) return
         isClosed = true
         sub?.close()
-        p.reject(new Error('Aborted'))
+        t.reject(new Error('Aborted'))
       }
       signal?.addEventListener('abort', onAbort, { once: true })
 
       const timer = maybeUnref(setTimeout(() => {
+        if (isClosed) return
         isClosed = true
         sub?.close()
-        p.reject(new Error(`timeout: ${url}`))
+        t.reject(new Error(`timeout: ${url}`))
       }, timeout))
-      try {
-        const relay = await this.#getRelay(url)
-        if (isClosed || signal?.aborted) { // Double check in case of race
-          clearTimeout(timer)
-          return p.promise
-        }
 
-        // Shared resolve path: EOSE, early close (limit/ids satisfied), or normal close
-        const resolveRelay = () => {
+      ;(async () => {
+        try {
+          const relay = await this.#getRelay(url)
           if (isClosed) return
-          clearTimeout(timer)
-          isClosed = true
-          sub?.close()
-          p.resolve()
-        }
 
-        const checkEarlyClose = makeEarlyCloseChecker(filter, resolveRelay)
-
-        sub = relay.subscribe([filter], {
-          onevent: (event) => {
-            event.meta = { relay: url }
-            events.push(event)
-            if (callback) callback({ type: 'event', event, relay: url })
-            checkEarlyClose(event)
-          },
-          oninvalidevent: (event) => {
-            checkEarlyClose(event)
-          },
-          onclose: err => {
-            clearTimeout(timer)
+          // Shared resolve path: EOSE, early close (limit/ids satisfied), or normal close
+          const resolveRelay = () => {
             if (isClosed) return
-            let reason
-            if (err !== undefined) {
-              reason = err instanceof Error ? err : new Error(String(err))
-              if (callback) callback({ type: 'error', error: reason, relay: url })
-            }
-            // May have closed normally, without error
-            reason ? p.reject(reason) : p.resolve()
-          },
-          oneose: resolveRelay
-        })
-      } catch (err) {
-        clearTimeout(timer)
-        if (callback) callback({ type: 'error', error: err, relay: url })
-        p.reject(err)
-      }
+            isClosed = true
+            sub?.close()
+            p.resolve()
+          }
 
-      return p.promise.finally(() => {
+          const checkEarlyClose = makeEarlyCloseChecker(filter, resolveRelay)
+
+          sub = relay.subscribe([filter], {
+            onevent: (event) => {
+              event.meta = { relay: url }
+              events.push(event)
+              if (callback) callback({ type: 'event', event, relay: url })
+              checkEarlyClose(event)
+            },
+            oninvalidevent: (event) => {
+              checkEarlyClose(event)
+            },
+            onclose: err => {
+              if (isClosed) return
+              isClosed = true
+              let reason
+              if (err !== undefined) {
+                reason = err instanceof Error ? err : new Error(String(err))
+                if (callback) callback({ type: 'error', error: reason, relay: url })
+              }
+              // May have closed normally, without error
+              reason ? p.reject(reason) : p.resolve()
+            },
+            oneose: resolveRelay
+          })
+        } catch (err) {
+          if (callback) callback({ type: 'error', error: err, relay: url })
+          p.reject(err)
+        }
+      })()
+
+      try {
+        await Promise.race([p.promise, t.promise])
+      } finally {
+        clearTimeout(timer)
         signal?.removeEventListener('abort', onAbort)
-      })
+      }
     })
 
     const results = await Promise.allSettled(promises)
@@ -623,28 +627,33 @@ export class NostrRelays {
     if (eventToSend.meta) delete eventToSend.meta
 
     const promises = relays.map(async (url) => {
-      let timer
       const p = Promise.withResolvers()
-      try {
-        timer = maybeUnref(setTimeout(() => {
-          p.reject(new Error(`timeout: ${url}`))
-        }, timeout))
+      const t = Promise.withResolvers()
+      const timer = maybeUnref(setTimeout(() => {
+        t.reject(new Error(`timeout: ${url}`))
+      }, timeout))
 
-        const relay = await this.#getRelay(url)
-        await relay.publish(eventToSend)
-        p.resolve()
-      } catch (err) {
-        const reason = err instanceof Error ? err : new Error(String(err))
-        if (reason.message.startsWith('duplicate:')) return p.resolve()
-        if (reason.message.startsWith('mute:')) {
-          console.info([url, reason.message].filter(Boolean).join(' - '))
-          return p.resolve()
+      ;(async () => {
+        try {
+          const relay = await this.#getRelay(url)
+          await relay.publish(eventToSend)
+          p.resolve()
+        } catch (err) {
+          const reason = err instanceof Error ? err : new Error(String(err))
+          if (reason.message.startsWith('duplicate:')) return p.resolve()
+          if (reason.message.startsWith('mute:')) {
+            console.info([url, reason.message].filter(Boolean).join(' - '))
+            return p.resolve()
+          }
+          p.reject(reason)
         }
-        p.reject(reason)
+      })()
+
+      try {
+        await Promise.race([p.promise, t.promise])
       } finally {
         clearTimeout(timer)
       }
-      return p.promise
     })
 
     const results = await Promise.allSettled(promises)
