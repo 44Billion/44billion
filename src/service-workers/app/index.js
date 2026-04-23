@@ -1,7 +1,7 @@
 // Any change to this file will reinstall sw
 import '#config/polyfills.js'
 import { injectIntoTheHeadTag } from '#helpers/html.js'
-import { requestMultipleMessages } from '#helpers/window-message/index.js'
+import { askStream } from '#helpers/window-message/index.js'
 import Base93Decoder from '#services/base93-decoder.js'
 import appPageScriptContent from '#scripts/app-page.txt.js'
 import _appPageLoader from '../../assets/html/app-page-loader.txt.html'
@@ -89,13 +89,13 @@ self.addEventListener('fetch', e => {
   })())
 })
 
-// TODO: add timeout to requestMultipleMessages, catch error and if it's a timeout one
+// TODO: add timeout to askStream, catch error and if it's a timeout one
 // call selectClientToPostMessagesTo again by recursively retrying handleRequest
 async function handleRequest (request) {
   const pathname = request.pathname ?? new URL(request.url).pathname
   const toPort = await selectClientToPostMessagesTo()
   const msg = { code: 'STREAM_APP_FILE', payload: { pathname } }
-  const iterator = requestMultipleMessages(toPort, msg, { targetOrigin: self.location.origin || '*' })
+  const iterator = askStream(toPort, msg, { targetOrigin: self.location.origin || '*' })
   const firstReplyMsg = (await iterator.next()).value
 
   if (firstReplyMsg.error) {

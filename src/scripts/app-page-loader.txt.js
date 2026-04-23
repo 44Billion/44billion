@@ -1,4 +1,4 @@
-import { postMessage, requestMultipleMessages } from '#helpers/window-message/index.js'
+import { tell, askStream } from '#helpers/window-message/index.js'
 import Base93Decoder from '#services/base93-decoder.js'
 
 // ERROR: Top-level await is currently not supported with the "iife" output format [plugin js-text]
@@ -27,13 +27,13 @@ function tellParentImReady () {
     p.resolve(browserPort)
   }, { once: true })
   browserPort.start()
-  postMessage(window.parent, readyMsg, { targetOrigin: '*', transfer: [appPagePortForBrowser] })
+  tell(window.parent, readyMsg, { targetOrigin: '*', transfer: [appPagePortForBrowser] })
   return p.promise
 }
 
 async function maybeSetIcon (napp, to) {
   const iconMsg = { code: 'STREAM_APP_ICON', payload: { pathname: window.location.pathname } }
-  const iterator = requestMultipleMessages(to, iconMsg)
+  const iterator = askStream(to, iconMsg)
   function extractFirstDataFromChunkMsg ({ payload, error }) {
     if (error) return {}
     return {
@@ -62,7 +62,7 @@ async function maybeSetIcon (napp, to) {
 async function updateRouteLoadProgress (napp, to) {
   const routeLoadMsg = { code: 'CACHE_APP_FILE', payload: { pathname: window.location.pathname } }
 
-  for await (const { payload: progress, error } of requestMultipleMessages(to, routeLoadMsg)) {
+  for await (const { payload: progress, error } of askStream(to, routeLoadMsg)) {
     if (error) { console.log(error); continue }
     napp.progress = progress
     napp.dispatchEvent(new CustomEvent('progress'))

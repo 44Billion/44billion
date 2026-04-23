@@ -1,6 +1,6 @@
 import { f, useGlobalStore, useClosestStore, useStore, useTask, useCallback, useComputed, useSignal } from '#f'
 import useWebStorage from '#hooks/use-web-storage.js'
-import { postMessage, requestMessage } from '#helpers/window-message/index.js'
+import { tell, ask } from '#helpers/window-message/index.js'
 import { setAccountsState } from '#zones/screen/use-init-or-reset-screen.js'
 import '#shared/modal.js'
 
@@ -80,7 +80,7 @@ f('vault-messenger-wrapper', function () {
 
   const { vaultPort$ } = useVaultMessengerStore({ shouldInit: true })
   // init it even if vault isn't ready yet cause other components may try to use its methods
-  useRequestVaultMessage(vaultPort$)
+  useVaultActor(vaultPort$)
 
   if (!vaultUrl$() || !isReachable$()) return this.h``
 
@@ -128,7 +128,7 @@ f('vault-messenger', function () {
     config_vaultUrl$: vaultUrl$
   } = storage
 
-  const { cancelPreviousRequests, postVaultMessage } = useRequestVaultMessage(vaultPort$)
+  const { cancelPreviousRequests, tellVault } = useVaultActor(vaultPort$)
   const vaultModalStore = useVaultModalStore()
   const { isOpen$ } = vaultModalStore
   useTask(({ track }) => {
@@ -136,7 +136,7 @@ f('vault-messenger', function () {
     if (isFirstRun$() || isOpen) return
 
     if (vaultPort$()) {
-      postVaultMessage(
+      tellVault(
         { code: 'CLOSED_VAULT_VIEW', payload: null },
         { instant: true }
       )
@@ -152,7 +152,7 @@ f('vault-messenger', function () {
     if (isFirstRun$() || isClosed || !wasWorkarounEnabled) return
 
     if (vaultPort$()) {
-      postVaultMessage(
+      tellVault(
         { code: 'OPEN_VAULT_HOME', payload: null },
         { instant: true }
       )
@@ -239,14 +239,14 @@ let _activeVaultPort = null
 const _pendingVaultMessages = []
 const MAX_PENDING_VAULT_MESSAGES = 50
 
-export function postToVault (msg) {
+export function tellVault (msg) {
   if (!_activeVaultPort) {
     if (_pendingVaultMessages.length < MAX_PENDING_VAULT_MESSAGES) {
       _pendingVaultMessages.push(msg)
     }
     return
   }
-  postMessage(_activeVaultPort, msg)
+  tell(_activeVaultPort, msg)
 }
 
 function initMessageListener ({
@@ -294,7 +294,7 @@ function initMessageListener ({
     stopRenderHandshake?.()
     // BROWSER_READY must be the first message the vault receives
     tellVaultImReady(currentVaultPort)
-    _pendingVaultMessages.splice(0).forEach(msg => postMessage(_activeVaultPort, msg))
+    _pendingVaultMessages.splice(0).forEach(msg => tell(_activeVaultPort, msg))
     vaultPort$(currentVaultPort)
   }, { signal: componentSignal })
 
@@ -327,7 +327,7 @@ function initMessageListener ({
       code: 'BROWSER_READY',
       payload: null
     }
-    postMessage(vaultPort, readyMsg)
+    tell(vaultPort, readyMsg)
   }
 }
 
@@ -358,7 +358,7 @@ function startRenderHandshake ({
       stop()
       return
     }
-    postMessage(
+    tell(
       targetWindow,
       { code: 'RENDER', payload: null },
       // don't set to vaultOrigin here, as it may not be ready yet
@@ -381,12 +381,12 @@ function startRenderHandshake ({
   return controller
 }
 
-export function useRequestVaultMessage (vaultPort$) {
-  if (vaultPort$ !== undefined) useRequestVaultMessageInit(vaultPort$)
-  return useGlobalStore('useRequestVaultMessage')
+export function useVaultActor (vaultPort$) {
+  if (vaultPort$ !== undefined) useVaultActorInit(vaultPort$)
+  return useGlobalStore('vaultActor')
 }
 
-function useRequestVaultMessageInit (vaultPort$) {
+function useVaultActorInit (vaultPort$) {
   const storage = useWebStorage(localStorage)
   const {
     config_vaultUrl$: vaultUrl$
@@ -394,21 +394,21 @@ function useRequestVaultMessageInit (vaultPort$) {
 
   const {
     msgQueue$
-  } = useGlobalStore('useRequestVaultMessage', () => ({
+  } = useGlobalStore('vaultActor', () => ({
     vaultPort$,
     vaultOrigin$ () { return new URL(vaultUrl$()).origin },
     msgQueue$: {
       waiting: [],
       running: []
     },
-    postVaultMessage (msg) {
+    tellVault (msg) {
       if (!this.vaultPort$()) return Promise.reject(new Error('Vault not connected'))
-      postMessage(this.vaultPort$(), msg)
+      tell(this.vaultPort$(), msg)
     },
-    async requestVaultMessage (msg, { timeout, instant = false } = {}) {
+    async askVault (msg, { timeout, instant = false } = {}) {
       if (instant) {
         if (!this.vaultPort$()) return Promise.reject(new Error('Vault not connected'))
-        return requestMessage(this.vaultPort$(), msg, {
+        return ask(this.vaultPort$(), msg, {
           ...(timeout != null && { timeout })
         })
       }
@@ -432,7 +432,7 @@ function useRequestVaultMessageInit (vaultPort$) {
     },
     cancelPreviousRequests (error) {
       this.msgQueue$().running.forEach(v => v.p.resolve({
-        // same signature as requestMessage's soft-rejection
+        // same signature as ask()'s soft-rejection
         code: v.msg.code,
         payload: null,
         error: error || new Error('Canceled')
@@ -476,7 +476,7 @@ function useRequestVaultMessageInit (vaultPort$) {
 
       const { msg, timeout, queuedAt, p } = queue.running[queue.running.length - promisesToStart + i]
       // this never errors out, it resolves with { error } in that case
-      requestMessage(vaultPort, msg, {
+      ask(vaultPort, msg, {
         ...(timeout != null && { timeout: queuedAt + timeout - now })
       })
         .then(v => { p.resolve(v) })

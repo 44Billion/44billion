@@ -1,7 +1,7 @@
 import { useTask } from '#f'
 import useWebStorage from '#hooks/use-web-storage.js'
 import nostrRelays, { seedRelays } from '#services/nostr-relays.js'
-import { postToVault } from '#zones/vault-modal/index.js'
+import { tellVault } from '#zones/vault-modal/index.js'
 import { base62ToBase16 } from '#helpers/base62.js'
 import { isValidRelayUrl } from '#helpers/relay.js'
 
@@ -66,7 +66,7 @@ async function trackEventsForAccount (pk, signal, storage) {
 
   const maybeSendToVault = (event) => {
     if (event.created_at <= getStoredEventAt(event.kind)) return
-    postToVault({
+    tellVault({
       code: 'UPDATE_ACCOUNT_EVENTS',
       payload: { pubkey: pkBase16, events: [event] }
     })

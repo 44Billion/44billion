@@ -20,7 +20,7 @@ import '#shared/route.js'
 import { initMessageListener } from '#helpers/window-message/browser/index.js'
 import { isOnline } from '#helpers/network.js'
 import { base62ToBase36 } from '#helpers/base36.js'
-import { useVaultModalStore, useRequestVaultMessage } from '#zones/vault-modal/index.js'
+import { useVaultModalStore, useVaultActor } from '#zones/vault-modal/index.js'
 import { base62ToBase16 } from '#helpers/base62.js'
 import '#shared/napp-assets-caching-progress-bar.js'
 import '#shared/app-icon.js'
@@ -281,7 +281,7 @@ f('appWindow', function () {
       // }
     }
   })
-  const { requestVaultMessage } = useRequestVaultMessage()
+  const { askVault } = useVaultActor()
   const pdStore = useGlobalStore('<permission-dialog>')
   const { requestPermission } = pdStore
   const { openApp } = useGlobalStore('useAppRouter')
@@ -430,7 +430,7 @@ f('appWindow', function () {
       await initMessageListener(
         userPkB36$(), appId$(), appSubdomain$(), initialRoute,
         trustedAppIframeRef$(), appIframeRef$(), appIframeSrc$,
-        cachingProgress$, requestVaultMessage, requestPermission, openApp,
+        cachingProgress$, askVault, requestPermission, openApp,
         { signal: ac.signal, isSingleNapp: false, onFileNotCached }
       )
       trustedAppIframeSrc$(`//${appSubdomain$()}.${window.location.host}/~~napp`)
@@ -623,7 +623,7 @@ f('toolbarMenu', function () {
   const { session_openWorkspaceKeys$: openWorkspaceKeys$, session_workspaceKeys$: workspaceKeys$ } = storage
   const { close: closeMenu } = useClosestStore('<a-menu>')
   const vaultModalStore = useVaultModalStore()
-  const { requestVaultMessage } = useRequestVaultMessage()
+  const { askVault } = useVaultActor()
 
   // Track unlocking state for each user
   const unlockingUsers$ = useSignal({})
@@ -702,7 +702,7 @@ f('toolbarMenu', function () {
 
       try {
         const userPkB16 = base62ToBase16(userPk)
-        const response = await requestVaultMessage(
+        const response = await askVault(
           { code: 'UNLOCK_ACCOUNT', payload: { pubkey: userPkB16 } },
           { timeout: 120000, instant: true }
         )
