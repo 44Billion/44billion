@@ -1,4 +1,4 @@
-import { postMessage, requestMessage } from '#helpers/window-message/index.js'
+import { tell, ask } from '#helpers/window-message/index.js'
 
 // ERROR: Top-level await is currently not supported with the "iife" output format [plugin js-text]
 // https://github.com/evanw/esbuild/issues/253
@@ -53,7 +53,7 @@ function tellParentImReady (p) {
     p.resolve(browserPort)
   }, { once: true })
   browserPort.start()
-  postMessage(window.parent, readyMsg, { targetOrigin: '*', transfer: [appPagePortForBrowser] })
+  tell(window.parent, readyMsg, { targetOrigin: '*', transfer: [appPagePortForBrowser] })
 }
 
 function injectNip07 (promise) {
@@ -78,7 +78,7 @@ function injectNip07 (promise) {
 
   function createNostrMethod (method, nsName, nsParams) {
     return (...params) => promise
-      .then(browserPort => requestMessage(
+      .then(browserPort => ask(
         browserPort,
         { code: 'NIP07', payload: { ns: [nsName, ...nsParams], method, params } },
         { timeout }
@@ -260,7 +260,7 @@ function interceptNavigations (browserPortPromise) {
   function sendOpenAppMessage (url) {
     try {
       browserPortPromise.then(browserPort => {
-        postMessage(browserPort, {
+        tell(browserPort, {
           code: 'OPEN_APP',
           payload: { href: url }
         })

@@ -4,7 +4,7 @@ import { appDecode } from '#helpers/nip19.js'
 import { addressObjToAppId } from '#helpers/app.js'
 import { base62ToBase36 } from '#helpers/base36.js'
 import { initMessageListener } from '#helpers/window-message/browser/index.js'
-import { useVaultModalStore, useRequestVaultMessage } from '#zones/vault-modal/index.js'
+import { useVaultModalStore, useVaultActor } from '#zones/vault-modal/index.js'
 import '#shared/napp-assets-caching-progress-bar.js'
 
 f('singleNapp', function () {
@@ -74,7 +74,7 @@ f('singleNappLauncher', function () {
       // }
     }
   })
-  const { requestVaultMessage } = useRequestVaultMessage()
+  const { askVault } = useVaultActor()
 
   useTask(
     async ({ cleanup }) => {
@@ -91,7 +91,7 @@ f('singleNappLauncher', function () {
       await initMessageListener(
         userPkB36$(), appId, appSubdomain$(), initialRoute,
         trustedAppIframeRef$(), appIframeRef$(), appIframeSrc$,
-        cachingProgress$, requestVaultMessage, function requestPermission () {
+        cachingProgress$, askVault, function requestPermission () {
           throw new Error('Permission request not available in single napp mode yet')
         }, function openApp () {
           throw new Error('Open app not available in single napp mode yet')

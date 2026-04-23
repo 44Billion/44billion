@@ -58,7 +58,7 @@ export const initReplyListener = ((
   if (isPort) hasRunKey.start()
   listenerRegistry.register(hasRunKey, controller)
 })()
-export async function requestMessage (to, message, options, transfer) {
+export async function ask (to, message, options, transfer) {
   if (!message.code && !('payload' in message)) throw new Error('Missing args')
   if (!options || typeof options !== 'object') options = { targetOrigin: options, transfer }
 
@@ -81,7 +81,7 @@ export async function requestMessage (to, message, options, transfer) {
       error
     }))
 }
-export function replyWithMessage (originalMsgEvent, message, options, transfer) {
+export function reply (originalMsgEvent, message, options, transfer) {
   if ((!('payload' in message) && !('error' in message))) throw new Error('Missing args')
   if (!options || typeof options !== 'object') options = { targetOrigin: options, transfer }
   options.targetOrigin ??= originalMsgEvent.origin
@@ -93,13 +93,13 @@ export function replyWithMessage (originalMsgEvent, message, options, transfer) 
     code: 'REPLY'
   }, options)
 }
-export function postMessage (to, message, options, transfer) {
+export function tell (to, message, options, transfer) {
   if (!message.code || (!('payload' in message) && !('error' in message))) throw new Error('Missing args')
   if (!options || typeof options !== 'object') options = { targetOrigin: options, transfer }
   to.postMessage(message, options)
 }
 
-export async function * requestMultipleMessages (to, message, options, transfer) {
+export async function * askStream (to, message, options, transfer) {
   if (!message.code && !('payload' in message)) throw new Error('Missing args')
   if (!options || typeof options !== 'object') options = { targetOrigin: options, transfer }
 

@@ -6,7 +6,7 @@
 //
 // Note: wildcard certificates for second-level subdomains are hard to get (*.<many>.a.com),
 // that's why we can't do  <loggedinuserpubkey>.<appid>.44billion.net
-import { postMessage } from '../index.js'
+import { tell } from '../index.js'
 
 export async function clearAppData () {
   try {
@@ -28,10 +28,10 @@ export async function clearAppData () {
     if (registration) await registration.unregister()
 
     // notify parent
-    postMessage(window.parent, { code: 'DATA_CLEARED', payload: null }, { targetOrigin: '*' })
+    tell(window.parent, { code: 'DATA_CLEARED', payload: null }, { targetOrigin: '*' })
   } catch (error) {
     // notify parent about the error
-    postMessage(window.parent, {
+    tell(window.parent, {
       code: 'DATA_CLEAR_ERROR',
       error
     }, { targetOrigin: '*' })
@@ -73,11 +73,11 @@ export function tellSwImReady () {
   ac = new AbortController()
   // This port1 will receive messages from the service worker
   swPort.addEventListener('message', async e => {
-    postMessage(await browserPortPromise, e.data)
+    tell(await browserPortPromise, e.data)
   }, { signal: ac.signal })
   swPort.start()
 
-  postMessage(getSw(), readyMsg, { targetOrigin: swOrigin, transfer: [trustedAppPagePortForSw] })
+  tell(getSw(), readyMsg, { targetOrigin: swOrigin, transfer: [trustedAppPagePortForSw] })
 }
 
 export function tellParentImReady () {
@@ -105,13 +105,13 @@ export function tellParentImReady () {
         // but the inverse doesn't for some reason (browser bug?)
         // and needs a MessageChannel (that can't be created on sw)
         // Since we have a channel port, we'll use it
-        postMessage(await swPortPromise, e.data, { targetOrigin: swOrigin })
+        tell(await swPortPromise, e.data, { targetOrigin: swOrigin })
         break
       }
     }
   })
   browserPort.start()
-  postMessage(window.parent, readyMsg, { targetOrigin: '*', transfer: [trustedAppPagePortForBrowser] })
+  tell(window.parent, readyMsg, { targetOrigin: '*', transfer: [trustedAppPagePortForBrowser] })
 }
 
 function getSw () {

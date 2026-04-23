@@ -1,4 +1,4 @@
-import { /* handleMessageReply, */ postMessage, replyWithMessage } from '../index.js'
+import { /* handleMessageReply, */ tell, reply } from '../index.js'
 import { appIdToAddressObj, addressObjToAppId } from '#helpers/app.js'
 import { base36ToBase16 } from '#helpers/base36.js'
 import { base16ToBase62 } from '#helpers/base62.js'
@@ -43,7 +43,7 @@ async function updateIconStorage (appId, favicon, chunks) {
 export async function initMessageListener (
   userPkB36, appId, appSubdomain, initialRoute,
   trustedAppPageIframe, appPageIframe, appPageIframeSrc$,
-  cachingProgress$, requestVaultMessage, requestPermission, openApp,
+  cachingProgress$, askVault, requestPermission, openApp,
   { signal: componentSignal, isSingleNapp = false, onFileNotCached = null } = {}
 ) {
   const userPkB16 = base36ToBase16(userPkB36)
@@ -142,7 +142,7 @@ export async function initMessageListener (
         // case 'GET_BUNDLE': {
         //   // using e.data.domainLabels gotten from app sw's self.location
         //   const msg = await getAppBundleMessage(e.data.domainLabels[0])
-        //   replyWithMessage(e, msg, { to: trustedAppPagePort })
+        //   reply(e, msg, { to: trustedAppPagePort })
         //   break
         // }
 
@@ -152,7 +152,7 @@ export async function initMessageListener (
             if (onFileNotCached && errorToSend.message !== 'HTML_FILE_NOT_CACHED') {
               onFileNotCached(e.data.payload.pathname)
             }
-            return replyWithMessage(e, { error: errorToSend, isLast: true }, { to: trustedAppPagePort })
+            return reply(e, { error: errorToSend, isLast: true }, { to: trustedAppPagePort })
           }
 
           try {
@@ -199,7 +199,7 @@ export async function initMessageListener (
                       }
 
                       const isLast = (totalChunks != null && nextChunkIndexToStream === totalChunks - 1)
-                      replyWithMessage(e, {
+                      reply(e, {
                         payload: {
                           content: chunk.evt.content,
                           ...(nextChunkIndexToStream === 0 && { contentType: cacheStatus.contentType })
@@ -272,7 +272,7 @@ export async function initMessageListener (
 
             let i = 0
             for await (const chunk of streamFileChunksFromDb(appId, appFiles.getFileRootHash(e.data.payload.pathname))) {
-              replyWithMessage(e, {
+              reply(e, {
                 payload: {
                   content: chunk.evt.content,
                   ...(i === 0 && { contentType: cacheStatus.contentType })
@@ -285,7 +285,7 @@ export async function initMessageListener (
       }
     }, { signal })
     trustedAppPagePort.start()
-    postMessage(trustedAppPagePort, { code: 'BROWSER_READY', payload: null })
+    tell(trustedAppPagePort, { code: 'BROWSER_READY', payload: null })
   }
 
   const appMetadataCache = new Map() // Cache app metadata by app ID
@@ -415,21 +415,21 @@ export async function initMessageListener (
             e.data.payload.ns.length === 1
           ) {
             const msg = { payload: userPkB16 }
-            replyWithMessage(e, msg, { to: appPagePort })
+            reply(e, msg, { to: appPagePort })
             break
           }
           const { ns, method, params = [] } = e.data.payload
           const appMetadata = await getAppMetadata(appId, appAddress, { timeoutMs: 0 })
           let msg
           try {
-            msg = await requestNip07Message(
-              requestVaultMessage, userPkB16, ns, method, params,
+            msg = await askNip07(
+              askVault, userPkB16, ns, method, params,
               { isDefaultUser, requestPermission, app: appMetadata }
             )
           } catch (err) {
             msg = { error: err }
           }
-          replyWithMessage(e, msg, { to: appPagePort })
+          reply(e, msg, { to: appPagePort })
           break
         }
         // window.napp extras
@@ -448,7 +448,7 @@ export async function initMessageListener (
               // so subsequent calls are served from cache without re-downloading.
               const icon = await appFiles.getIcon()
               if (!icon?.url) {
-                replyWithMessage(e, { error: new Error('No icon'), isLast: true }, { to: appPagePort })
+                reply(e, { error: new Error('No icon'), isLast: true }, { to: appPagePort })
                 break
               }
 
@@ -461,7 +461,7 @@ export async function initMessageListener (
               const numChunks = Math.max(1, Math.ceil(bytes.length / CHUNK_SIZE))
               for (let i = 0; i < numChunks; i++) {
                 const content = new Base93Encoder().update(bytes.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE)).getEncoded()
-                replyWithMessage(e, {
+                reply(e, {
                   payload: { content, ...(i === 0 && { mimeType, contentType }) },
                   isLast: i === numChunks - 1
                 }, { to: appPagePort })
@@ -482,7 +482,7 @@ export async function initMessageListener (
               }
               if (bytesToBase16(hasher.digest()) !== favicon.rootHash) {
                 if (favicon.rootHash) await deleteFileChunksFromDb(appId, favicon.rootHash)
-                replyWithMessage(e, { error: new Error('Icon hash mismatch'), isLast: true }, { to: appPagePort })
+                reply(e, { error: new Error('Icon hash mismatch'), isLast: true }, { to: appPagePort })
                 break
               }
             }
@@ -495,7 +495,7 @@ export async function initMessageListener (
             let i = 0
             for await (const chunk of streamFileChunksFromDb(appId, favicon.rootHash)) {
               if (shouldCacheIconOnLs) allChunks.push(chunk.evt.content)
-              replyWithMessage(e, {
+              reply(e, {
                 payload: {
                   content: chunk.evt.content,
                   ...(i === 0 && {
@@ -517,7 +517,7 @@ export async function initMessageListener (
             }
           } catch (error) {
             console.log(error.stack)
-            replyWithMessage(e, { error, isLast: true }, { to: appPagePort })
+            reply(e, { error, isLast: true }, { to: appPagePort })
           }
           break
         }
@@ -526,29 +526,29 @@ export async function initMessageListener (
             const progressCallback = ({ progress, error }) => {
               if (error) {
                 if (onFileNotCached) onFileNotCached(e.data.payload.pathname)
-                replyWithMessage(e, { error, isLast: true }, { to: appPagePort })
+                reply(e, { error, isLast: true }, { to: appPagePort })
               } else {
                 const isLast = progress >= 100
-                replyWithMessage(e, { payload: progress, isLast }, { to: appPagePort })
+                reply(e, { payload: progress, isLast }, { to: appPagePort })
               }
             }
             appFiles.cacheFile(e.data.payload.pathname, null, progressCallback)
           } catch (error) {
             console.log(e.data.payload.pathname, 'error:', error.stack)
             if (onFileNotCached) onFileNotCached(e.data.payload.pathname)
-            replyWithMessage(e, { error, isLast: true }, { to: appPagePort })
+            reply(e, { error, isLast: true }, { to: appPagePort })
           }
           break
         }
       }
     }, { signal })
     appPagePort.start()
-    postMessage(appPagePort, { code: 'BROWSER_READY', payload: null })
+    tell(appPagePort, { code: 'BROWSER_READY', payload: null })
   }
 }
 
 function handleNappRequest (e) {
-  return replyWithMessage(e, { error: new Error('Not implemented yet') })
+  return reply(e, { error: new Error('Not implemented yet') })
 }
 
 const methodNameToPermissionName = {
@@ -563,8 +563,8 @@ function toPermissionName (method) {
   return methodNameToPermissionName[method] ||
     (() => { throw new Error(`Unknown method ${method}`) })()
 }
-export async function requestNip07Message (
-  requestVaultMessage, pubkey, ns, method, params, { isDefaultUser, requestPermission, app } = {}
+export async function askNip07 (
+  askVault, pubkey, ns, method, params, { isDefaultUser, requestPermission, app } = {}
 ) {
   if (isDefaultUser) throw new Error('Please login')
   if (requestPermission) {
@@ -604,5 +604,5 @@ export async function requestNip07Message (
       params
     }
   }
-  return requestVaultMessage(msg, { timeout: 120000 })
+  return askVault(msg, { timeout: 120000 })
 }
