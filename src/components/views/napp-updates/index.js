@@ -402,7 +402,6 @@ f('napp-updates', function () {
     <div class='body-cydfv983dfff'>
       ${allAppIds$().map(appId => this.h({ key: appId })`
         <f-to-signals
-          key=${appId}
           props=${{
             from: ['updateInfo', 'updateState'],
             updateInfo: availableUpdates$()[appId],
@@ -410,8 +409,8 @@ f('napp-updates', function () {
             appId,
             publisherProfiles$,
             onUpdate: () => handleUpdateSingle(appId),
-            render (props) {
-              return this.h`<napp-update-card props=${props} />`
+            render ({ h, props }) {
+              return h`<napp-update-card props=${props} />`
             }
           }}
         />

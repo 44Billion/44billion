@@ -46,7 +46,7 @@
     "meilisearch": "^0.54.0",
     "mime": "^4.0.7",
     "nostr-tools": "^2.23.3",
-    "thenameisf": "^1.0.8",
+    "thenameisf": "^1.1.1",
     "url-router": "^13.0.0"
   }
 }

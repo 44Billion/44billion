@@ -261,10 +261,9 @@ f('permissionDialogStack', function () {
     <div id='permission-dialog-stack' class=${cssClasses.defaultTheme}>
       ${store.permissionRequests$().map((req, index) => this.h({ key: req.id })`
         <f-to-signals
-          key=${req.id}
           props=${{
-            from: ['req', 'index'], req, index, render ({ req$, index$ }) {
-              return this.h`<permission-dialog-card
+            from: ['req', 'index'], req, index, render ({ h, props: { req$, index$ } }) {
+              return h`<permission-dialog-card
                 props=${{
                   req$,
                   index$
