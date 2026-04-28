@@ -7,6 +7,9 @@ import { setWebStorageItem } from '#helpers/web-storage.js'
 
 export default class AppUpdater {
   static _pendingSearches = new Map()
+  // Set to true while the user is on the app updates page so the unread
+  // indicator stays hidden even if a background check finds new updates.
+  static isUserViewingUpdates = false
 
   static getInstalledAppIds ({ _localStorage } = {}) {
     const storage = _localStorage || localStorage
@@ -28,7 +31,6 @@ export default class AppUpdater {
     _AppFileDownloader = AppFileDownloader,
     _getSiteManifestFromDb = getSiteManifestFromDb,
     _saveSiteManifestToDb = saveSiteManifestToDb,
-    _setWebStorageItem = setWebStorageItem,
     _localStorage
   } = {}) {
     let ids = appIds
@@ -55,34 +57,25 @@ export default class AppUpdater {
 
           if (remoteResult) {
             const remoteEvent = remoteResult.event
-            let hasUpdate = false
-
-            if (!localManifest) {
-              hasUpdate = true
-            } else if (remoteEvent.created_at > localManifest.created_at) {
-              hasUpdate = true
-            }
+            const hasUpdate = !localManifest || remoteEvent.created_at > localManifest.created_at
 
             if (hasUpdate) {
               updates[appId] = remoteResult
             }
 
             if (localManifest) {
-              await _saveSiteManifestToDb(localManifest, { ...localManifest.meta, hasUpdate })
+              await _saveSiteManifestToDb(localManifest, {
+                ...localManifest.meta,
+                latestUpdateEventId: hasUpdate ? remoteEvent.id : null
+              })
             }
           } else if (localManifest) {
-            await _saveSiteManifestToDb(localManifest, { ...localManifest.meta, hasUpdate: false })
+            await _saveSiteManifestToDb(localManifest, {
+              ...localManifest.meta,
+              latestUpdateEventId: null
+            })
           }
         }
-
-        const allAppIds = this.getInstalledAppIds({ _localStorage })
-
-        let updateCount = 0
-        for (const id of allAppIds) {
-          const manifest = await _getSiteManifestFromDb(id)
-          if (manifest?.meta?.hasUpdate) updateCount++
-        }
-        _setWebStorageItem(_localStorage || (typeof localStorage !== 'undefined' ? localStorage : null), 'session_unread_appUpdateCount', updateCount)
 
         return updates
       } finally {
@@ -92,6 +85,47 @@ export default class AppUpdater {
 
     this._pendingSearches.set(key, promise)
     return promise
+  }
+
+  // Recomputes the unread badge count from manifest meta. Counts apps that
+  // have an update available AND whose update event the user hasn't seen yet
+  // (i.e. hasn't visited the app updates page while that update was visible).
+  // While the user is on the app updates page, the count is forced to 0.
+  static async refreshUnreadCount ({
+    _getSiteManifestFromDb = getSiteManifestFromDb,
+    _setWebStorageItem = setWebStorageItem,
+    _localStorage
+  } = {}) {
+    const local = _localStorage || (typeof localStorage !== 'undefined' ? localStorage : null)
+
+    if (this.isUserViewingUpdates) {
+      _setWebStorageItem(local, 'session_unread_appUpdateCount', undefined)
+      return
+    }
+
+    const allAppIds = this.getInstalledAppIds({ _localStorage: local })
+    let updateCount = 0
+    for (const id of allAppIds) {
+      const manifest = await _getSiteManifestFromDb(id)
+      const latest = manifest?.meta?.latestUpdateEventId
+      if (latest == null) continue
+      if (latest !== manifest.meta.seenUpdateEventId) updateCount++
+    }
+    _setWebStorageItem(local, 'session_unread_appUpdateCount', updateCount || undefined)
+  }
+
+  static async markUpdateAsSeen (appId, updateEventId, {
+    _getSiteManifestFromDb = getSiteManifestFromDb,
+    _saveSiteManifestToDb = saveSiteManifestToDb
+  } = {}) {
+    if (!updateEventId) return
+    const manifest = await _getSiteManifestFromDb(appId)
+    if (!manifest) return
+    if (manifest.meta?.seenUpdateEventId === updateEventId) return
+    await _saveSiteManifestToDb(manifest, {
+      ...manifest.meta,
+      seenUpdateEventId: updateEventId
+    })
   }
 
   static isAppOpen (appId, { _sessionStorage, _localStorage } = {}) {
@@ -178,6 +212,7 @@ export default class AppUpdater {
 
       try {
         await this.searchForUpdates(null, deps)
+        await this.refreshUnreadCount(deps)
       } catch (err) {
         console.error('Update check failed', err)
       }
@@ -267,7 +302,7 @@ export default class AppUpdater {
     const localManifest = await _getSiteManifestFromDb(appId)
     const lastOpenedAsSingleNappAt = localManifest?.meta?.lastOpenedAsSingleNappAt || 0
 
-    await _saveSiteManifestToDb(nextSiteManifestEvent, { hasUpdate: false, lastOpenedAsSingleNappAt })
+    await _saveSiteManifestToDb(nextSiteManifestEvent, { lastOpenedAsSingleNappAt })
   }
 
   static async * updateApps (nextSiteManifestEvents, {

@@ -18,7 +18,11 @@ export async function saveSiteManifestToDb (siteManifest, metadata) {
   return run('put', [record], 'siteManifests')
 }
 
-function toDbRecord (event, { hasUpdate = false, lastOpenedAsSingleNappAt = 0 } = {}) {
+function toDbRecord (event, {
+  lastOpenedAsSingleNappAt = 0,
+  latestUpdateEventId = null,
+  seenUpdateEventId = null
+} = {}) {
   const dTag = event.tags.find(t => t[0] === 'd')?.[1] ?? ''
   if (!isNostrAppDTagSafe(dTag)) throw new Error('Invalid d tag')
 
@@ -33,8 +37,9 @@ function toDbRecord (event, { hasUpdate = false, lastOpenedAsSingleNappAt = 0 } 
     c: channelEnum,
     p: base16ToBytes(pubkey),
     d: dTag,
-    u: hasUpdate,
     s: lastOpenedAsSingleNappAt,
+    lu: latestUpdateEventId,
+    su: seenUpdateEventId,
     evt
   }
 }
@@ -51,8 +56,9 @@ function toEvent (record) {
     pubkey: bytesToBase16(record.p),
     ...record.evt,
     meta: {
-      hasUpdate: record.u,
-      lastOpenedAsSingleNappAt: record.s
+      lastOpenedAsSingleNappAt: record.s,
+      latestUpdateEventId: record.lu ?? null,
+      seenUpdateEventId: record.su ?? null
     }
   }
 }

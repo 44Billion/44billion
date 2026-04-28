@@ -34,11 +34,11 @@ describe('AppUpdater', () => {
   describe('searchForUpdates', () => {
     const appId = 'app1'
 
-    it('should check for updates and mark hasUpdate=true when remote is newer', async () => {
+    it('should set latestUpdateEventId when remote is newer', async () => {
       const localManifest = {
         id: 'local',
         created_at: 100,
-        meta: { hasUpdate: false }
+        meta: {}
       }
       const remoteEvent = {
         id: 'remote',
@@ -58,7 +58,6 @@ describe('AppUpdater', () => {
         storedManifest = { ...manifest, meta }
       })
 
-      const mockSetWebStorageItem = mock.fn()
       const mockLocalStorage = {
         getItem: mock.fn((key) => {
           if (key === 'session_workspaceKeys') return JSON.stringify(['ws1'])
@@ -71,28 +70,23 @@ describe('AppUpdater', () => {
         _AppFileDownloader: mockAppFileDownloader,
         _getSiteManifestFromDb: mockGetManifestFromDb,
         _saveSiteManifestToDb: mockSaveManifestToDb,
-        _setWebStorageItem: mockSetWebStorageItem,
         _localStorage: mockLocalStorage
       })
 
       assert.equal(mockAppFileDownloader.getSiteManifestEvents.mock.callCount(), 1)
-      assert.equal(mockGetManifestFromDb.mock.callCount(), 2) // 1 for check, 1 for count
+      assert.equal(mockGetManifestFromDb.mock.callCount(), 1)
       assert.equal(mockSaveManifestToDb.mock.callCount(), 1)
 
       const [, savedMeta] = mockSaveManifestToDb.mock.calls[0].arguments
-      assert.equal(savedMeta.hasUpdate, true)
+      assert.equal(savedMeta.latestUpdateEventId, 'remote')
       assert.deepEqual(updates[appId].event, remoteEvent)
-
-      assert.equal(mockSetWebStorageItem.mock.callCount(), 1)
-      assert.equal(mockSetWebStorageItem.mock.calls[0].arguments[1], 'session_unread_appUpdateCount')
-      assert.equal(mockSetWebStorageItem.mock.calls[0].arguments[2], 1)
     })
 
-    it('should mark hasUpdate=false when remote is older or same', async () => {
+    it('should clear latestUpdateEventId when remote is older or same', async () => {
       const localManifest = {
         id: 'local',
         created_at: 200,
-        meta: { hasUpdate: true } // currently marked as having update
+        meta: { latestUpdateEventId: 'old-remote' }
       }
       const remoteEvent = {
         id: 'remote',
@@ -106,21 +100,18 @@ describe('AppUpdater', () => {
       }
       const mockGetManifestFromDb = mock.fn(async () => localManifest)
       const mockSaveManifestToDb = mock.fn(async () => {})
-      const mockSetWebStorageItem = mock.fn()
       const mockLocalStorage = { getItem: mock.fn(() => '[]') }
 
       const updates = await AppUpdater.searchForUpdates([appId], {
         _AppFileDownloader: mockAppFileDownloader,
         _getSiteManifestFromDb: mockGetManifestFromDb,
         _saveSiteManifestToDb: mockSaveManifestToDb,
-        _setWebStorageItem: mockSetWebStorageItem,
         _localStorage: mockLocalStorage
       })
 
       const [, savedMeta] = mockSaveManifestToDb.mock.calls[0].arguments
-      assert.equal(savedMeta.hasUpdate, false)
+      assert.equal(savedMeta.latestUpdateEventId, null)
       assert.equal(updates[appId], undefined)
-      assert.equal(mockSetWebStorageItem.mock.callCount(), 1)
     })
 
     it('should use getInstalledAppIds if no appIds provided', async () => {
@@ -137,26 +128,23 @@ describe('AppUpdater', () => {
       }
       const mockGetManifestFromDb = mock.fn(async () => null)
       const mockSaveManifestToDb = mock.fn(async () => {})
-      const mockSetWebStorageItem = mock.fn()
 
       await AppUpdater.searchForUpdates(undefined, {
         _AppFileDownloader: mockAppFileDownloader,
         _getSiteManifestFromDb: mockGetManifestFromDb,
         _saveSiteManifestToDb: mockSaveManifestToDb,
-        _localStorage: mockLocalStorage,
-        _setWebStorageItem: mockSetWebStorageItem
+        _localStorage: mockLocalStorage
       })
 
       assert.equal(mockAppFileDownloader.getSiteManifestEvents.mock.callCount(), 1)
       assert.deepEqual(mockAppFileDownloader.getSiteManifestEvents.mock.calls[0].arguments[0], [appId])
-      assert.equal(mockSetWebStorageItem.mock.callCount(), 1)
     })
 
-    it('should mark hasUpdate=false when local manifest exists but no remote manifest found', async () => {
+    it('should clear latestUpdateEventId when local manifest exists but no remote manifest found', async () => {
       const localManifest = {
         id: 'local',
         created_at: 100,
-        meta: { hasUpdate: true }
+        meta: { latestUpdateEventId: 'old-remote' }
       }
 
       const mockAppFileDownloader = {
@@ -164,7 +152,6 @@ describe('AppUpdater', () => {
       }
       const mockGetManifestFromDb = mock.fn(async () => localManifest)
       const mockSaveManifestToDb = mock.fn(async () => {})
-      const mockSetWebStorageItem = mock.fn()
       const mockLocalStorage = {
         getItem: mock.fn((key) => {
           if (key === 'session_workspaceKeys') return JSON.stringify(['ws1'])
@@ -177,13 +164,12 @@ describe('AppUpdater', () => {
         _AppFileDownloader: mockAppFileDownloader,
         _getSiteManifestFromDb: mockGetManifestFromDb,
         _saveSiteManifestToDb: mockSaveManifestToDb,
-        _setWebStorageItem: mockSetWebStorageItem,
         _localStorage: mockLocalStorage
       })
 
       assert.equal(mockSaveManifestToDb.mock.callCount(), 1)
       const [, savedMeta] = mockSaveManifestToDb.mock.calls[0].arguments
-      assert.equal(savedMeta.hasUpdate, false)
+      assert.equal(savedMeta.latestUpdateEventId, null)
       assert.deepEqual(updates, {})
     })
 
@@ -193,7 +179,6 @@ describe('AppUpdater', () => {
       }
       const mockGetManifestFromDb = mock.fn(async () => null)
       const mockSaveManifestToDb = mock.fn(async () => {})
-      const mockSetWebStorageItem = mock.fn()
 
       const mockLocalStorage = {
         getItem: mock.fn((key) => {
@@ -207,7 +192,6 @@ describe('AppUpdater', () => {
         _AppFileDownloader: mockAppFileDownloader,
         _getSiteManifestFromDb: mockGetManifestFromDb,
         _saveSiteManifestToDb: mockSaveManifestToDb,
-        _setWebStorageItem: mockSetWebStorageItem,
         _localStorage: mockLocalStorage
       }
 
@@ -220,6 +204,120 @@ describe('AppUpdater', () => {
       assert.equal(p1, p2)
 
       await p1
+    })
+  })
+
+  describe('refreshUnreadCount', () => {
+    const mockLocalStorage = {
+      getItem: mock.fn((key) => {
+        if (key === 'session_workspaceKeys') return JSON.stringify(['ws1'])
+        if (key === 'session_workspaceByKey_ws1_pinnedAppIds') return JSON.stringify(['app1', 'app2', 'app3'])
+        if (key === 'session_workspaceByKey_ws1_unpinnedAppIds') return JSON.stringify([])
+        return null
+      })
+    }
+
+    it('counts only updates whose latest event id differs from the seen one', async () => {
+      const manifests = {
+        app1: { meta: { latestUpdateEventId: 'a', seenUpdateEventId: null } }, // unseen
+        app2: { meta: { latestUpdateEventId: 'b', seenUpdateEventId: 'b' } }, // seen
+        app3: { meta: { latestUpdateEventId: null, seenUpdateEventId: null } } // none
+      }
+      const mockGet = mock.fn(async (id) => manifests[id])
+      const mockSet = mock.fn()
+
+      AppUpdater.isUserViewingUpdates = false
+      await AppUpdater.refreshUnreadCount({
+        _getSiteManifestFromDb: mockGet,
+        _setWebStorageItem: mockSet,
+        _localStorage: mockLocalStorage
+      })
+
+      assert.equal(mockSet.mock.callCount(), 1)
+      assert.equal(mockSet.mock.calls[0].arguments[1], 'session_unread_appUpdateCount')
+      assert.equal(mockSet.mock.calls[0].arguments[2], 1)
+    })
+
+    it('writes undefined when no updates are unseen', async () => {
+      const manifests = {
+        app1: { meta: { latestUpdateEventId: 'a', seenUpdateEventId: 'a' } },
+        app2: { meta: { latestUpdateEventId: null } },
+        app3: { meta: {} }
+      }
+      const mockGet = mock.fn(async (id) => manifests[id])
+      const mockSet = mock.fn()
+
+      AppUpdater.isUserViewingUpdates = false
+      await AppUpdater.refreshUnreadCount({
+        _getSiteManifestFromDb: mockGet,
+        _setWebStorageItem: mockSet,
+        _localStorage: mockLocalStorage
+      })
+
+      assert.equal(mockSet.mock.calls[0].arguments[2], undefined)
+    })
+
+    it('writes undefined while the user is viewing the updates page', async () => {
+      const mockGet = mock.fn()
+      const mockSet = mock.fn()
+
+      AppUpdater.isUserViewingUpdates = true
+      try {
+        await AppUpdater.refreshUnreadCount({
+          _getSiteManifestFromDb: mockGet,
+          _setWebStorageItem: mockSet,
+          _localStorage: mockLocalStorage
+        })
+      } finally {
+        AppUpdater.isUserViewingUpdates = false
+      }
+
+      assert.equal(mockGet.mock.callCount(), 0) // short-circuits before reading
+      assert.equal(mockSet.mock.callCount(), 1)
+      assert.equal(mockSet.mock.calls[0].arguments[2], undefined)
+    })
+  })
+
+  describe('markUpdateAsSeen', () => {
+    it('saves the seenUpdateEventId on the manifest', async () => {
+      const manifest = { id: 'm', meta: { latestUpdateEventId: 'a' } }
+      const mockGet = mock.fn(async () => manifest)
+      const mockSave = mock.fn(async () => {})
+
+      await AppUpdater.markUpdateAsSeen('app1', 'a', {
+        _getSiteManifestFromDb: mockGet,
+        _saveSiteManifestToDb: mockSave
+      })
+
+      assert.equal(mockSave.mock.callCount(), 1)
+      const [, savedMeta] = mockSave.mock.calls[0].arguments
+      assert.equal(savedMeta.seenUpdateEventId, 'a')
+      assert.equal(savedMeta.latestUpdateEventId, 'a')
+    })
+
+    it('is a no-op when the seenUpdateEventId already matches', async () => {
+      const manifest = { id: 'm', meta: { latestUpdateEventId: 'a', seenUpdateEventId: 'a' } }
+      const mockGet = mock.fn(async () => manifest)
+      const mockSave = mock.fn(async () => {})
+
+      await AppUpdater.markUpdateAsSeen('app1', 'a', {
+        _getSiteManifestFromDb: mockGet,
+        _saveSiteManifestToDb: mockSave
+      })
+
+      assert.equal(mockSave.mock.callCount(), 0)
+    })
+
+    it('is a no-op when no manifest exists', async () => {
+      const mockGet = mock.fn(async () => null)
+      const mockSave = mock.fn(async () => {})
+
+      await AppUpdater.markUpdateAsSeen('app1', 'a', {
+        _getSiteManifestFromDb: mockGet,
+        _saveSiteManifestToDb: mockSave
+      })
+
+      assert.equal(mockSave.mock.callCount(), 0)
     })
   })
 
@@ -282,7 +380,6 @@ describe('AppUpdater', () => {
       assert.equal(mockSaveManifest.mock.callCount(), 1)
       const [savedEvent, savedMeta] = mockSaveManifest.mock.calls[0].arguments
       assert.deepEqual(savedEvent, nextSiteManifestEvent)
-      assert.equal(savedMeta.hasUpdate, false)
       assert.equal(savedMeta.lastOpenedAsSingleNappAt, 123)
     })
 

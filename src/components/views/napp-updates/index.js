@@ -19,8 +19,13 @@ f('napp-updates', function () {
   const storage = useWebStorage(localStorage)
   const { session_unread_appUpdateCount$: appUpdateCount$ } = storage
 
-  useTask(() => {
+  useTask(({ cleanup }) => {
+    AppUpdater.isUserViewingUpdates = true
     appUpdateCount$(undefined)
+    cleanup(() => {
+      AppUpdater.isUserViewingUpdates = false
+      AppUpdater.refreshUnreadCount()
+    })
   })
 
   const allAppIds$ = useComputed(() => {
@@ -86,6 +91,16 @@ f('napp-updates', function () {
         })
         return next
       })
+
+      // Mark every update currently visible to the user as seen, so the
+      // unread indicator (computed by AppUpdater.refreshUnreadCount) only
+      // counts updates that arrive after the user leaves this page.
+      const visible = availableUpdates$()
+      for (const [appId, update] of Object.entries(visible)) {
+        if (update?.event?.id) {
+          await AppUpdater.markUpdateAsSeen(appId, update.event.id)
+        }
+      }
     } catch (e) {
       console.error('Error checking for updates', e)
     } finally {
@@ -195,7 +210,7 @@ f('napp-updates', function () {
         return changed ? next : prev
       })
 
-      appUpdateCount$(Object.keys(availableUpdates$()).length || undefined)
+      await AppUpdater.refreshUnreadCount()
     } catch (e) {
       console.error('Update all failed', e)
     } finally {
@@ -234,7 +249,7 @@ f('napp-updates', function () {
         return next
       })
 
-      appUpdateCount$(Object.keys(availableUpdates$()).length || undefined)
+      await AppUpdater.refreshUnreadCount()
     } catch (e) {
       updateStates$(prev => ({ ...prev, [appId]: { status: 'error', error: e, progress: 0 } }))
     }
