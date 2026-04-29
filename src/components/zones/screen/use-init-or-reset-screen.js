@@ -96,7 +96,7 @@ function addUser ({ userPk, storage, tabStorage, isFirstTimeUser: _ }) {
 
   const wsKey = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
   if (storage.config_isSingleWindow$() === undefined) storage.config_isSingleWindow$(false)
-  if (storage.config_isAutoUpdateEnabled$() === undefined) storage.config_isAutoUpdateEnabled$(true)
+  if (storage.config_appUpdateMode$() === undefined) storage.config_appUpdateMode$('always')
 
   // de-normalized from `session_appByKey_${app.key}_visibility$` (open or minimized)
   // const openAppKeys = isFirstTimeUser ? [defaultPinnedApps[0].key] : []

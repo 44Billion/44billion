@@ -11,6 +11,25 @@ export default class AppUpdater {
   // indicator stays hidden even if a background check finds new updates.
   static isUserViewingUpdates = false
 
+  // Cap on concurrent app updates across all entry points (auto + manual).
+  // Tunable: bump this to allow more parallel downloads.
+  static MAX_CONCURRENT_UPDATES = 1
+  static _activeUpdates = 0
+  static _updateQueue = []
+
+  static async _acquireUpdateSlot () {
+    while (this._activeUpdates >= this.MAX_CONCURRENT_UPDATES) {
+      await new Promise(resolve => this._updateQueue.push(resolve))
+    }
+    this._activeUpdates++
+  }
+
+  static _releaseUpdateSlot () {
+    this._activeUpdates--
+    const next = this._updateQueue.shift()
+    if (next) next()
+  }
+
   static getInstalledAppIds ({ _localStorage } = {}) {
     const storage = _localStorage || localStorage
     const workspaceKeys = JSON.parse(storage.getItem('session_workspaceKeys') || '[]')
@@ -114,12 +133,24 @@ export default class AppUpdater {
     _setWebStorageItem(local, 'session_unread_appUpdateCount', updateCount || undefined)
   }
 
-  static _isAutoUpdateEnabled ({ _localStorage } = {}) {
+  // 'always' | 'wifi' | 'manual'. Defaults to 'always' (matches what
+  // use-init-or-reset-screen seeds for new users).
+  static _appUpdateMode ({ _localStorage } = {}) {
     const local = _localStorage || (typeof localStorage !== 'undefined' ? localStorage : null)
-    if (!local) return true
-    const raw = local.getItem('config_isAutoUpdateEnabled')
-    if (raw == null) return true
-    try { return JSON.parse(raw) === true } catch { return true }
+    if (!local) return 'always'
+    const raw = local.getItem('config_appUpdateMode')
+    if (raw == null) return 'always'
+    try {
+      const v = JSON.parse(raw)
+      if (v === 'always' || v === 'wifi' || v === 'manual') return v
+    } catch {}
+    return 'always'
+  }
+
+  static _isMetered ({ _navigator } = {}) {
+    const nav = _navigator || (typeof navigator !== 'undefined' ? navigator : null)
+    const connection = nav?.connection || nav?.mozConnection || nav?.webkitConnection
+    return connection?.metered === true
   }
 
   static async markUpdateAsSeen (appId, updateEventId, {
@@ -209,18 +240,15 @@ export default class AppUpdater {
   } = {}) {
     if (!_navigator?.locks) return
 
-    const connection = _navigator.connection || _navigator.mozConnection || _navigator.webkitConnection
-    if (connection?.metered) {
-      _setTimeout(() => this.scheduleUpdateCheck({ _navigator, _setTimeout, interval, ...deps }), interval)
-      return
-    }
-
     return _navigator.locks.request('app-update-check-job', { ifAvailable }, async (lock) => {
       if (!lock) return
 
       try {
         const updates = await this.searchForUpdates(null, deps)
-        if (this._isAutoUpdateEnabled(deps)) {
+        const mode = this._appUpdateMode(deps)
+        const shouldAutoApply = mode === 'always' ||
+          (mode === 'wifi' && !this._isMetered({ _navigator }))
+        if (shouldAutoApply) {
           const events = Object.values(updates).map(u => u.event)
           if (events.length > 0) {
             for await (const report of this.updateApps(events, deps)) {
@@ -259,66 +287,75 @@ export default class AppUpdater {
     _sessionStorage,
     writeRelays
   } = {}) {
-    const dTag = nextSiteManifestEvent.tags.find(t => t[0] === 'd')?.[1] ?? ''
-    const appId = _addressObjToAppId({
-      kind: nextSiteManifestEvent.kind,
-      pubkey: nextSiteManifestEvent.pubkey,
-      dTag
-    })
-
-    if (!writeRelays) {
-      const relays = await _getUserRelays([nextSiteManifestEvent.pubkey])
-      writeRelays = Array.from(relays[nextSiteManifestEvent.pubkey].write)
-    }
-
-    const files = nextSiteManifestEvent.tags
-      .filter(t => t[0] === 'path')
-      .map(t => ({ rootHash: t[2], filename: t[1] }))
-
-    const totalFiles = files.length
-
-    for (let i = 0; i < totalFiles; i++) {
-      const file = files[i]
-      const downloader = new _AppFileDownloader(appId, file.rootHash, writeRelays)
-
-      try {
-        for await (const report of downloader.run()) {
-          if (report.error) {
-            yield { appProgress: 0, fileProgress: 0, error: report.error }
-            return
-          }
-
-          const appProgress = Math.floor(((i * 100) + report.progress) / totalFiles)
-          yield {
-            appProgress,
-            fileProgress: report.progress,
-            currentFile: file.filename,
-            error: null
-          }
-        }
-      } catch (err) {
-        yield { appProgress: 0, fileProgress: 0, error: err }
-        return
-      }
-    }
-
-    const fileRootHashes = files.map(f => f.rootHash)
-
-    if (this.isAppOpen(appId, { _sessionStorage, _localStorage })) {
-      await this.scheduleCleanup([appId], {
-        _localStorage,
-        _sessionStorage,
-        _getSiteManifestFromDb,
-        _deleteStaleFileChunksFromDb
+    // Yield a queued report so consumers can render a pending state while we
+    // wait for a free concurrency slot. Auto and manual paths funnel through
+    // here, so they share the same queue (MAX_CONCURRENT_UPDATES).
+    yield { appProgress: 0, fileProgress: 0, error: null, queued: true }
+    await this._acquireUpdateSlot()
+    try {
+      const dTag = nextSiteManifestEvent.tags.find(t => t[0] === 'd')?.[1] ?? ''
+      const appId = _addressObjToAppId({
+        kind: nextSiteManifestEvent.kind,
+        pubkey: nextSiteManifestEvent.pubkey,
+        dTag
       })
-    } else {
-      await _deleteStaleFileChunksFromDb(appId, fileRootHashes)
+
+      if (!writeRelays) {
+        const relays = await _getUserRelays([nextSiteManifestEvent.pubkey])
+        writeRelays = Array.from(relays[nextSiteManifestEvent.pubkey].write)
+      }
+
+      const files = nextSiteManifestEvent.tags
+        .filter(t => t[0] === 'path')
+        .map(t => ({ rootHash: t[2], filename: t[1] }))
+
+      const totalFiles = files.length
+
+      for (let i = 0; i < totalFiles; i++) {
+        const file = files[i]
+        const downloader = new _AppFileDownloader(appId, file.rootHash, writeRelays)
+
+        try {
+          for await (const report of downloader.run()) {
+            if (report.error) {
+              yield { appProgress: 0, fileProgress: 0, error: report.error }
+              return
+            }
+
+            const appProgress = Math.floor(((i * 100) + report.progress) / totalFiles)
+            yield {
+              appProgress,
+              fileProgress: report.progress,
+              currentFile: file.filename,
+              error: null
+            }
+          }
+        } catch (err) {
+          yield { appProgress: 0, fileProgress: 0, error: err }
+          return
+        }
+      }
+
+      const fileRootHashes = files.map(f => f.rootHash)
+
+      if (this.isAppOpen(appId, { _sessionStorage, _localStorage })) {
+        await this.scheduleCleanup([appId], {
+          _localStorage,
+          _sessionStorage,
+          _getSiteManifestFromDb,
+          _deleteStaleFileChunksFromDb
+        })
+      } else {
+        await _deleteStaleFileChunksFromDb(appId, fileRootHashes)
+      }
+
+      const localManifest = await _getSiteManifestFromDb(appId)
+      const lastOpenedAsSingleNappAt = localManifest?.meta?.lastOpenedAsSingleNappAt || 0
+
+      await _saveSiteManifestToDb(nextSiteManifestEvent, { lastOpenedAsSingleNappAt })
+    } finally {
+      this._releaseUpdateSlot()
     }
-
-    const localManifest = await _getSiteManifestFromDb(appId)
-    const lastOpenedAsSingleNappAt = localManifest?.meta?.lastOpenedAsSingleNappAt || 0
-
-    await _saveSiteManifestToDb(nextSiteManifestEvent, { lastOpenedAsSingleNappAt })
   }
 
   static async * updateApps (nextSiteManifestEvents, {

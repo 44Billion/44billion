@@ -11,12 +11,13 @@ f('a-settings', function () {
   const storage = useWebStorage(localStorage)
   const {
     config_isSingleWindow$: isSingleWindow$,
-    config_isAutoUpdateEnabled$: isAutoUpdateEnabled$,
+    config_appUpdateMode$: appUpdateMode$,
     config_vaultUrl$: vaultUrl$,
     session_unread_appUpdateCount$: appUpdateCount$
   } = storage
-  const autoUpdate$ = useComputed(() => isAutoUpdateEnabled$() ?? true)
-  const showAppUpdatesBadge$ = useComputed(() => !autoUpdate$() && (appUpdateCount$() ?? 0) > 0)
+  const updateMode$ = useComputed(() => appUpdateMode$() ?? 'always')
+  const isManualUpdate$ = useComputed(() => updateMode$() === 'manual')
+  const showAppUpdatesBadge$ = useComputed(() => isManualUpdate$() && (appUpdateCount$() ?? 0) > 0)
   const location = useLocation()
 
   const draftVaultUrl$ = useSignal(vaultUrl$())
@@ -155,6 +156,15 @@ f('a-settings', function () {
         color: ${cssVars.colors.fg};
         font-size: 16rem;
       }
+      .update-mode-select {
+        padding: 8px 10px;
+        border-radius: 4px;
+        border: 1px solid ${cssVars.colors.bg3};
+        background-color: ${cssVars.colors.bg};
+        color: ${cssVars.colors.fg};
+        font-size: 14rem;
+        cursor: pointer;
+      }
     `}</style>
 
     <div class="header">
@@ -169,18 +179,19 @@ f('a-settings', function () {
         <div class="item">
           <div class="item-content">
             <div class="item-title">Auto Update</div>
-            <div class="item-subtitle">Automatically install app updates</div>
+            <div class="item-subtitle">When to install app updates</div>
           </div>
-          <toggle-switch props=${{
-            checked: autoUpdate$(),
-            onChange: (checked) => isAutoUpdateEnabled$(checked)
-          }} />
+          <select class="update-mode-select" onchange=${(e) => appUpdateMode$(e.target.value)}>
+            <option value="always" selected=${updateMode$() === 'always'}>Always</option>
+            <option value="wifi" selected=${updateMode$() === 'wifi'}>Wi-Fi only</option>
+            <option value="manual" selected=${updateMode$() === 'manual'}>Manual</option>
+          </select>
         </div>
 
         <div class=${{
           item: true,
           'app-updates-item': true,
-          collapsed: autoUpdate$()
+          collapsed: !isManualUpdate$()
         }} onclick=${() => location.pushState({}, '', '/app-updates')}>
           <div class="item-content">
             <div class="item-title">App Updates</div>

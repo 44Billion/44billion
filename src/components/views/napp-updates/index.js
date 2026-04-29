@@ -163,10 +163,14 @@ f('napp-updates', function () {
 
     try {
       for await (const report of AppUpdater.updateApps(events)) {
-        const { appId, appProgress, error, overallProgress } = report
+        const { appId, appProgress, error, overallProgress, queued } = report
         overallProgress$(overallProgress)
 
-        const newStatus = error ? 'error' : (appProgress === 100 ? 'done' : 'updating')
+        const newStatus = error
+          ? 'error'
+          : queued
+            ? 'pending'
+            : (appProgress === 100 ? 'done' : 'updating')
         updateStates$(prev => ({
           ...prev,
           [appId]: { status: newStatus, progress: appProgress, error }
@@ -226,14 +230,19 @@ f('napp-updates', function () {
     const currentState = updateStates$()[appId]?.status
     if (currentState === 'updating' || currentState === 'pending') return
 
-    updateStates$(prev => ({ ...prev, [appId]: { status: 'updating', progress: 0, error: null } }))
+    updateStates$(prev => ({ ...prev, [appId]: { status: 'pending', progress: 0, error: null } }))
 
     try {
       for await (const report of AppUpdater.updateApp(update.event)) {
+        const status = report.error
+          ? 'error'
+          : report.queued
+            ? 'pending'
+            : (report.appProgress === 100 ? 'done' : 'updating')
         updateStates$(prev => ({
           ...prev,
           [appId]: {
-            status: report.error ? 'error' : 'updating',
+            status,
             progress: report.appProgress,
             error: report.error
           }

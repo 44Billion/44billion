@@ -18,10 +18,10 @@ f('toolbar-more-menu', function () {
   const location = useLocation()
   const {
     session_unread_appUpdateCount$: appUpdateCount$,
-    config_isAutoUpdateEnabled$: isAutoUpdateEnabled$
+    config_appUpdateMode$: appUpdateMode$
   } = useWebStorage(localStorage)
   const showUpdateIndicator$ = useComputed(() =>
-    !(isAutoUpdateEnabled$() ?? true) && (appUpdateCount$() ?? 0) > 0
+    (appUpdateMode$() ?? 'always') === 'manual' && (appUpdateCount$() ?? 0) > 0
   )
 
   const menuProps = useStore({

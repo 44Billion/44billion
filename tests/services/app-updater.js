@@ -321,6 +321,136 @@ describe('AppUpdater', () => {
     })
   })
 
+  describe('_appUpdateMode', () => {
+    it('defaults to "always" when not set', () => {
+      const ls = { getItem: mock.fn(() => null) }
+      assert.equal(AppUpdater._appUpdateMode({ _localStorage: ls }), 'always')
+    })
+    it('returns the parsed mode for known values', () => {
+      for (const mode of ['always', 'wifi', 'manual']) {
+        const ls = { getItem: mock.fn(() => JSON.stringify(mode)) }
+        assert.equal(AppUpdater._appUpdateMode({ _localStorage: ls }), mode)
+      }
+    })
+    it('falls back to "always" for unknown or malformed values', () => {
+      const unknown = { getItem: mock.fn(() => '"bogus"') }
+      assert.equal(AppUpdater._appUpdateMode({ _localStorage: unknown }), 'always')
+      const broken = { getItem: mock.fn(() => '{not json') }
+      assert.equal(AppUpdater._appUpdateMode({ _localStorage: broken }), 'always')
+    })
+  })
+
+  describe('update concurrency queue', () => {
+    it('serializes updateApp calls so the second yields queued until the first releases', async () => {
+      const originalMax = AppUpdater.MAX_CONCURRENT_UPDATES
+      AppUpdater.MAX_CONCURRENT_UPDATES = 1
+      AppUpdater._activeUpdates = 0
+      AppUpdater._updateQueue = []
+
+      const event = { kind: 35128, pubkey: 'pk', tags: [['d', 'app1'], ['path', 'f', 'h']] }
+
+      // The first call's downloader is a deferred async iterator we hold paused
+      // so the slot stays held until we explicitly release.
+      let resolveFirstDownload
+      const firstDownloadPromise = new Promise(resolve => { resolveFirstDownload = resolve })
+      const firstDownloader = {
+        run: async function * () {
+          await firstDownloadPromise
+          yield { progress: 100, error: null }
+        }
+      }
+      const secondDownloader = {
+        run: async function * () { yield { progress: 100, error: null } }
+      }
+
+      let downloaderIndex = 0
+      const MockAppFileDownloader = class {
+        constructor () {
+          return downloaderIndex++ === 0 ? firstDownloader : secondDownloader
+        }
+      }
+
+      const baseDeps = {
+        _AppFileDownloader: MockAppFileDownloader,
+        _deleteStaleFileChunksFromDb: async () => {},
+        _saveSiteManifestToDb: async () => {},
+        _getSiteManifestFromDb: async () => ({}),
+        _addressObjToAppId: () => 'app1',
+        writeRelays: ['wss://r']
+      }
+
+      try {
+        const it1 = AppUpdater.updateApp(event, baseDeps)
+        const it2 = AppUpdater.updateApp(event, baseDeps)
+
+        // Both yield the queued report up-front.
+        const r1Queued = await it1.next()
+        const r2Queued = await it2.next()
+        assert.equal(r1Queued.value.queued, true)
+        assert.equal(r2Queued.value.queued, true)
+
+        // Pump it1 once: it acquires the slot and starts downloading,
+        // but firstDownloadPromise is still unresolved so it suspends inside run().
+        const it1NextPromise = it1.next()
+
+        // While it1 holds the slot, asking it2 for its next value must not yield
+        // a non-queued report — it's waiting on _acquireUpdateSlot.
+        const it2NextPromise = it2.next()
+        // Race against a microtask-flushing promise to confirm it2 is pending.
+        const sentinel = Symbol('pending')
+        const winner = await Promise.race([
+          it2NextPromise.then(v => v),
+          Promise.resolve().then(() => Promise.resolve()).then(() => sentinel)
+        ])
+        assert.equal(winner, sentinel, 'it2 should still be waiting for the slot')
+
+        // Let it1 finish, then drain both.
+        resolveFirstDownload()
+        await it1NextPromise
+        for await (const _ of it1) { /* drain */ }
+        // Now it2 should proceed.
+        const r2First = await it2NextPromise
+        assert.equal(r2First.value.queued, undefined)
+        for await (const _ of it2) { /* drain */ }
+
+        // Slot accounting back to zero.
+        assert.equal(AppUpdater._activeUpdates, 0)
+        assert.equal(AppUpdater._updateQueue.length, 0)
+      } finally {
+        AppUpdater.MAX_CONCURRENT_UPDATES = originalMax
+      }
+    })
+
+    it('releases the slot when the generator throws or returns early', async () => {
+      const originalMax = AppUpdater.MAX_CONCURRENT_UPDATES
+      AppUpdater.MAX_CONCURRENT_UPDATES = 1
+      AppUpdater._activeUpdates = 0
+      AppUpdater._updateQueue = []
+
+      const event = { kind: 35128, pubkey: 'pk', tags: [['d', 'app1'], ['path', 'f', 'h']] }
+      const error = new Error('boom')
+      const downloader = {
+        run: async function * () { yield { progress: 0, error } }
+      }
+      const MockAppFileDownloader = class { constructor () { return downloader } }
+
+      try {
+        const it = AppUpdater.updateApp(event, {
+          _AppFileDownloader: MockAppFileDownloader,
+          _deleteStaleFileChunksFromDb: async () => {},
+          _saveSiteManifestToDb: async () => {},
+          _getSiteManifestFromDb: async () => ({}),
+          _addressObjToAppId: () => 'app1',
+          writeRelays: ['wss://r']
+        })
+        for await (const _ of it) { /* drain */ }
+        assert.equal(AppUpdater._activeUpdates, 0)
+      } finally {
+        AppUpdater.MAX_CONCURRENT_UPDATES = originalMax
+      }
+    })
+  })
+
   describe('updateApp', () => {
     const nextSiteManifestEvent = {
       kind: 35128,
@@ -364,14 +494,15 @@ describe('AppUpdater', () => {
         reports.push(report)
       }
 
-      // Check progress reports
+      // 1 queued report + 4 progress reports
       // File 1: 50% -> app: 25%
       // File 1: 100% -> app: 50%
       // File 2: 50% -> app: 75%
       // File 2: 100% -> app: 100%
-      assert.equal(reports.length, 4)
-      assert.equal(reports[3].appProgress, 100)
-      assert.equal(reports[3].error, null)
+      assert.equal(reports.length, 5)
+      assert.equal(reports[0].queued, true)
+      assert.equal(reports[4].appProgress, 100)
+      assert.equal(reports[4].error, null)
 
       // Check DB calls
       assert.equal(mockDeleteStale.mock.callCount(), 1)
@@ -411,8 +542,10 @@ describe('AppUpdater', () => {
         reports.push(report)
       }
 
-      assert.equal(reports.length, 1)
-      assert.equal(reports[0].error, error)
+      // 1 queued report + 1 error report
+      assert.equal(reports.length, 2)
+      assert.equal(reports[0].queued, true)
+      assert.equal(reports[1].error, error)
       assert.equal(mockDeleteStale.mock.callCount(), 0)
       assert.equal(mockSaveManifest.mock.callCount(), 0)
     })
