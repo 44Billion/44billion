@@ -14,7 +14,7 @@ import { f, useStore, useTask } from '#f'
 // A descriptive aria-label can be used to allow screen readers
 // to announce an icon if there is no visual label to accompany it.
 const noIcon = 'M0 0h24v24H0V0zm2 2v20h20V2H2z'
-f('aSvg', function () {
+f('a-svg', function () {
   const store = useStore(() => {
     const it = this
     return {
@@ -78,7 +78,7 @@ f('aSvg', function () {
       },
       // https://github.com/iconmeister/iconmeister.github.io/blob/master/elements.iconmeister.js
       _rotate$: this.props.rotate$ || this.props.rotate || '0', // 0-360
-      rotate$: function () { return `rotate(${this._rotate$.get()})` },
+      rotate$: function () { return `rotate(${String(this._rotate$.get()).endsWith('deg') ? this._rotate$.get() : this._rotate$.get() + 'deg'})` },
       _strokeWidth$: this.props.strokeWidth$ || this.props.strokeWidth,
       strokeWidth$: function () {
         return this._strokeWidth$() ?? ({
@@ -121,6 +121,9 @@ f('aSvg', function () {
           */
           vertical-align: bottom;
           pointer-events: bounding-box; /* clickable inside holes */
+          /* thick strokes (e.g. weight: 'bold') bleed past tight viewBoxes like '2 2 20 20'; */
+          /* let them render instead of being clipped by the svg box */
+          overflow: visible;
           stroke-width: ${store.strokeWidth$.get()}; /* add unit or it will depend on bbox's unit */
           color: ${store.color$.get() === 'currentColor' ? 'currentcolor' : store.color$.get()};
           transform: ${store.scale$.get()}

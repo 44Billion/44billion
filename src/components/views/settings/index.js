@@ -6,6 +6,7 @@ import '#shared/back-btn.js'
 import '#shared/toggle-switch.js'
 import '#shared/icons/icon-check.js'
 import '#shared/icons/icon-cancel.js'
+import '#shared/icons/icon-chevron-left.js'
 
 f('a-settings', function () {
   const storage = useWebStorage(localStorage)
@@ -156,14 +157,25 @@ f('a-settings', function () {
         color: ${cssVars.colors.fg};
         font-size: 16rem;
       }
+      .update-mode-select-wrapper {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+      }
       .update-mode-select {
-        padding: 8px 10px;
+        appearance: none;
+        padding: 8px 32px 8px 10px;
         border-radius: 4px;
         border: 1px solid ${cssVars.colors.bg3};
         background-color: ${cssVars.colors.bg};
         color: ${cssVars.colors.fg};
         font-size: 14rem;
         cursor: pointer;
+      }
+      .update-mode-select-chevron svg {
+        position: absolute;
+        right: 8px;
+        pointer-events: none !important;
       }
     `}</style>
 
@@ -181,11 +193,14 @@ f('a-settings', function () {
             <div class="item-title">Auto Update</div>
             <div class="item-subtitle">When to install app updates</div>
           </div>
-          <select class="update-mode-select" onchange=${(e) => appUpdateMode$(e.target.value)}>
-            <option value="always" selected=${updateMode$() === 'always'}>Always</option>
-            <option value="wifi" selected=${updateMode$() === 'wifi'}>Wi-Fi only</option>
-            <option value="manual" selected=${updateMode$() === 'manual'}>Manual</option>
-          </select>
+          <div class="update-mode-select-wrapper">
+            <select class="update-mode-select" name="appUpdateMode" onchange=${(e) => appUpdateMode$(e.target.value)}>
+              <option value="always" selected=${updateMode$() === 'always'}>Always</option>
+              <option value="wifi" selected=${updateMode$() === 'wifi'}>Wi-Fi only</option>
+              <option value="manual" selected=${updateMode$() === 'manual'}>Manual</option>
+            </select>
+            <icon-chevron-left class="update-mode-select-chevron" props=${{ rotate: 270, size: '16px' }} />
+          </div>
         </div>
 
         <div class=${{
