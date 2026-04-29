@@ -1,4 +1,4 @@
-import { f, useSignal, useCallback } from '#f'
+import { f, useSignal, useCallback, useComputed } from '#f'
 import useWebStorage from '#hooks/use-web-storage.js'
 import useLocation from '#hooks/use-location.js'
 import { cssVars } from '#assets/styles/theme.js'
@@ -11,9 +11,12 @@ f('a-settings', function () {
   const storage = useWebStorage(localStorage)
   const {
     config_isSingleWindow$: isSingleWindow$,
+    config_isAutoUpdateEnabled$: isAutoUpdateEnabled$,
     config_vaultUrl$: vaultUrl$,
     session_unread_appUpdateCount$: appUpdateCount$
   } = storage
+  const autoUpdate$ = useComputed(() => isAutoUpdateEnabled$() ?? true)
+  const showAppUpdatesBadge$ = useComputed(() => !autoUpdate$() && (appUpdateCount$() ?? 0) > 0)
   const location = useLocation()
 
   const draftVaultUrl$ = useSignal(vaultUrl$())
@@ -104,6 +107,20 @@ f('a-settings', function () {
         border-radius: 8px;
         cursor: pointer;
       }
+      .app-updates-item {
+        overflow: hidden;
+        max-height: 200px;
+        margin-top: 0;
+        transition: max-height 0.3s ease, opacity 0.3s ease, padding 0.3s ease, margin-top 0.3s ease;
+      }
+      .app-updates-item.collapsed {
+        max-height: 0;
+        opacity: 0;
+        padding-top: 0;
+        padding-bottom: 0;
+        margin-top: -10px; /* absorbs the .section's row gap so siblings don't get a phantom gap */
+        pointer-events: none;
+      }
       .item-content {
         display: flex;
         flex-direction: column;
@@ -149,12 +166,27 @@ f('a-settings', function () {
       <div class="section">
         <div class="section-title">General</div>
 
-        <div class="item" onclick=${() => location.pushState({}, '', '/app-updates')}>
+        <div class="item">
+          <div class="item-content">
+            <div class="item-title">Auto Update</div>
+            <div class="item-subtitle">Automatically install app updates</div>
+          </div>
+          <toggle-switch props=${{
+            checked: autoUpdate$(),
+            onChange: (checked) => isAutoUpdateEnabled$(checked)
+          }} />
+        </div>
+
+        <div class=${{
+          item: true,
+          'app-updates-item': true,
+          collapsed: autoUpdate$()
+        }} onclick=${() => location.pushState({}, '', '/app-updates')}>
           <div class="item-content">
             <div class="item-title">App Updates</div>
             <div class="item-subtitle">Check for updates</div>
           </div>
-          ${(appUpdateCount$() ?? 0) > 0 ? this.h`<div class="badge">${appUpdateCount$()}</div>` : ''}
+          ${showAppUpdatesBadge$() ? this.h`<div class="badge">${appUpdateCount$()}</div>` : ''}
         </div>
 
         <div class="item">

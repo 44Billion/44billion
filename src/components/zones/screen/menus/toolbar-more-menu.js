@@ -1,4 +1,4 @@
-import { f, useStore, useGlobalStore } from '#f'
+import { f, useStore, useGlobalStore, useComputed } from '#f'
 import { cssVars } from '#assets/styles/theme.js'
 import '#shared/menu.js'
 import '#shared/icons/icon-dots.js'
@@ -16,7 +16,13 @@ f('toolbar-more-menu', function () {
     anchorRef$: null
   })
   const location = useLocation()
-  const { session_unread_appUpdateCount$: appUpdateCount$ } = useWebStorage(localStorage)
+  const {
+    session_unread_appUpdateCount$: appUpdateCount$,
+    config_isAutoUpdateEnabled$: isAutoUpdateEnabled$
+  } = useWebStorage(localStorage)
+  const showUpdateIndicator$ = useComputed(() =>
+    !(isAutoUpdateEnabled$() ?? true) && (appUpdateCount$() ?? 0) > 0
+  )
 
   const menuProps = useStore({
     isOpen$,
@@ -104,7 +110,7 @@ f('toolbar-more-menu', function () {
         }}>
           <div class='icon-wrapper'><icon-settings props=${{ size: '16px' }} /></div>
           <div class='menu-label'>Settings</div>
-          ${(appUpdateCount$() ?? 0) > 0 ? this.h`<div class='badge-dot'></div>` : ''}
+          ${showUpdateIndicator$() ? this.h`<div class='badge-dot'></div>` : ''}
         </div>
       </div>
     `
@@ -158,7 +164,7 @@ f('toolbar-more-menu', function () {
         }
       `}</style>
       <icon-dots props=${{ size: '24px' }} />
-      ${(appUpdateCount$() ?? 0) > 0 ? this.h`<div class='more-menu-badge'></div>` : ''}
+      ${showUpdateIndicator$() ? this.h`<div class='more-menu-badge'></div>` : ''}
     </div>
     <a-menu props=${menuProps} />
   `

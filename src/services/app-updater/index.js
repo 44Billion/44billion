@@ -114,6 +114,14 @@ export default class AppUpdater {
     _setWebStorageItem(local, 'session_unread_appUpdateCount', updateCount || undefined)
   }
 
+  static _isAutoUpdateEnabled ({ _localStorage } = {}) {
+    const local = _localStorage || (typeof localStorage !== 'undefined' ? localStorage : null)
+    if (!local) return true
+    const raw = local.getItem('config_isAutoUpdateEnabled')
+    if (raw == null) return true
+    try { return JSON.parse(raw) === true } catch { return true }
+  }
+
   static async markUpdateAsSeen (appId, updateEventId, {
     _getSiteManifestFromDb = getSiteManifestFromDb,
     _saveSiteManifestToDb = saveSiteManifestToDb
@@ -211,7 +219,15 @@ export default class AppUpdater {
       if (!lock) return
 
       try {
-        await this.searchForUpdates(null, deps)
+        const updates = await this.searchForUpdates(null, deps)
+        if (this._isAutoUpdateEnabled(deps)) {
+          const events = Object.values(updates).map(u => u.event)
+          if (events.length > 0) {
+            for await (const report of this.updateApps(events, deps)) {
+              if (report.error) console.error(`Auto update of ${report.appId} failed`, report.error)
+            }
+          }
+        }
         await this.refreshUnreadCount(deps)
       } catch (err) {
         console.error('Update check failed', err)
