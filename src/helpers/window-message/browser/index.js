@@ -1,4 +1,5 @@
 import { /* handleMessageReply, */ tell, reply } from '../index.js'
+import { needsNip07Permission, nip07PermissionContext } from './nip07-permission-context.js'
 import { appIdToAddressObj, addressObjToAppId } from '#helpers/app.js'
 import { base36ToBase16 } from '#helpers/base36.js'
 import { base16ToBase62 } from '#helpers/base62.js'
@@ -412,20 +413,22 @@ export async function initMessageListener (
           if (
             ['peek_public_key', 'get_public_key'].includes(e.data.payload.method) &&
             e.data.payload.ns[0] === '' &&
-            e.data.payload.ns.length === 1
+            e.data.payload.ns.length === 1 &&
+            !e.data.payload.with_shared_key
           ) {
             const msg = { payload: userPkB16 }
             reply(e, msg, { to: appPagePort })
             break
           }
-          const { ns, method, params = [] } = e.data.payload
+          const { ns, with_shared_key: withSharedKey, method, params = [] } = e.data.payload
           const appMetadata = await getAppMetadata(appId, appAddress, { timeoutMs: 0 })
           let msg
           try {
-            msg = await askNip07(
-              askVault, userPkB16, ns, method, params,
-              { isDefaultUser, requestPermission, app: appMetadata }
-            )
+            msg = await askNip07(askVault, userPkB16, { ns, withSharedKey, method, params }, {
+              isDefaultUser,
+              requestPermission,
+              app: appMetadata
+            })
           } catch (err) {
             msg = { error: err }
           }
@@ -552,40 +555,35 @@ function handleNappRequest (e) {
 }
 
 const methodNameToPermissionName = {
-  getPublicKey: 'readProfile',
   signEvent: 'signEvent',
+  doubleSignEvent: 'signEvent',
   nip04Encrypt: 'encrypt',
   nip04Decrypt: 'decrypt',
   nip44Encrypt: 'encrypt',
-  nip44Decrypt: 'decrypt'
+  nip44Decrypt: 'decrypt',
+  nip44v3Encrypt: 'encrypt',
+  nip44v3Decrypt: 'decrypt',
+  nip44v3EncryptDoubleDH: 'encrypt',
+  nip44v3DecryptDoubleDH: 'decrypt'
 }
 function toPermissionName (method) {
   return methodNameToPermissionName[method] ||
     (() => { throw new Error(`Unknown method ${method}`) })()
 }
 export async function askNip07 (
-  askVault, pubkey, ns, method, params, { isDefaultUser, requestPermission, app } = {}
+  askVault, pubkey, { ns = [''], withSharedKey = null, method, params = [] }, { isDefaultUser, requestPermission, app } = {}
 ) {
   if (isDefaultUser) throw new Error('Please login')
-  if (requestPermission) {
-    const camelCaseMethod = method.includes('_')
-      ? method.replace(/_([a-z0-9])/g, (_, c) => c.toUpperCase())
-      : method
-    // TODO: find out the kind by decrypting first
-    const eKind = (() => {
-      switch (camelCaseMethod) {
-        case 'signEvent': return params?.[0]?.kind
-        // default: return -1 // all kinds
-        default: return null // won't grant to all kinds
-      }
-    })()
+  if (requestPermission && needsNip07Permission(method)) {
+    const { method: camelCaseMethod, eKind, scope } = nip07PermissionContext({ method, params })
 
     await requestPermission({
       app,
       name: toPermissionName(camelCaseMethod),
       eKind,
       meta: {
-        params
+        params,
+        ...(scope === undefined ? {} : { scope })
       }
     })
   }
@@ -600,6 +598,7 @@ export async function askNip07 (
       },
       pubkey,
       ns, // [name, ...optionalArgs]
+      ...(withSharedKey ? { with_shared_key: withSharedKey } : {}),
       method,
       params
     }

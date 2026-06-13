@@ -139,6 +139,7 @@ f('permissionDialogStack', function () {
       20: 'pictures',
       21: 'videos',
       22: 'short vertical videos',
+      263: 'private-channel router rows',
       1018: 'poll responses',
       1059: 'recipient directions',
       1068: 'polls',
@@ -146,6 +147,7 @@ f('permissionDialogStack', function () {
       1222: 'short voice notes',
       1244: 'short voice comments',
       1984: 'misconduct reports',
+      3560: 'private-channel broadcasts',
       7376: 'nutzap redemption logs',
       9321: 'nutzaps',
       9734: 'bitcoin pre-payment data',
@@ -190,6 +192,19 @@ f('permissionDialogStack', function () {
     getNameToText (name) {
       return this.nameToText[name] || name
     },
+    scopeToText (scope, eKind) {
+      if (!scope) return ''
+      const value = String(scope)
+      const normalized = value.replace(/\s+/g, ' ').trim()
+      if (!normalized) return ''
+      const clipped = normalized.length > 48
+        ? `${normalized.slice(0, 32)}...${normalized.slice(-12)}`
+        : normalized
+      if (eKind === 263 && /^[0-9a-f]{64}$/i.test(normalized)) {
+        return `Channel: ${normalized.slice(0, 8)}...${normalized.slice(-8)}`
+      }
+      return `Scope: ${clipped}`
+    },
     getPemissionText (name, eKind, meta) {
       let dynText
       if (eKind === 22242) dynText = 'access content that needs login'
@@ -226,7 +241,8 @@ f('permissionDialogStack', function () {
         const permissionText = this.getNameToText(name)
         dynText = [permissionText, eKindText].filter(Boolean).join(' ')
       }
-      return 'Can I ' + dynText + '?'
+      const scopeText = this.scopeToText(meta?.scope, eKind)
+      return `Can I ${dynText}${scopeText ? ` (${scopeText})` : ''}?`
     },
     permissionRequests$ () {
       return pdStore.queue$()
@@ -317,7 +333,7 @@ f('permissionDialogCard', function () {
       .permission-dialog-card {
         border-radius: 8px;
         display: flex;
-        align-items: center;
+        align-items: flex-start;
         padding: 5px 8px;
         transition: background-color 0.2s;
 
@@ -358,15 +374,19 @@ f('permissionDialogCard', function () {
           line-height: 1.3;
           color: rgba(255, 255, 255, 0.7);
           margin-top: 2px;
-          white-space: nowrap;
+          display: -webkit-box;
+          -webkit-box-orient: vertical;
+          -webkit-line-clamp: 3;
           overflow: hidden;
-          text-overflow: ellipsis;
+          overflow-wrap: anywhere;
         }
 
         .permission-actions {
           display: flex;
+          align-self: flex-start;
           gap: 8px;
           margin-left: 8px;
+          padding-top: 2px;
         }
 
         .permission-button {

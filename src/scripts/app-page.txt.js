@@ -64,23 +64,31 @@ function injectNip07 (promise) {
     'nip04.encrypt',
     'nip04.decrypt',
     'nip44.encrypt',
-    'nip44.decrypt'
+    'nip44.decrypt',
+    'nip44v3.encrypt',
+    'nip44v3.decrypt',
+    'nip44v3.encryptDoubleDH',
+    'nip44v3.decryptDoubleDH',
+    'doubleSignEvent'
   ]
+  const nip46MethodAliases = {
+    'nip44v3.encryptDoubleDH': 'nip44v3_encrypt_double_dh',
+    'nip44v3.decryptDoubleDH': 'nip44v3_decrypt_double_dh'
+  }
   function toNip46MethodName (nip07MethodName) {
+    if (nip46MethodAliases[nip07MethodName]) return nip46MethodAliases[nip07MethodName]
     return nip07MethodName
       .replace(/\.([a-z])/g, (m, p1) => p1.toUpperCase())
       .replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`)
   }
 
-  const defaultNsName = ''
-  const defaultNsParams = []
   const timeout = 5 * 60 * 1000
 
-  function createNostrMethod (method, nsName, nsParams) {
+  function createNostrMethod (method, context) {
     return (...params) => promise
       .then(browserPort => ask(
         browserPort,
-        { code: 'NIP07', payload: { ns: [nsName, ...nsParams], method, params } },
+        { code: 'NIP07', payload: { ...context, method, params } },
         { timeout }
       ))
       .then(({ payload, error }) => {
@@ -89,13 +97,13 @@ function injectNip07 (promise) {
       })
   }
 
-  function buildMethodsObject (methods, nsName, nsParams) {
+  function buildMethodsObject (methods, context) {
     const obj = {}
     methods.map(toNip46MethodName).forEach((nip46MethodName, i) => {
       const originalMethodName = methods[i]
       originalMethodName.split('.').reduce((r, part, j, methodParts) => {
         if (j === methodParts.length - 1) {
-          r[part] = createNostrMethod(nip46MethodName, nsName, nsParams)
+          r[part] = createNostrMethod(nip46MethodName, context)
         } else {
           r[part] ??= {}
         }
@@ -107,11 +115,15 @@ function injectNip07 (promise) {
 
   const nostr = {}
   // Add the default methods to nostr
-  Object.assign(nostr, buildMethodsObject(nip07Methods, defaultNsName, defaultNsParams))
+  Object.assign(nostr, buildMethodsObject(nip07Methods, { ns: [''] }))
 
   // Add the namespace method
   nostr.ns = (nsName, ...nsParams) => {
-    return buildMethodsObject(nip07Methods, nsName, nsParams)
+    return buildMethodsObject(nip07Methods, { ns: [nsName, ...nsParams] })
+  }
+
+  nostr.withSharedKey = (...withSharedKeyParams) => {
+    return buildMethodsObject(nip07Methods, { ns: [''], with_shared_key: withSharedKeyParams })
   }
 
   // napp methods will use code='WINDOW_NAPP'
