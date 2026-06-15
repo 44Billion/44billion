@@ -1,6 +1,6 @@
 import { f, useGlobalStore, useClosestStore, useStore, useTask, useCallback, useComputed, useSignal } from '#f'
 import useWebStorage from '#hooks/use-web-storage.js'
-import { tell, ask } from '#helpers/window-message/index.js'
+import { tell, ask, reply } from '#helpers/window-message/index.js'
 import { setAccountsState } from '#zones/screen/use-init-or-reset-screen.js'
 import '#shared/modal.js'
 
@@ -294,6 +294,8 @@ function initMessageListener ({
     stopRenderHandshake?.()
     // BROWSER_READY must be the first message the vault receives
     tellVaultImReady(currentVaultPort)
+    // Make it work with ez-vault's simplified messenger
+    if (e.data.reqId) reply(e, { payload: true })
     _pendingVaultMessages.splice(0).forEach(msg => tell(_activeVaultPort, msg))
     vaultPort$(currentVaultPort)
   }, { signal: componentSignal })
