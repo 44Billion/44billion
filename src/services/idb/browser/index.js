@@ -45,9 +45,9 @@ const initDb = () => {
   return p.promise
 }
 
-export async function run (method, args = [], storeName, indexName, { p = Promise.withResolvers(), tx, txMode = tx?.mode, storeOrIndex } = {}) {
+export async function run (method, args = [], storeName, indexName, { db, p = Promise.withResolvers(), tx, txMode = tx?.mode, storeOrIndex } = {}) {
   if (!tx) {
-    const db = await getDb()
+    db ??= await getDb()
     // one may pre-select it if it wants to use many different methods in a row
     txMode ??= ['get', 'getKey', 'count'].includes(method) ? 'readonly' : 'readwrite'
     tx = db.transaction([storeName], txMode)
