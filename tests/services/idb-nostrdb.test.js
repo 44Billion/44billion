@@ -96,7 +96,41 @@ describe('nostrdb', () => {
     assert.deepEqual((await db.query({ authors: [A], kinds: [1], limit: 1 })).map(e => e.id), [four.id])
     assert.deepEqual((await db.query({ '#e': ['root'] })).map(e => e.id), [three.id, one.id])
     assert.deepEqual((await db.query({ '#d': ['alpha'] })).map(e => e.id), [three.id, one.id])
-    assert.equal(await db.count({ kinds: [1], limit: 1 }), 3)
+    assert.equal(await db.count({ kinds: [1] }), 3)
+    assert.equal(await db.count({ kinds: [1], limit: 1 }), 1)
+  })
+
+  it('sorts direct query results before applying limit', async () => {
+    const db = getNostrDb(`${OWNER}18`)
+    const old = event({ id: '1'.repeat(64), created_at: 10 })
+    const newer = event({ id: '2'.repeat(64), created_at: 20 })
+
+    assert.equal(await db.add(old), true)
+    assert.equal(await db.add(newer), true)
+
+    assert.deepEqual((await db.query({ ids: [old.id, newer.id], limit: 1 })).map(e => e.id), [newer.id])
+  })
+
+  it('sorts multi-cursor query results before applying limit', async () => {
+    const db = getNostrDb(`${OWNER}19`)
+    const old = event({ id: '1'.repeat(64), created_at: 10, tags: [['e', 'a']] })
+    const newer = event({ id: '2'.repeat(64), created_at: 20, tags: [['e', 'b']] })
+
+    assert.equal(await db.add(old), true)
+    assert.equal(await db.add(newer), true)
+
+    assert.deepEqual((await db.query({ '#e': ['a', 'b'], limit: 1 })).map(e => e.id), [newer.id])
+  })
+
+  it('counts only up to the filter limit', async () => {
+    const db = getNostrDb(`${OWNER}20`)
+
+    assert.equal(await db.add(event({ id: '1'.repeat(64), tags: [['e', 'a']] })), true)
+    assert.equal(await db.add(event({ id: '2'.repeat(64), tags: [['e', 'b']] })), true)
+    assert.equal(await db.add(event({ id: '3'.repeat(64), tags: [['e', 'b']] })), true)
+
+    assert.equal(await db.count({ '#e': ['a', 'b'] }), 3)
+    assert.equal(await db.count({ '#e': ['a', 'b'], limit: 2 }), 2)
   })
 
   it('rejects filter arrays', async () => {

@@ -8,6 +8,35 @@ export const NOSTRDB_PREFIX = '44billion_nostrdb:'
 export const EVENTS_STORE = 'events'
 export const DELETIONS_STORE = 'deletions'
 
+/*
+IndexedDB schema, scoped per owner DB name:
+
+events, keyPath "ref"
+  ref   "e:<base64url-id>" or "c:<base64url-sha256-coordinate>"
+  i     base64url event id bytes
+  p     base64url pubkey bytes
+  k     event kind
+  ca    created_at timestamp
+  t     multiEntry tag index keys: [tagName, sha256(tagValue), created_at]
+  event original Nostr event
+
+events indexes
+  byId         i, unique
+  byCreatedAt ca
+  byPubkey    [p, ca]
+  byKind      [k, ca]
+  byPubkeyKind [p, k, ca]
+  byTag       t, multiEntry
+
+deletions, keyPath "ref"
+  ref   "e:<base64url-id>:<base64url-pubkey>" or "a:<base64url-sha256-coordinate>"
+  tag   deletion target tag to preserve when compacting: ["e", id] or ["a", address]
+  ca    max created_at among stored deletion requests contributing this tombstone
+  c     multiEntry contributors: [requestIdKey, requestCreatedAt]
+
+deletions indexes
+  byRequest c, multiEntry
+*/
 export const INDEX = {
   id: 'byId',
   createdAt: 'byCreatedAt',
@@ -268,7 +297,7 @@ export class NostrDb {
     if (!db) return 0
 
     try {
-      return await queryRecords(db, filter, { countOnly: true, ignoreLimit: true })
+      return await queryRecords(db, filter, { countOnly: true, ignoreLimit: false })
     } catch {
       return 0
     }
@@ -407,7 +436,7 @@ async function queryRecords (db, rawFilter, { countOnly, ignoreLimit }) {
   const filter = new ParsedFilter(rawFilter)
   if (filter.neverMatch) return countOnly ? 0 : []
 
-  const limit = ignoreLimit ? Infinity : Math.min(MAX_LIMIT, filter.limit)
+  const limit = ignoreLimit ? Infinity : Math.min(countOnly ? Infinity : MAX_LIMIT, filter.limit)
   if (limit <= 0) return countOnly ? 0 : []
 
   const plan = planQuery(filter)
@@ -415,28 +444,35 @@ async function queryRecords (db, rawFilter, { countOnly, ignoreLimit }) {
   const results = []
   let count = 0
 
+  const matches = stored => stored && filter.matches(stored.event)
   const emit = stored => {
-    if (!stored || seen.has(stored.event.id) || !filter.matches(stored.event)) return false
+    if (!matches(stored) || seen.has(stored.event.id)) return false
     seen.add(stored.event.id)
     count++
     if (!countOnly) results.push(stored.event)
-    return count >= limit
+    return true
   }
 
   if (plan.type === 'direct') {
     for (const cursor of plan.cursors) {
       const stored = await run('get', [cursor.key], EVENTS_STORE, cursor.indexName, { db })
         .then(v => v.result)
-      if (emit(stored)) break
+      if (emit(stored) && countOnly && count >= limit) break
     }
   } else {
     for (const cursor of plan.cursors) {
+      let matchedInCursor = 0
+
       for await (const stored of streamCursor(db, EVENTS_STORE, cursor.indexName, cursor.range, {
         direction: 'prev'
       })) {
-        if (emit(stored)) break
+        if (!matches(stored)) continue
+        matchedInCursor++
+        emit(stored)
+        if (countOnly && count >= limit) break
+        if (!countOnly && matchedInCursor >= limit) break
       }
-      if (count >= limit) break
+      if (countOnly && count >= limit) break
     }
   }
 
