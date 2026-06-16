@@ -4,10 +4,15 @@ import { base16ToBase64, bytesToBase64 } from '#helpers/base64.js'
 import { run } from '#services/idb/browser/index.js'
 import {
   SEARCH_BATCH_SIZE,
+  SEARCH_MATCH_MULTIPLIER,
   SEARCH_MAX_BATCHES,
   SEARCH_MAX_CANDIDATES,
+  SEARCH_MAX_MATCHES,
+  SEARCH_MIN_BATCHES,
+  SEARCH_MIN_MATCHES,
   eventMatchesSearch,
   getSearchableText,
+  matchSearchCandidates,
   parseSearch,
   rankSearchCandidates
 } from './search.js'
@@ -452,11 +457,11 @@ async function queryRecords (db, rawFilter, { countOnly, ignoreLimit }) {
   const direction = filter.sortOld ? 'next' : 'prev'
 
   if (filter.searchText) {
-    const candidates = await collectSearchCandidates(db, plan, filter, direction)
+    const candidates = await collectSearchCandidates(db, plan, filter, direction, { countOnly, limit })
+
+    if (countOnly) return Number.isFinite(limit) ? Math.min(candidates.length, limit) : candidates.length
+
     const ranked = rankSearchCandidates(candidates, filter, compareSearchTime)
-
-    if (countOnly) return Number.isFinite(limit) ? Math.min(ranked.length, limit) : ranked.length
-
     return ranked
       .slice(0, Number.isFinite(limit) ? limit : ranked.length)
       .map(candidate => candidate.event)
@@ -516,19 +521,22 @@ async function * streamCursor (db, storeName, indexName, range, { tx, direction 
   }
 }
 
-async function collectSearchCandidates (db, plan, filter, direction) {
-  const candidates = []
+// IDB scanning stays here because it knows about plans, stores, cursors, and caps.
+async function collectSearchCandidates (db, plan, filter, direction, { countOnly, limit }) {
+  const matches = []
   const seen = new Set()
+  const matchTarget = searchMatchTarget(countOnly, limit)
 
-  const add = stored => {
-    if (!stored || seen.has(stored.event.id) || !filter.matchesStructured(stored.event)) return
+  const toCandidate = stored => {
+    if (!stored || seen.has(stored.event.id) || !filter.matchesStructured(stored.event)) return null
     seen.add(stored.event.id)
 
     const text = getSearchableText(stored.event)
-    if (text) candidates.push({ event: stored.event, text })
+    return text ? { event: stored.event, text } : null
   }
 
   if (plan.type === 'direct') {
+    const candidates = []
     let scanned = 0
 
     for (const cursor of plan.cursors) {
@@ -537,10 +545,11 @@ async function collectSearchCandidates (db, plan, filter, direction) {
       const stored = await run('get', [cursor.key], EVENTS_STORE, cursor.indexName, { db })
         .then(v => v.result)
       scanned++
-      add(stored)
+      const candidate = toCandidate(stored)
+      if (candidate) candidates.push(candidate)
     }
 
-    return candidates
+    return matchSearchCandidates(candidates, filter)
   }
 
   const states = plan.cursors.map(cursor => ({
@@ -550,6 +559,7 @@ async function collectSearchCandidates (db, plan, filter, direction) {
   let scanned = 0
 
   for (let batch = 0; batch < SEARCH_MAX_BATCHES && scanned < SEARCH_MAX_CANDIDATES; batch++) {
+    const batchCandidates = []
     let scannedInBatch = 0
 
     while (
@@ -571,7 +581,8 @@ async function collectSearchCandidates (db, plan, filter, direction) {
         progressed = true
         scanned++
         scannedInBatch++
-        add(next.value)
+        const candidate = toCandidate(next.value)
+        if (candidate) batchCandidates.push(candidate)
 
         if (scannedInBatch >= SEARCH_BATCH_SIZE || scanned >= SEARCH_MAX_CANDIDATES) break
       }
@@ -580,13 +591,32 @@ async function collectSearchCandidates (db, plan, filter, direction) {
     }
 
     if (scannedInBatch === 0) break
+
+    matches.push(...matchSearchCandidates(batchCandidates, filter))
+    if (shouldStopSearch(countOnly, batch + 1, matches.length, matchTarget)) break
   }
 
-  return candidates
+  return matches
 }
 
 function compareSearchTime (a, b, filter) {
   return filter.sortOld ? compareOldest(a, b) : compareNewest(a, b)
+}
+
+function searchMatchTarget (countOnly, limit) {
+  if (countOnly) return Number.isFinite(limit) ? limit : Infinity
+
+  return Math.min(
+    SEARCH_MAX_MATCHES,
+    Math.max(SEARCH_MIN_MATCHES, limit * SEARCH_MATCH_MULTIPLIER)
+  )
+}
+
+function shouldStopSearch (countOnly, batchCount, matchCount, matchTarget) {
+  if (!Number.isFinite(matchTarget)) return false
+  if (countOnly) return matchCount >= matchTarget
+
+  return batchCount >= SEARCH_MIN_BATCHES && matchCount >= matchTarget
 }
 
 export function planQuery (filter) {

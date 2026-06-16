@@ -1,8 +1,20 @@
 import uFuzzy from '@leeoniya/ufuzzy'
 
+/*
+Search is a bounded local fuzzy pass over IndexedDB-filtered events, not a full
+text index. Query-time early stop is match-count based: once enough uFuzzy
+matches have been collected after a small amount of chronological coverage, the
+scan can stop and final ranking is quality-first only within that collected set.
+This keeps broad searches responsive, but a better match farther away in time can
+be missed after early stop triggers.
+*/
 export const SEARCH_BATCH_SIZE = 500
 export const SEARCH_MAX_BATCHES = 20
 export const SEARCH_MAX_CANDIDATES = SEARCH_BATCH_SIZE * SEARCH_MAX_BATCHES
+export const SEARCH_MIN_BATCHES = 2
+export const SEARCH_MIN_MATCHES = 100
+export const SEARCH_MATCH_MULTIPLIER = 8
+export const SEARCH_MAX_MATCHES = 1000
 
 const searchCollator = typeof Intl === 'undefined'
   ? null
@@ -12,10 +24,11 @@ const searchCollator = typeof Intl === 'undefined'
 // 0: { contentJson: ['name'] }
 // 30023: { content: true, tags: ['title', 'summary'] }
 const SEARCH_FIELD_CONFIG = {
-  0: { contentJson: ['name'] },
-  30023: { content: true, tags: ['title', 'summary'] }
+  0: { contentJson: ['name'], tags: ['name'] },
+  30023: { tags: ['title', 'summary'] }
 }
 
+// Parse NIP-50 search text into uFuzzy input and the extensions this DB knows.
 export function parseSearch (value) {
   const parsed = { text: '', sortOld: false, autocomplete: false }
   if (typeof value !== 'string') return parsed
@@ -36,6 +49,22 @@ export function parseSearch (value) {
   return parsed
 }
 
+// Cheaply keep only candidates that uFuzzy considers matches for this batch.
+export function matchSearchCandidates (candidates, filter) {
+  if (candidates.length === 0) return []
+
+  const needle = uFuzzy.latinize(filter.searchText)
+  const haystack = uFuzzy.latinize(candidates.map(candidate => candidate.text))
+  // eslint-disable-next-line new-cap
+  const searcher = new uFuzzy()
+  const [idxs] = searcher.search(haystack, needle, true, 0)
+
+  if (!idxs || idxs.length === 0) return []
+
+  return idxs.map(idx => candidates[idx])
+}
+
+// Final quality-first ordering over the bounded set collected by the DB scan.
 export function rankSearchCandidates (candidates, filter, compareTime) {
   if (candidates.length === 0) return []
 
@@ -67,6 +96,7 @@ export function eventMatchesSearch (event, filter, compareTime) {
   return !!text && rankSearchCandidates([{ event, text }], filter, compareTime).length > 0
 }
 
+// Extract the text fields that should participate in fuzzy search for each kind.
 export function getSearchableText (event) {
   const config = SEARCH_FIELD_CONFIG[event.kind]
   const values = []

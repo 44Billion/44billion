@@ -200,6 +200,45 @@ describe('nostrdb', () => {
     assert.deepEqual((await db.query({ kinds: [30023], search: 'body' })).map(e => e.id), [content.id])
   })
 
+  it('supports uFuzzy negative search terms', async () => {
+    const db = getNostrDb(`${OWNER}27`)
+    const match = event({ id: '1'.repeat(64), content: 'nostr protocol notes' })
+    const excluded = event({ id: '2'.repeat(64), content: 'nostr bitcoin bridge' })
+
+    assert.equal(await db.add(match), true)
+    assert.equal(await db.add(excluded), true)
+
+    assert.deepEqual((await db.query({ search: 'nostr -bitcoin' })).map(e => e.id), [match.id])
+    assert.equal(await db.count({ search: 'nostr -bitcoin' }), 1)
+  })
+
+  it('counts search matches without applying query early-stop targets', async () => {
+    const db = getNostrDb(`${OWNER}28`)
+
+    for (let i = 0; i < 150; i++) {
+      assert.equal(await db.add(event({
+        id: hexId(1000 + i),
+        created_at: i,
+        content: `nostr match ${i}`
+      })), true)
+    }
+
+    for (let i = 0; i < 30; i++) {
+      assert.equal(await db.add(event({
+        id: hexId(2000 + i),
+        created_at: 200 + i,
+        content: `other topic ${i}`
+      })), true)
+    }
+
+    assert.equal(await db.count({ search: 'nostr' }), 150)
+    assert.equal(await db.count({ search: 'nostr', limit: 25 }), 25)
+    assert.deepEqual(
+      (await db.query({ search: 'nostr', limit: 5 })).map(e => e.id),
+      [149, 148, 147, 146, 145].map(i => hexId(1000 + i))
+    )
+  })
+
   it('rejects filter arrays', async () => {
     const db = getNostrDb(`${OWNER}3`)
 
@@ -580,6 +619,10 @@ function withTimeout (promise) {
 
 function delay (ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function hexId (value) {
+  return value.toString(16).padStart(64, '0')
 }
 
 class FakeIndexedDB {
