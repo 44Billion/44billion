@@ -2,6 +2,15 @@ import { sha256 } from '@noble/hashes/sha2.js'
 
 import { base16ToBase64, bytesToBase64 } from '#helpers/base64.js'
 import { run } from '#services/idb/browser/index.js'
+import {
+  SEARCH_BATCH_SIZE,
+  SEARCH_MAX_BATCHES,
+  SEARCH_MAX_CANDIDATES,
+  eventMatchesSearch,
+  getSearchableText,
+  parseSearch,
+  rankSearchCandidates
+} from './search.js'
 
 export const NOSTRDB_VERSION = 1
 export const NOSTRDB_PREFIX = '44billion_nostrdb:'
@@ -304,7 +313,7 @@ export class NostrDb {
   }
 
   async supports () {
-    return []
+    return ['search']
   }
 
   async deleteDb () {
@@ -441,6 +450,18 @@ async function queryRecords (db, rawFilter, { countOnly, ignoreLimit }) {
 
   const plan = planQuery(filter)
   const direction = filter.sortOld ? 'next' : 'prev'
+
+  if (filter.searchText) {
+    const candidates = await collectSearchCandidates(db, plan, filter, direction)
+    const ranked = rankSearchCandidates(candidates, filter, compareSearchTime)
+
+    if (countOnly) return Number.isFinite(limit) ? Math.min(ranked.length, limit) : ranked.length
+
+    return ranked
+      .slice(0, Number.isFinite(limit) ? limit : ranked.length)
+      .map(candidate => candidate.event)
+  }
+
   const seen = new Set()
   const results = []
   let count = 0
@@ -493,6 +514,79 @@ async function * streamCursor (db, storeName, indexName, range, { tx, direction 
     Object.assign(p, Promise.withResolvers())
     cursor.continue()
   }
+}
+
+async function collectSearchCandidates (db, plan, filter, direction) {
+  const candidates = []
+  const seen = new Set()
+
+  const add = stored => {
+    if (!stored || seen.has(stored.event.id) || !filter.matchesStructured(stored.event)) return
+    seen.add(stored.event.id)
+
+    const text = getSearchableText(stored.event)
+    if (text) candidates.push({ event: stored.event, text })
+  }
+
+  if (plan.type === 'direct') {
+    let scanned = 0
+
+    for (const cursor of plan.cursors) {
+      if (scanned >= SEARCH_MAX_CANDIDATES) break
+
+      const stored = await run('get', [cursor.key], EVENTS_STORE, cursor.indexName, { db })
+        .then(v => v.result)
+      scanned++
+      add(stored)
+    }
+
+    return candidates
+  }
+
+  const states = plan.cursors.map(cursor => ({
+    done: false,
+    iterator: streamCursor(db, EVENTS_STORE, cursor.indexName, cursor.range, { direction })[Symbol.asyncIterator]()
+  }))
+  let scanned = 0
+
+  for (let batch = 0; batch < SEARCH_MAX_BATCHES && scanned < SEARCH_MAX_CANDIDATES; batch++) {
+    let scannedInBatch = 0
+
+    while (
+      scannedInBatch < SEARCH_BATCH_SIZE &&
+      scanned < SEARCH_MAX_CANDIDATES &&
+      states.some(state => !state.done)
+    ) {
+      let progressed = false
+
+      for (const state of states) {
+        if (state.done) continue
+
+        const next = await state.iterator.next()
+        if (next.done) {
+          state.done = true
+          continue
+        }
+
+        progressed = true
+        scanned++
+        scannedInBatch++
+        add(next.value)
+
+        if (scannedInBatch >= SEARCH_BATCH_SIZE || scanned >= SEARCH_MAX_CANDIDATES) break
+      }
+
+      if (!progressed) break
+    }
+
+    if (scannedInBatch === 0) break
+  }
+
+  return candidates
+}
+
+function compareSearchTime (a, b, filter) {
+  return filter.sortOld ? compareOldest(a, b) : compareNewest(a, b)
 }
 
 export function planQuery (filter) {
@@ -657,6 +751,8 @@ export class ParsedFilter {
     this.limit = Infinity
     this.neverMatch = false
     this.sortOld = false
+    this.autocomplete = false
+    this.searchText = ''
 
     if (!filter || typeof filter !== 'object' || Array.isArray(filter)) {
       this.neverMatch = true
@@ -682,7 +778,10 @@ export class ParsedFilter {
       } else if (key === 'limit') {
         this.limit = normalizeLimit(value)
       } else if (key === 'search') {
-        this.sortOld = hasSearchToken(value, 'sort:old')
+        const search = parseSearch(value)
+        this.sortOld = search.sortOld
+        this.autocomplete = search.autocomplete
+        this.searchText = search.text
       } else if (key.startsWith('#') && key.length >= 2) {
         const values = normalizeTagValues(value)
         const tag = { name: key.slice(1), values }
@@ -703,6 +802,13 @@ export class ParsedFilter {
   }
 
   matches (event) {
+    if (!this.matchesStructured(event)) return false
+    if (this.searchText && !eventMatchesSearch(event, this, compareSearchTime)) return false
+
+    return true
+  }
+
+  matchesStructured (event) {
     if (this.neverMatch) return false
     if (event.created_at < this.since || event.created_at > this.until) return false
     if (this.ids && !this.ids.includes(event.id)) return false
@@ -715,10 +821,6 @@ export class ParsedFilter {
 
     return true
   }
-}
-
-function hasSearchToken (value, token) {
-  return typeof value === 'string' && value.trim().split(/\s+/).includes(token)
 }
 
 export function toStoredRecord (event) {

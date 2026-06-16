@@ -18,6 +18,7 @@ import {
 
 const A = 'a'.repeat(64)
 const B = 'b'.repeat(64)
+const C = 'c'.repeat(64)
 const OWNER = 'f'.repeat(64)
 const SIG = '0'.repeat(128)
 
@@ -135,8 +136,8 @@ describe('nostrdb', () => {
 
   it('supports the search sort:old extension', async () => {
     const db = getNostrDb(`${OWNER}21`)
-    const old = event({ id: '1'.repeat(64), created_at: 10, tags: [['e', 'thread']] })
-    const newer = event({ id: '2'.repeat(64), created_at: 20, tags: [['e', 'thread']] })
+    const old = event({ id: '1'.repeat(64), created_at: 10, tags: [['e', 'thread']], content: 'hello old' })
+    const newer = event({ id: '2'.repeat(64), created_at: 20, tags: [['e', 'thread']], content: 'hello newer' })
 
     assert.equal(await db.add(old), true)
     assert.equal(await db.add(newer), true)
@@ -144,6 +145,59 @@ describe('nostrdb', () => {
     assert.deepEqual((await db.query({ kinds: [1], search: 'hello unknown:value' })).map(e => e.id), [newer.id, old.id])
     assert.deepEqual((await db.query({ ids: [newer.id, old.id], search: 'sort:old', limit: 1 })).map(e => e.id), [old.id])
     assert.deepEqual((await db.query({ '#e': ['thread'], search: 'sort:old', limit: 1 })).map(e => e.id), [old.id])
+  })
+
+  it('ranks fuzzy search matches before applying limit', async () => {
+    const db = getNostrDb(`${OWNER}22`)
+    const exactOld = event({ id: '1'.repeat(64), created_at: 10, content: 'nostr' })
+    const laterMatch = event({ id: '2'.repeat(64), created_at: 20, content: 'zzzz nostr' })
+
+    assert.equal(await db.add(laterMatch), true)
+    assert.equal(await db.add(exactOld), true)
+
+    assert.deepEqual((await db.query({ search: 'nostr', limit: 1 })).map(e => e.id), [exactOld.id])
+    assert.equal(await db.count({ search: 'nostr', limit: 1 }), 1)
+  })
+
+  it('uses sort:old as the fuzzy search chronological tie-breaker', async () => {
+    const db = getNostrDb(`${OWNER}23`)
+    const old = event({ id: '1'.repeat(64), created_at: 10, content: 'nostr' })
+    const newer = event({ id: '2'.repeat(64), created_at: 20, content: 'nostr' })
+
+    assert.equal(await db.add(old), true)
+    assert.equal(await db.add(newer), true)
+
+    assert.deepEqual((await db.query({ search: 'nostr', limit: 1 })).map(e => e.id), [newer.id])
+    assert.deepEqual((await db.query({ search: 'nostr sort:old', limit: 1 })).map(e => e.id), [old.id])
+  })
+
+  it('searches profile names with autocomplete sorting', async () => {
+    const db = getNostrDb(`${OWNER}24`)
+    const alice = event({ id: '1'.repeat(64), pubkey: A, kind: 0, content: JSON.stringify({ name: 'Alice' }) })
+    const malice = event({ id: '2'.repeat(64), pubkey: B, kind: 0, content: JSON.stringify({ name: 'Malice' }) })
+    const aboutOnly = event({ id: '3'.repeat(64), pubkey: C, kind: 0, content: JSON.stringify({ name: 'Bob', about: 'Alice' }) })
+
+    assert.equal(await db.add(malice), true)
+    assert.equal(await db.add(aboutOnly), true)
+    assert.equal(await db.add(alice), true)
+
+    assert.deepEqual((await db.query({ kinds: [0], search: 'ali autocomplete:true' })).map(e => e.id), [alice.id, malice.id])
+    assert.deepEqual(await db.query({ kinds: [0], search: 'about' }), [])
+  })
+
+  it('searches long-form title, summary, and content fields', async () => {
+    const db = getNostrDb(`${OWNER}25`)
+    const title = event({ id: '1'.repeat(64), kind: 30023, tags: [['d', 'title'], ['title', 'Solar Nostr']] })
+    const summary = event({ id: '2'.repeat(64), kind: 30023, tags: [['d', 'summary'], ['summary', 'Relay Guide']] })
+    const content = event({ id: '3'.repeat(64), kind: 30023, tags: [['d', 'content']], content: 'Body Match' })
+
+    assert.equal(await db.add(title), true)
+    assert.equal(await db.add(summary), true)
+    assert.equal(await db.add(content), true)
+
+    assert.deepEqual((await db.query({ kinds: [30023], search: 'solar' })).map(e => e.id), [title.id])
+    assert.deepEqual((await db.query({ kinds: [30023], search: 'guide' })).map(e => e.id), [summary.id])
+    assert.deepEqual((await db.query({ kinds: [30023], search: 'body' })).map(e => e.id), [content.id])
   })
 
   it('rejects filter arrays', async () => {
@@ -423,6 +477,19 @@ describe('nostrdb', () => {
     await iterator.return()
   })
 
+  it('subscribes to future fuzzy search matches', async () => {
+    const db = getNostrDb(`${OWNER}26`)
+    const iterator = db.subscribe({ search: 'nostr' })
+    const next = iterator.next()
+    const match = event({ id: '1'.repeat(64), content: 'nostr search' })
+
+    assert.equal(await db.add(event({ id: '2'.repeat(64), content: 'bitcoin' })), true)
+    assert.equal(await db.add(match), true)
+
+    assert.deepEqual(await withTimeout(next), { value: match, done: false })
+    await iterator.return()
+  })
+
   it('receives BroadcastChannel events from another instance', async () => {
     if (typeof BroadcastChannel !== 'function') return
 
@@ -447,10 +514,18 @@ describe('nostrdb', () => {
     const ignored = new ParsedFilter({ search: 'hello unknown:value' })
     assert.equal(ignored.neverMatch, false)
     assert.equal(ignored.sortOld, false)
+    assert.equal(ignored.autocomplete, false)
+    assert.equal(ignored.searchText, 'hello')
 
-    const oldest = new ParsedFilter({ search: 'hello sort:old unknown:value' })
+    const oldest = new ParsedFilter({ search: 'hello sort:old autocomplete:true unknown:value' })
     assert.equal(oldest.neverMatch, false)
     assert.equal(oldest.sortOld, true)
+    assert.equal(oldest.autocomplete, true)
+    assert.equal(oldest.searchText, 'hello')
+
+    const extensionOnly = new ParsedFilter({ search: 'sort:old unknown:value' })
+    assert.equal(extensionOnly.sortOld, true)
+    assert.equal(extensionOnly.searchText, '')
   })
 
   it('noops when IndexedDB is unavailable', async () => {
@@ -460,7 +535,7 @@ describe('nostrdb', () => {
     assert.equal(await db.add(event({ id: '1'.repeat(64) })), false)
     assert.deepEqual(await db.query({ kinds: [1] }), [])
     assert.equal(await db.count({ kinds: [1] }), 0)
-    assert.deepEqual(await db.supports(), [])
+    assert.deepEqual(await db.supports(), ['search'])
     db.bc?.close()
   })
 
