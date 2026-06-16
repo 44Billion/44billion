@@ -133,6 +133,19 @@ describe('nostrdb', () => {
     assert.equal(await db.count({ '#e': ['a', 'b'], limit: 2 }), 2)
   })
 
+  it('supports the search sort:old extension', async () => {
+    const db = getNostrDb(`${OWNER}21`)
+    const old = event({ id: '1'.repeat(64), created_at: 10, tags: [['e', 'thread']] })
+    const newer = event({ id: '2'.repeat(64), created_at: 20, tags: [['e', 'thread']] })
+
+    assert.equal(await db.add(old), true)
+    assert.equal(await db.add(newer), true)
+
+    assert.deepEqual((await db.query({ kinds: [1], search: 'hello unknown:value' })).map(e => e.id), [newer.id, old.id])
+    assert.deepEqual((await db.query({ ids: [newer.id, old.id], search: 'sort:old', limit: 1 })).map(e => e.id), [old.id])
+    assert.deepEqual((await db.query({ '#e': ['thread'], search: 'sort:old', limit: 1 })).map(e => e.id), [old.id])
+  })
+
   it('rejects filter arrays', async () => {
     const db = getNostrDb(`${OWNER}3`)
 
@@ -428,9 +441,16 @@ describe('nostrdb', () => {
     sender.bc.close()
   })
 
-  it('treats empty arrays and search as never matching', () => {
+  it('treats empty arrays as never matching and parses search extensions', () => {
     assert.equal(new ParsedFilter({ ids: [] }).neverMatch, true)
-    assert.equal(new ParsedFilter({ search: 'hello' }).neverMatch, true)
+
+    const ignored = new ParsedFilter({ search: 'hello unknown:value' })
+    assert.equal(ignored.neverMatch, false)
+    assert.equal(ignored.sortOld, false)
+
+    const oldest = new ParsedFilter({ search: 'hello sort:old unknown:value' })
+    assert.equal(oldest.neverMatch, false)
+    assert.equal(oldest.sortOld, true)
   })
 
   it('noops when IndexedDB is unavailable', async () => {

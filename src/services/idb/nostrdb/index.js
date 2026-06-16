@@ -440,6 +440,7 @@ async function queryRecords (db, rawFilter, { countOnly, ignoreLimit }) {
   if (limit <= 0) return countOnly ? 0 : []
 
   const plan = planQuery(filter)
+  const direction = filter.sortOld ? 'next' : 'prev'
   const seen = new Set()
   const results = []
   let count = 0
@@ -464,7 +465,7 @@ async function queryRecords (db, rawFilter, { countOnly, ignoreLimit }) {
       let matchedInCursor = 0
 
       for await (const stored of streamCursor(db, EVENTS_STORE, cursor.indexName, cursor.range, {
-        direction: 'prev'
+        direction
       })) {
         if (!matches(stored)) continue
         matchedInCursor++
@@ -478,7 +479,7 @@ async function queryRecords (db, rawFilter, { countOnly, ignoreLimit }) {
 
   if (countOnly) return count
 
-  results.sort(compareNewest)
+  results.sort(filter.sortOld ? compareOldest : compareNewest)
   return Number.isFinite(limit) ? results.slice(0, limit) : results
 }
 
@@ -655,6 +656,7 @@ export class ParsedFilter {
     this.until = Infinity
     this.limit = Infinity
     this.neverMatch = false
+    this.sortOld = false
 
     if (!filter || typeof filter !== 'object' || Array.isArray(filter)) {
       this.neverMatch = true
@@ -680,7 +682,7 @@ export class ParsedFilter {
       } else if (key === 'limit') {
         this.limit = normalizeLimit(value)
       } else if (key === 'search') {
-        this.neverMatch = true
+        this.sortOld = hasSearchToken(value, 'sort:old')
       } else if (key.startsWith('#') && key.length >= 2) {
         const values = normalizeTagValues(value)
         const tag = { name: key.slice(1), values }
@@ -713,6 +715,10 @@ export class ParsedFilter {
 
     return true
   }
+}
+
+function hasSearchToken (value, token) {
+  return typeof value === 'string' && value.trim().split(/\s+/).includes(token)
 }
 
 export function toStoredRecord (event) {
