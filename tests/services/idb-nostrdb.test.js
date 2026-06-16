@@ -6,9 +6,13 @@ import {
   ParsedFilter,
   coordinateRef,
   deleteNostrDb,
+  deletionCoordinateRef,
+  deletionEventRef,
   eventRef,
+  eventIdIndexKey,
   getNostrDb,
   isNewer,
+  pubkeyIndexKey,
   toStoredRecord
 } from '../../src/services/idb/nostrdb/index.js'
 
@@ -43,6 +47,13 @@ describe('nostrdb', () => {
     assert.equal(toStoredRecord(dTagged).ref, coordinateRef(1, A, 'room'))
     assert.equal(toStoredRecord(replaceable).ref, coordinateRef(0, A, ''))
     assert.equal(toStoredRecord(addressable).ref, coordinateRef(30023, A, 'article'))
+  })
+
+  it('derives deletion refs', () => {
+    const id = '1'.repeat(64)
+
+    assert.equal(deletionEventRef(id, A), `e:${eventIdIndexKey(id)}:${pubkeyIndexKey(A)}`)
+    assert.equal(deletionCoordinateRef(30023, A, 'post'), `a:${coordinateRef(30023, A, 'post').slice(2)}`)
   })
 
   it('keeps the newest coordinate event', async () => {
@@ -144,6 +155,214 @@ describe('nostrdb', () => {
     assert.deepEqual((await db.query({ authors: [B], kinds: [30023], '#d': ['post'] })).map(e => e.id), [otherAuthor.id])
   })
 
+  it('blocks future events with durable e-tag tombstones', async () => {
+    const db = getNostrDb(`${OWNER}11`)
+    const targetId = '1'.repeat(64)
+    const deletion = event({
+      id: '5'.repeat(64),
+      pubkey: A,
+      kind: 5,
+      created_at: 2,
+      tags: [['e', targetId]]
+    })
+
+    assert.equal(await db.add(deletion), true)
+    assert.equal(await db.add(event({ id: targetId, pubkey: A, created_at: 10 })), false)
+    assert.equal(await db.add(event({ id: targetId, pubkey: B, created_at: 10 })), true)
+
+    assert.deepEqual((await db.query({ ids: [targetId] })).map(e => e.pubkey), [B])
+  })
+
+  it('blocks future coordinate events only up to the deletion timestamp', async () => {
+    const db = getNostrDb(`${OWNER}12`)
+    const deletion = event({
+      id: '5'.repeat(64),
+      pubkey: A,
+      kind: 5,
+      created_at: 10,
+      tags: [['a', `30023:${A}:post`]]
+    })
+    const old = event({ id: '1'.repeat(64), pubkey: A, kind: 30023, created_at: 10, tags: [['d', 'post']] })
+    const newer = event({ id: '2'.repeat(64), pubkey: A, kind: 30023, created_at: 11, tags: [['d', 'post']] })
+
+    assert.equal(await db.add(deletion), true)
+    assert.equal(await db.add(old), false)
+    assert.equal(await db.add(newer), true)
+
+    assert.deepEqual((await db.query({ authors: [A], kinds: [30023], '#d': ['post'] })).map(e => e.id), [newer.id])
+  })
+
+  it('removes unique tombstones when a deletion request is deleted', async () => {
+    const db = getNostrDb(`${OWNER}13`)
+    const target = event({ id: '1'.repeat(64), pubkey: A, created_at: 5 })
+    const firstDeletion = event({
+      id: '5'.repeat(64),
+      pubkey: A,
+      kind: 5,
+      created_at: 6,
+      tags: [['e', target.id]]
+    })
+    const secondDeletion = event({
+      id: '6'.repeat(64),
+      pubkey: A,
+      kind: 5,
+      created_at: 7,
+      tags: [['e', firstDeletion.id]]
+    })
+
+    assert.equal(await db.add(firstDeletion), true)
+    assert.equal(await db.add(target), false)
+    assert.equal(await db.add(secondDeletion), true)
+    assert.deepEqual(await db.query({ ids: [firstDeletion.id] }), [])
+    assert.equal(await db.add(target), true)
+    assert.equal(await db.add(firstDeletion), false)
+  })
+
+  it('keeps shared tombstones when deleting one contributing deletion request', async () => {
+    const db = getNostrDb(`${OWNER}14`)
+    const target = event({ id: '1'.repeat(64), pubkey: A, created_at: 5 })
+    const firstDeletion = event({
+      id: '5'.repeat(64),
+      pubkey: A,
+      kind: 5,
+      created_at: 6,
+      tags: [['e', target.id]]
+    })
+    const sharedDeletion = event({
+      id: '6'.repeat(64),
+      pubkey: A,
+      kind: 5,
+      created_at: 7,
+      tags: [['e', target.id]]
+    })
+    const deletingDeletion = event({
+      id: '7'.repeat(64),
+      pubkey: A,
+      kind: 5,
+      created_at: 8,
+      tags: [['e', firstDeletion.id]]
+    })
+
+    assert.equal(await db.add(firstDeletion), true)
+    assert.equal(await db.add(sharedDeletion), true)
+    assert.equal(await db.add(deletingDeletion), true)
+
+    assert.deepEqual(await db.query({ ids: [firstDeletion.id] }), [])
+    assert.deepEqual((await db.query({ ids: [sharedDeletion.id] })).map(e => e.id), [sharedDeletion.id])
+    assert.equal(await db.add(target), false)
+  })
+
+  it('keeps tombstones shared with the deletion request being inserted', async () => {
+    const db = getNostrDb(`${OWNER}15`)
+    const target = event({ id: '1'.repeat(64), pubkey: A, created_at: 5 })
+    const firstDeletion = event({
+      id: '5'.repeat(64),
+      pubkey: A,
+      kind: 5,
+      created_at: 6,
+      tags: [['e', target.id]]
+    })
+    const replacingDeletion = event({
+      id: '6'.repeat(64),
+      pubkey: A,
+      kind: 5,
+      created_at: 7,
+      tags: [['e', target.id], ['e', firstDeletion.id]]
+    })
+
+    assert.equal(await db.add(firstDeletion), true)
+    assert.equal(await db.add(replacingDeletion), true)
+
+    assert.deepEqual(await db.query({ ids: [firstDeletion.id] }), [])
+    assert.equal(await db.add(target), false)
+  })
+
+  it('compacts deletion requests without recursive old-request e-tags', async () => {
+    const db = getNostrDb(`${OWNER}16`)
+    const targetId = '1'.repeat(64)
+    const firstDeletion = event({
+      id: '5'.repeat(64),
+      pubkey: A,
+      kind: 5,
+      created_at: 6,
+      tags: [['e', targetId]]
+    })
+    const duplicateDeletion = event({
+      id: '6'.repeat(64),
+      pubkey: A,
+      kind: 5,
+      created_at: 7,
+      tags: [['e', targetId]]
+    })
+    const leftoverDeletion = event({
+      id: '7'.repeat(64),
+      pubkey: A,
+      kind: 5,
+      created_at: 8,
+      tags: [['a', `30023:${A}:post`]]
+    })
+    const signed = event({
+      id: '9'.repeat(64),
+      pubkey: A,
+      kind: 5,
+      created_at: 100,
+      tags: [['e', targetId]]
+    })
+
+    assert.equal(await db.add(firstDeletion), true)
+    assert.equal(await db.add(duplicateDeletion), true)
+    assert.equal(await db.add(leftoverDeletion), true)
+
+    const result = await db.compactDeletionRequests({
+      author: A,
+      maxTargetRefs: 1,
+      createdAt: 100,
+      sign: template => {
+        assert.deepEqual(template.tags, [['e', targetId]])
+        return { ...signed, tags: template.tags, created_at: template.created_at }
+      }
+    })
+
+    assert.equal(result.compacted, true)
+    assert.equal(result.created.id, signed.id)
+    assert.deepEqual(result.consumed, [firstDeletion.id, duplicateDeletion.id])
+    assert.deepEqual(result.targets, [['e', targetId]])
+    assert.deepEqual(await db.query({ ids: [firstDeletion.id, duplicateDeletion.id] }), [])
+    assert.deepEqual((await db.query({ ids: [leftoverDeletion.id] })).map(e => e.id), [leftoverDeletion.id])
+    assert.equal(await db.add(event({ id: targetId, pubkey: A, created_at: 10 })), false)
+    assert.equal(await db.add(firstDeletion), true)
+  })
+
+  it('starts deletion compaction on a non-overlapping timer', async () => {
+    const db = new NostrDb(`${OWNER}17`)
+    let calls = 0
+    let running = 0
+    let maxRunning = 0
+
+    db.compactDeletionRequests = async () => {
+      calls++
+      running++
+      maxRunning = Math.max(maxRunning, running)
+      await delay(20)
+      running--
+    }
+
+    const abort = db.startDeletionCompaction({
+      sign: () => event({ id: '9'.repeat(64), pubkey: A, kind: 5 }),
+      intervalMs: 1,
+      runImmediately: true
+    })
+
+    await delay(35)
+    abort()
+    const callsAfterAbort = calls
+    await delay(10)
+
+    assert.equal(maxRunning, 1)
+    assert.equal(calls, callsAfterAbort)
+    db.bc?.close()
+  })
+
   it('subscribes to future matching events', async () => {
     const db = getNostrDb(`${OWNER}4`)
     const iterator = db.subscribe({ kinds: [1] })
@@ -228,6 +447,10 @@ function withTimeout (promise) {
     promise,
     new Promise((resolve, reject) => setTimeout(() => reject(new Error('timed out')), 1000))
   ])
+}
+
+function delay (ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 class FakeIndexedDB {

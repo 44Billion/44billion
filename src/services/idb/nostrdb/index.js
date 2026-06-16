@@ -6,6 +6,7 @@ import { run } from '#services/idb/browser/index.js'
 export const NOSTRDB_VERSION = 1
 export const NOSTRDB_PREFIX = '44billion_nostrdb:'
 export const EVENTS_STORE = 'events'
+export const DELETIONS_STORE = 'deletions'
 
 export const INDEX = {
   id: 'byId',
@@ -14,6 +15,10 @@ export const INDEX = {
   kind: 'byKind',
   pubkeyKind: 'byPubkeyKind',
   tag: 'byTag'
+}
+
+export const DELETION_INDEX = {
+  request: 'byRequest'
 }
 
 const HEX64_RE = /^[0-9a-f]{64}$/i
@@ -47,6 +52,12 @@ export class NostrDb {
   }
 
   async add (event) {
+    const saved = await this.addEvent(event)
+    if (saved) this.publish(event, true)
+    return saved
+  }
+
+  async addEvent (event, { consumeDeletionRequestIds = [] } = {}) {
     if (!isValidEventShape(event)) return false
 
     const db = await openNostrDb(this.ownerPubkey)
@@ -55,13 +66,18 @@ export class NostrDb {
     const record = toStoredRecord(event)
 
     try {
-      const tx = db.transaction([EVENTS_STORE], 'readwrite')
+      const tx = db.transaction([EVENTS_STORE, DELETIONS_STORE], 'readwrite')
       const done = txDone(tx)
 
       const existingById = await run('get', [record.i], EVENTS_STORE, INDEX.id, { db, tx })
         .then(v => v.result)
 
       if (existingById) {
+        await done
+        return false
+      }
+
+      if (await isBlockedByDeletion(db, tx, event)) {
         await done
         return false
       }
@@ -80,14 +96,156 @@ export class NostrDb {
         // Keep this chain IDB-only; unrelated awaits can let the transaction auto-commit.
         await applyDeletionRequest(db, tx, event, record.ref)
       }
+
+      for (const id of consumeDeletionRequestIds) {
+        await deleteStoredDeletionRequestById(db, tx, id, event.pubkey)
+      }
+
       await run('put', [record], EVENTS_STORE, null, { db, tx })
       await done
     } catch {
       return false
     }
 
-    this.publish(event, true)
     return true
+  }
+
+  async compactDeletionRequests ({
+    sign,
+    author = this.ownerPubkey,
+    maxTargetRefs = 1000,
+    createdAt,
+    signal
+  } = {}) {
+    if (typeof sign !== 'function') throw new TypeError('compactDeletionRequests requires a sign function')
+    if (!HEX64_RE.test(author)) return compactResult()
+
+    throwIfAborted(signal)
+
+    const db = await openNostrDb(this.ownerPubkey)
+    if (!db) return compactResult()
+
+    const maxRefs = Number.isInteger(maxTargetRefs) && maxTargetRefs > 0 ? maxTargetRefs : 1000
+    let requests
+    let infos
+
+    try {
+      requests = await queryRecords(db, { authors: [author], kinds: [5] }, {
+        countOnly: false,
+        ignoreLimit: true
+      })
+      requests.sort(compareOldest)
+
+      if (requests.length < 2) return compactResult()
+
+      const tx = db.transaction([DELETIONS_STORE], 'readonly')
+      const done = txDone(tx)
+      infos = []
+
+      for (const request of requests) {
+        throwIfAborted(signal)
+
+        const rows = await getDeletionRowsForRequest(db, tx, eventIdIndexKey(request.id))
+        const targets = uniqueDeletionRows(rows)
+        if (targets.length > 0) infos.push({ event: request, targets })
+      }
+
+      await done
+    } catch {
+      throwIfAborted(signal)
+      return compactResult()
+    }
+
+    const selected = []
+    const targets = new Map()
+
+    for (const info of infos) {
+      const newRefs = info.targets.filter(row => !targets.has(row.ref))
+      if (targets.size + newRefs.length > maxRefs) continue
+
+      selected.push(info)
+      for (const row of info.targets) {
+        if (!targets.has(row.ref)) targets.set(row.ref, row)
+      }
+    }
+
+    if (selected.length < 2 || targets.size === 0) return compactResult()
+
+    const consumed = selected.map(info => info.event.id)
+    const maxConsumedCreatedAt = Math.max(...selected.map(info => info.event.created_at))
+    const templateCreatedAt = Math.max(
+      normalizeTimestamp(createdAt, Math.floor(Date.now() / 1000)),
+      maxConsumedCreatedAt
+    )
+    const tags = [...targets.values()].map(row => [...row.tag])
+    const template = {
+      kind: 5,
+      created_at: templateCreatedAt,
+      tags: tags.map(tag => [...tag]),
+      content: ''
+    }
+
+    throwIfAborted(signal)
+    const signed = await sign(template)
+    throwIfAborted(signal)
+
+    if (
+      !isValidEventShape(signed) ||
+      signed.kind !== 5 ||
+      signed.pubkey !== author ||
+      signed.created_at < maxConsumedCreatedAt ||
+      signed.content !== '' ||
+      !sameTags(signed.tags, tags)
+    ) {
+      return compactResult()
+    }
+
+    const saved = await this.addEvent(signed, { consumeDeletionRequestIds: consumed })
+    if (!saved) return compactResult()
+
+    this.publish(signed, true)
+    return compactResult({ compacted: true, created: signed, consumed, targets: tags })
+  }
+
+  startDeletionCompaction ({
+    intervalMs = 3600000,
+    runImmediately = true,
+    ...options
+  } = {}) {
+    const delay = Number.isInteger(intervalMs) && intervalMs > 0 ? intervalMs : 3600000
+    let stopped = false
+    let running = false
+    let timer = null
+
+    const schedule = ms => {
+      if (stopped) return
+      timer = setTimeout(tick, ms)
+      timer.unref?.()
+    }
+
+    const tick = async () => {
+      if (stopped) return
+      if (running) {
+        schedule(delay)
+        return
+      }
+
+      running = true
+      try {
+        await this.compactDeletionRequests(options)
+      } catch {
+      } finally {
+        running = false
+        schedule(delay)
+      }
+    }
+
+    schedule(runImmediately ? 0 : delay)
+
+    return () => {
+      stopped = true
+      if (timer) clearTimeout(timer)
+    }
   }
 
   async query (filter) {
@@ -217,21 +375,25 @@ function initNostrDb (dbName) {
     const tx = e.target.transaction
     let store
 
-    if (!db.objectStoreNames.contains(EVENTS_STORE)) {
-      store = db.createObjectStore(EVENTS_STORE, { keyPath: 'ref' })
-    } else {
-      store = tx.objectStore(EVENTS_STORE)
-    }
-
+    store = createObjectStoreIfMissing(db, tx, EVENTS_STORE, { keyPath: 'ref' })
     createIndexIfMissing(store, INDEX.id, 'i', { unique: true })
     createIndexIfMissing(store, INDEX.createdAt, 'ca')
     createIndexIfMissing(store, INDEX.pubkey, ['p', 'ca'])
     createIndexIfMissing(store, INDEX.kind, ['k', 'ca'])
     createIndexIfMissing(store, INDEX.pubkeyKind, ['p', 'k', 'ca'])
     createIndexIfMissing(store, INDEX.tag, 't', { multiEntry: true })
+
+    store = createObjectStoreIfMissing(db, tx, DELETIONS_STORE, { keyPath: 'ref' })
+    createIndexIfMissing(store, DELETION_INDEX.request, 'c', { multiEntry: true })
   }
 
   return p.promise
+}
+
+function createObjectStoreIfMissing (db, tx, name, options) {
+  return db.objectStoreNames.contains(name)
+    ? tx.objectStore(name)
+    : db.createObjectStore(name, options)
 }
 
 function createIndexIfMissing (store, name, keyPath, options) {
@@ -240,11 +402,12 @@ function createIndexIfMissing (store, name, keyPath, options) {
   }
 }
 
+const MAX_LIMIT = 200
 async function queryRecords (db, rawFilter, { countOnly, ignoreLimit }) {
   const filter = new ParsedFilter(rawFilter)
   if (filter.neverMatch) return countOnly ? 0 : []
 
-  const limit = ignoreLimit ? Infinity : filter.limit
+  const limit = ignoreLimit ? Infinity : Math.min(MAX_LIMIT, filter.limit)
   if (limit <= 0) return countOnly ? 0 : []
 
   const plan = planQuery(filter)
@@ -268,7 +431,9 @@ async function queryRecords (db, rawFilter, { countOnly, ignoreLimit }) {
     }
   } else {
     for (const cursor of plan.cursors) {
-      for await (const stored of streamCursor(db, cursor.indexName, cursor.range)) {
+      for await (const stored of streamCursor(db, EVENTS_STORE, cursor.indexName, cursor.range, {
+        direction: 'prev'
+      })) {
         if (emit(stored)) break
       }
       if (count >= limit) break
@@ -281,9 +446,9 @@ async function queryRecords (db, rawFilter, { countOnly, ignoreLimit }) {
   return Number.isFinite(limit) ? results.slice(0, limit) : results
 }
 
-async function * streamCursor (db, indexName, range) {
+async function * streamCursor (db, storeName, indexName, range, { tx, direction = 'next' } = {}) {
   const p = Promise.withResolvers()
-  await run('openCursor', [range, 'prev'], EVENTS_STORE, indexName, { db, p })
+  await run('openCursor', [range, direction], storeName, indexName, { db, p, tx })
 
   let cursor
   while ((cursor = (await p.promise).result)) {
@@ -538,7 +703,19 @@ export function eventRef (id) {
 }
 
 export function coordinateRef (kind, pubkey, dtag) {
-  return `c:${bytesToBase64(sha256(textEncoder.encode(`${kind}:${pubkey}:${dtag}`)))}`
+  return `c:${coordinateHash(kind, pubkey, dtag)}`
+}
+
+export function deletionEventRef (id, pubkey) {
+  return `e:${eventIdIndexKey(id)}:${pubkeyIndexKey(pubkey)}`
+}
+
+export function deletionCoordinateRef (kind, pubkey, dtag) {
+  return `a:${coordinateHash(kind, pubkey, dtag)}`
+}
+
+function coordinateHash (kind, pubkey, dtag) {
+  return bytesToBase64(sha256(textEncoder.encode(`${kind}:${pubkey}:${dtag}`)))
 }
 
 export function eventIdIndexKey (id) {
@@ -590,39 +767,110 @@ export function isValidEventShape (event) {
   return event.tags.every(tag => Array.isArray(tag) && tag.every(value => typeof value === 'string'))
 }
 
-async function applyDeletionRequest (db, tx, request, requestRef) {
-  for (const tag of request.tags) {
-    if (tag[0] === 'e') {
-      await deleteEventTagTarget(db, tx, request, requestRef, tag[1])
-    } else if (tag[0] === 'a') {
-      await deleteAddressTagTarget(db, tx, request, requestRef, tag[1])
-    }
-  }
-}
-
-async function deleteEventTagTarget (db, tx, request, requestRef, id) {
-  if (!HEX64_RE.test(id)) return
-
-  const target = await run('get', [eventIdIndexKey(id)], EVENTS_STORE, INDEX.id, { db, tx })
-    .then(v => v.result)
-
-  await deleteMatchingTarget(db, tx, request, requestRef, target)
-}
-
-async function deleteAddressTagTarget (db, tx, request, requestRef, address) {
-  const parsed = parseAddress(address)
-  if (!parsed || parsed.pubkey !== request.pubkey) return
-
-  const target = await run(
+async function isBlockedByDeletion (db, tx, event) {
+  const eventDeletion = await run(
     'get',
-    [coordinateRef(parsed.kind, parsed.pubkey, parsed.dtag)],
-    EVENTS_STORE,
+    [deletionEventRef(event.id, event.pubkey)],
+    DELETIONS_STORE,
     null,
     { db, tx }
   ).then(v => v.result)
 
-  await deleteMatchingTarget(db, tx, request, requestRef, target, {
+  if (eventDeletion) return true
+
+  const coordinate = getCoordinate(event)
+  if (coordinate === null) return false
+
+  const coordinateDeletion = await run(
+    'get',
+    [deletionCoordinateRef(event.kind, event.pubkey, coordinate)],
+    DELETIONS_STORE,
+    null,
+    { db, tx }
+  ).then(v => v.result)
+
+  return !!coordinateDeletion && event.created_at <= coordinateDeletion.ca
+}
+
+async function applyDeletionRequest (db, tx, request, requestRef) {
+  for (const tag of request.tags) {
+    const target = deletionTargetFromTag(request, requestRef, tag)
+    if (!target) continue
+
+    await addDeletionContribution(db, tx, target, request)
+    await deleteDeletionTarget(db, tx, request, requestRef, target)
+  }
+}
+
+function deletionTargetFromTag (request, requestRef, tag) {
+  if (tag[0] === 'e') {
+    const id = tag[1]
+    if (!HEX64_RE.test(id)) return null
+    if (id === request.id) return null
+
+    return {
+      ref: deletionEventRef(id, request.pubkey),
+      tag: ['e', id],
+      type: 'e',
+      id,
+      upToCreatedAt: Infinity
+    }
+  }
+
+  if (tag[0] !== 'a') return null
+
+  const parsed = parseAddress(tag[1])
+  if (!parsed || parsed.pubkey !== request.pubkey) return null
+  if (coordinateRef(parsed.kind, parsed.pubkey, parsed.dtag) === requestRef) return null
+
+  const address = `${parsed.kind}:${parsed.pubkey}:${parsed.dtag}`
+  return {
+    ref: deletionCoordinateRef(parsed.kind, parsed.pubkey, parsed.dtag),
+    tag: ['a', address],
+    type: 'a',
+    kind: parsed.kind,
+    pubkey: parsed.pubkey,
+    dtag: parsed.dtag,
     upToCreatedAt: request.created_at
+  }
+}
+
+async function addDeletionContribution (db, tx, target, request) {
+  const requestIdKey = eventIdIndexKey(request.id)
+  const existing = await run('get', [target.ref], DELETIONS_STORE, null, { db, tx })
+    .then(v => v.result)
+  const contributors = validContributors(existing?.c)
+    .filter(contributor => contributor[0] !== requestIdKey)
+
+  contributors.push([requestIdKey, request.created_at])
+  contributors.sort(compareKeys)
+
+  await run('put', [{
+    ref: target.ref,
+    tag: target.tag,
+    ca: maxContributorCreatedAt(contributors),
+    c: contributors
+  }], DELETIONS_STORE, null, { db, tx })
+}
+
+async function deleteDeletionTarget (db, tx, request, requestRef, target) {
+  let stored
+
+  if (target.type === 'e') {
+    stored = await run('get', [eventIdIndexKey(target.id)], EVENTS_STORE, INDEX.id, { db, tx })
+      .then(v => v.result)
+  } else {
+    stored = await run(
+      'get',
+      [coordinateRef(target.kind, target.pubkey, target.dtag)],
+      EVENTS_STORE,
+      null,
+      { db, tx }
+    ).then(v => v.result)
+  }
+
+  await deleteMatchingTarget(db, tx, request, requestRef, stored, {
+    upToCreatedAt: target.upToCreatedAt
   })
 }
 
@@ -631,7 +879,77 @@ async function deleteMatchingTarget (db, tx, request, requestRef, target, { upTo
   if (target.event.pubkey !== request.pubkey) return
   if (target.event.created_at > upToCreatedAt) return
 
-  await run('delete', [target.ref], EVENTS_STORE, null, { db, tx })
+  await deleteStoredEvent(db, tx, target)
+}
+
+async function deleteStoredDeletionRequestById (db, tx, id, author) {
+  if (!HEX64_RE.test(id)) return false
+
+  const target = await run('get', [eventIdIndexKey(id)], EVENTS_STORE, INDEX.id, { db, tx })
+    .then(v => v.result)
+
+  if (!target || target.event.kind !== 5 || target.event.pubkey !== author) return false
+
+  await deleteStoredEvent(db, tx, target)
+  return true
+}
+
+async function deleteStoredEvent (db, tx, stored) {
+  await run('delete', [stored.ref], EVENTS_STORE, null, { db, tx })
+
+  if (stored.event.kind === 5) {
+    await removeDeletionRequestContributions(db, tx, stored.i)
+  }
+}
+
+async function removeDeletionRequestContributions (db, tx, requestIdKey) {
+  const rows = await getDeletionRowsForRequest(db, tx, requestIdKey)
+
+  for (const row of uniqueDeletionRows(rows)) {
+    const contributors = validContributors(row.c)
+      .filter(contributor => contributor[0] !== requestIdKey)
+
+    if (contributors.length === 0) {
+      await run('delete', [row.ref], DELETIONS_STORE, null, { db, tx })
+    } else {
+      await run('put', [{
+        ...row,
+        ca: maxContributorCreatedAt(contributors),
+        c: contributors
+      }], DELETIONS_STORE, null, { db, tx })
+    }
+  }
+}
+
+async function getDeletionRowsForRequest (db, tx, requestIdKey) {
+  const range = IDBKeyRange.bound([requestIdKey, 0], [requestIdKey, 0xffffffff])
+  const rows = []
+
+  for await (const row of streamCursor(db, DELETIONS_STORE, DELETION_INDEX.request, range, { tx })) {
+    rows.push(row)
+  }
+
+  return rows
+}
+
+function uniqueDeletionRows (rows) {
+  return [...new Map(rows.map(row => [row.ref, row])).values()]
+}
+
+function validContributors (contributors) {
+  if (!Array.isArray(contributors)) return []
+
+  return contributors.filter(contributor => (
+    Array.isArray(contributor) &&
+    contributor.length === 2 &&
+    typeof contributor[0] === 'string' &&
+    Number.isInteger(contributor[1]) &&
+    contributor[1] >= 0
+  ))
+}
+
+function maxContributorCreatedAt (contributors) {
+  return contributors.reduce((max, contributor) => Math.max(max, contributor[1]), 0)
 }
 
 function parseAddress (address) {
@@ -677,6 +995,48 @@ function assertSingleFilter (filter) {
 function compareNewest (a, b) {
   if (a.created_at !== b.created_at) return b.created_at - a.created_at
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+}
+
+function compareOldest (a, b) {
+  if (a.created_at !== b.created_at) return a.created_at - b.created_at
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+}
+
+function compareKeys (a, b) {
+  if (Array.isArray(a) && Array.isArray(b)) {
+    for (let i = 0; i < Math.min(a.length, b.length); i++) {
+      const compared = compareKeys(a[i], b[i])
+      if (compared !== 0) return compared
+    }
+    return a.length - b.length
+  }
+  if (a === b) return 0
+  return a < b ? -1 : 1
+}
+
+function sameTags (a, b) {
+  if (!Array.isArray(a) || a.length !== b.length) return false
+
+  return a.every((tag, index) => (
+    Array.isArray(tag) &&
+    tag.length === b[index].length &&
+    tag.every((value, valueIndex) => value === b[index][valueIndex])
+  ))
+}
+
+function compactResult ({
+  compacted = false,
+  created = null,
+  consumed = [],
+  targets = []
+} = {}) {
+  return { compacted, created, consumed, targets }
+}
+
+function throwIfAborted (signal) {
+  if (!signal?.aborted) return
+  if (typeof signal.throwIfAborted === 'function') signal.throwIfAborted()
+  throw new Error('operation aborted')
 }
 
 function txDone (tx) {
