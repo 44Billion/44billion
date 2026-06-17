@@ -1,6 +1,6 @@
 import { sha256 } from '@noble/hashes/sha2.js'
 
-import { base16ToBase64, bytesToBase64 } from '#helpers/base64.js'
+import { base16ToBase64, base64ToBase16, bytesToBase64 } from '#helpers/base64.js'
 import { run } from '#services/idb/browser/index.js'
 import {
   SEARCH_BATCH_SIZE,
@@ -25,9 +25,9 @@ export const DELETIONS_STORE = 'deletions'
 /*
 IndexedDB schema, scoped per owner DB name:
 
-events, keyPath "ref"
-  ref   "e:<base64url-id>" or "c:<base64url-sha256-coordinate>"
-  i     base64url event id bytes
+events, keyPath "i"
+  i     base64url event id bytes, primary key
+  a     optional address key: [kind, pubkeyKey, dTagKey]
   p     base64url pubkey bytes
   k     event kind
   ca    created_at timestamp
@@ -36,7 +36,7 @@ events, keyPath "ref"
   event original Nostr event
 
 events indexes
-  byId         i, unique
+  byAddress   a, unique, sparse
   byCreatedAt ca
   byExpiration ex
   byPubkey    [p, ca]
@@ -54,7 +54,7 @@ deletions indexes
   byRequest c, multiEntry
 */
 export const INDEX = {
-  id: 'byId',
+  address: 'byAddress',
   createdAt: 'byCreatedAt',
   expiration: 'byExpiration',
   pubkey: 'byPubkey',
@@ -125,7 +125,7 @@ export class NostrDb {
       const tx = db.transaction([EVENTS_STORE, DELETIONS_STORE], 'readwrite')
       const done = txDone(tx)
 
-      const existingById = await run('get', [record.i], EVENTS_STORE, INDEX.id, { db, tx })
+      const existingById = await run('get', [record.i], EVENTS_STORE, null, { db, tx })
         .then(v => v.result)
 
       if (existingById) {
@@ -138,19 +138,21 @@ export class NostrDb {
         return false
       }
 
-      if (record.ref.startsWith('c:')) {
-        const existingByRef = await run('get', [record.ref], EVENTS_STORE, null, { db, tx })
+      if (record.a) {
+        const existingByAddress = await run('get', [record.a], EVENTS_STORE, INDEX.address, { db, tx })
           .then(v => v.result)
 
-        if (existingByRef && !isNewer(event, existingByRef.event)) {
+        if (existingByAddress && !isNewer(event, existingByAddress.event)) {
           await done
           return false
         }
+
+        if (existingByAddress) await deleteStoredEvent(db, tx, existingByAddress)
       }
 
       if (event.kind === 5) {
         // Keep this chain IDB-only; unrelated awaits can let the transaction auto-commit.
-        await applyDeletionRequest(db, tx, event, record.ref)
+        await applyDeletionRequest(db, tx, event)
       }
 
       for (const id of consumeDeletionRequestIds) {
@@ -497,8 +499,8 @@ function initNostrDb (dbName) {
     const tx = e.target.transaction
     let store
 
-    store = createObjectStoreIfMissing(db, tx, EVENTS_STORE, { keyPath: 'ref' })
-    createIndexIfMissing(store, INDEX.id, 'i', { unique: true })
+    store = createObjectStoreIfMissing(db, tx, EVENTS_STORE, { keyPath: 'i' })
+    createIndexIfMissing(store, INDEX.address, 'a', { unique: true })
     createIndexIfMissing(store, INDEX.createdAt, 'ca')
     createIndexIfMissing(store, INDEX.expiration, 'ex')
     createIndexIfMissing(store, INDEX.pubkey, ['p', 'ca'])
@@ -526,6 +528,7 @@ function createIndexIfMissing (store, name, keyPath, options) {
 }
 
 const MAX_LIMIT = 200
+const KEY_GATED_EXCLUDE_THRESHOLD = 128
 async function queryRecords (db, rawFilter, { countOnly, ignoreLimit }) {
   const filter = new ParsedFilter(rawFilter)
   if (filter.neverMatch) return countOnly ? 0 : []
@@ -547,6 +550,19 @@ async function queryRecords (db, rawFilter, { countOnly, ignoreLimit }) {
       .slice(0, Number.isFinite(limit) ? limit : ranked.length)
       .map(candidate => candidate.event)
     return projectQueryResults(results, filter)
+  }
+
+  if (!countOnly && canUseKeyOnlyCursor(plan, filter)) {
+    if (filter.idsOnly) {
+      return queryIdsWithKeyCursor(db, plan, filter, direction, { limit, now })
+    }
+
+    // Key-gated fetching pays off during local DB sync when the other device
+    // instance already has many IDs:
+    // below this rough cutoff, one value cursor is usually cheaper than key cursor + per-row gets.
+    if (filter.excludeIdKeySet?.size >= KEY_GATED_EXCLUDE_THRESHOLD) {
+      return queryFullEventsWithKeyGate(db, plan, filter, direction, { limit, now })
+    }
   }
 
   const seen = new Set()
@@ -595,6 +611,72 @@ function projectQueryResults (events, filter) {
   return filter.idsOnly ? events.map(event => event.id) : events
 }
 
+async function queryIdsWithKeyCursor (db, plan, filter, direction, { limit, now }) {
+  const expiredIdKeySet = await getExpiredIdKeySet(db, now)
+  const seen = new Set()
+  const results = []
+
+  for (const cursor of plan.cursors) {
+    let matchedInCursor = 0
+
+    for await (const item of streamKeyCursor(db, EVENTS_STORE, cursor.indexName, cursor.range, {
+      direction
+    })) {
+      const idKey = item.primaryKey
+      if (seen.has(idKey)) continue
+      if (filter.excludeIdKeySet?.has(idKey)) continue
+      if (expiredIdKeySet.has(idKey)) continue
+
+      seen.add(idKey)
+      matchedInCursor++
+      results.push({
+        id: idKeyToEventId(idKey),
+        created_at: timestampFromIndexKey(item.key, cursor.indexName)
+      })
+
+      if (matchedInCursor >= limit) break
+    }
+  }
+
+  results.sort(filter.sortOld ? compareOldest : compareNewest)
+  return (Number.isFinite(limit) ? results.slice(0, limit) : results).map(result => result.id)
+}
+
+// Unlike the normal value cursor, this scans index keys first and fetches full
+// rows only for IDs that are not already known by the other local DB instance.
+async function queryFullEventsWithKeyGate (db, plan, filter, direction, { limit, now }) {
+  const expiredIdKeySet = await getExpiredIdKeySet(db, now)
+  const seen = new Set()
+  const results = []
+  const matches = stored => stored && isStoredRecordLive(stored, now) && filter.matches(stored.event)
+
+  for (const cursor of plan.cursors) {
+    let matchedInCursor = 0
+
+    for await (const item of streamKeyCursor(db, EVENTS_STORE, cursor.indexName, cursor.range, {
+      direction
+    })) {
+      const idKey = item.primaryKey
+      if (seen.has(idKey)) continue
+      if (filter.excludeIdKeySet?.has(idKey)) continue
+      if (expiredIdKeySet.has(idKey)) continue
+
+      seen.add(idKey)
+      const stored = await run('get', [idKey], EVENTS_STORE, null, { db })
+        .then(v => v.result)
+      if (!matches(stored)) continue
+
+      matchedInCursor++
+      results.push(stored.event)
+
+      if (matchedInCursor >= limit) break
+    }
+  }
+
+  results.sort(filter.sortOld ? compareOldest : compareNewest)
+  return Number.isFinite(limit) ? results.slice(0, limit) : results
+}
+
 async function * streamCursor (db, storeName, indexName, range, { tx, direction = 'next' } = {}) {
   const p = Promise.withResolvers()
   await run('openCursor', [range, direction], storeName, indexName, { db, p, tx })
@@ -605,6 +687,61 @@ async function * streamCursor (db, storeName, indexName, range, { tx, direction 
     Object.assign(p, Promise.withResolvers())
     cursor.continue()
   }
+}
+
+async function * streamKeyCursor (db, storeName, indexName, range, { tx, direction = 'next' } = {}) {
+  const p = Promise.withResolvers()
+  await run('openKeyCursor', [range, direction], storeName, indexName, { db, p, tx })
+
+  let cursor
+  while ((cursor = (await p.promise).result)) {
+    yield { key: cursor.key, primaryKey: cursor.primaryKey }
+    Object.assign(p, Promise.withResolvers())
+    cursor.continue()
+  }
+}
+
+async function getExpiredIdKeySet (db, now) {
+  const expired = new Set()
+  const range = IDBKeyRange.upperBound(now)
+
+  for await (const { primaryKey } of streamKeyCursor(db, EVENTS_STORE, INDEX.expiration, range)) {
+    expired.add(primaryKey)
+  }
+
+  return expired
+}
+
+function canUseKeyOnlyCursor (plan, filter) {
+  // Covers sync inventory queries like:
+  //   local DB A: query({ since, until, ids_only: true })
+  //   local DB B: query({ since, until, "!ids": localDbAIds })
+  // Also covers author/kind variants such as:
+  //   query({ authors: [pubkey], kinds: [1], ids_only: true })
+  // Search and mixed post-filter cases still need full event rows, so they stay on value cursors.
+  if (filter.searchText || plan.type !== 'cursor') return false
+  if (plan.cursors.length === 0) return false
+
+  return plan.cursors.every(cursor => {
+    if (cursor.indexName === INDEX.createdAt) return true
+    if (cursor.indexName === INDEX.pubkey) return true
+    if (cursor.indexName === INDEX.kind) return true
+    if (cursor.indexName === INDEX.pubkeyKind) return true
+    return (
+      cursor.indexName === INDEX.tag &&
+      filter.tags.length === 1 &&
+      filter.tags[0].name.length === 1 &&
+      !filter.authors &&
+      !filter.kinds
+    )
+  })
+}
+
+function timestampFromIndexKey (key, indexName) {
+  if (indexName === INDEX.createdAt) return key
+  if (indexName === INDEX.pubkey || indexName === INDEX.kind) return key[1]
+  if (indexName === INDEX.pubkeyKind || indexName === INDEX.tag) return key[2]
+  return 0
 }
 
 // IDB scanning stays here because it knows about plans, stores, cursors, and caps.
@@ -714,7 +851,7 @@ export function planQuery (filter) {
   if (filter.ids) {
     return {
       type: 'direct',
-      cursors: filter.ids.map(id => ({ indexName: INDEX.id, key: eventIdIndexKey(id) }))
+      cursors: filter.ids.map(id => ({ key: eventIdIndexKey(id) }))
     }
   }
 
@@ -798,7 +935,7 @@ function getCoordinateCursors (filter) {
   for (const author of filter.authors) {
     for (const kind of filter.kinds) {
       for (const dtag of filter.dtags) {
-        cursors.push({ key: coordinateRef(kind, author, dtag) })
+        cursors.push({ indexName: INDEX.address, key: addressKey(kind, author, dtag) })
       }
     }
   }
@@ -812,7 +949,7 @@ function getReplaceableCursors (filter) {
   const cursors = []
   for (const author of filter.authors) {
     for (const kind of filter.kinds) {
-      cursors.push({ key: coordinateRef(kind, author, '') })
+      cursors.push({ indexName: INDEX.address, key: addressKey(kind, author, '') })
     }
   }
   return cursors
@@ -869,6 +1006,7 @@ export class ParsedFilter {
     this.dtags = undefined
     this.excludeIds = undefined
     this.excludeIdSet = undefined
+    this.excludeIdKeySet = undefined
     this.tags = []
     this.since = 0
     this.until = Infinity
@@ -897,6 +1035,7 @@ export class ParsedFilter {
         if (excludeIds.length > 0) {
           this.excludeIds = excludeIds
           this.excludeIdSet = new Set(excludeIds)
+          this.excludeIdKeySet = new Set(excludeIds.map(eventIdIndexKey))
         }
       } else if (key === 'authors') {
         this.authors = normalizeStringArray(value, HEX64_RE)
@@ -964,7 +1103,6 @@ export class ParsedFilter {
 export function toStoredRecord (event, { now = currentUnixTime() } = {}) {
   const coordinate = getCoordinate(event)
   const record = {
-    ref: coordinate === null ? eventRef(event.id) : coordinateRef(event.kind, event.pubkey, coordinate),
     i: eventIdIndexKey(event.id),
     p: pubkeyIndexKey(event.pubkey),
     k: event.kind,
@@ -974,6 +1112,7 @@ export function toStoredRecord (event, { now = currentUnixTime() } = {}) {
   }
   const expiration = getExpiration(event)
 
+  if (coordinate !== null) record.a = addressKey(event.kind, event.pubkey, coordinate)
   if (expiration !== null && expiration > now) record.ex = expiration
 
   return record
@@ -986,11 +1125,15 @@ export function getCoordinate (event) {
 }
 
 export function eventRef (id) {
-  return `e:${eventIdIndexKey(id)}`
+  return eventIdIndexKey(id)
 }
 
 export function coordinateRef (kind, pubkey, dtag) {
-  return `c:${coordinateHash(kind, pubkey, dtag)}`
+  return addressKey(kind, pubkey, dtag)
+}
+
+export function addressKey (kind, pubkey, dtag) {
+  return [kind, pubkeyIndexKey(pubkey), dtag === '' ? '' : tagValueIndexKey(dtag)]
 }
 
 export function deletionEventRef (id, pubkey) {
@@ -998,15 +1141,15 @@ export function deletionEventRef (id, pubkey) {
 }
 
 export function deletionCoordinateRef (kind, pubkey, dtag) {
-  return `a:${coordinateHash(kind, pubkey, dtag)}`
-}
-
-function coordinateHash (kind, pubkey, dtag) {
-  return bytesToBase64(sha256(textEncoder.encode(`${kind}:${pubkey}:${dtag}`)))
+  return `a:${kind}:${pubkeyIndexKey(pubkey)}:${dtag === '' ? '' : tagValueIndexKey(dtag)}`
 }
 
 export function eventIdIndexKey (id) {
   return base16ToBase64(id)
+}
+
+export function idKeyToEventId (idKey) {
+  return base64ToBase16(idKey)
 }
 
 export function pubkeyIndexKey (pubkey) {
@@ -1131,17 +1274,17 @@ async function isBlockedByDeletion (db, tx, event) {
   return !!coordinateDeletion && event.created_at <= coordinateDeletion.ca
 }
 
-async function applyDeletionRequest (db, tx, request, requestRef) {
+async function applyDeletionRequest (db, tx, request) {
   for (const tag of request.tags) {
-    const target = deletionTargetFromTag(request, requestRef, tag)
+    const target = deletionTargetFromTag(request, tag)
     if (!target) continue
 
     await addDeletionContribution(db, tx, target, request)
-    await deleteDeletionTarget(db, tx, request, requestRef, target)
+    await deleteDeletionTarget(db, tx, request, target)
   }
 }
 
-function deletionTargetFromTag (request, requestRef, tag) {
+function deletionTargetFromTag (request, tag) {
   if (tag[0] === 'e') {
     const id = tag[1]
     if (!HEX64_RE.test(id)) return null
@@ -1160,7 +1303,12 @@ function deletionTargetFromTag (request, requestRef, tag) {
 
   const parsed = parseAddress(tag[1])
   if (!parsed || parsed.pubkey !== request.pubkey) return null
-  if (coordinateRef(parsed.kind, parsed.pubkey, parsed.dtag) === requestRef) return null
+
+  const requestAddress = getCoordinate(request)
+  if (
+    requestAddress !== null &&
+    compareKeys(addressKey(parsed.kind, parsed.pubkey, parsed.dtag), addressKey(request.kind, request.pubkey, requestAddress)) === 0
+  ) return null
 
   const address = `${parsed.kind}:${parsed.pubkey}:${parsed.dtag}`
   return {
@@ -1192,29 +1340,29 @@ async function addDeletionContribution (db, tx, target, request) {
   }], DELETIONS_STORE, null, { db, tx })
 }
 
-async function deleteDeletionTarget (db, tx, request, requestRef, target) {
+async function deleteDeletionTarget (db, tx, request, target) {
   let stored
 
   if (target.type === 'e') {
-    stored = await run('get', [eventIdIndexKey(target.id)], EVENTS_STORE, INDEX.id, { db, tx })
+    stored = await run('get', [eventIdIndexKey(target.id)], EVENTS_STORE, null, { db, tx })
       .then(v => v.result)
   } else {
     stored = await run(
       'get',
-      [coordinateRef(target.kind, target.pubkey, target.dtag)],
+      [addressKey(target.kind, target.pubkey, target.dtag)],
       EVENTS_STORE,
-      null,
+      INDEX.address,
       { db, tx }
     ).then(v => v.result)
   }
 
-  await deleteMatchingTarget(db, tx, request, requestRef, stored, {
+  await deleteMatchingTarget(db, tx, request, stored, {
     upToCreatedAt: target.upToCreatedAt
   })
 }
 
-async function deleteMatchingTarget (db, tx, request, requestRef, target, { upToCreatedAt = Infinity } = {}) {
-  if (!target || target.ref === requestRef) return
+async function deleteMatchingTarget (db, tx, request, target, { upToCreatedAt = Infinity } = {}) {
+  if (!target || target.i === eventIdIndexKey(request.id)) return
   if (target.event.pubkey !== request.pubkey) return
   if (target.event.created_at > upToCreatedAt) return
 
@@ -1224,7 +1372,7 @@ async function deleteMatchingTarget (db, tx, request, requestRef, target, { upTo
 async function deleteStoredDeletionRequestById (db, tx, id, author) {
   if (!HEX64_RE.test(id)) return false
 
-  const target = await run('get', [eventIdIndexKey(id)], EVENTS_STORE, INDEX.id, { db, tx })
+  const target = await run('get', [eventIdIndexKey(id)], EVENTS_STORE, null, { db, tx })
     .then(v => v.result)
 
   if (!target || target.event.kind !== 5 || target.event.pubkey !== author) return false
@@ -1234,7 +1382,7 @@ async function deleteStoredDeletionRequestById (db, tx, id, author) {
 }
 
 async function deleteStoredEvent (db, tx, stored) {
-  await run('delete', [stored.ref], EVENTS_STORE, null, { db, tx })
+  await run('delete', [stored.i], EVENTS_STORE, null, { db, tx })
 
   if (stored.event.kind === 5) {
     await removeDeletionRequestContributions(db, tx, stored.i)

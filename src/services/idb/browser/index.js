@@ -49,7 +49,7 @@ export async function run (method, args = [], storeName, indexName, { db, p = Pr
   if (!tx) {
     db ??= await getDb()
     // one may pre-select it if it wants to use many different methods in a row
-    txMode ??= ['get', 'getKey', 'count'].includes(method) ? 'readonly' : 'readwrite'
+    txMode ??= ['get', 'getKey', 'count', 'openCursor', 'openKeyCursor'].includes(method) ? 'readonly' : 'readwrite'
     tx = db.transaction([storeName], txMode)
   }
   if (!storeOrIndex) {

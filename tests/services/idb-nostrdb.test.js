@@ -3,7 +3,9 @@ import assert from 'node:assert/strict'
 
 import {
   NostrDb,
+  NOSTRDB_PREFIX,
   ParsedFilter,
+  addressKey,
   coordinateRef,
   deleteNostrDb,
   deletionCoordinateRef,
@@ -45,10 +47,12 @@ describe('nostrdb', () => {
     const addressable = event({ id: '4'.repeat(64), pubkey: A, kind: 30023, tags: [['d', 'article']] })
     const expiring = event({ id: '5'.repeat(64), tags: [['expiration', '100']] })
 
-    assert.equal(toStoredRecord(regular).ref, eventRef(regular.id))
-    assert.equal(toStoredRecord(dTagged).ref, coordinateRef(1, A, 'room'))
-    assert.equal(toStoredRecord(replaceable).ref, coordinateRef(0, A, ''))
-    assert.equal(toStoredRecord(addressable).ref, coordinateRef(30023, A, 'article'))
+    assert.equal(toStoredRecord(regular).i, eventRef(regular.id))
+    assert.equal('a' in toStoredRecord(regular), false)
+    assert.deepEqual(toStoredRecord(dTagged).a, addressKey(1, A, 'room'))
+    assert.deepEqual(toStoredRecord(dTagged).a, coordinateRef(1, A, 'room'))
+    assert.deepEqual(toStoredRecord(replaceable).a, addressKey(0, A, ''))
+    assert.deepEqual(toStoredRecord(addressable).a, addressKey(30023, A, 'article'))
     assert.equal(toStoredRecord(expiring, { now: 50 }).ex, 100)
     assert.equal('ex' in toStoredRecord(regular), false)
   })
@@ -57,7 +61,7 @@ describe('nostrdb', () => {
     const id = '1'.repeat(64)
 
     assert.equal(deletionEventRef(id, A), `e:${eventIdIndexKey(id)}:${pubkeyIndexKey(A)}`)
-    assert.equal(deletionCoordinateRef(30023, A, 'post'), `a:${coordinateRef(30023, A, 'post').slice(2)}`)
+    assert.equal(deletionCoordinateRef(30023, A, 'post'), `a:${addressKey(30023, A, 'post').join(':')}`)
   })
 
   it('keeps the newest coordinate event', async () => {
@@ -119,6 +123,74 @@ describe('nostrdb', () => {
     assert.deepEqual(await db.query({ authors: [A], ids_only: true, search: 'sort:old', limit: 1 }), [old.id])
   })
 
+  it('uses key cursors for sync ids_only time scans without fetching event values', async () => {
+    const owner = `${OWNER}55`
+    const db = getNostrDb(owner)
+    const old = event({ id: '1'.repeat(64), created_at: 10 })
+    const newer = event({ id: '2'.repeat(64), created_at: 20 })
+    const outside = event({ id: '3'.repeat(64), created_at: 30 })
+
+    assert.equal(await db.add(old), true)
+    assert.equal(await db.add(newer), true)
+    assert.equal(await db.add(outside), true)
+
+    const store = fakeStore(owner, 'events')
+    store.getCount = 0
+    store.openCursorCount = 0
+    store.openKeyCursorCount = 0
+
+    assert.deepEqual(await db.query({ since: 1, until: 25, ids_only: true }), [newer.id, old.id])
+    assert.equal(store.getCount, 0)
+    assert.equal(store.openCursorCount, 0)
+    assert.equal(store.openKeyCursorCount > 0, true)
+  })
+
+  it('uses key cursors for sync ids_only author and kind scans', async () => {
+    const owner = `${OWNER}56`
+    const db = getNostrDb(owner)
+    const one = event({ id: '1'.repeat(64), pubkey: A, kind: 1, created_at: 10 })
+    const two = event({ id: '2'.repeat(64), pubkey: A, kind: 1, created_at: 20 })
+    const otherAuthor = event({ id: '3'.repeat(64), pubkey: B, kind: 1, created_at: 30 })
+    const otherKind = event({ id: '4'.repeat(64), pubkey: A, kind: 7, created_at: 40 })
+
+    assert.equal(await db.add(one), true)
+    assert.equal(await db.add(two), true)
+    assert.equal(await db.add(otherAuthor), true)
+    assert.equal(await db.add(otherKind), true)
+
+    const store = fakeStore(owner, 'events')
+    store.getCount = 0
+    store.openCursorCount = 0
+    store.openKeyCursorCount = 0
+
+    assert.deepEqual(await db.query({ authors: [A], kinds: [1], ids_only: true }), [two.id, one.id])
+    assert.equal(store.getCount, 0)
+    assert.equal(store.openCursorCount, 0)
+    assert.equal(store.openKeyCursorCount > 0, true)
+  })
+
+  it('skips excluded and expired ids in the ids_only key cursor path', async () => {
+    let now = 100
+    await withMutableNow(() => now, async () => {
+      const owner = `${OWNER}57`
+      const db = getNostrDb(owner)
+      const keep = event({ id: '1'.repeat(64), created_at: 10 })
+      const excluded = event({ id: '2'.repeat(64), created_at: 20 })
+      const expired = event({ id: '3'.repeat(64), created_at: 30, tags: [['expiration', '200']] })
+
+      assert.equal(await db.add(keep), true)
+      assert.equal(await db.add(excluded), true)
+      assert.equal(await db.add(expired), true)
+
+      now = 201
+      const store = fakeStore(owner, 'events')
+      store.getCount = 0
+
+      assert.deepEqual(await db.query({ ids_only: true, '!ids': [excluded.id] }), [keep.id])
+      assert.equal(store.getCount, 0)
+    })
+  })
+
   it('projects ranked search results to ids after fuzzy ordering and limit', async () => {
     const db = getNostrDb(`${OWNER}51`)
     const exactOld = event({ id: '1'.repeat(64), created_at: 10, content: 'nostr' })
@@ -143,6 +215,48 @@ describe('nostrdb', () => {
     assert.deepEqual((await db.query({ authors: [A], '!ids': [two.id] })).map(e => e.id), [three.id, one.id])
     assert.deepEqual((await db.query({ ids: [one.id, two.id, three.id], '!ids': [one.id, three.id] })).map(e => e.id), [two.id])
     assert.equal(await db.count({ authors: [A], '!ids': [one.id], limit: 10 }), 2)
+  })
+
+  it('uses key-gated full event fetching for large negative id sync filters', async () => {
+    const owner = `${OWNER}58`
+    const db = getNostrDb(owner)
+    const events = []
+
+    for (let i = 1; i <= 132; i++) {
+      const item = event({ id: hexId(i), created_at: i })
+      events.push(item)
+      assert.equal(await db.add(item), true)
+    }
+
+    const excluded = events.slice(0, 130).map(event => event.id)
+    const store = fakeStore(owner, 'events')
+    store.getCount = 0
+    store.openCursorCount = 0
+    store.openKeyCursorCount = 0
+
+    assert.deepEqual(
+      (await db.query({ since: 1, until: 132, '!ids': excluded })).map(event => event.id),
+      [events[131].id, events[130].id]
+    )
+    assert.equal(store.getCount, 2)
+    assert.equal(store.openCursorCount, 0)
+    assert.equal(store.openKeyCursorCount > 0, true)
+  })
+
+  it('keeps the normal cursor path for small negative id filters', async () => {
+    const owner = `${OWNER}59`
+    const db = getNostrDb(owner)
+    const one = event({ id: '1'.repeat(64), created_at: 10 })
+    const two = event({ id: '2'.repeat(64), created_at: 20 })
+
+    assert.equal(await db.add(one), true)
+    assert.equal(await db.add(two), true)
+
+    const store = fakeStore(owner, 'events')
+    store.openKeyCursorCount = 0
+
+    assert.deepEqual((await db.query({ '!ids': [one.id] })).map(event => event.id), [two.id])
+    assert.equal(store.openKeyCursorCount, 0)
   })
 
   it('treats empty negative ids as a no-op and all-excluded positive ids as never matching', async () => {
@@ -836,6 +950,10 @@ function delay (ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+function fakeStore (owner, name) {
+  return globalThis.indexedDB.databases.get(`${NOSTRDB_PREFIX}${owner}`).stores.get(name)
+}
+
 async function withPatchedNow (seconds, fn) {
   return withMutableNow(() => seconds, fn)
 }
@@ -940,6 +1058,9 @@ class FakeStoreData {
     this.records = new Map()
     this.indexes = new Map()
     this.indexNames = namesList(this.indexes)
+    this.getCount = 0
+    this.openCursorCount = 0
+    this.openKeyCursorCount = 0
   }
 }
 
@@ -959,21 +1080,28 @@ class FakeObjectStore {
   }
 
   get (key) {
-    return request(() => this.data.records.get(key), this.tx)
+    return request(() => {
+      this.data.getCount++
+      return this.data.records.get(key)
+    }, this.tx)
   }
 
   put (value) {
     return request(() => {
-      const key = value[this.data.keyPath]
-      const byId = this.data.indexes.get('byId')
-      if (byId) {
-        const idKey = getByKeyPath(value, byId.keyPath)
-        for (const [recordKey, record] of this.data.records) {
-          if (recordKey !== key && compareKeys(getByKeyPath(record, byId.keyPath), idKey) === 0) {
-            throw new Error('unique index violation')
+      const key = getByKeyPath(value, this.data.keyPath)
+
+      for (const index of this.data.indexes.values()) {
+        if (!index.options.unique) continue
+
+        for (const indexKey of indexKeys(value, index)) {
+          for (const [recordKey, record] of this.data.records) {
+            if (compareKeys(recordKey, key) !== 0 && indexKeys(record, index).some(key => compareKeys(key, indexKey) === 0)) {
+              throw new Error('unique index violation')
+            }
           }
         }
       }
+
       this.data.records.set(key, value)
       return key
     }, this.tx)
@@ -984,7 +1112,19 @@ class FakeObjectStore {
   }
 
   openCursor (range, direction) {
-    return requestCursor([...this.data.records.values()].map(value => ({ key: value.ref, value })), range, direction, this.tx)
+    this.data.openCursorCount++
+    return requestCursor([...this.data.records.values()].map(value => {
+      const key = getByKeyPath(value, this.data.keyPath)
+      return { key, primaryKey: key, value }
+    }), range, direction, this.tx)
+  }
+
+  openKeyCursor (range, direction) {
+    this.data.openKeyCursorCount++
+    return requestCursor([...this.data.records.values()].map(value => {
+      const key = getByKeyPath(value, this.data.keyPath)
+      return { key, primaryKey: key }
+    }), range, direction, this.tx)
   }
 }
 
@@ -1000,17 +1140,24 @@ class FakeIndex {
   }
 
   openCursor (range, direction) {
+    this.store.openCursorCount++
     return requestCursor(this.entries(), range, direction, this.tx)
+  }
+
+  openKeyCursor (range, direction) {
+    this.store.openKeyCursorCount++
+    return requestCursor(this.entries().map(entry => ({
+      key: entry.key,
+      primaryKey: entry.primaryKey
+    })), range, direction, this.tx)
   }
 
   entries () {
     const entries = []
     for (const value of this.store.records.values()) {
-      const key = getByKeyPath(value, this.index.keyPath)
-      const keys = this.index.options.multiEntry && Array.isArray(key) ? key : [key]
-      for (const item of keys) {
-        if (item === undefined) continue
-        entries.push({ key: item, value })
+      const primaryKey = getByKeyPath(value, this.store.keyPath)
+      for (const key of indexKeys(value, this.index)) {
+        entries.push({ key, primaryKey, value })
       }
     }
     return entries
@@ -1026,6 +1173,7 @@ class FakeCursor {
     this.index = index
     this.value = entries[index].value
     this.key = entries[index].key
+    this.primaryKey = entries[index].primaryKey
   }
 
   continue () {
@@ -1093,7 +1241,7 @@ function requestCursor (entries, range, direction, tx) {
   queueMicrotask(() => {
     const filtered = entries
       .filter(entry => !range || range.includes(entry.key))
-      .sort((a, b) => compareKeys(a.key, b.key))
+      .sort((a, b) => compareKeys(a.key, b.key) || compareKeys(a.primaryKey, b.primaryKey))
     if (direction === 'prev') filtered.reverse()
 
     req.result = filtered[0] ? new FakeCursor(req, filtered, 0) : undefined
@@ -1101,6 +1249,12 @@ function requestCursor (entries, range, direction, tx) {
     tx?.completeSoon()
   })
   return req
+}
+
+function indexKeys (value, index) {
+  const key = getByKeyPath(value, index.keyPath)
+  const keys = index.options.multiEntry && Array.isArray(key) ? key : [key]
+  return keys.filter(key => key !== undefined)
 }
 
 function getByKeyPath (value, keyPath) {
