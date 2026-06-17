@@ -318,6 +318,17 @@ describe('nostrdb', () => {
     assert.deepEqual((await db.query({ '#e': ['thread'], search: 'sort:old', limit: 1 })).map(e => e.id), [old.id])
   })
 
+  it('searches across multiple cursor ranges without pausing live cursor transactions', async () => {
+    const db = getNostrDb(`${OWNER}60`)
+    const old = event({ id: '1'.repeat(64), created_at: 10, tags: [['e', 'alpha']], content: 'nostr relay' })
+    const newer = event({ id: '2'.repeat(64), created_at: 20, tags: [['e', 'beta']], content: 'nostr relay' })
+
+    assert.equal(await db.add(old), true)
+    assert.equal(await db.add(newer), true)
+
+    assert.deepEqual((await db.query({ '#e': ['alpha', 'beta'], search: 'nostr' })).map(e => e.id), [newer.id, old.id])
+  })
+
   it('ranks fuzzy search matches before applying limit', async () => {
     const db = getNostrDb(`${OWNER}22`)
     const exactOld = event({ id: '1'.repeat(64), created_at: 10, content: 'nostr' })
@@ -1035,19 +1046,49 @@ class FakeTransaction {
     this.db = db
     this.mode = mode
     this.error = null
+    this.pending = 0
+    this.completed = false
+    this.completeQueued = false
   }
 
   objectStore (name) {
+    this.assertActive()
     return new FakeObjectStore(this.db.stores.get(name), this)
   }
 
   abort (error) {
+    if (this.completed) return
     this.error = error || new Error('transaction aborted')
+    this.completed = true
     this.onabort?.()
   }
 
-  completeSoon () {
-    queueMicrotask(() => this.oncomplete?.())
+  startRequest () {
+    this.assertActive()
+    this.pending++
+    this.completeQueued = false
+  }
+
+  finishRequest () {
+    this.pending--
+    this.queueComplete()
+  }
+
+  queueComplete () {
+    if (this.completed || this.pending !== 0 || this.completeQueued) return
+
+    this.completeQueued = true
+    queueFakeTask(() => {
+      this.completeQueued = false
+      if (this.completed || this.pending !== 0) return
+
+      this.completed = true
+      this.oncomplete?.()
+    })
+  }
+
+  assertActive () {
+    if (this.completed) throw new Error('TransactionInactiveError')
   }
 }
 
@@ -1167,20 +1208,29 @@ class FakeIndex {
 class FakeRequest {}
 
 class FakeCursor {
-  constructor (req, entries, index) {
+  constructor (req, entries, index, tx) {
     this.req = req
     this.entries = entries
     this.index = index
+    this.tx = tx
     this.value = entries[index].value
     this.key = entries[index].key
     this.primaryKey = entries[index].primaryKey
   }
 
   continue () {
+    this.tx?.startRequest()
     this.index++
-    queueMicrotask(() => {
-      this.req.result = this.entries[this.index] ? new FakeCursor(this.req, this.entries, this.index) : undefined
-      this.req.onsuccess?.({ target: this.req })
+    queueFakeTask(() => {
+      try {
+        this.req.result = this.entries[this.index] ? new FakeCursor(this.req, this.entries, this.index, this.tx) : undefined
+        this.req.onsuccess?.({ target: this.req })
+        this.tx?.finishRequest()
+      } catch (error) {
+        this.req.error = error
+        this.req.onerror?.({ target: this.req })
+        this.tx?.abort(error)
+      }
     })
   }
 }
@@ -1222,11 +1272,12 @@ class FakeIDBKeyRange {
 
 function request (fn, tx) {
   const req = new FakeRequest()
-  queueMicrotask(() => {
+  tx?.startRequest()
+  queueFakeTask(() => {
     try {
       req.result = fn()
       req.onsuccess?.({ target: req })
-      tx?.completeSoon()
+      tx?.finishRequest()
     } catch (error) {
       req.error = error
       req.onerror?.({ target: req })
@@ -1238,17 +1289,28 @@ function request (fn, tx) {
 
 function requestCursor (entries, range, direction, tx) {
   const req = new FakeRequest()
-  queueMicrotask(() => {
-    const filtered = entries
-      .filter(entry => !range || range.includes(entry.key))
-      .sort((a, b) => compareKeys(a.key, b.key) || compareKeys(a.primaryKey, b.primaryKey))
-    if (direction === 'prev') filtered.reverse()
+  tx?.startRequest()
+  queueFakeTask(() => {
+    try {
+      const filtered = entries
+        .filter(entry => !range || range.includes(entry.key))
+        .sort((a, b) => compareKeys(a.key, b.key) || compareKeys(a.primaryKey, b.primaryKey))
+      if (direction === 'prev') filtered.reverse()
 
-    req.result = filtered[0] ? new FakeCursor(req, filtered, 0) : undefined
-    req.onsuccess?.({ target: req })
-    tx?.completeSoon()
+      req.result = filtered[0] ? new FakeCursor(req, filtered, 0, tx) : undefined
+      req.onsuccess?.({ target: req })
+      tx?.finishRequest()
+    } catch (error) {
+      req.error = error
+      req.onerror?.({ target: req })
+      tx?.abort(error)
+    }
   })
   return req
+}
+
+function queueFakeTask (fn) {
+  setImmediate(fn)
 }
 
 function indexKeys (value, index) {

@@ -312,13 +312,18 @@ export class NostrDb {
     if (!db) return 0
 
     try {
-      const tx = db.transaction([EVENTS_STORE, DELETIONS_STORE], 'readwrite')
-      const done = txDone(tx)
-      const range = IDBKeyRange.upperBound(cutoff)
+      const expiredIdKeys = await getExpiredIdKeys(db, cutoff)
       let removed = 0
 
-      for await (const stored of streamCursor(db, EVENTS_STORE, INDEX.expiration, range, { tx })) {
-        if (isStoredRecordLive(stored, cutoff)) continue
+      if (expiredIdKeys.length === 0) return 0
+
+      const tx = db.transaction([EVENTS_STORE, DELETIONS_STORE], 'readwrite')
+      const done = txDone(tx)
+
+      for (const idKey of expiredIdKeys) {
+        const stored = await run('get', [idKey], EVENTS_STORE, null, { db, tx })
+          .then(v => v.result)
+        if (!stored || isStoredRecordLive(stored, cutoff)) continue
 
         await deleteStoredEvent(db, tx, stored)
         removed++
@@ -529,6 +534,7 @@ function createIndexIfMissing (store, name, keyPath, options) {
 
 const MAX_LIMIT = 200
 const KEY_GATED_EXCLUDE_THRESHOLD = 128
+const KEY_GATED_GET_BATCH_SIZE = 64
 async function queryRecords (db, rawFilter, { countOnly, ignoreLimit }) {
   const filter = new ParsedFilter(rawFilter)
   if (filter.neverMatch) return countOnly ? 0 : []
@@ -588,15 +594,17 @@ async function queryRecords (db, rawFilter, { countOnly, ignoreLimit }) {
     for (const cursor of plan.cursors) {
       let matchedInCursor = 0
 
-      for await (const stored of streamCursor(db, EVENTS_STORE, cursor.indexName, cursor.range, {
-        direction
-      })) {
-        if (!matches(stored)) continue
-        matchedInCursor++
-        emit(stored)
-        if (countOnly && count >= limit) break
-        if (!countOnly && matchedInCursor >= limit) break
-      }
+      await scanCursor(db, EVENTS_STORE, cursor.indexName, cursor.range, {
+        direction,
+        onItem: stored => {
+          if (!matches(stored)) return true
+          matchedInCursor++
+          emit(stored)
+          if (countOnly && count >= limit) return false
+          if (!countOnly && matchedInCursor >= limit) return false
+          return true
+        }
+      })
       if (countOnly && count >= limit) break
     }
   }
@@ -619,23 +627,24 @@ async function queryIdsWithKeyCursor (db, plan, filter, direction, { limit, now 
   for (const cursor of plan.cursors) {
     let matchedInCursor = 0
 
-    for await (const item of streamKeyCursor(db, EVENTS_STORE, cursor.indexName, cursor.range, {
-      direction
-    })) {
-      const idKey = item.primaryKey
-      if (seen.has(idKey)) continue
-      if (filter.excludeIdKeySet?.has(idKey)) continue
-      if (expiredIdKeySet.has(idKey)) continue
+    await scanKeyCursor(db, EVENTS_STORE, cursor.indexName, cursor.range, {
+      direction,
+      onItem: item => {
+        const idKey = item.primaryKey
+        if (seen.has(idKey)) return true
+        if (filter.excludeIdKeySet?.has(idKey)) return true
+        if (expiredIdKeySet.has(idKey)) return true
 
-      seen.add(idKey)
-      matchedInCursor++
-      results.push({
-        id: idKeyToEventId(idKey),
-        created_at: timestampFromIndexKey(item.key, cursor.indexName)
-      })
+        seen.add(idKey)
+        matchedInCursor++
+        results.push({
+          id: idKeyToEventId(idKey),
+          created_at: timestampFromIndexKey(item.key, cursor.indexName)
+        })
 
-      if (matchedInCursor >= limit) break
-    }
+        return matchedInCursor < limit
+      }
+    })
   }
 
   results.sort(filter.sortOld ? compareOldest : compareNewest)
@@ -645,31 +654,19 @@ async function queryIdsWithKeyCursor (db, plan, filter, direction, { limit, now 
 // Unlike the normal value cursor, this scans index keys first and fetches full
 // rows only for IDs that are not already known by the other local DB instance.
 async function queryFullEventsWithKeyGate (db, plan, filter, direction, { limit, now }) {
-  const expiredIdKeySet = await getExpiredIdKeySet(db, now)
-  const seen = new Set()
+  const candidates = await collectKeyGateCandidates(db, plan, filter, direction, { limit, now })
   const results = []
   const matches = stored => stored && isStoredRecordLive(stored, now) && filter.matches(stored.event)
 
-  for (const cursor of plan.cursors) {
-    let matchedInCursor = 0
+  for (let i = 0; i < candidates.length; i += KEY_GATED_GET_BATCH_SIZE) {
+    const batch = candidates.slice(i, i + KEY_GATED_GET_BATCH_SIZE)
+    const records = await getStoredRecordsByIdKeys(db, batch.map(candidate => candidate.idKey))
 
-    for await (const item of streamKeyCursor(db, EVENTS_STORE, cursor.indexName, cursor.range, {
-      direction
-    })) {
-      const idKey = item.primaryKey
-      if (seen.has(idKey)) continue
-      if (filter.excludeIdKeySet?.has(idKey)) continue
-      if (expiredIdKeySet.has(idKey)) continue
-
-      seen.add(idKey)
-      const stored = await run('get', [idKey], EVENTS_STORE, null, { db })
-        .then(v => v.result)
+    for (const candidate of batch) {
+      const stored = records.get(candidate.idKey)
       if (!matches(stored)) continue
 
-      matchedInCursor++
       results.push(stored.event)
-
-      if (matchedInCursor >= limit) break
     }
   }
 
@@ -677,37 +674,130 @@ async function queryFullEventsWithKeyGate (db, plan, filter, direction, { limit,
   return Number.isFinite(limit) ? results.slice(0, limit) : results
 }
 
-async function * streamCursor (db, storeName, indexName, range, { tx, direction = 'next' } = {}) {
-  const p = Promise.withResolvers()
-  await run('openCursor', [range, direction], storeName, indexName, { db, p, tx })
+async function collectKeyGateCandidates (db, plan, filter, direction, { limit, now }) {
+  const expiredIdKeySet = await getExpiredIdKeySet(db, now)
+  const seen = new Set()
+  const candidates = []
 
-  let cursor
-  while ((cursor = (await p.promise).result)) {
-    yield cursor.value
-    Object.assign(p, Promise.withResolvers())
-    cursor.continue()
+  for (const cursor of plan.cursors) {
+    let matchedInCursor = 0
+
+    await scanKeyCursor(db, EVENTS_STORE, cursor.indexName, cursor.range, {
+      direction,
+      onItem: item => {
+        const idKey = item.primaryKey
+        if (seen.has(idKey)) return true
+        if (filter.excludeIdKeySet?.has(idKey)) return true
+        if (expiredIdKeySet.has(idKey)) return true
+
+        seen.add(idKey)
+        matchedInCursor++
+        candidates.push({
+          id: idKeyToEventId(idKey),
+          idKey,
+          created_at: timestampFromIndexKey(item.key, cursor.indexName)
+        })
+
+        return matchedInCursor < limit
+      }
+    })
   }
+
+  candidates.sort(filter.sortOld ? compareOldest : compareNewest)
+  return Number.isFinite(limit) ? candidates.slice(0, limit) : candidates
 }
 
-async function * streamKeyCursor (db, storeName, indexName, range, { tx, direction = 'next' } = {}) {
-  const p = Promise.withResolvers()
-  await run('openKeyCursor', [range, direction], storeName, indexName, { db, p, tx })
+async function getStoredRecordsByIdKeys (db, idKeys) {
+  const tx = db.transaction([EVENTS_STORE], 'readonly')
+  const store = tx.objectStore(EVENTS_STORE)
+  const records = new Map()
 
-  let cursor
-  while ((cursor = (await p.promise).result)) {
-    yield { key: cursor.key, primaryKey: cursor.primaryKey }
-    Object.assign(p, Promise.withResolvers())
-    cursor.continue()
-  }
+  // Queue the whole batch synchronously so one readonly transaction owns all gets.
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve(records)
+    tx.onabort = () => reject(tx.error || new Error('transaction aborted'))
+    tx.onerror = () => reject(tx.error || new Error('transaction failed'))
+
+    for (const idKey of idKeys) {
+      const req = store.get(idKey)
+      req.onsuccess = () => {
+        if (req.result) records.set(idKey, req.result)
+      }
+      req.onerror = () => {
+        reject(req.error)
+        tx.abort()
+      }
+    }
+  })
+}
+
+function scanCursor (db, storeName, indexName, range, { tx, direction = 'next', onItem }) {
+  return scanIdbCursor(db, storeName, indexName, range, { tx, direction, onItem, keyOnly: false })
+}
+
+function scanKeyCursor (db, storeName, indexName, range, { tx, direction = 'next', onItem }) {
+  return scanIdbCursor(db, storeName, indexName, range, { tx, direction, onItem, keyOnly: true })
+}
+
+// Keep cursor continuation inside the IDB success callback. Yielding a live
+// cursor across unrelated awaits can let the transaction auto-commit first.
+function scanIdbCursor (db, storeName, indexName, range, { tx, direction, onItem, keyOnly }) {
+  return new Promise((resolve, reject) => {
+    let storeOrIndex
+
+    try {
+      tx ??= db.transaction([storeName], 'readonly')
+      const store = tx.objectStore(storeName)
+      storeOrIndex = indexName ? store.index(indexName) : store
+      const req = storeOrIndex[keyOnly ? 'openKeyCursor' : 'openCursor'](range, direction)
+
+      req.onsuccess = () => {
+        const cursor = req.result
+        if (!cursor) {
+          resolve()
+          return
+        }
+
+        try {
+          const item = keyOnly
+            ? { key: cursor.key, primaryKey: cursor.primaryKey }
+            : cursor.value
+          if (onItem(item) === false) {
+            resolve()
+            return
+          }
+        } catch (error) {
+          reject(error)
+          tx.abort()
+          return
+        }
+
+        cursor.continue()
+      }
+      req.onerror = () => {
+        reject(req.error)
+        tx.abort()
+      }
+    } catch (error) {
+      reject(error)
+    }
+  })
 }
 
 async function getExpiredIdKeySet (db, now) {
-  const expired = new Set()
+  return new Set(await getExpiredIdKeys(db, now))
+}
+
+async function getExpiredIdKeys (db, now) {
+  const expired = []
   const range = IDBKeyRange.upperBound(now)
 
-  for await (const { primaryKey } of streamKeyCursor(db, EVENTS_STORE, INDEX.expiration, range)) {
-    expired.add(primaryKey)
-  }
+  await scanKeyCursor(db, EVENTS_STORE, INDEX.expiration, range, {
+    onItem: ({ primaryKey }) => {
+      expired.push(primaryKey)
+      return true
+    }
+  })
 
   return expired
 }
@@ -780,48 +870,39 @@ async function collectSearchCandidates (db, plan, filter, direction, { countOnly
     return matchSearchCandidates(candidates, filter)
   }
 
-  const states = plan.cursors.map(cursor => ({
-    done: false,
-    iterator: streamCursor(db, EVENTS_STORE, cursor.indexName, cursor.range, { direction })[Symbol.asyncIterator]()
-  }))
   let scanned = 0
+  let batchCount = 0
+  let batchScanned = 0
+  let batchCandidates = []
+  let stop = false
 
-  for (let batch = 0; batch < SEARCH_MAX_BATCHES && scanned < SEARCH_MAX_CANDIDATES; batch++) {
-    const batchCandidates = []
-    let scannedInBatch = 0
+  const flushBatch = () => {
+    if (batchScanned === 0) return
+    matches.push(...matchSearchCandidates(batchCandidates, filter))
+    batchCandidates = []
+    batchScanned = 0
+    batchCount++
+    stop = shouldStopSearch(countOnly, batchCount, matches.length, matchTarget)
+  }
 
-    while (
-      scannedInBatch < SEARCH_BATCH_SIZE &&
-      scanned < SEARCH_MAX_CANDIDATES &&
-      states.some(state => !state.done)
-    ) {
-      let progressed = false
+  for (const cursor of plan.cursors) {
+    await scanCursor(db, EVENTS_STORE, cursor.indexName, cursor.range, {
+      direction,
+      onItem: stored => {
+        if (stop || scanned >= SEARCH_MAX_CANDIDATES || batchCount >= SEARCH_MAX_BATCHES) return false
 
-      for (const state of states) {
-        if (state.done) continue
-
-        const next = await state.iterator.next()
-        if (next.done) {
-          state.done = true
-          continue
-        }
-
-        progressed = true
         scanned++
-        scannedInBatch++
-        const candidate = toCandidate(next.value)
+        batchScanned++
+        const candidate = toCandidate(stored)
         if (candidate) batchCandidates.push(candidate)
 
-        if (scannedInBatch >= SEARCH_BATCH_SIZE || scanned >= SEARCH_MAX_CANDIDATES) break
+        if (batchScanned >= SEARCH_BATCH_SIZE || scanned >= SEARCH_MAX_CANDIDATES) flushBatch()
+        return !stop && scanned < SEARCH_MAX_CANDIDATES && batchCount < SEARCH_MAX_BATCHES
       }
+    })
 
-      if (!progressed) break
-    }
-
-    if (scannedInBatch === 0) break
-
-    matches.push(...matchSearchCandidates(batchCandidates, filter))
-    if (shouldStopSearch(countOnly, batch + 1, matches.length, matchTarget)) break
+    flushBatch()
+    if (stop || scanned >= SEARCH_MAX_CANDIDATES || batchCount >= SEARCH_MAX_BATCHES) break
   }
 
   return matches
@@ -1412,9 +1493,13 @@ async function getDeletionRowsForRequest (db, tx, requestIdKey) {
   const range = IDBKeyRange.bound([requestIdKey, 0], [requestIdKey, 0xffffffff])
   const rows = []
 
-  for await (const row of streamCursor(db, DELETIONS_STORE, DELETION_INDEX.request, range, { tx })) {
-    rows.push(row)
-  }
+  await scanCursor(db, DELETIONS_STORE, DELETION_INDEX.request, range, {
+    tx,
+    onItem: row => {
+      rows.push(row)
+      return true
+    }
+  })
 
   return rows
 }
