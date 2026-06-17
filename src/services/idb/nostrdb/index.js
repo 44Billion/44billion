@@ -543,9 +543,10 @@ async function queryRecords (db, rawFilter, { countOnly, ignoreLimit }) {
     if (countOnly) return Number.isFinite(limit) ? Math.min(candidates.length, limit) : candidates.length
 
     const ranked = rankSearchCandidates(candidates, filter, compareSearchTime)
-    return ranked
+    const results = ranked
       .slice(0, Number.isFinite(limit) ? limit : ranked.length)
       .map(candidate => candidate.event)
+    return projectQueryResults(results, filter)
   }
 
   const seen = new Set()
@@ -587,7 +588,11 @@ async function queryRecords (db, rawFilter, { countOnly, ignoreLimit }) {
   if (countOnly) return count
 
   results.sort(filter.sortOld ? compareOldest : compareNewest)
-  return Number.isFinite(limit) ? results.slice(0, limit) : results
+  return projectQueryResults(Number.isFinite(limit) ? results.slice(0, limit) : results, filter)
+}
+
+function projectQueryResults (events, filter) {
+  return filter.idsOnly ? events.map(event => event.id) : events
 }
 
 async function * streamCursor (db, storeName, indexName, range, { tx, direction = 'next' } = {}) {
@@ -821,10 +826,11 @@ function createSubscription (filter) {
   return {
     push (event) {
       if (closed || !filter.matches(event)) return
+      const value = filter.idsOnly ? event.id : event
       if (waiters.length > 0) {
-        waiters.shift().resolve({ value: event, done: false })
+        waiters.shift().resolve({ value, done: false })
       } else {
-        queue.push(event)
+        queue.push(value)
       }
     },
     iterator (onClose) {
@@ -861,10 +867,13 @@ export class ParsedFilter {
     this.authors = undefined
     this.kinds = undefined
     this.dtags = undefined
+    this.excludeIds = undefined
+    this.excludeIdSet = undefined
     this.tags = []
     this.since = 0
     this.until = Infinity
     this.limit = Infinity
+    this.idsOnly = false
     this.neverMatch = false
     this.sortOld = false
     this.autocomplete = false
@@ -876,13 +885,19 @@ export class ParsedFilter {
     }
 
     for (const [key, value] of Object.entries(filter)) {
-      if (Array.isArray(value) && value.length === 0) {
+      if (Array.isArray(value) && value.length === 0 && key !== '!ids') {
         this.neverMatch = true
         continue
       }
 
       if (key === 'ids') {
         this.ids = normalizeStringArray(value, HEX64_RE)
+      } else if (key === '!ids') {
+        const excludeIds = normalizeStringArray(value, HEX64_RE)
+        if (excludeIds.length > 0) {
+          this.excludeIds = excludeIds
+          this.excludeIdSet = new Set(excludeIds)
+        }
       } else if (key === 'authors') {
         this.authors = normalizeStringArray(value, HEX64_RE)
       } else if (key === 'kinds') {
@@ -893,6 +908,8 @@ export class ParsedFilter {
         this.until = normalizeTimestamp(value, Infinity)
       } else if (key === 'limit') {
         this.limit = normalizeLimit(value)
+      } else if (key === 'ids_only') {
+        this.idsOnly = value === true
       } else if (key === 'search') {
         const search = parseSearch(value)
         this.sortOld = search.sortOld
@@ -904,6 +921,10 @@ export class ParsedFilter {
         this.tags.push(tag)
         if (key === '#d') this.dtags = values
       }
+    }
+
+    if (this.ids && this.excludeIdSet) {
+      this.ids = this.ids.filter(id => !this.excludeIdSet.has(id))
     }
 
     if (
@@ -928,6 +949,7 @@ export class ParsedFilter {
     if (this.neverMatch) return false
     if (event.created_at < this.since || event.created_at > this.until) return false
     if (this.ids && !this.ids.includes(event.id)) return false
+    if (this.excludeIdSet?.has(event.id)) return false
     if (this.authors && !this.authors.includes(event.pubkey)) return false
     if (this.kinds && !this.kinds.includes(event.kind)) return false
 

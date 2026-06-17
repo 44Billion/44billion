@@ -104,6 +104,60 @@ describe('nostrdb', () => {
     assert.equal(await db.count({ kinds: [1], limit: 1 }), 1)
   })
 
+  it('projects query results to ids when ids_only is true', async () => {
+    const db = getNostrDb(`${OWNER}50`)
+    const old = event({ id: '1'.repeat(64), pubkey: A, created_at: 10 })
+    const newer = event({ id: '2'.repeat(64), pubkey: A, created_at: 20 })
+    const other = event({ id: '3'.repeat(64), pubkey: B, created_at: 30 })
+
+    assert.equal(await db.add(old), true)
+    assert.equal(await db.add(newer), true)
+    assert.equal(await db.add(other), true)
+
+    assert.deepEqual(await db.query({ authors: [A], ids_only: true }), [newer.id, old.id])
+    assert.deepEqual(await db.query({ ids: [old.id, newer.id], ids_only: true, limit: 1 }), [newer.id])
+    assert.deepEqual(await db.query({ authors: [A], ids_only: true, search: 'sort:old', limit: 1 }), [old.id])
+  })
+
+  it('projects ranked search results to ids after fuzzy ordering and limit', async () => {
+    const db = getNostrDb(`${OWNER}51`)
+    const exactOld = event({ id: '1'.repeat(64), created_at: 10, content: 'nostr' })
+    const laterMatch = event({ id: '2'.repeat(64), created_at: 20, content: 'zzzz nostr' })
+
+    assert.equal(await db.add(laterMatch), true)
+    assert.equal(await db.add(exactOld), true)
+
+    assert.deepEqual(await db.query({ search: 'nostr', ids_only: true, limit: 1 }), [exactOld.id])
+  })
+
+  it('excludes ids from cursor, direct, and count queries', async () => {
+    const db = getNostrDb(`${OWNER}52`)
+    const one = event({ id: '1'.repeat(64), pubkey: A, created_at: 10 })
+    const two = event({ id: '2'.repeat(64), pubkey: A, created_at: 20 })
+    const three = event({ id: '3'.repeat(64), pubkey: A, created_at: 30 })
+
+    assert.equal(await db.add(one), true)
+    assert.equal(await db.add(two), true)
+    assert.equal(await db.add(three), true)
+
+    assert.deepEqual((await db.query({ authors: [A], '!ids': [two.id] })).map(e => e.id), [three.id, one.id])
+    assert.deepEqual((await db.query({ ids: [one.id, two.id, three.id], '!ids': [one.id, three.id] })).map(e => e.id), [two.id])
+    assert.equal(await db.count({ authors: [A], '!ids': [one.id], limit: 10 }), 2)
+  })
+
+  it('treats empty negative ids as a no-op and all-excluded positive ids as never matching', async () => {
+    const db = getNostrDb(`${OWNER}53`)
+    const one = event({ id: '1'.repeat(64), pubkey: A, created_at: 10 })
+    const two = event({ id: '2'.repeat(64), pubkey: A, created_at: 20 })
+
+    assert.equal(await db.add(one), true)
+    assert.equal(await db.add(two), true)
+
+    assert.deepEqual((await db.query({ authors: [A], '!ids': [] })).map(e => e.id), [two.id, one.id])
+    assert.deepEqual(await db.query({ ids: [one.id], '!ids': [one.id] }), [])
+    assert.equal(await db.count({ ids: [one.id], '!ids': [one.id] }), 0)
+  })
+
   it('sorts direct query results before applying limit', async () => {
     const db = getNostrDb(`${OWNER}18`)
     const old = event({ id: '1'.repeat(64), created_at: 10 })
@@ -532,6 +586,20 @@ describe('nostrdb', () => {
     await iterator.return()
   })
 
+  it('applies negative ids and ids_only to subscriptions', async () => {
+    const db = getNostrDb(`${OWNER}54`)
+    const excluded = event({ id: '1'.repeat(64), kind: 1 })
+    const match = event({ id: '2'.repeat(64), kind: 1 })
+    const iterator = db.subscribe({ kinds: [1], '!ids': [excluded.id], ids_only: true })
+    const next = iterator.next()
+
+    assert.equal(await db.add(excluded), true)
+    assert.equal(await db.add(match), true)
+
+    assert.deepEqual(await withTimeout(next), { value: match.id, done: false })
+    await iterator.return()
+  })
+
   it('publishes ephemeral events without storing them', async () => {
     const db = getNostrDb(`${OWNER}27`)
     const iterator = db.subscribe({ kinds: [20000] })
@@ -693,6 +761,9 @@ describe('nostrdb', () => {
 
   it('treats empty arrays as never matching and parses search extensions', () => {
     assert.equal(new ParsedFilter({ ids: [] }).neverMatch, true)
+    assert.equal(new ParsedFilter({ '!ids': [] }).neverMatch, false)
+    assert.equal(new ParsedFilter({ ids: ['1'.repeat(64)], '!ids': ['1'.repeat(64)] }).neverMatch, true)
+    assert.equal(new ParsedFilter({ ids_only: true }).idsOnly, true)
 
     const ignored = new ParsedFilter({ search: 'hello unknown:value' })
     assert.equal(ignored.neverMatch, false)
