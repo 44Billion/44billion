@@ -43,11 +43,14 @@ describe('nostrdb', () => {
     const dTagged = event({ id: '2'.repeat(64), pubkey: A, kind: 1, tags: [['d', 'room']] })
     const replaceable = event({ id: '3'.repeat(64), pubkey: A, kind: 0, tags: [['d', 'ignored']] })
     const addressable = event({ id: '4'.repeat(64), pubkey: A, kind: 30023, tags: [['d', 'article']] })
+    const expiring = event({ id: '5'.repeat(64), tags: [['expiration', '100']] })
 
     assert.equal(toStoredRecord(regular).ref, eventRef(regular.id))
     assert.equal(toStoredRecord(dTagged).ref, coordinateRef(1, A, 'room'))
     assert.equal(toStoredRecord(replaceable).ref, coordinateRef(0, A, ''))
     assert.equal(toStoredRecord(addressable).ref, coordinateRef(30023, A, 'article'))
+    assert.equal(toStoredRecord(expiring, { now: 50 }).ex, 100)
+    assert.equal('ex' in toStoredRecord(regular), false)
   })
 
   it('derives deletion refs', () => {
@@ -201,7 +204,7 @@ describe('nostrdb', () => {
   })
 
   it('supports uFuzzy negative search terms', async () => {
-    const db = getNostrDb(`${OWNER}27`)
+    const db = getNostrDb(`${OWNER}40`)
     const match = event({ id: '1'.repeat(64), content: 'nostr protocol notes' })
     const excluded = event({ id: '2'.repeat(64), content: 'nostr bitcoin bridge' })
 
@@ -529,6 +532,147 @@ describe('nostrdb', () => {
     await iterator.return()
   })
 
+  it('publishes ephemeral events without storing them', async () => {
+    const db = getNostrDb(`${OWNER}27`)
+    const iterator = db.subscribe({ kinds: [20000] })
+    const next = iterator.next()
+    const ephemeral = event({ id: '1'.repeat(64), kind: 20000, created_at: 10 })
+
+    assert.equal(await db.add(ephemeral), false)
+
+    assert.deepEqual(await withTimeout(next), { value: ephemeral, done: false })
+    assert.deepEqual(await db.query({ ids: [ephemeral.id] }), [])
+    await iterator.return()
+  })
+
+  it('publishes expiration-at-created-at events without storing them', async () => {
+    await withPatchedNow(50, async () => {
+      const db = getNostrDb(`${OWNER}41`)
+      const iterator = db.subscribe({ kinds: [1] })
+      const next = iterator.next()
+      const honorary = event({
+        id: '1'.repeat(64),
+        created_at: 100,
+        tags: [['expiration', '100']]
+      })
+
+      assert.equal(await db.add(honorary), false)
+
+      assert.deepEqual(await withTimeout(next), { value: honorary, done: false })
+      assert.deepEqual(await db.query({ ids: [honorary.id] }), [])
+      await iterator.return()
+    })
+  })
+
+  it('publishes expired events without storing them', async () => {
+    await withPatchedNow(200, async () => {
+      const db = getNostrDb(`${OWNER}42`)
+      const iterator = db.subscribe({ kinds: [1] })
+      const next = iterator.next()
+      const expired = event({
+        id: '1'.repeat(64),
+        created_at: 100,
+        tags: [['expiration', '150']]
+      })
+
+      assert.equal(await db.add(expired), false)
+
+      assert.deepEqual(await withTimeout(next), { value: expired, done: false })
+      assert.deepEqual(await db.query({ ids: [expired.id] }), [])
+      await iterator.return()
+    })
+  })
+
+  it('hides persisted events after they expire before purge runs', async () => {
+    let now = 100
+    await withMutableNow(() => now, async () => {
+      const db = getNostrDb(`${OWNER}43`)
+      const expiring = event({
+        id: '1'.repeat(64),
+        created_at: 10,
+        tags: [['expiration', '200']]
+      })
+
+      assert.equal(await db.add(expiring), true)
+      assert.deepEqual((await db.query({ ids: [expiring.id] })).map(e => e.id), [expiring.id])
+
+      now = 201
+      assert.deepEqual(await db.query({ ids: [expiring.id] }), [])
+      assert.equal(await db.count({ ids: [expiring.id] }), 0)
+    })
+  })
+
+  it('purges expired events through the expiration index', async () => {
+    await withPatchedNow(100, async () => {
+      const db = getNostrDb(`${OWNER}44`)
+      const expiring = event({
+        id: '1'.repeat(64),
+        created_at: 10,
+        tags: [['expiration', '200']]
+      })
+      const survivor = event({
+        id: '2'.repeat(64),
+        created_at: 20,
+        tags: [['expiration', '300']]
+      })
+
+      assert.equal(await db.add(expiring), true)
+      assert.equal(await db.add(survivor), true)
+      assert.equal(await db.purgeExpired({ now: 250 }), 1)
+      assert.deepEqual((await db.query({ ids: [expiring.id, survivor.id] })).map(e => e.id), [survivor.id])
+      assert.equal(await db.purgeExpired({ now: 250 }), 0)
+    })
+  })
+
+  it('purges expired deletion requests and their tombstones', async () => {
+    await withPatchedNow(1000, async () => {
+      const db = getNostrDb(`${OWNER}45`)
+      const target = event({ id: '1'.repeat(64), pubkey: A, created_at: 10 })
+      const deletion = event({
+        id: '2'.repeat(64),
+        pubkey: A,
+        kind: 5,
+        created_at: 100,
+        tags: [['e', target.id], ['expiration', '2000']]
+      })
+
+      assert.equal(await db.add(deletion), true)
+      assert.equal(await db.add(target), false)
+      assert.equal(await db.purgeExpired({ now: 2001 }), 1)
+      assert.deepEqual(await db.query({ ids: [deletion.id] }), [])
+      assert.equal(await db.add(target), true)
+    })
+  })
+
+  it('starts expiration purge on a non-overlapping timer', async () => {
+    const db = getNostrDb(`${OWNER}46`)
+    let calls = 0
+    let running = 0
+    let maxRunning = 0
+
+    db.purgeExpired = async () => {
+      calls++
+      running++
+      maxRunning = Math.max(maxRunning, running)
+      await delay(20)
+      running--
+    }
+
+    const abort = db.startExpirationPurge({
+      intervalMs: 1,
+      runImmediately: true
+    })
+
+    await delay(35)
+    abort()
+    const callsAfterAbort = calls
+    await delay(10)
+
+    assert.equal(maxRunning, 1)
+    assert.equal(calls, callsAfterAbort)
+    db.bc?.close()
+  })
+
   it('receives BroadcastChannel events from another instance', async () => {
     if (typeof BroadcastChannel !== 'function') return
 
@@ -619,6 +763,21 @@ function withTimeout (promise) {
 
 function delay (ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+async function withPatchedNow (seconds, fn) {
+  return withMutableNow(() => seconds, fn)
+}
+
+async function withMutableNow (getSeconds, fn) {
+  const original = Date.now
+  Date.now = () => getSeconds() * 1000
+
+  try {
+    return await fn()
+  } finally {
+    Date.now = original
+  }
 }
 
 function hexId (value) {
@@ -778,7 +937,10 @@ class FakeIndex {
     for (const value of this.store.records.values()) {
       const key = getByKeyPath(value, this.index.keyPath)
       const keys = this.index.options.multiEntry && Array.isArray(key) ? key : [key]
-      for (const item of keys) entries.push({ key: item, value })
+      for (const item of keys) {
+        if (item === undefined) continue
+        entries.push({ key: item, value })
+      }
     }
     return entries
   }
@@ -805,12 +967,16 @@ class FakeCursor {
 }
 
 class FakeIDBKeyRange {
-  static bound (lower, upper) {
-    return new FakeIDBKeyRange(lower, upper, false, false)
+  static bound (lower, upper, lowerOpen = false, upperOpen = false) {
+    return new FakeIDBKeyRange(lower, upper, lowerOpen, upperOpen)
   }
 
   static only (value) {
     return new FakeIDBKeyRange(value, value, false, false)
+  }
+
+  static upperBound (upper, open = false) {
+    return new FakeIDBKeyRange(undefined, upper, true, open)
   }
 
   constructor (lower, upper, lowerOpen, upperOpen) {
@@ -821,9 +987,17 @@ class FakeIDBKeyRange {
   }
 
   includes (key) {
-    const lower = compareKeys(key, this.lower)
-    const upper = compareKeys(key, this.upper)
-    return (this.lowerOpen ? lower > 0 : lower >= 0) && (this.upperOpen ? upper < 0 : upper <= 0)
+    if (this.lower !== undefined) {
+      const lower = compareKeys(key, this.lower)
+      if (this.lowerOpen ? lower <= 0 : lower < 0) return false
+    }
+
+    if (this.upper !== undefined) {
+      const upper = compareKeys(key, this.upper)
+      if (this.upperOpen ? upper >= 0 : upper > 0) return false
+    }
+
+    return true
   }
 }
 

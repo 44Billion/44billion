@@ -25,7 +25,7 @@ const searchCollator = typeof Intl === 'undefined'
 // 30023: { content: true, tags: ['title', 'summary'] }
 const SEARCH_FIELD_CONFIG = {
   0: { contentJson: ['name'], tags: ['name'] },
-  30023: { tags: ['title', 'summary'] }
+  30023: { content: true, tags: ['title', 'summary'] }
 }
 
 // Parse NIP-50 search text into uFuzzy input and the extensions this DB knows.

@@ -31,12 +31,14 @@ events, keyPath "ref"
   p     base64url pubkey bytes
   k     event kind
   ca    created_at timestamp
+  ex    optional NIP-40 expiration timestamp
   t     multiEntry tag index keys: [tagName, sha256(tagValue), created_at]
   event original Nostr event
 
 events indexes
   byId         i, unique
   byCreatedAt ca
+  byExpiration ex
   byPubkey    [p, ca]
   byKind      [k, ca]
   byPubkeyKind [p, k, ca]
@@ -54,6 +56,7 @@ deletions indexes
 export const INDEX = {
   id: 'byId',
   createdAt: 'byCreatedAt',
+  expiration: 'byExpiration',
   pubkey: 'byPubkey',
   kind: 'byKind',
   pubkeyKind: 'byPubkeyKind',
@@ -95,6 +98,13 @@ export class NostrDb {
   }
 
   async add (event) {
+    if (!isValidEventShape(event)) return false
+
+    if (shouldSkipStorage(event, currentUnixTime())) {
+      this.publish(event, true)
+      return false
+    }
+
     const saved = await this.addEvent(event)
     if (saved) this.publish(event, true)
     return saved
@@ -103,10 +113,13 @@ export class NostrDb {
   async addEvent (event, { consumeDeletionRequestIds = [] } = {}) {
     if (!isValidEventShape(event)) return false
 
+    const now = currentUnixTime()
+    if (shouldSkipStorage(event, now)) return false
+
     const db = await openNostrDb(this.ownerPubkey)
     if (!db) return false
 
-    const record = toStoredRecord(event)
+    const record = toStoredRecord(event, { now })
 
     try {
       const tx = db.transaction([EVENTS_STORE, DELETIONS_STORE], 'readwrite')
@@ -291,6 +304,72 @@ export class NostrDb {
     }
   }
 
+  async purgeExpired ({ now } = {}) {
+    const cutoff = normalizeTimestamp(now, currentUnixTime())
+    const db = await openNostrDb(this.ownerPubkey)
+    if (!db) return 0
+
+    try {
+      const tx = db.transaction([EVENTS_STORE, DELETIONS_STORE], 'readwrite')
+      const done = txDone(tx)
+      const range = IDBKeyRange.upperBound(cutoff)
+      let removed = 0
+
+      for await (const stored of streamCursor(db, EVENTS_STORE, INDEX.expiration, range, { tx })) {
+        if (isStoredRecordLive(stored, cutoff)) continue
+
+        await deleteStoredEvent(db, tx, stored)
+        removed++
+      }
+
+      await done
+      return removed
+    } catch {
+      return 0
+    }
+  }
+
+  startExpirationPurge ({
+    intervalMs = 3600000,
+    runImmediately = true,
+    ...options
+  } = {}) {
+    const delay = Number.isInteger(intervalMs) && intervalMs > 0 ? intervalMs : 3600000
+    let stopped = false
+    let running = false
+    let timer = null
+
+    const schedule = ms => {
+      if (stopped) return
+      timer = setTimeout(tick, ms)
+      timer.unref?.()
+    }
+
+    const tick = async () => {
+      if (stopped) return
+      if (running) {
+        schedule(delay)
+        return
+      }
+
+      running = true
+      try {
+        await this.purgeExpired(options)
+      } catch {
+      } finally {
+        running = false
+        schedule(delay)
+      }
+    }
+
+    schedule(runImmediately ? 0 : delay)
+
+    return () => {
+      stopped = true
+      if (timer) clearTimeout(timer)
+    }
+  }
+
   async query (filter) {
     assertSingleFilter(filter)
 
@@ -421,6 +500,7 @@ function initNostrDb (dbName) {
     store = createObjectStoreIfMissing(db, tx, EVENTS_STORE, { keyPath: 'ref' })
     createIndexIfMissing(store, INDEX.id, 'i', { unique: true })
     createIndexIfMissing(store, INDEX.createdAt, 'ca')
+    createIndexIfMissing(store, INDEX.expiration, 'ex')
     createIndexIfMissing(store, INDEX.pubkey, ['p', 'ca'])
     createIndexIfMissing(store, INDEX.kind, ['k', 'ca'])
     createIndexIfMissing(store, INDEX.pubkeyKind, ['p', 'k', 'ca'])
@@ -455,9 +535,10 @@ async function queryRecords (db, rawFilter, { countOnly, ignoreLimit }) {
 
   const plan = planQuery(filter)
   const direction = filter.sortOld ? 'next' : 'prev'
+  const now = currentUnixTime()
 
   if (filter.searchText) {
-    const candidates = await collectSearchCandidates(db, plan, filter, direction, { countOnly, limit })
+    const candidates = await collectSearchCandidates(db, plan, filter, direction, { countOnly, limit, now })
 
     if (countOnly) return Number.isFinite(limit) ? Math.min(candidates.length, limit) : candidates.length
 
@@ -471,7 +552,7 @@ async function queryRecords (db, rawFilter, { countOnly, ignoreLimit }) {
   const results = []
   let count = 0
 
-  const matches = stored => stored && filter.matches(stored.event)
+  const matches = stored => stored && isStoredRecordLive(stored, now) && filter.matches(stored.event)
   const emit = stored => {
     if (!matches(stored) || seen.has(stored.event.id)) return false
     seen.add(stored.event.id)
@@ -522,13 +603,18 @@ async function * streamCursor (db, storeName, indexName, range, { tx, direction 
 }
 
 // IDB scanning stays here because it knows about plans, stores, cursors, and caps.
-async function collectSearchCandidates (db, plan, filter, direction, { countOnly, limit }) {
+async function collectSearchCandidates (db, plan, filter, direction, { countOnly, limit, now }) {
   const matches = []
   const seen = new Set()
   const matchTarget = searchMatchTarget(countOnly, limit)
 
   const toCandidate = stored => {
-    if (!stored || seen.has(stored.event.id) || !filter.matchesStructured(stored.event)) return null
+    if (
+      !stored ||
+      !isStoredRecordLive(stored, now) ||
+      seen.has(stored.event.id) ||
+      !filter.matchesStructured(stored.event)
+    ) return null
     seen.add(stored.event.id)
 
     const text = getSearchableText(stored.event)
@@ -853,9 +939,9 @@ export class ParsedFilter {
   }
 }
 
-export function toStoredRecord (event) {
+export function toStoredRecord (event, { now = currentUnixTime() } = {}) {
   const coordinate = getCoordinate(event)
-  return {
+  const record = {
     ref: coordinate === null ? eventRef(event.id) : coordinateRef(event.kind, event.pubkey, coordinate),
     i: eventIdIndexKey(event.id),
     p: pubkeyIndexKey(event.pubkey),
@@ -864,6 +950,11 @@ export function toStoredRecord (event) {
     t: tagIndexKeys(event),
     event
   }
+  const expiration = getExpiration(event)
+
+  if (expiration !== null && expiration > now) record.ex = expiration
+
+  return record
 }
 
 export function getCoordinate (event) {
@@ -928,6 +1019,49 @@ export function isNewer (event, other) {
   return event.id < other.id
 }
 
+export function currentUnixTime () {
+  return Math.floor(Date.now() / 1000)
+}
+
+export function getExpiration (event) {
+  if (!Array.isArray(event?.tags)) return null
+
+  for (const tag of event.tags) {
+    if (!Array.isArray(tag) || tag[0] !== 'expiration') continue
+
+    const timestamp = parseExpirationTimestamp(tag[1])
+    if (timestamp !== null) return timestamp
+  }
+
+  return null
+}
+
+export function isEphemeralKind (kind) {
+  return kind >= 20000 && kind < 30000
+}
+
+export function isHonoraryEphemeralEvent (event) {
+  const expiration = getExpiration(event)
+  return expiration !== null && expiration === event.created_at
+}
+
+export function isExpiredEvent (event, now = currentUnixTime()) {
+  const expiration = getExpiration(event)
+  return expiration !== null && expiration <= now
+}
+
+export function shouldSkipStorage (event, now = currentUnixTime()) {
+  return (
+    isEphemeralKind(event.kind) ||
+    isHonoraryEphemeralEvent(event) ||
+    isExpiredEvent(event, now)
+  )
+}
+
+function isStoredRecordLive (stored, now) {
+  return !!stored?.event && !shouldSkipStorage(stored.event, now)
+}
+
 export function isValidEventShape (event) {
   if (!event || typeof event !== 'object') return false
   if (!HEX64_RE.test(event.id)) return false
@@ -939,6 +1073,15 @@ export function isValidEventShape (event) {
   if (typeof event.content !== 'string') return false
 
   return event.tags.every(tag => Array.isArray(tag) && tag.every(value => typeof value === 'string'))
+}
+
+function parseExpirationTimestamp (value) {
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) return null
+
+  const timestamp = Number(value)
+  return Number.isInteger(timestamp) && timestamp >= 0 && timestamp <= 0xffffffff
+    ? timestamp
+    : null
 }
 
 async function isBlockedByDeletion (db, tx, event) {
