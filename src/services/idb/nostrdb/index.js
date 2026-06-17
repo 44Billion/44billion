@@ -404,7 +404,14 @@ export class NostrDb {
   }
 
   async supports () {
-    return ['search']
+    return [
+      'search',
+      'search:sort:old',
+      'search:autocomplete:true',
+      'ids_only',
+      '!ids',
+      '&tags'
+    ]
   }
 
   async deleteDb () {
@@ -810,6 +817,7 @@ function canUseKeyOnlyCursor (plan, filter) {
   //   query({ authors: [pubkey], kinds: [1], ids_only: true })
   // Search and mixed post-filter cases still need full event rows, so they stay on value cursors.
   if (filter.searchText || plan.type !== 'cursor') return false
+  if (filter.andTags.length > 0) return false
   if (plan.cursors.length === 0) return false
 
   return plan.cursors.every(cursor => {
@@ -946,8 +954,9 @@ export function planQuery (filter) {
     return { type: 'direct', cursors: replaceableCursors }
   }
 
-  if (filter.tags.length > 0) {
-    const tag = filter.tags.reduce((a, b) => (b.values.length < a.values.length ? b : a))
+  if (filter.tags.length > 0 || filter.andTags.length > 0) {
+    const tag = [...filter.tags, ...filter.andTags]
+      .reduce((a, b) => (b.values.length < a.values.length ? b : a))
     return {
       type: 'cursor',
       cursors: tag.values.map(value => ({
@@ -1089,6 +1098,7 @@ export class ParsedFilter {
     this.excludeIdSet = undefined
     this.excludeIdKeySet = undefined
     this.tags = []
+    this.andTags = []
     this.since = 0
     this.until = Infinity
     this.limit = Infinity
@@ -1104,6 +1114,8 @@ export class ParsedFilter {
     }
 
     for (const [key, value] of Object.entries(filter)) {
+      if ((key.startsWith('#') || key.startsWith('&')) && key.length !== 2) continue
+
       if (Array.isArray(value) && value.length === 0 && key !== '!ids') {
         this.neverMatch = true
         continue
@@ -1135,13 +1147,18 @@ export class ParsedFilter {
         this.sortOld = search.sortOld
         this.autocomplete = search.autocomplete
         this.searchText = search.text
-      } else if (key.startsWith('#') && key.length >= 2) {
+      } else if (key.startsWith('#')) {
         const values = normalizeTagValues(value)
         const tag = { name: key.slice(1), values }
         this.tags.push(tag)
         if (key === '#d') this.dtags = values
+      } else if (key.startsWith('&')) {
+        this.andTags.push({ name: key.slice(1), values: normalizeTagValues(value) })
       }
     }
+
+    this.tags = pruneOrTagsCoveredByAndTags(this.tags, this.andTags)
+    this.dtags = this.tags.find(tag => tag.name === 'd')?.values
 
     if (this.ids && this.excludeIdSet) {
       this.ids = this.ids.filter(id => !this.excludeIdSet.has(id))
@@ -1152,7 +1169,8 @@ export class ParsedFilter {
       this.authors?.length === 0 ||
       this.kinds?.length === 0 ||
       this.dtags?.length === 0 ||
-      this.tags.some(tag => tag.values.length === 0)
+      this.tags.some(tag => tag.values.length === 0) ||
+      this.andTags.some(tag => tag.values.length === 0)
     ) {
       this.neverMatch = true
     }
@@ -1175,6 +1193,12 @@ export class ParsedFilter {
 
     for (const { name, values } of this.tags) {
       if (!event.tags.some(tag => tag[0] === name && values.includes(tag[1]))) return false
+    }
+
+    for (const { name, values } of this.andTags) {
+      for (const value of values) {
+        if (!event.tags.some(tag => tag[0] === name && tag[1] === value)) return false
+      }
     }
 
     return true
@@ -1550,6 +1574,31 @@ function normalizeNumberArray (value) {
 function normalizeTagValues (value) {
   if (!Array.isArray(value)) return []
   return [...new Set(value.filter(item => typeof item === 'string'))].sort()
+}
+
+function pruneOrTagsCoveredByAndTags (tags, andTags) {
+  if (andTags.length === 0) return tags
+
+  const andValuesByName = new Map()
+  for (const tag of andTags) {
+    const values = andValuesByName.get(tag.name) ?? new Set()
+    for (const value of tag.values) values.add(value)
+    andValuesByName.set(tag.name, values)
+  }
+
+  const pruned = []
+  for (const tag of tags) {
+    const andValues = andValuesByName.get(tag.name)
+    if (!andValues) {
+      pruned.push(tag)
+      continue
+    }
+
+    const values = tag.values.filter(value => !andValues.has(value))
+    if (values.length > 0) pruned.push({ ...tag, values })
+  }
+
+  return pruned
 }
 
 function normalizeTimestamp (value, fallback) {

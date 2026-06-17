@@ -305,6 +305,53 @@ describe('nostrdb', () => {
     assert.equal(await db.count({ '#e': ['a', 'b'], limit: 2 }), 2)
   })
 
+  it('supports NIP-91 AND tag filters with OR fallback pruning', async () => {
+    const db = getNostrDb(`${OWNER}61`)
+    const fullBlack = event({ id: '1'.repeat(64), created_at: 10, tags: [['t', 'meme'], ['t', 'cat'], ['t', 'black']] })
+    const fullWhite = event({ id: '2'.repeat(64), created_at: 20, tags: [['t', 'meme'], ['t', 'cat'], ['t', 'white']] })
+    const missingAnd = event({ id: '3'.repeat(64), created_at: 30, tags: [['t', 'meme'], ['t', 'black']] })
+    const missingOr = event({ id: '4'.repeat(64), created_at: 40, tags: [['t', 'meme'], ['t', 'cat']] })
+
+    assert.equal(await db.add(fullBlack), true)
+    assert.equal(await db.add(fullWhite), true)
+    assert.equal(await db.add(missingAnd), true)
+    assert.equal(await db.add(missingOr), true)
+
+    assert.deepEqual(
+      (await db.query({
+        kinds: [1],
+        '&t': ['meme', 'cat'],
+        '#t': ['meme', 'cat', 'black', 'white']
+      })).map(e => e.id),
+      [fullWhite.id, fullBlack.id]
+    )
+    assert.equal(await db.count({ '&t': ['meme', 'cat'], '#t': ['meme', 'cat', 'black', 'white'] }), 2)
+  })
+
+  it('supports pure AND tags, multiple tag names, ids_only, and search post-filtering', async () => {
+    const owner = `${OWNER}62`
+    const db = getNostrDb(owner)
+    const match = event({ id: '1'.repeat(64), created_at: 10, tags: [['t', 'meme'], ['t', 'cat'], ['p', B]], content: 'nostr cats' })
+    const newer = event({ id: '2'.repeat(64), created_at: 20, tags: [['t', 'meme'], ['t', 'cat'], ['p', B]], content: 'nostr memes' })
+    const missingTag = event({ id: '3'.repeat(64), created_at: 30, tags: [['t', 'meme'], ['p', B]], content: 'nostr missing' })
+    const wrongP = event({ id: '4'.repeat(64), created_at: 40, tags: [['t', 'meme'], ['t', 'cat'], ['p', C]], content: 'nostr wrong p' })
+
+    assert.equal(await db.add(match), true)
+    assert.equal(await db.add(newer), true)
+    assert.equal(await db.add(missingTag), true)
+    assert.equal(await db.add(wrongP), true)
+
+    const store = fakeStore(owner, 'events')
+    store.openCursorCount = 0
+    store.openKeyCursorCount = 0
+
+    assert.deepEqual((await db.query({ '&t': ['meme', 'cat'], '&p': [B] })).map(e => e.id), [newer.id, match.id])
+    assert.deepEqual(await db.query({ '&t': ['meme', 'cat'], '&p': [B], ids_only: true }), [newer.id, match.id])
+    assert.equal(store.openKeyCursorCount, 0)
+    assert.equal(store.openCursorCount > 0, true)
+    assert.deepEqual((await db.query({ '&t': ['meme', 'cat'], '&p': [B], search: 'memes' })).map(e => e.id), [newer.id])
+  })
+
   it('supports the search sort:old extension', async () => {
     const db = getNostrDb(`${OWNER}21`)
     const old = event({ id: '1'.repeat(64), created_at: 10, tags: [['e', 'thread']], content: 'hello old' })
@@ -725,6 +772,20 @@ describe('nostrdb', () => {
     await iterator.return()
   })
 
+  it('applies AND tags to subscriptions', async () => {
+    const db = getNostrDb(`${OWNER}63`)
+    const iterator = db.subscribe({ '&t': ['meme', 'cat'], ids_only: true })
+    const next = iterator.next()
+    const partial = event({ id: '1'.repeat(64), tags: [['t', 'meme']] })
+    const match = event({ id: '2'.repeat(64), tags: [['t', 'meme'], ['t', 'cat']] })
+
+    assert.equal(await db.add(partial), true)
+    assert.equal(await db.add(match), true)
+
+    assert.deepEqual(await withTimeout(next), { value: match.id, done: false })
+    await iterator.return()
+  })
+
   it('publishes ephemeral events without storing them', async () => {
     const db = getNostrDb(`${OWNER}27`)
     const iterator = db.subscribe({ kinds: [20000] })
@@ -887,8 +948,29 @@ describe('nostrdb', () => {
   it('treats empty arrays as never matching and parses search extensions', () => {
     assert.equal(new ParsedFilter({ ids: [] }).neverMatch, true)
     assert.equal(new ParsedFilter({ '!ids': [] }).neverMatch, false)
+    assert.equal(new ParsedFilter({ '&t': [] }).neverMatch, true)
     assert.equal(new ParsedFilter({ ids: ['1'.repeat(64)], '!ids': ['1'.repeat(64)] }).neverMatch, true)
     assert.equal(new ParsedFilter({ ids_only: true }).idsOnly, true)
+
+    const andTags = new ParsedFilter({ '&t': ['meme', 'cat'], '#t': ['meme', 'cat', 'black', 'white'] })
+    assert.equal(andTags.neverMatch, false)
+    assert.deepEqual(andTags.andTags, [{ name: 't', values: ['cat', 'meme'] }])
+    assert.deepEqual(andTags.tags, [{ name: 't', values: ['black', 'white'] }])
+
+    const andFallback = new ParsedFilter({ '&t': ['meme', 'cat'], '#t': ['meme', 'cat'] })
+    assert.equal(andFallback.neverMatch, false)
+    assert.deepEqual(andFallback.tags, [])
+    assert.deepEqual(andFallback.andTags, [{ name: 't', values: ['cat', 'meme'] }])
+
+    const ignoredAnd = new ParsedFilter({ '&topic': ['meme'] })
+    assert.equal(ignoredAnd.neverMatch, false)
+    assert.deepEqual(ignoredAnd.andTags, [])
+    assert.equal(new ParsedFilter({ '&topic': [] }).neverMatch, false)
+
+    const ignoredOr = new ParsedFilter({ '#topic': ['meme'] })
+    assert.equal(ignoredOr.neverMatch, false)
+    assert.deepEqual(ignoredOr.tags, [])
+    assert.equal(new ParsedFilter({ '#topic': [] }).neverMatch, false)
 
     const ignored = new ParsedFilter({ search: 'hello unknown:value' })
     assert.equal(ignored.neverMatch, false)
@@ -914,7 +996,14 @@ describe('nostrdb', () => {
     assert.equal(await db.add(event({ id: '1'.repeat(64) })), false)
     assert.deepEqual(await db.query({ kinds: [1] }), [])
     assert.equal(await db.count({ kinds: [1] }), 0)
-    assert.deepEqual(await db.supports(), ['search'])
+    assert.deepEqual(await db.supports(), [
+      'search',
+      'search:sort:old',
+      'search:autocomplete:true',
+      'ids_only',
+      '!ids',
+      '&tags'
+    ])
     db.bc?.close()
   })
 
