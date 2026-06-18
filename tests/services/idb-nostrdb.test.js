@@ -468,12 +468,62 @@ describe('nostrdb', () => {
     )
   })
 
-  it('rejects filter arrays', async () => {
+  it('queries multiple filters as OR clauses with global dedupe and overrides', async () => {
     const db = getNostrDb(`${OWNER}3`)
+    const old = event({ id: '1'.repeat(64), pubkey: A, kind: 1, created_at: 10, tags: [['t', 'alpha']], content: 'nostr old' })
+    const shared = event({ id: '2'.repeat(64), pubkey: A, kind: 7, created_at: 20, tags: [['t', 'beta']], content: 'nostr shared' })
+    const newest = event({ id: '3'.repeat(64), pubkey: B, kind: 1, created_at: 30, tags: [['t', 'gamma']], content: 'bitcoin newest' })
 
-    await assert.rejects(() => db.query([{ kinds: [1] }]), /single filter/)
-    await assert.rejects(() => db.count([{ kinds: [1] }]), /single filter/)
-    assert.throws(() => db.subscribe([{ kinds: [1] }]), /single filter/)
+    assert.equal(await db.add(old), true)
+    assert.equal(await db.add(shared), true)
+    assert.equal(await db.add(newest), true)
+
+    assert.deepEqual(
+      (await db.query([{ authors: [A] }, { kinds: [1] }])).map(event => event.id),
+      [newest.id, shared.id, old.id]
+    )
+    assert.deepEqual(
+      await db.query([{ authors: [A], ids_only: true, limit: 1 }, { kinds: [1], ids_only: false, limit: 3 }]),
+      [newest.id]
+    )
+    assert.deepEqual(
+      (await db.query([{ authors: [A], search: 'sort:old', limit: 3 }, { kinds: [1], search: 'bitcoin' }], {
+        search: 'nostr',
+        limit: 2,
+        ids_only: false
+      })).map(event => event.id),
+      [shared.id, old.id]
+    )
+    assert.deepEqual(
+      (await db.query([{ authors: [A], search: 'nostr sort:old', limit: 2 }, { kinds: [1], search: 'bitcoin' }])).map(event => event.id),
+      [old.id, shared.id]
+    )
+    const store = fakeStore(`${OWNER}3`, 'events')
+    store.openCursorCount = 0
+    store.openKeyCursorCount = 0
+    assert.deepEqual(
+      await db.query([{ authors: [A] }, { kinds: [1] }], { ids_only: true, limit: 2 }),
+      [newest.id, shared.id]
+    )
+    assert.equal(store.openCursorCount, 0)
+    assert.equal(store.openKeyCursorCount > 0, true)
+    assert.deepEqual(await db.query([]), [])
+  })
+
+  it('counts unique matches across multiple filters with global limit and search', async () => {
+    const db = getNostrDb(`${OWNER}64`)
+    const one = event({ id: '1'.repeat(64), pubkey: A, kind: 1, created_at: 10, content: 'nostr one' })
+    const two = event({ id: '2'.repeat(64), pubkey: A, kind: 7, created_at: 20, content: 'nostr two' })
+    const three = event({ id: '3'.repeat(64), pubkey: B, kind: 1, created_at: 30, content: 'bitcoin three' })
+
+    assert.equal(await db.add(one), true)
+    assert.equal(await db.add(two), true)
+    assert.equal(await db.add(three), true)
+
+    assert.equal(await db.count([{ authors: [A] }, { kinds: [1] }]), 3)
+    assert.equal(await db.count([{ authors: [A] }, { kinds: [1] }], { limit: 2 }), 2)
+    assert.equal(await db.count([{ authors: [A], search: 'nostr' }, { kinds: [1], search: 'bitcoin' }], { search: 'nostr' }), 2)
+    assert.equal(await db.count([]), 0)
   })
 
   it('applies NIP-09 e-tag deletion requests by author', async () => {
@@ -786,6 +836,33 @@ describe('nostrdb', () => {
     await iterator.return()
   })
 
+  it('subscribes to multiple filters with ids_only, search, and auto-close limit', async () => {
+    const db = getNostrDb(`${OWNER}65`)
+    const iterator = db.subscribe([{ authors: [A] }, { kinds: [7] }], {
+      ids_only: true,
+      search: 'nostr',
+      limit: 2
+    })
+    const first = iterator.next()
+    const second = iterator.next()
+
+    const ignored = event({ id: '1'.repeat(64), pubkey: B, kind: 1, content: 'nostr ignored' })
+    const authorMatch = event({ id: '2'.repeat(64), pubkey: A, kind: 1, content: 'nostr author' })
+    const kindMatch = event({ id: '3'.repeat(64), pubkey: B, kind: 7, content: 'nostr kind' })
+    const afterLimit = event({ id: '4'.repeat(64), pubkey: A, kind: 7, content: 'nostr later' })
+
+    assert.equal(await db.add(ignored), true)
+    assert.equal(await db.add(authorMatch), true)
+    assert.equal(await db.add(kindMatch), true)
+
+    assert.deepEqual(await withTimeout(first), { value: authorMatch.id, done: false })
+    assert.deepEqual(await withTimeout(second), { value: kindMatch.id, done: false })
+    assert.deepEqual(await iterator.next(), { done: true })
+
+    assert.equal(await db.add(afterLimit), true)
+    assert.deepEqual(await iterator.next(), { done: true })
+  })
+
   it('publishes ephemeral events without storing them', async () => {
     const db = getNostrDb(`${OWNER}27`)
     const iterator = db.subscribe({ kinds: [20000] })
@@ -1002,7 +1079,8 @@ describe('nostrdb', () => {
       'search:autocomplete:true',
       'ids_only',
       '!ids',
-      '&tags'
+      '&tags',
+      'multi_filters'
     ])
     db.bc?.close()
   })

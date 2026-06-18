@@ -80,6 +80,24 @@ export function getNostrDb (ownerPubkey) {
   return storeCache.get(ownerPubkey)
 }
 
+/*
+Usage:
+
+  const db = getNostrDb(ownerPubkey)
+
+  await db.add(event)
+  const events = await db.query({ authors: [pubkey], kinds: [1], limit: 20 })
+  const ids = await db.query({ since, until }, { ids_only: true })
+  const total = await db.count([{ kinds: [1] }, { kinds: [30023] }])
+
+  const sub = db.subscribe({ '#t': ['nostr'], search: 'relay' })
+  for await (const event of sub) {
+    // receives future matching events added through this module or another tab
+  }
+
+Filters follow NIP-01 shape plus local extensions: search, ids_only, !ids,
+&<tag> AND filters, and top-level filter arrays as OR clauses.
+*/
 export class NostrDb {
   constructor (ownerPubkey) {
     this.ownerPubkey = ownerPubkey
@@ -97,6 +115,8 @@ export class NostrDb {
     }
   }
 
+  // Public ingest path: valid transient events reach live subscribers, while
+  // durable events are persisted through addEvent() before being published.
   async add (event) {
     if (!isValidEventShape(event)) return false
 
@@ -110,6 +130,8 @@ export class NostrDb {
     return saved
   }
 
+  // Durable write path used internally by add() and compaction; it updates
+  // IndexedDB/tombstones but does not publish events by itself.
   async addEvent (event, { consumeDeletionRequestIds = [] } = {}) {
     if (!isValidEventShape(event)) return false
 
@@ -377,27 +399,25 @@ export class NostrDb {
     }
   }
 
-  async query (filter) {
-    assertSingleFilter(filter)
-
+  async query (filterOrFilters, options = {}) {
     const db = await openNostrDb(this.ownerPubkey)
     if (!db) return []
 
     try {
-      return await queryRecords(db, filter, { countOnly: false, ignoreLimit: false })
+      const filters = parseFilterInput(filterOrFilters, options)
+      return await queryParsedFilters(db, filters, { countOnly: false, ignoreLimit: false })
     } catch {
       return []
     }
   }
 
-  async count (filter) {
-    assertSingleFilter(filter)
-
+  async count (filterOrFilters, options = {}) {
     const db = await openNostrDb(this.ownerPubkey)
     if (!db) return 0
 
     try {
-      return await queryRecords(db, filter, { countOnly: true, ignoreLimit: false })
+      const filters = parseFilterInput(filterOrFilters, options)
+      return await queryParsedFilters(db, filters, { countOnly: true, ignoreLimit: false })
     } catch {
       return 0
     }
@@ -410,7 +430,8 @@ export class NostrDb {
       'search:autocomplete:true',
       'ids_only',
       '!ids',
-      '&tags'
+      '&tags',
+      'multi_filters'
     ]
   }
 
@@ -420,11 +441,12 @@ export class NostrDb {
     return deleteNostrDb(this.ownerPubkey)
   }
 
-  subscribe (filter) {
-    assertSingleFilter(filter)
-
-    const parsed = new ParsedFilter(filter)
-    const subscription = createSubscription(parsed)
+  subscribe (filterOrFilters, options = {}) {
+    const filters = parseFilterInput(filterOrFilters, options)
+    const subscription = createSubscription(filters, {
+      idsOnly: filters[0]?.idsOnly === true,
+      limit: filters[0]?.limit ?? Infinity
+    })
     this.subscriptions.add(subscription)
 
     return subscription.iterator(() => {
@@ -542,8 +564,71 @@ function createIndexIfMissing (store, name, keyPath, options) {
 const MAX_LIMIT = 200
 const KEY_GATED_EXCLUDE_THRESHOLD = 128
 const KEY_GATED_GET_BATCH_SIZE = 64
+
+function parseFilterInput (filterOrFilters, options = {}) {
+  const rawFilters = normalizeFilterList(filterOrFilters)
+  if (rawFilters.length === 0) return []
+
+  const controls = resolveFilterControls(rawFilters, normalizeOptions(options), {
+    multi: Array.isArray(filterOrFilters)
+  })
+
+  return rawFilters.map(filter => new ParsedFilter(filter, controls))
+}
+
+function normalizeFilterList (filterOrFilters) {
+  return Array.isArray(filterOrFilters) ? filterOrFilters : [filterOrFilters]
+}
+
+function normalizeOptions (options) {
+  return options && typeof options === 'object' && !Array.isArray(options) ? options : {}
+}
+
+function resolveFilterControls (rawFilters, options, { multi }) {
+  const first = rawFilters[0] && typeof rawFilters[0] === 'object' && !Array.isArray(rawFilters[0])
+    ? rawFilters[0]
+    : {}
+  const controls = { ignoreFields: new Set() }
+  const optionLimit = normalizeOptionalLimit(options.limit)
+
+  if (multi || optionLimit !== undefined) {
+    controls.hasLimit = true
+    controls.limit = optionLimit ?? normalizeLimit(first.limit)
+    controls.ignoreFields.add('limit')
+  }
+
+  if (multi || typeof options.ids_only === 'boolean') {
+    controls.hasIdsOnly = true
+    controls.idsOnly = typeof options.ids_only === 'boolean' ? options.ids_only : first.ids_only === true
+    controls.ignoreFields.add('ids_only')
+  }
+
+  if (multi || typeof options.search === 'string') {
+    controls.hasSearch = true
+    controls.search = typeof options.search === 'string' ? options.search : first.search
+    controls.ignoreFields.add('search')
+  }
+
+  return controls
+}
+
+function normalizeOptionalLimit (value) {
+  return Number.isInteger(value) && value >= 0 ? value : undefined
+}
+
 async function queryRecords (db, rawFilter, { countOnly, ignoreLimit }) {
-  const filter = new ParsedFilter(rawFilter)
+  return queryParsedFilters(db, parseFilterInput(rawFilter), { countOnly, ignoreLimit })
+}
+
+async function queryParsedFilters (db, filters, { countOnly, ignoreLimit }) {
+  const liveFilters = filters.filter(filter => !filter.neverMatch)
+  if (liveFilters.length === 0) return countOnly ? 0 : []
+  if (liveFilters.length === 1) return queryParsedFilterRecords(db, liveFilters[0], { countOnly, ignoreLimit })
+
+  return queryMultipleParsedFilters(db, liveFilters, { countOnly, ignoreLimit })
+}
+
+async function queryParsedFilterRecords (db, filter, { countOnly, ignoreLimit }) {
   if (filter.neverMatch) return countOnly ? 0 : []
 
   const limit = ignoreLimit ? Infinity : Math.min(countOnly ? Infinity : MAX_LIMIT, filter.limit)
@@ -620,6 +705,157 @@ async function queryRecords (db, rawFilter, { countOnly, ignoreLimit }) {
 
   results.sort(filter.sortOld ? compareOldest : compareNewest)
   return projectQueryResults(Number.isFinite(limit) ? results.slice(0, limit) : results, filter)
+}
+
+async function queryMultipleParsedFilters (db, filters, { countOnly, ignoreLimit }) {
+  const limit = ignoreLimit ? Infinity : Math.min(countOnly ? Infinity : MAX_LIMIT, filters[0].limit)
+  if (limit <= 0) return countOnly ? 0 : []
+
+  if (filters[0].searchText) {
+    return queryMultipleSearchFilters(db, filters, { countOnly, limit })
+  }
+
+  if (!countOnly && filters[0].idsOnly && filters.every(filter => canUseKeyOnlyCursor(planQuery(filter), filter))) {
+    return queryMultipleIdsWithKeyCursor(db, filters, { limit })
+  }
+
+  const now = currentUnixTime()
+  const seen = new Set()
+  const results = []
+  const compare = filters[0].sortOld ? compareOldest : compareNewest
+
+  const emit = event => {
+    if (seen.has(event.id)) return true
+
+    seen.add(event.id)
+    if (countOnly) return !Number.isFinite(limit) || seen.size < limit
+
+    results.push(event)
+    if (Number.isFinite(limit) && results.length > limit) {
+      results.sort(compare)
+      results.length = limit
+    }
+    return true
+  }
+
+  for (const filter of filters) {
+    const keepGoing = await scanParsedFilterEvents(db, filter, { now, limit, countOnly, onEvent: emit })
+    if (!keepGoing || (countOnly && seen.size >= limit)) break
+  }
+
+  if (countOnly) return Number.isFinite(limit) ? Math.min(seen.size, limit) : seen.size
+
+  results.sort(compare)
+  return projectQueryResults(Number.isFinite(limit) ? results.slice(0, limit) : results, filters[0])
+}
+
+async function queryMultipleIdsWithKeyCursor (db, filters, { limit }) {
+  const now = currentUnixTime()
+  const seen = new Set()
+  const results = []
+  const compare = filters[0].sortOld ? compareOldest : compareNewest
+
+  for (const filter of filters) {
+    const plan = planQuery(filter)
+    const direction = filter.sortOld ? 'next' : 'prev'
+    const candidates = await collectKeyGateCandidates(db, plan, filter, direction, { limit, now })
+
+    for (const candidate of candidates) {
+      if (seen.has(candidate.id)) continue
+
+      seen.add(candidate.id)
+      results.push(candidate)
+      if (Number.isFinite(limit) && results.length > limit) {
+        results.sort(compare)
+        results.length = limit
+      }
+    }
+  }
+
+  results.sort(compare)
+  return (Number.isFinite(limit) ? results.slice(0, limit) : results).map(result => result.id)
+}
+
+async function queryMultipleSearchFilters (db, filters, { countOnly, limit }) {
+  const now = currentUnixTime()
+  const candidatesById = new Map()
+
+  for (const filter of filters) {
+    const plan = planQuery(filter)
+    const direction = filter.sortOld ? 'next' : 'prev'
+    const candidates = await collectSearchCandidates(db, plan, filter, direction, { countOnly, limit, now })
+
+    for (const candidate of candidates) {
+      if (!candidatesById.has(candidate.event.id)) candidatesById.set(candidate.event.id, candidate)
+      if (countOnly && Number.isFinite(limit) && candidatesById.size >= limit) {
+        return limit
+      }
+    }
+  }
+
+  if (countOnly) return Number.isFinite(limit) ? Math.min(candidatesById.size, limit) : candidatesById.size
+
+  const ranked = rankSearchCandidates([...candidatesById.values()], filters[0], compareSearchTime)
+  const events = ranked
+    .slice(0, Number.isFinite(limit) ? limit : ranked.length)
+    .map(candidate => candidate.event)
+  return projectQueryResults(events, filters[0])
+}
+
+async function scanParsedFilterEvents (db, filter, { now, limit, countOnly, onEvent }) {
+  const plan = planQuery(filter)
+  const direction = filter.sortOld ? 'next' : 'prev'
+  const seen = new Set()
+
+  const emit = stored => {
+    if (!stored || !isStoredRecordLive(stored, now) || !filter.matches(stored.event)) return true
+    if (seen.has(stored.event.id)) return true
+
+    seen.add(stored.event.id)
+    return onEvent(stored.event) !== false
+  }
+
+  if (filter.searchText) {
+    const candidates = await collectSearchCandidates(db, plan, filter, direction, { countOnly, limit, now })
+    const events = countOnly
+      ? candidates.map(candidate => candidate.event)
+      : rankSearchCandidates(candidates, filter, compareSearchTime).map(candidate => candidate.event)
+
+    for (const event of events) {
+      if (seen.has(event.id)) continue
+      seen.add(event.id)
+      if (onEvent(event) === false) return false
+    }
+    return true
+  }
+
+  if (plan.type === 'direct') {
+    for (const cursor of plan.cursors) {
+      const stored = await run('get', [cursor.key], EVENTS_STORE, cursor.indexName, { db })
+        .then(v => v.result)
+      if (emit(stored) === false) return false
+    }
+    return true
+  }
+
+  for (const cursor of plan.cursors) {
+    let stopped = false
+
+    await scanCursor(db, EVENTS_STORE, cursor.indexName, cursor.range, {
+      direction,
+      onItem: stored => {
+        if (emit(stored) === false) {
+          stopped = true
+          return false
+        }
+        return true
+      }
+    })
+
+    if (stopped) return false
+  }
+
+  return true
 }
 
 function projectQueryResults (events, filter) {
@@ -1045,22 +1281,37 @@ function getReplaceableCursors (filter) {
   return cursors
 }
 
-function createSubscription (filter) {
+function createSubscription (filters, { idsOnly = false, limit = Infinity } = {}) {
   const queue = []
   const waiters = []
   let closed = false
+  let yielded = 0
+  let onClose
 
-  return {
+  const close = () => {
+    if (closed) return
+    closed = true
+    onClose?.()
+    while (waiters.length > 0) {
+      waiters.shift().resolve({ done: true })
+    }
+  }
+
+  const subscription = {
     push (event) {
-      if (closed || !filter.matches(event)) return
-      const value = filter.idsOnly ? event.id : event
+      if (closed || !filters.some(filter => filter.matches(event))) return
+      const value = idsOnly ? event.id : event
+      yielded++
       if (waiters.length > 0) {
         waiters.shift().resolve({ value, done: false })
       } else {
         queue.push(value)
       }
+      if (yielded >= limit) close()
     },
-    iterator (onClose) {
+    iterator (closeSubscription) {
+      onClose = closeSubscription
+      if (limit <= 0 || filters.length === 0) close()
       return {
         [Symbol.asyncIterator] () {
           return this
@@ -1076,20 +1327,17 @@ function createSubscription (filter) {
           return p.promise
         },
         return () {
-          closed = true
-          onClose()
-          while (waiters.length > 0) {
-            waiters.shift().resolve({ done: true })
-          }
+          close()
           return Promise.resolve({ done: true })
         }
       }
     }
   }
+  return subscription
 }
 
 export class ParsedFilter {
-  constructor (filter) {
+  constructor (filter, controls = {}) {
     this.ids = undefined
     this.authors = undefined
     this.kinds = undefined
@@ -1114,6 +1362,7 @@ export class ParsedFilter {
     }
 
     for (const [key, value] of Object.entries(filter)) {
+      if (controls.ignoreFields?.has(key)) continue
       if ((key.startsWith('#') || key.startsWith('&')) && key.length !== 2) continue
 
       if (Array.isArray(value) && value.length === 0 && key !== '!ids') {
@@ -1155,6 +1404,15 @@ export class ParsedFilter {
       } else if (key.startsWith('&')) {
         this.andTags.push({ name: key.slice(1), values: normalizeTagValues(value) })
       }
+    }
+
+    if (controls.hasLimit) this.limit = controls.limit
+    if (controls.hasIdsOnly) this.idsOnly = controls.idsOnly
+    if (controls.hasSearch) {
+      const search = parseSearch(controls.search)
+      this.sortOld = search.sortOld
+      this.autocomplete = search.autocomplete
+      this.searchText = search.text
     }
 
     this.tags = pruneOrTagsCoveredByAndTags(this.tags, this.andTags)
@@ -1607,10 +1865,6 @@ function normalizeTimestamp (value, fallback) {
 
 function normalizeLimit (value) {
   return Number.isInteger(value) && value >= 0 ? value : Infinity
-}
-
-function assertSingleFilter (filter) {
-  if (Array.isArray(filter)) throw new TypeError('nostrdb accepts a single filter object, not an array')
 }
 
 function compareNewest (a, b) {
