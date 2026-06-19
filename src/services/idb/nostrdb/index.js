@@ -1,5 +1,7 @@
 import { sha256 } from '@noble/hashes/sha2.js'
 
+import { eventKinds } from '#constants/event.js'
+import { appIdToDbAppRef } from '#helpers/app.js'
 import { base16ToBase64, base64ToBase16, bytesToBase64 } from '#helpers/base64.js'
 import { run } from '#services/idb/browser/index.js'
 import {
@@ -21,6 +23,7 @@ export const NOSTRDB_VERSION = 1
 export const NOSTRDB_PREFIX = '44billion_nostrdb:'
 export const EVENTS_STORE = 'events'
 export const DELETIONS_STORE = 'deletions'
+export const KIND_REGISTRY_STORE = 'kindRegistry'
 
 /*
 IndexedDB schema, scoped per owner DB name:
@@ -32,11 +35,13 @@ events, keyPath "i"
   k     event kind
   ca    created_at timestamp
   ex    optional NIP-40 expiration timestamp
+  ap    optional multiEntry app refs for custom/unknown app-data ownership
   t     multiEntry tag index keys: [tagName, sha256(tagValue), created_at]
   event original Nostr event
 
 events indexes
   byAddress   a, unique, sparse
+  byApp       ap, multiEntry
   byCreatedAt ca
   byExpiration ex
   byPubkey    [p, ca]
@@ -52,9 +57,14 @@ deletions, keyPath "ref"
 
 deletions indexes
   byRequest c, multiEntry
+
+kindRegistry, keyPath "key"
+  key   registry record name, currently "appNeutralKinds"
+  kinds sorted app-neutral event kinds
 */
 export const INDEX = {
   address: 'byAddress',
+  app: 'byApp',
   createdAt: 'byCreatedAt',
   expiration: 'byExpiration',
   pubkey: 'byPubkey',
@@ -70,11 +80,14 @@ export const DELETION_INDEX = {
 const HEX64_RE = /^[0-9a-f]{64}$/i
 const SIG_RE = /^[0-9a-f]{128}$/i
 const HONORARY_EXPIRATION_SKEW = 60
+const REGULAR_CUSTOM_APP_DATA_KIND = eventKinds.REGULAR_CUSTOM_APP_DATA ?? 78
+const CUSTOM_APP_DATA_KIND = eventKinds.CUSTOM_APP_DATA ?? 30078
+const APP_NEUTRAL_KINDS_KEY = 'appNeutralKinds'
 const textEncoder = new TextEncoder()
 const dbCache = new Map()
 const storeCache = new Map()
 
-const ADD_FAILURE_CODES = new Set(['invalid', 'expired', 'blocked', 'unavailable', 'error'])
+const ADD_FAILURE_CODES = new Set(['invalid', 'invalid_app', 'expired', 'blocked', 'unavailable', 'error'])
 const ADD_MESSAGES = {
   stored: 'Event was stored.',
   replaced: 'Event replaced an older stored coordinate event.',
@@ -82,6 +95,7 @@ const ADD_MESSAGES = {
   superseded: 'A newer or tie-winning coordinate event is already stored.',
   published: 'Event was published to subscribers without being stored.',
   invalid: 'Event shape is invalid.',
+  invalid_app: 'App id is invalid.',
   expired: 'Event is expired.',
   blocked: 'Event is blocked by a deletion request.',
   unavailable: 'IndexedDB is unavailable.',
@@ -174,10 +188,13 @@ export class NostrDb {
 
   // Public ingest path: valid transient events reach live subscribers, while
   // durable events are persisted through addEvent() before being published.
-  async add (event) {
+  async add (event, { appId } = {}) {
     if (!isValidEventShape(event)) {
       return this.reportAddResult('add', event, addResult('invalid'))
     }
+
+    const appRef = normalizeOptionalAppRef(appId)
+    if (appRef === false) return this.reportAddResult('add', event, addResult('invalid_app'))
 
     const now = currentUnixTime()
 
@@ -190,8 +207,8 @@ export class NostrDb {
       return addResult('published', { published: true })
     }
 
-    const result = await this.addEvent(event, { now, log: false })
-    if (result.stored) {
+    const result = await this.addEvent(event, { now, appRef, log: false })
+    if (result.stored && (result.code === 'stored' || result.code === 'replaced')) {
       this.publish(event, true)
       return publishResult(result)
     }
@@ -200,9 +217,19 @@ export class NostrDb {
 
   // Durable write path used internally by add() and compaction; it updates
   // IndexedDB/tombstones but does not publish events by itself.
-  async addEvent (event, { consumeDeletionRequestIds = [], now = currentUnixTime(), log = true } = {}) {
+  async addEvent (event, {
+    appId,
+    appRef = normalizeOptionalAppRef(appId),
+    consumeDeletionRequestIds = [],
+    now = currentUnixTime(),
+    log = true
+  } = {}) {
     if (!isValidEventShape(event)) {
       return this.reportAddResult('addEvent', event, addResult('invalid'), { log })
+    }
+
+    if (appRef === false) {
+      return this.reportAddResult('addEvent', event, addResult('invalid_app'), { log })
     }
 
     if (isExpiredForIngest(event, now)) {
@@ -217,7 +244,7 @@ export class NostrDb {
     const db = await openNostrDb(this.ownerPubkey)
     if (!db) return this.reportAddResult('addEvent', event, addResult('unavailable'), { log })
 
-    const record = toStoredRecord(event, { now })
+    const record = toStoredRecord(event, { now, appRef })
     let replaced = false
 
     try {
@@ -228,8 +255,10 @@ export class NostrDb {
         .then(v => v.result)
 
       if (existingById) {
+        const changed = mergeAppRef(existingById, appRef)
+        if (changed) await run('put', [existingById], EVENTS_STORE, null, { db, tx })
         await done
-        return addResult('duplicate')
+        return addResult('duplicate', { stored: changed })
       }
 
       if (await isBlockedByDeletion(db, tx, event)) {
@@ -242,11 +271,14 @@ export class NostrDb {
           .then(v => v.result)
 
         if (existingByAddress && !isNewer(event, existingByAddress.event)) {
+          const changed = mergeAppRef(existingByAddress, appRef)
+          if (changed) await run('put', [existingByAddress], EVENTS_STORE, null, { db, tx })
           await done
-          return addResult('superseded')
+          return addResult('superseded', { stored: changed })
         }
 
         if (existingByAddress) {
+          mergeAppRefs(record, existingByAddress.ap)
           await deleteStoredEvent(db, tx, existingByAddress)
           replaced = true
         }
@@ -535,6 +567,27 @@ export class NostrDb {
     return deleteNostrDb(this.ownerPubkey)
   }
 
+  async deleteEventsByApp (appId) {
+    const appRef = normalizeOptionalAppRef(appId)
+    if (!appRef) return 0
+
+    const db = await openNostrDb(this.ownerPubkey)
+    if (!db) return 0
+
+    try {
+      let deleted = 0
+
+      while (true) {
+        const idKeys = await collectAppEventIdKeyBatch(db, appRef)
+        if (idKeys.length === 0) return deleted
+
+        deleted += await deleteAppEventBatch(db, appRef, idKeys)
+      }
+    } catch {
+      return 0
+    }
+  }
+
   subscribe (filterOrFilters, options = {}) {
     const filters = parseFilterInput(filterOrFilters, options)
     const subscription = createSubscription(filters, {
@@ -620,7 +673,7 @@ function initNostrDb (dbName) {
       db.close()
       dbCache.delete(dbName)
     }
-    p.resolve(db)
+    syncAppNeutralKindRegistry(db).finally(() => p.resolve(db))
   }
   req.onupgradeneeded = e => {
     const db = e.target.result
@@ -629,6 +682,7 @@ function initNostrDb (dbName) {
 
     store = createObjectStoreIfMissing(db, tx, EVENTS_STORE, { keyPath: 'i' })
     createIndexIfMissing(store, INDEX.address, 'a', { unique: true })
+    createIndexIfMissing(store, INDEX.app, 'ap', { multiEntry: true })
     createIndexIfMissing(store, INDEX.createdAt, 'ca')
     createIndexIfMissing(store, INDEX.expiration, 'ex')
     createIndexIfMissing(store, INDEX.pubkey, ['p', 'ca'])
@@ -638,6 +692,8 @@ function initNostrDb (dbName) {
 
     store = createObjectStoreIfMissing(db, tx, DELETIONS_STORE, { keyPath: 'ref' })
     createIndexIfMissing(store, DELETION_INDEX.request, 'c', { multiEntry: true })
+
+    createObjectStoreIfMissing(db, tx, KIND_REGISTRY_STORE, { keyPath: 'key' })
   }
 
   return p.promise
@@ -655,9 +711,123 @@ function createIndexIfMissing (store, name, keyPath, options) {
   }
 }
 
+async function syncAppNeutralKindRegistry (db) {
+  try {
+    const currentKinds = appNeutralKindList()
+    const current = kindRegistryRecord(currentKinds)
+    const tx = db.transaction([KIND_REGISTRY_STORE], 'readonly')
+    const done = txDone(tx)
+    const previous = await run('get', [APP_NEUTRAL_KINDS_KEY], KIND_REGISTRY_STORE, null, { db, tx })
+      .then(v => v.result)
+
+    await done
+
+    if (Array.isArray(previous?.kinds) && !sameKindList(previous.kinds, currentKinds)) {
+      const previousKinds = new Set(previous.kinds)
+      const newlyKnownKinds = currentKinds
+        .filter(kind => !previousKinds.has(kind))
+
+      if (newlyKnownKinds.length > 0) {
+        await removeAppRefsFromKinds(db, newlyKnownKinds)
+      }
+    }
+
+    const writeTx = db.transaction([KIND_REGISTRY_STORE], 'readwrite')
+    const writeDone = txDone(writeTx)
+    await run('put', [current], KIND_REGISTRY_STORE, null, { db, tx: writeTx })
+    await writeDone
+  } catch {
+  }
+}
+
+async function removeAppRefsFromKinds (db, kinds) {
+  const idKeys = []
+
+  for (const kind of kinds) {
+    const range = IDBKeyRange.bound([kind, 0], [kind, Infinity])
+    await scanKeyCursor(db, EVENTS_STORE, INDEX.kind, range, {
+      onItem: cursor => {
+        if (!idKeys.some(idKey => compareKeys(idKey, cursor.primaryKey) === 0)) {
+          idKeys.push(cursor.primaryKey)
+        }
+        return true
+      }
+    })
+  }
+
+  if (idKeys.length === 0) return
+
+  const tx = db.transaction([EVENTS_STORE], 'readwrite')
+  const done = txDone(tx)
+  const cleanupKinds = new Set(kinds)
+
+  for (const idKey of idKeys) {
+    const stored = await run('get', [idKey], EVENTS_STORE, null, { db, tx })
+      .then(v => v.result)
+    if (!stored?.ap || !cleanupKinds.has(stored.k) || isCustomAppDataKind(stored.k)) continue
+
+    delete stored.ap
+    await run('put', [stored], EVENTS_STORE, null, { db, tx })
+  }
+
+  await done
+}
+
+async function collectAppEventIdKeyBatch (db, appRef) {
+  const idKeys = []
+
+  await scanKeyCursor(db, EVENTS_STORE, INDEX.app, IDBKeyRange.only(appRef), {
+    onItem: cursor => {
+      if (!idKeys.some(idKey => compareKeys(idKey, cursor.primaryKey) === 0)) {
+        idKeys.push(cursor.primaryKey)
+      }
+      return idKeys.length < APP_DELETE_BATCH_SIZE
+    }
+  })
+
+  return idKeys
+}
+
+async function deleteAppEventBatch (db, appRef, idKeys) {
+  const tx = db.transaction([EVENTS_STORE, DELETIONS_STORE], 'readwrite')
+  const done = txDone(tx)
+  let deleted = 0
+
+  for (const idKey of idKeys) {
+    const stored = await run('get', [idKey], EVENTS_STORE, null, { db, tx })
+      .then(v => v.result)
+    if (!stored) continue
+
+    const refs = removeAppRef(stored.ap, appRef)
+    if (refs.length === 0) {
+      await deleteStoredEvent(db, tx, stored)
+      deleted++
+    } else {
+      stored.ap = refs
+      await run('put', [stored], EVENTS_STORE, null, { db, tx })
+    }
+  }
+
+  await done
+  return deleted
+}
+
+function kindRegistryRecord (kinds = appNeutralKindList()) {
+  return {
+    key: APP_NEUTRAL_KINDS_KEY,
+    kinds
+  }
+}
+
+function sameKindList (a, b) {
+  return Array.isArray(a) && Array.isArray(b) && a.length === b.length &&
+    a.every((kind, index) => kind === b[index])
+}
+
 const MAX_LIMIT = 200
 const KEY_GATED_EXCLUDE_THRESHOLD = 128
 const KEY_GATED_GET_BATCH_SIZE = 64
+const APP_DELETE_BATCH_SIZE = 64
 
 function parseFilterInput (filterOrFilters, options = {}) {
   const rawFilters = normalizeFilterList(filterOrFilters)
@@ -1557,7 +1727,7 @@ export class ParsedFilter {
   }
 }
 
-export function toStoredRecord (event, { now = currentUnixTime() } = {}) {
+export function toStoredRecord (event, { now = currentUnixTime(), appRef } = {}) {
   const coordinate = getCoordinate(event)
   const record = {
     i: eventIdIndexKey(event.id),
@@ -1571,8 +1741,96 @@ export function toStoredRecord (event, { now = currentUnixTime() } = {}) {
 
   if (coordinate !== null) record.a = addressKey(event.kind, event.pubkey, coordinate)
   if (expiration !== null && expiration > now) record.ex = expiration
+  if (appRef && isAppTrackableKind(event.kind)) record.ap = [appRef]
 
   return record
+}
+
+function normalizeOptionalAppRef (appId) {
+  if (appId === undefined) return undefined
+
+  try {
+    return appIdToDbAppRef(appId)
+  } catch {
+    return false
+  }
+}
+
+function mergeAppRef (stored, appRef) {
+  if (!stored?.event || !appRef || !isAppTrackableKind(stored.event.kind)) return false
+
+  const refs = normalizeAppRefs(stored.ap)
+  if (refs.some(ref => sameAppRef(ref, appRef))) return false
+
+  refs.push(appRef)
+  stored.ap = sortAppRefs(refs)
+  return true
+}
+
+function mergeAppRefs (stored, refs) {
+  let changed = false
+
+  for (const ref of normalizeAppRefs(refs)) {
+    changed = mergeAppRef(stored, ref) || changed
+  }
+
+  return changed
+}
+
+function removeAppRef (refs, appRef) {
+  return normalizeAppRefs(refs)
+    .filter(ref => !sameAppRef(ref, appRef))
+}
+
+function normalizeAppRefs (refs) {
+  if (!Array.isArray(refs)) return []
+
+  const unique = []
+  for (const ref of refs) {
+    if (!isAppRef(ref)) continue
+    if (!unique.some(existing => sameAppRef(existing, ref))) unique.push(ref)
+  }
+  return sortAppRefs(unique)
+}
+
+function sortAppRefs (refs) {
+  return refs.sort(compareKeys)
+}
+
+function sameAppRef (a, b) {
+  return compareKeys(a, b) === 0
+}
+
+function isAppRef (ref) {
+  return (
+    Array.isArray(ref) &&
+    ref.length === 3 &&
+    typeof ref[0] === 'string' &&
+    isBinaryKey(ref[1]) &&
+    typeof ref[2] === 'string'
+  )
+}
+
+function isAppTrackableKind (kind) {
+  return isCustomAppDataKind(kind) || !appNeutralKindSet().has(kind)
+}
+
+function isCustomAppDataKind (kind) {
+  return kind === REGULAR_CUSTOM_APP_DATA_KIND || kind === CUSTOM_APP_DATA_KIND
+}
+
+let appNeutralKindsCache
+let appNeutralKindSetCache
+
+function appNeutralKindList () {
+  return (appNeutralKindsCache ??= [...new Set(Object.values(eventKinds))]
+    .filter(Number.isInteger)
+    .filter(kind => !isCustomAppDataKind(kind))
+    .sort((a, b) => a - b))
+}
+
+function appNeutralKindSet () {
+  return (appNeutralKindSetCache ??= new Set(appNeutralKindList()))
 }
 
 export function getCoordinate (event) {
@@ -1992,8 +2250,20 @@ function compareKeys (a, b) {
     }
     return a.length - b.length
   }
+  if (isBinaryKey(a) && isBinaryKey(b)) {
+    const aBytes = new Uint8Array(a.buffer, a.byteOffset, a.byteLength)
+    const bBytes = new Uint8Array(b.buffer, b.byteOffset, b.byteLength)
+    for (let i = 0; i < Math.min(aBytes.length, bBytes.length); i++) {
+      if (aBytes[i] !== bBytes[i]) return aBytes[i] - bBytes[i]
+    }
+    return aBytes.length - bBytes.length
+  }
   if (a === b) return 0
   return a < b ? -1 : 1
+}
+
+function isBinaryKey (value) {
+  return ArrayBuffer.isView(value)
 }
 
 function sameTags (a, b) {

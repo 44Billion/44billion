@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  INDEX,
+  KIND_REGISTRY_STORE,
   NostrDb,
   NOSTRDB_PREFIX,
   ParsedFilter,
@@ -14,15 +16,20 @@ import {
   eventIdIndexKey,
   getNostrDb,
   isNewer,
+  openNostrDb,
   pubkeyIndexKey,
   toStoredRecord
 } from '../../src/services/idb/nostrdb/index.js'
+import { eventKinds } from '../../src/constants/event.js'
+import { appIdToDbAppRef } from '../../src/helpers/app.js'
 
 const A = 'a'.repeat(64)
 const B = 'b'.repeat(64)
 const C = 'c'.repeat(64)
 const OWNER = 'f'.repeat(64)
 const SIG = '0'.repeat(128)
+const APP1 = `a${'1'.repeat(43)}one`
+const APP2 = `a${'2'.repeat(43)}two`
 let consoleErrors = []
 let consoleWarns = []
 
@@ -74,6 +81,146 @@ describe('nostrdb', () => {
 
     assert.equal(deletionEventRef(id, A), `e:${eventIdIndexKey(id)}:${pubkeyIndexKey(A)}`)
     assert.equal(deletionCoordinateRef(30023, A, 'post'), `a:${addressKey(30023, A, 'post').join(':')}`)
+  })
+
+  it('stores app refs only for custom app-data and unknown kinds', async () => {
+    const owner = `${OWNER}72`
+    const db = getNostrDb(owner)
+    const appRef = appIdToDbAppRef(APP1)
+    const regularCustom = event({ id: '1'.repeat(64), kind: eventKinds.REGULAR_CUSTOM_APP_DATA })
+    const addressableCustom = event({ id: '2'.repeat(64), kind: eventKinds.CUSTOM_APP_DATA, tags: [['d', 'settings']] })
+    const unknown = event({ id: '3'.repeat(64), kind: 40000 })
+    const known = event({ id: '4'.repeat(64), kind: eventKinds.TEXT_NOTE })
+
+    assert.deepEqual(toStoredRecord(regularCustom, { appRef }).ap, [appRef])
+    assert.deepEqual(toStoredRecord(addressableCustom, { appRef }).ap, [appRef])
+    assert.deepEqual(toStoredRecord(unknown, { appRef }).ap, [appRef])
+    assert.equal('ap' in toStoredRecord(known, { appRef }), false)
+
+    assertAddOk(await db.add(regularCustom, { appId: APP1 }))
+    assertAddOk(await db.add(addressableCustom, { appId: APP1 }))
+    assertAddOk(await db.add(unknown, { appId: APP1 }))
+    assertAddOk(await db.add(known, { appId: APP1 }))
+
+    const store = fakeStore(owner, 'events')
+    assert.equal(store.indexes.has(INDEX.app), true)
+    assert.deepEqual(store.records.get(eventIdIndexKey(regularCustom.id)).ap, [appRef])
+    assert.deepEqual(store.records.get(eventIdIndexKey(addressableCustom.id)).ap, [appRef])
+    assert.deepEqual(store.records.get(eventIdIndexKey(unknown.id)).ap, [appRef])
+    assert.equal('ap' in store.records.get(eventIdIndexKey(known.id)), false)
+    assert.equal(fakeStore(owner, KIND_REGISTRY_STORE).records.has('appNeutralKinds'), true)
+  })
+
+  it('rejects invalid app ids without storing events', async () => {
+    const owner = `${OWNER}73`
+    const db = getNostrDb(owner)
+    const custom = event({ id: '1'.repeat(64), kind: eventKinds.CUSTOM_APP_DATA, tags: [['d', 'settings']] })
+
+    assertAddNotOk(await db.add(custom, { appId: 'nope' }), { code: 'invalid_app' })
+    assert.deepEqual(await db.query({ ids: [custom.id] }), [])
+  })
+
+  it('merges app refs into duplicate and superseded custom events', async () => {
+    const owner = `${OWNER}74`
+    const db = getNostrDb(owner)
+    const duplicate = event({ id: '1'.repeat(64), kind: eventKinds.REGULAR_CUSTOM_APP_DATA })
+    const newer = event({ id: '2'.repeat(64), kind: eventKinds.CUSTOM_APP_DATA, created_at: 20, tags: [['d', 'settings']] })
+    const stale = event({ id: '3'.repeat(64), kind: eventKinds.CUSTOM_APP_DATA, created_at: 10, tags: [['d', 'settings']] })
+
+    assertAddOk(await db.add(duplicate, { appId: APP1 }), { code: 'stored', stored: true })
+    assertAddOk(await db.add(duplicate, { appId: APP2 }), { code: 'duplicate', stored: true, published: false })
+    assertAppRefs(fakeStore(owner, 'events').records.get(eventIdIndexKey(duplicate.id)), [APP1, APP2])
+
+    assertAddOk(await db.add(newer, { appId: APP1 }), { code: 'stored', stored: true })
+    assertAddOk(await db.add(stale, { appId: APP2 }), { code: 'superseded', stored: true, published: false })
+    assertAppRefs(fakeStore(owner, 'events').records.get(eventIdIndexKey(newer.id)), [APP1, APP2])
+    assert.deepEqual((await db.query({ kinds: [eventKinds.CUSTOM_APP_DATA], '#d': ['settings'] })).map(e => e.id), [newer.id])
+  })
+
+  it('preserves app refs across coordinate replacement', async () => {
+    const owner = `${OWNER}75`
+    const db = getNostrDb(owner)
+    const old = event({ id: '1'.repeat(64), kind: eventKinds.CUSTOM_APP_DATA, created_at: 10, tags: [['d', 'settings']] })
+    const newer = event({ id: '2'.repeat(64), kind: eventKinds.CUSTOM_APP_DATA, created_at: 20, tags: [['d', 'settings']] })
+
+    assertAddOk(await db.add(old, { appId: APP1 }), { code: 'stored', stored: true })
+    assertAddOk(await db.add(newer, { appId: APP2 }), { code: 'replaced', stored: true })
+    assertAppRefs(fakeStore(owner, 'events').records.get(eventIdIndexKey(newer.id)), [APP1, APP2])
+    assert.deepEqual(await db.query({ ids: [old.id] }), [])
+  })
+
+  it('deletes exclusive app rows and only unlinks shared app rows', async () => {
+    const owner = `${OWNER}76`
+    const db = getNostrDb(owner)
+    const exclusive = event({ id: '1'.repeat(64), kind: eventKinds.CUSTOM_APP_DATA, tags: [['d', 'one']] })
+    const shared = event({ id: '2'.repeat(64), kind: eventKinds.REGULAR_CUSTOM_APP_DATA })
+
+    assertAddOk(await db.add(exclusive, { appId: APP1 }))
+    assertAddOk(await db.add(shared, { appId: APP1 }))
+    assertAddOk(await db.add(shared, { appId: APP2 }), { code: 'duplicate', stored: true, published: false })
+
+    assert.equal(await db.deleteEventsByApp(APP1), 1)
+    assert.deepEqual(await db.query({ ids: [exclusive.id] }), [])
+    assert.deepEqual((await db.query({ ids: [shared.id] })).map(e => e.id), [shared.id])
+    assertAppRefs(fakeStore(owner, 'events').records.get(eventIdIndexKey(shared.id)), [APP2])
+
+    assert.equal(await db.deleteEventsByApp(APP2), 1)
+    assert.deepEqual(await db.query({ ids: [shared.id] }), [])
+    assert.equal(await db.deleteEventsByApp('nope'), 0)
+  })
+
+  it('deletes app rows in bounded batches', async () => {
+    const owner = `${OWNER}79`
+    const db = getNostrDb(owner)
+    const exclusive = []
+
+    for (let i = 1; i <= 69; i++) {
+      const item = event({ id: hexId(i), kind: eventKinds.REGULAR_CUSTOM_APP_DATA })
+      exclusive.push(item)
+      assertAddOk(await db.add(item, { appId: APP1 }))
+    }
+
+    const shared = event({ id: hexId(1000), kind: eventKinds.REGULAR_CUSTOM_APP_DATA })
+    assertAddOk(await db.add(shared, { appId: APP1 }))
+    assertAddOk(await db.add(shared, { appId: APP2 }), { code: 'duplicate', stored: true, published: false })
+
+    const store = fakeStore(owner, 'events')
+    store.openKeyCursorCount = 0
+
+    assert.equal(await db.deleteEventsByApp(APP1), exclusive.length)
+    assert.equal(store.openKeyCursorCount > 1, true)
+    assert.deepEqual(await db.query({ ids: exclusive.map(event => event.id) }), [])
+    assert.deepEqual((await db.query({ ids: [shared.id] })).map(e => e.id), [shared.id])
+    assertAppRefs(store.records.get(eventIdIndexKey(shared.id)), [APP2])
+  })
+
+  it('removes app refs when stored unknown kinds become known', async () => {
+    const owner = `${OWNER}77`
+    const dbName = `${NOSTRDB_PREFIX}${owner}`
+    const db = new FakeDB(dbName, 1)
+    const text = event({ id: '1'.repeat(64), kind: eventKinds.TEXT_NOTE })
+    const custom = event({ id: '2'.repeat(64), kind: eventKinds.CUSTOM_APP_DATA, tags: [['d', 'settings']] })
+    const appRef = appIdToDbAppRef(APP1)
+    const staleTextRecord = toStoredRecord(text)
+    staleTextRecord.ap = [appRef]
+
+    createNostrDbSchema(db)
+    db.stores.get('events').records.set(eventIdIndexKey(text.id), staleTextRecord)
+    db.stores.get('events').records.set(eventIdIndexKey(custom.id), toStoredRecord(custom, { appRef }))
+    db.stores.get(KIND_REGISTRY_STORE).records.set('appNeutralKinds', {
+      key: 'appNeutralKinds',
+      kinds: []
+    })
+    globalThis.indexedDB.databases.set(dbName, db)
+
+    await openNostrDb(owner)
+
+    assert.equal('ap' in db.stores.get('events').records.get(eventIdIndexKey(text.id)), false)
+    assertAppRefs(db.stores.get('events').records.get(eventIdIndexKey(custom.id)), [APP1])
+    assert.deepEqual(db.stores.get(KIND_REGISTRY_STORE).records.get('appNeutralKinds'), {
+      key: 'appNeutralKinds',
+      kinds: appNeutralKindListForTest()
+    })
   })
 
   it('returns structured add results for accepted and rejected events', async () => {
@@ -1354,6 +1501,10 @@ function assertConsoleIssue (logs, { method, ownerPubkey, code, event, hasError 
   assert.equal(error instanceof Error, hasError)
 }
 
+function assertAppRefs (stored, appIds) {
+  assert.deepEqual(stored.ap, appIds.map(appIdToDbAppRef).sort(compareKeys))
+}
+
 function compactEvent (event) {
   return {
     id: event.id,
@@ -1394,6 +1545,30 @@ function delay (ms) {
 
 function fakeStore (owner, name) {
   return globalThis.indexedDB.databases.get(`${NOSTRDB_PREFIX}${owner}`).stores.get(name)
+}
+
+function createNostrDbSchema (db) {
+  let store = db.createObjectStore('events', { keyPath: 'i' })
+  store.createIndex(INDEX.address, 'a', { unique: true })
+  store.createIndex(INDEX.app, 'ap', { multiEntry: true })
+  store.createIndex(INDEX.createdAt, 'ca')
+  store.createIndex(INDEX.expiration, 'ex')
+  store.createIndex(INDEX.pubkey, ['p', 'ca'])
+  store.createIndex(INDEX.kind, ['k', 'ca'])
+  store.createIndex(INDEX.pubkeyKind, ['p', 'k', 'ca'])
+  store.createIndex(INDEX.tag, 't', { multiEntry: true })
+
+  store = db.createObjectStore('deletions', { keyPath: 'ref' })
+  store.createIndex('byRequest', 'c', { multiEntry: true })
+
+  db.createObjectStore(KIND_REGISTRY_STORE, { keyPath: 'key' })
+}
+
+function appNeutralKindListForTest () {
+  return [...new Set(Object.values(eventKinds))]
+    .filter(Number.isInteger)
+    .filter(kind => kind !== eventKinds.REGULAR_CUSTOM_APP_DATA && kind !== eventKinds.CUSTOM_APP_DATA)
+    .sort((a, b) => a - b)
 }
 
 async function withPatchedNow (seconds, fn) {
@@ -1763,8 +1938,20 @@ function compareKeys (a, b) {
     }
     return a.length - b.length
   }
+  if (isBinaryKey(a) && isBinaryKey(b)) {
+    const aBytes = new Uint8Array(a.buffer, a.byteOffset, a.byteLength)
+    const bBytes = new Uint8Array(b.buffer, b.byteOffset, b.byteLength)
+    for (let i = 0; i < Math.min(aBytes.length, bBytes.length); i++) {
+      if (aBytes[i] !== bBytes[i]) return aBytes[i] - bBytes[i]
+    }
+    return aBytes.length - bBytes.length
+  }
   if (a === b) return 0
   return a < b ? -1 : 1
+}
+
+function isBinaryKey (value) {
+  return ArrayBuffer.isView(value)
 }
 
 function namesList (map) {
