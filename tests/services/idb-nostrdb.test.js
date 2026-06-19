@@ -23,21 +23,33 @@ const B = 'b'.repeat(64)
 const C = 'c'.repeat(64)
 const OWNER = 'f'.repeat(64)
 const SIG = '0'.repeat(128)
+let consoleErrors = []
+let consoleWarns = []
 
 describe('nostrdb', () => {
   let oldIndexedDB
   let oldIDBKeyRange
+  let oldConsoleError
+  let oldConsoleWarn
 
   beforeEach(() => {
     oldIndexedDB = globalThis.indexedDB
     oldIDBKeyRange = globalThis.IDBKeyRange
+    oldConsoleError = console.error
+    oldConsoleWarn = console.warn
+    consoleErrors = []
+    consoleWarns = []
     globalThis.indexedDB = new FakeIndexedDB()
     globalThis.IDBKeyRange = FakeIDBKeyRange
+    console.error = (...args) => consoleErrors.push(args)
+    console.warn = (...args) => consoleWarns.push(args)
   })
 
   afterEach(() => {
     globalThis.indexedDB = oldIndexedDB
     globalThis.IDBKeyRange = oldIDBKeyRange
+    console.error = oldConsoleError
+    console.warn = oldConsoleWarn
   })
 
   it('derives id and coordinate refs', () => {
@@ -64,15 +76,176 @@ describe('nostrdb', () => {
     assert.equal(deletionCoordinateRef(30023, A, 'post'), `a:${addressKey(30023, A, 'post').join(':')}`)
   })
 
+  it('returns structured add results for accepted and rejected events', async () => {
+    const db = getNostrDb(`${OWNER}66`)
+    const first = event({ id: '1'.repeat(64), created_at: 10 })
+    const old = event({ id: '2'.repeat(64), kind: 30023, created_at: 10, tags: [['d', 'post']] })
+    const newer = event({ id: '3'.repeat(64), kind: 30023, created_at: 20, tags: [['d', 'post']] })
+    const stale = event({ id: '4'.repeat(64), kind: 30023, created_at: 15, tags: [['d', 'post']] })
+    const deletedId = '5'.repeat(64)
+    const deletion = event({ id: '6'.repeat(64), kind: 5, created_at: 30, tags: [['e', deletedId]] })
+
+    assertAddOk(await db.add(first), { code: 'stored', stored: true, published: true })
+
+    const duplicateIterator = db.subscribe({ ids: [first.id] })
+    const duplicateNext = duplicateIterator.next()
+    assertAddOk(await db.add(first), { code: 'duplicate', stored: false, published: false })
+    assert.equal(await settlesWithin(duplicateNext), false)
+    await duplicateIterator.return()
+
+    assertAddOk(await db.add(old), { code: 'stored', stored: true, published: true })
+    assertAddOk(await db.add(newer), { code: 'replaced', stored: true, published: true })
+    assertAddOk(await db.add(stale), { code: 'superseded', stored: false, published: false })
+    assertAddOk(await db.add(deletion), { code: 'stored', stored: true, published: true })
+    assertAddNotOk(await db.add(event({ id: deletedId, created_at: 40 })), { code: 'blocked' })
+    assertAddNotOk(await db.add({}), { code: 'invalid' })
+
+    const fake = globalThis.indexedDB.databases.get(`${NOSTRDB_PREFIX}${OWNER}66`)
+    const originalTransaction = fake.transaction
+    fake.transaction = () => {
+      throw new Error('boom')
+    }
+    assertAddNotOk(await db.add(event({ id: '7'.repeat(64), created_at: 50 })), { code: 'error' })
+    fake.transaction = originalTransaction
+  })
+
+  it('logs failed add operations without logging accepted benign outcomes', async () => {
+    const owner = `${OWNER}69`
+    const db = getNostrDb(owner)
+
+    resetConsoleLogs()
+    assertAddNotOk(await db.add({}), { code: 'invalid' })
+    assertConsoleIssue(consoleWarns, { method: 'add', ownerPubkey: owner, code: 'invalid', event: null })
+    assert.equal(consoleErrors.length, 0)
+
+    await withPatchedNow(200, async () => {
+      const expired = event({
+        id: '1'.repeat(64),
+        created_at: 100,
+        tags: [['expiration', '150']],
+        content: 'private'
+      })
+
+      resetConsoleLogs()
+      assertAddNotOk(await db.add(expired), { code: 'expired' })
+      assertConsoleIssue(consoleWarns, {
+        method: 'add',
+        ownerPubkey: owner,
+        code: 'expired',
+        event: compactEvent(expired)
+      })
+    })
+
+    const targetId = '2'.repeat(64)
+    const deletion = event({ id: '3'.repeat(64), kind: 5, created_at: 10, tags: [['e', targetId]] })
+    assertAddOk(await db.add(deletion))
+
+    resetConsoleLogs()
+    assertAddNotOk(await db.add(event({ id: targetId, created_at: 20 })), { code: 'blocked' })
+    assertConsoleIssue(consoleWarns, {
+      method: 'add',
+      ownerPubkey: owner,
+      code: 'blocked',
+      event: compactEvent(event({ id: targetId, created_at: 20 }))
+    })
+
+    resetConsoleLogs()
+    assertAddNotOk(await db.addEvent({}), { code: 'invalid' })
+    assertConsoleIssue(consoleWarns, { method: 'addEvent', ownerPubkey: owner, code: 'invalid', event: null })
+
+    const stored = event({ id: '4'.repeat(64), created_at: 30 })
+    assertAddOk(await db.add(stored))
+    resetConsoleLogs()
+    assertAddOk(await db.add(stored), { code: 'duplicate', stored: false, published: false })
+    assertNoConsoleIssues()
+
+    const newer = event({ id: '5'.repeat(64), kind: 30023, created_at: 50, tags: [['d', 'post']] })
+    const stale = event({ id: '6'.repeat(64), kind: 30023, created_at: 40, tags: [['d', 'post']] })
+    assertAddOk(await db.add(newer))
+    resetConsoleLogs()
+    assertAddOk(await db.add(stale), { code: 'superseded', stored: false, published: false })
+    assertNoConsoleIssues()
+
+    resetConsoleLogs()
+    assertAddOk(await db.add(event({ id: '7'.repeat(64), kind: 20000 })), {
+      code: 'published',
+      stored: false,
+      published: true
+    })
+    assertNoConsoleIssues()
+
+    const fake = globalThis.indexedDB.databases.get(`${NOSTRDB_PREFIX}${owner}`)
+    const originalTransaction = fake.transaction
+    try {
+      fake.transaction = () => {
+        throw new Error('boom')
+      }
+      resetConsoleLogs()
+      assertAddNotOk(await db.add(event({ id: '8'.repeat(64), created_at: 60 })), { code: 'error' })
+      assertConsoleIssue(consoleErrors, {
+        method: 'add',
+        ownerPubkey: owner,
+        code: 'error',
+        event: compactEvent(event({ id: '8'.repeat(64), created_at: 60 }))
+      })
+      assert.equal(consoleWarns.length, 0)
+    } finally {
+      fake.transaction = originalTransaction
+    }
+
+    const oldIndexedDbForTest = globalThis.indexedDB
+    try {
+      globalThis.indexedDB = undefined
+      const unavailable = new NostrDb(`${OWNER}70`)
+
+      resetConsoleLogs()
+      assertAddNotOk(await unavailable.add(event({ id: '9'.repeat(64) })), { code: 'unavailable' })
+      assertConsoleIssue(consoleErrors, {
+        method: 'add',
+        ownerPubkey: `${OWNER}70`,
+        code: 'unavailable',
+        event: compactEvent(event({ id: '9'.repeat(64) }))
+      })
+      unavailable.bc?.close()
+    } finally {
+      globalThis.indexedDB = oldIndexedDbForTest
+    }
+  })
+
+  it('logs query and count errors before returning fallbacks', async () => {
+    const owner = `${OWNER}71`
+    const db = getNostrDb(owner)
+    assertAddOk(await db.add(event({ id: '1'.repeat(64), created_at: 10 })))
+
+    const fake = globalThis.indexedDB.databases.get(`${NOSTRDB_PREFIX}${owner}`)
+    const originalTransaction = fake.transaction
+
+    try {
+      fake.transaction = () => {
+        throw new Error('boom')
+      }
+
+      resetConsoleLogs()
+      assert.deepEqual(await db.query({ kinds: [1] }), [])
+      assertConsoleIssue(consoleErrors, { method: 'query', ownerPubkey: owner, hasError: true })
+
+      resetConsoleLogs()
+      assert.equal(await db.count({ kinds: [1] }), 0)
+      assertConsoleIssue(consoleErrors, { method: 'count', ownerPubkey: owner, hasError: true })
+    } finally {
+      fake.transaction = originalTransaction
+    }
+  })
+
   it('keeps the newest coordinate event', async () => {
     const db = getNostrDb(`${OWNER}1`)
     const old = event({ id: '1'.repeat(64), pubkey: A, kind: 30023, created_at: 10, tags: [['d', 'post']] })
     const newer = event({ id: '2'.repeat(64), pubkey: A, kind: 30023, created_at: 20, tags: [['d', 'post']] })
     const stale = event({ id: '3'.repeat(64), pubkey: A, kind: 30023, created_at: 15, tags: [['d', 'post']] })
 
-    assert.equal(await db.add(old), true)
-    assert.equal(await db.add(newer), true)
-    assert.equal(await db.add(stale), false)
+    assertAddOk(await db.add(old))
+    assertAddOk(await db.add(newer))
+    assertAddOk(await db.add(stale), { code: 'superseded', stored: false, published: false })
 
     const results = await db.query({ authors: [A], kinds: [30023], '#d': ['post'] })
     assert.deepEqual(results.map(e => e.id), [newer.id])
@@ -93,10 +266,10 @@ describe('nostrdb', () => {
     const three = event({ id: '3'.repeat(64), pubkey: B, kind: 1, created_at: 30, tags: [['e', 'root'], ['d', 'alpha']] })
     const four = event({ id: '4'.repeat(64), pubkey: A, kind: 1, created_at: 40, tags: [['e', 'other']] })
 
-    assert.equal(await db.add(one), true)
-    assert.equal(await db.add(two), true)
-    assert.equal(await db.add(three), true)
-    assert.equal(await db.add(four), true)
+    assertAddOk(await db.add(one))
+    assertAddOk(await db.add(two))
+    assertAddOk(await db.add(three))
+    assertAddOk(await db.add(four))
 
     assert.deepEqual((await db.query({ ids: [one.id, two.id], kinds: [1] })).map(e => e.id), [one.id])
     assert.deepEqual((await db.query({ authors: [A] })).map(e => e.id), [four.id, two.id, one.id])
@@ -114,9 +287,9 @@ describe('nostrdb', () => {
     const newer = event({ id: '2'.repeat(64), pubkey: A, created_at: 20 })
     const other = event({ id: '3'.repeat(64), pubkey: B, created_at: 30 })
 
-    assert.equal(await db.add(old), true)
-    assert.equal(await db.add(newer), true)
-    assert.equal(await db.add(other), true)
+    assertAddOk(await db.add(old))
+    assertAddOk(await db.add(newer))
+    assertAddOk(await db.add(other))
 
     assert.deepEqual(await db.query({ authors: [A], ids_only: true }), [newer.id, old.id])
     assert.deepEqual(await db.query({ ids: [old.id, newer.id], ids_only: true, limit: 1 }), [newer.id])
@@ -130,9 +303,9 @@ describe('nostrdb', () => {
     const newer = event({ id: '2'.repeat(64), created_at: 20 })
     const outside = event({ id: '3'.repeat(64), created_at: 30 })
 
-    assert.equal(await db.add(old), true)
-    assert.equal(await db.add(newer), true)
-    assert.equal(await db.add(outside), true)
+    assertAddOk(await db.add(old))
+    assertAddOk(await db.add(newer))
+    assertAddOk(await db.add(outside))
 
     const store = fakeStore(owner, 'events')
     store.getCount = 0
@@ -153,10 +326,10 @@ describe('nostrdb', () => {
     const otherAuthor = event({ id: '3'.repeat(64), pubkey: B, kind: 1, created_at: 30 })
     const otherKind = event({ id: '4'.repeat(64), pubkey: A, kind: 7, created_at: 40 })
 
-    assert.equal(await db.add(one), true)
-    assert.equal(await db.add(two), true)
-    assert.equal(await db.add(otherAuthor), true)
-    assert.equal(await db.add(otherKind), true)
+    assertAddOk(await db.add(one))
+    assertAddOk(await db.add(two))
+    assertAddOk(await db.add(otherAuthor))
+    assertAddOk(await db.add(otherKind))
 
     const store = fakeStore(owner, 'events')
     store.getCount = 0
@@ -178,9 +351,9 @@ describe('nostrdb', () => {
       const excluded = event({ id: '2'.repeat(64), created_at: 20 })
       const expired = event({ id: '3'.repeat(64), created_at: 30, tags: [['expiration', '200']] })
 
-      assert.equal(await db.add(keep), true)
-      assert.equal(await db.add(excluded), true)
-      assert.equal(await db.add(expired), true)
+      assertAddOk(await db.add(keep))
+      assertAddOk(await db.add(excluded))
+      assertAddOk(await db.add(expired))
 
       now = 201
       const store = fakeStore(owner, 'events')
@@ -196,8 +369,8 @@ describe('nostrdb', () => {
     const exactOld = event({ id: '1'.repeat(64), created_at: 10, content: 'nostr' })
     const laterMatch = event({ id: '2'.repeat(64), created_at: 20, content: 'zzzz nostr' })
 
-    assert.equal(await db.add(laterMatch), true)
-    assert.equal(await db.add(exactOld), true)
+    assertAddOk(await db.add(laterMatch))
+    assertAddOk(await db.add(exactOld))
 
     assert.deepEqual(await db.query({ search: 'nostr', ids_only: true, limit: 1 }), [exactOld.id])
   })
@@ -208,9 +381,9 @@ describe('nostrdb', () => {
     const two = event({ id: '2'.repeat(64), pubkey: A, created_at: 20 })
     const three = event({ id: '3'.repeat(64), pubkey: A, created_at: 30 })
 
-    assert.equal(await db.add(one), true)
-    assert.equal(await db.add(two), true)
-    assert.equal(await db.add(three), true)
+    assertAddOk(await db.add(one))
+    assertAddOk(await db.add(two))
+    assertAddOk(await db.add(three))
 
     assert.deepEqual((await db.query({ authors: [A], '!ids': [two.id] })).map(e => e.id), [three.id, one.id])
     assert.deepEqual((await db.query({ ids: [one.id, two.id, three.id], '!ids': [one.id, three.id] })).map(e => e.id), [two.id])
@@ -225,7 +398,7 @@ describe('nostrdb', () => {
     for (let i = 1; i <= 132; i++) {
       const item = event({ id: hexId(i), created_at: i })
       events.push(item)
-      assert.equal(await db.add(item), true)
+      assertAddOk(await db.add(item))
     }
 
     const excluded = events.slice(0, 130).map(event => event.id)
@@ -249,8 +422,8 @@ describe('nostrdb', () => {
     const one = event({ id: '1'.repeat(64), created_at: 10 })
     const two = event({ id: '2'.repeat(64), created_at: 20 })
 
-    assert.equal(await db.add(one), true)
-    assert.equal(await db.add(two), true)
+    assertAddOk(await db.add(one))
+    assertAddOk(await db.add(two))
 
     const store = fakeStore(owner, 'events')
     store.openKeyCursorCount = 0
@@ -264,8 +437,8 @@ describe('nostrdb', () => {
     const one = event({ id: '1'.repeat(64), pubkey: A, created_at: 10 })
     const two = event({ id: '2'.repeat(64), pubkey: A, created_at: 20 })
 
-    assert.equal(await db.add(one), true)
-    assert.equal(await db.add(two), true)
+    assertAddOk(await db.add(one))
+    assertAddOk(await db.add(two))
 
     assert.deepEqual((await db.query({ authors: [A], '!ids': [] })).map(e => e.id), [two.id, one.id])
     assert.deepEqual(await db.query({ ids: [one.id], '!ids': [one.id] }), [])
@@ -277,8 +450,8 @@ describe('nostrdb', () => {
     const old = event({ id: '1'.repeat(64), created_at: 10 })
     const newer = event({ id: '2'.repeat(64), created_at: 20 })
 
-    assert.equal(await db.add(old), true)
-    assert.equal(await db.add(newer), true)
+    assertAddOk(await db.add(old))
+    assertAddOk(await db.add(newer))
 
     assert.deepEqual((await db.query({ ids: [old.id, newer.id], limit: 1 })).map(e => e.id), [newer.id])
   })
@@ -288,8 +461,8 @@ describe('nostrdb', () => {
     const old = event({ id: '1'.repeat(64), created_at: 10, tags: [['e', 'a']] })
     const newer = event({ id: '2'.repeat(64), created_at: 20, tags: [['e', 'b']] })
 
-    assert.equal(await db.add(old), true)
-    assert.equal(await db.add(newer), true)
+    assertAddOk(await db.add(old))
+    assertAddOk(await db.add(newer))
 
     assert.deepEqual((await db.query({ '#e': ['a', 'b'], limit: 1 })).map(e => e.id), [newer.id])
   })
@@ -297,9 +470,9 @@ describe('nostrdb', () => {
   it('counts only up to the filter limit', async () => {
     const db = getNostrDb(`${OWNER}20`)
 
-    assert.equal(await db.add(event({ id: '1'.repeat(64), tags: [['e', 'a']] })), true)
-    assert.equal(await db.add(event({ id: '2'.repeat(64), tags: [['e', 'b']] })), true)
-    assert.equal(await db.add(event({ id: '3'.repeat(64), tags: [['e', 'b']] })), true)
+    assertAddOk(await db.add(event({ id: '1'.repeat(64), tags: [['e', 'a']] })))
+    assertAddOk(await db.add(event({ id: '2'.repeat(64), tags: [['e', 'b']] })))
+    assertAddOk(await db.add(event({ id: '3'.repeat(64), tags: [['e', 'b']] })))
 
     assert.equal(await db.count({ '#e': ['a', 'b'] }), 3)
     assert.equal(await db.count({ '#e': ['a', 'b'], limit: 2 }), 2)
@@ -312,10 +485,10 @@ describe('nostrdb', () => {
     const missingAnd = event({ id: '3'.repeat(64), created_at: 30, tags: [['t', 'meme'], ['t', 'black']] })
     const missingOr = event({ id: '4'.repeat(64), created_at: 40, tags: [['t', 'meme'], ['t', 'cat']] })
 
-    assert.equal(await db.add(fullBlack), true)
-    assert.equal(await db.add(fullWhite), true)
-    assert.equal(await db.add(missingAnd), true)
-    assert.equal(await db.add(missingOr), true)
+    assertAddOk(await db.add(fullBlack))
+    assertAddOk(await db.add(fullWhite))
+    assertAddOk(await db.add(missingAnd))
+    assertAddOk(await db.add(missingOr))
 
     assert.deepEqual(
       (await db.query({
@@ -336,10 +509,10 @@ describe('nostrdb', () => {
     const missingTag = event({ id: '3'.repeat(64), created_at: 30, tags: [['t', 'meme'], ['p', B]], content: 'nostr missing' })
     const wrongP = event({ id: '4'.repeat(64), created_at: 40, tags: [['t', 'meme'], ['t', 'cat'], ['p', C]], content: 'nostr wrong p' })
 
-    assert.equal(await db.add(match), true)
-    assert.equal(await db.add(newer), true)
-    assert.equal(await db.add(missingTag), true)
-    assert.equal(await db.add(wrongP), true)
+    assertAddOk(await db.add(match))
+    assertAddOk(await db.add(newer))
+    assertAddOk(await db.add(missingTag))
+    assertAddOk(await db.add(wrongP))
 
     const store = fakeStore(owner, 'events')
     store.openCursorCount = 0
@@ -357,8 +530,8 @@ describe('nostrdb', () => {
     const old = event({ id: '1'.repeat(64), created_at: 10, tags: [['e', 'thread']], content: 'hello old' })
     const newer = event({ id: '2'.repeat(64), created_at: 20, tags: [['e', 'thread']], content: 'hello newer' })
 
-    assert.equal(await db.add(old), true)
-    assert.equal(await db.add(newer), true)
+    assertAddOk(await db.add(old))
+    assertAddOk(await db.add(newer))
 
     assert.deepEqual((await db.query({ kinds: [1], search: 'hello unknown:value' })).map(e => e.id), [newer.id, old.id])
     assert.deepEqual((await db.query({ ids: [newer.id, old.id], search: 'sort:old', limit: 1 })).map(e => e.id), [old.id])
@@ -370,8 +543,8 @@ describe('nostrdb', () => {
     const old = event({ id: '1'.repeat(64), created_at: 10, tags: [['e', 'alpha']], content: 'nostr relay' })
     const newer = event({ id: '2'.repeat(64), created_at: 20, tags: [['e', 'beta']], content: 'nostr relay' })
 
-    assert.equal(await db.add(old), true)
-    assert.equal(await db.add(newer), true)
+    assertAddOk(await db.add(old))
+    assertAddOk(await db.add(newer))
 
     assert.deepEqual((await db.query({ '#e': ['alpha', 'beta'], search: 'nostr' })).map(e => e.id), [newer.id, old.id])
   })
@@ -381,8 +554,8 @@ describe('nostrdb', () => {
     const exactOld = event({ id: '1'.repeat(64), created_at: 10, content: 'nostr' })
     const laterMatch = event({ id: '2'.repeat(64), created_at: 20, content: 'zzzz nostr' })
 
-    assert.equal(await db.add(laterMatch), true)
-    assert.equal(await db.add(exactOld), true)
+    assertAddOk(await db.add(laterMatch))
+    assertAddOk(await db.add(exactOld))
 
     assert.deepEqual((await db.query({ search: 'nostr', limit: 1 })).map(e => e.id), [exactOld.id])
     assert.equal(await db.count({ search: 'nostr', limit: 1 }), 1)
@@ -393,8 +566,8 @@ describe('nostrdb', () => {
     const old = event({ id: '1'.repeat(64), created_at: 10, content: 'nostr' })
     const newer = event({ id: '2'.repeat(64), created_at: 20, content: 'nostr' })
 
-    assert.equal(await db.add(old), true)
-    assert.equal(await db.add(newer), true)
+    assertAddOk(await db.add(old))
+    assertAddOk(await db.add(newer))
 
     assert.deepEqual((await db.query({ search: 'nostr', limit: 1 })).map(e => e.id), [newer.id])
     assert.deepEqual((await db.query({ search: 'nostr sort:old', limit: 1 })).map(e => e.id), [old.id])
@@ -406,9 +579,9 @@ describe('nostrdb', () => {
     const malice = event({ id: '2'.repeat(64), pubkey: B, kind: 0, content: JSON.stringify({ name: 'Malice' }) })
     const aboutOnly = event({ id: '3'.repeat(64), pubkey: C, kind: 0, content: JSON.stringify({ name: 'Bob', about: 'Alice' }) })
 
-    assert.equal(await db.add(malice), true)
-    assert.equal(await db.add(aboutOnly), true)
-    assert.equal(await db.add(alice), true)
+    assertAddOk(await db.add(malice))
+    assertAddOk(await db.add(aboutOnly))
+    assertAddOk(await db.add(alice))
 
     assert.deepEqual((await db.query({ kinds: [0], search: 'ali autocomplete:true' })).map(e => e.id), [alice.id, malice.id])
     assert.deepEqual(await db.query({ kinds: [0], search: 'about' }), [])
@@ -420,9 +593,9 @@ describe('nostrdb', () => {
     const summary = event({ id: '2'.repeat(64), kind: 30023, tags: [['d', 'summary'], ['summary', 'Relay Guide']] })
     const content = event({ id: '3'.repeat(64), kind: 30023, tags: [['d', 'content']], content: 'Body Match' })
 
-    assert.equal(await db.add(title), true)
-    assert.equal(await db.add(summary), true)
-    assert.equal(await db.add(content), true)
+    assertAddOk(await db.add(title))
+    assertAddOk(await db.add(summary))
+    assertAddOk(await db.add(content))
 
     assert.deepEqual((await db.query({ kinds: [30023], search: 'solar' })).map(e => e.id), [title.id])
     assert.deepEqual((await db.query({ kinds: [30023], search: 'guide' })).map(e => e.id), [summary.id])
@@ -434,8 +607,8 @@ describe('nostrdb', () => {
     const match = event({ id: '1'.repeat(64), content: 'nostr protocol notes' })
     const excluded = event({ id: '2'.repeat(64), content: 'nostr bitcoin bridge' })
 
-    assert.equal(await db.add(match), true)
-    assert.equal(await db.add(excluded), true)
+    assertAddOk(await db.add(match))
+    assertAddOk(await db.add(excluded))
 
     assert.deepEqual((await db.query({ search: 'nostr -bitcoin' })).map(e => e.id), [match.id])
     assert.equal(await db.count({ search: 'nostr -bitcoin' }), 1)
@@ -445,19 +618,19 @@ describe('nostrdb', () => {
     const db = getNostrDb(`${OWNER}28`)
 
     for (let i = 0; i < 150; i++) {
-      assert.equal(await db.add(event({
+      assertAddOk(await db.add(event({
         id: hexId(1000 + i),
         created_at: i,
         content: `nostr match ${i}`
-      })), true)
+      })))
     }
 
     for (let i = 0; i < 30; i++) {
-      assert.equal(await db.add(event({
+      assertAddOk(await db.add(event({
         id: hexId(2000 + i),
         created_at: 200 + i,
         content: `other topic ${i}`
-      })), true)
+      })))
     }
 
     assert.equal(await db.count({ search: 'nostr' }), 150)
@@ -474,9 +647,9 @@ describe('nostrdb', () => {
     const shared = event({ id: '2'.repeat(64), pubkey: A, kind: 7, created_at: 20, tags: [['t', 'beta']], content: 'nostr shared' })
     const newest = event({ id: '3'.repeat(64), pubkey: B, kind: 1, created_at: 30, tags: [['t', 'gamma']], content: 'bitcoin newest' })
 
-    assert.equal(await db.add(old), true)
-    assert.equal(await db.add(shared), true)
-    assert.equal(await db.add(newest), true)
+    assertAddOk(await db.add(old))
+    assertAddOk(await db.add(shared))
+    assertAddOk(await db.add(newest))
 
     assert.deepEqual(
       (await db.query([{ authors: [A] }, { kinds: [1] }])).map(event => event.id),
@@ -516,9 +689,9 @@ describe('nostrdb', () => {
     const two = event({ id: '2'.repeat(64), pubkey: A, kind: 7, created_at: 20, content: 'nostr two' })
     const three = event({ id: '3'.repeat(64), pubkey: B, kind: 1, created_at: 30, content: 'bitcoin three' })
 
-    assert.equal(await db.add(one), true)
-    assert.equal(await db.add(two), true)
-    assert.equal(await db.add(three), true)
+    assertAddOk(await db.add(one))
+    assertAddOk(await db.add(two))
+    assertAddOk(await db.add(three))
 
     assert.equal(await db.count([{ authors: [A] }, { kinds: [1] }]), 3)
     assert.equal(await db.count([{ authors: [A] }, { kinds: [1] }], { limit: 2 }), 2)
@@ -538,9 +711,9 @@ describe('nostrdb', () => {
       tags: [['e', owned.id], ['e', otherAuthor.id]]
     })
 
-    assert.equal(await db.add(owned), true)
-    assert.equal(await db.add(otherAuthor), true)
-    assert.equal(await db.add(deletion), true)
+    assertAddOk(await db.add(owned))
+    assertAddOk(await db.add(otherAuthor))
+    assertAddOk(await db.add(deletion))
 
     assert.deepEqual(await db.query({ ids: [owned.id] }), [])
     assert.deepEqual((await db.query({ ids: [otherAuthor.id] })).map(e => e.id), [otherAuthor.id])
@@ -564,10 +737,10 @@ describe('nostrdb', () => {
       ]
     })
 
-    assert.equal(await db.add(owned), true)
-    assert.equal(await db.add(otherAuthor), true)
-    assert.equal(await db.add(newer), true)
-    assert.equal(await db.add(deletion), true)
+    assertAddOk(await db.add(owned))
+    assertAddOk(await db.add(otherAuthor))
+    assertAddOk(await db.add(newer))
+    assertAddOk(await db.add(deletion))
 
     assert.deepEqual(await db.query({ authors: [A], kinds: [30023], '#d': ['post'] }), [])
     assert.deepEqual((await db.query({ authors: [A], kinds: [30023], '#d': ['future'] })).map(e => e.id), [newer.id])
@@ -585,9 +758,9 @@ describe('nostrdb', () => {
       tags: [['e', targetId]]
     })
 
-    assert.equal(await db.add(deletion), true)
-    assert.equal(await db.add(event({ id: targetId, pubkey: A, created_at: 10 })), false)
-    assert.equal(await db.add(event({ id: targetId, pubkey: B, created_at: 10 })), true)
+    assertAddOk(await db.add(deletion))
+    assertAddNotOk(await db.add(event({ id: targetId, pubkey: A, created_at: 10 })), { code: 'blocked' })
+    assertAddOk(await db.add(event({ id: targetId, pubkey: B, created_at: 10 })))
 
     assert.deepEqual((await db.query({ ids: [targetId] })).map(e => e.pubkey), [B])
   })
@@ -604,9 +777,9 @@ describe('nostrdb', () => {
     const old = event({ id: '1'.repeat(64), pubkey: A, kind: 30023, created_at: 10, tags: [['d', 'post']] })
     const newer = event({ id: '2'.repeat(64), pubkey: A, kind: 30023, created_at: 11, tags: [['d', 'post']] })
 
-    assert.equal(await db.add(deletion), true)
-    assert.equal(await db.add(old), false)
-    assert.equal(await db.add(newer), true)
+    assertAddOk(await db.add(deletion))
+    assertAddNotOk(await db.add(old), { code: 'blocked' })
+    assertAddOk(await db.add(newer))
 
     assert.deepEqual((await db.query({ authors: [A], kinds: [30023], '#d': ['post'] })).map(e => e.id), [newer.id])
   })
@@ -629,12 +802,12 @@ describe('nostrdb', () => {
       tags: [['e', firstDeletion.id]]
     })
 
-    assert.equal(await db.add(firstDeletion), true)
-    assert.equal(await db.add(target), false)
-    assert.equal(await db.add(secondDeletion), true)
+    assertAddOk(await db.add(firstDeletion))
+    assertAddNotOk(await db.add(target), { code: 'blocked' })
+    assertAddOk(await db.add(secondDeletion))
     assert.deepEqual(await db.query({ ids: [firstDeletion.id] }), [])
-    assert.equal(await db.add(target), true)
-    assert.equal(await db.add(firstDeletion), false)
+    assertAddOk(await db.add(target))
+    assertAddNotOk(await db.add(firstDeletion), { code: 'blocked' })
   })
 
   it('keeps shared tombstones when deleting one contributing deletion request', async () => {
@@ -662,13 +835,13 @@ describe('nostrdb', () => {
       tags: [['e', firstDeletion.id]]
     })
 
-    assert.equal(await db.add(firstDeletion), true)
-    assert.equal(await db.add(sharedDeletion), true)
-    assert.equal(await db.add(deletingDeletion), true)
+    assertAddOk(await db.add(firstDeletion))
+    assertAddOk(await db.add(sharedDeletion))
+    assertAddOk(await db.add(deletingDeletion))
 
     assert.deepEqual(await db.query({ ids: [firstDeletion.id] }), [])
     assert.deepEqual((await db.query({ ids: [sharedDeletion.id] })).map(e => e.id), [sharedDeletion.id])
-    assert.equal(await db.add(target), false)
+    assertAddNotOk(await db.add(target), { code: 'blocked' })
   })
 
   it('keeps tombstones shared with the deletion request being inserted', async () => {
@@ -689,11 +862,11 @@ describe('nostrdb', () => {
       tags: [['e', target.id], ['e', firstDeletion.id]]
     })
 
-    assert.equal(await db.add(firstDeletion), true)
-    assert.equal(await db.add(replacingDeletion), true)
+    assertAddOk(await db.add(firstDeletion))
+    assertAddOk(await db.add(replacingDeletion))
 
     assert.deepEqual(await db.query({ ids: [firstDeletion.id] }), [])
-    assert.equal(await db.add(target), false)
+    assertAddNotOk(await db.add(target), { code: 'blocked' })
   })
 
   it('compacts deletion requests without recursive old-request e-tags', async () => {
@@ -728,9 +901,9 @@ describe('nostrdb', () => {
       tags: [['e', targetId]]
     })
 
-    assert.equal(await db.add(firstDeletion), true)
-    assert.equal(await db.add(duplicateDeletion), true)
-    assert.equal(await db.add(leftoverDeletion), true)
+    assertAddOk(await db.add(firstDeletion))
+    assertAddOk(await db.add(duplicateDeletion))
+    assertAddOk(await db.add(leftoverDeletion))
 
     const result = await db.compactDeletionRequests({
       author: A,
@@ -748,8 +921,8 @@ describe('nostrdb', () => {
     assert.deepEqual(result.targets, [['e', targetId]])
     assert.deepEqual(await db.query({ ids: [firstDeletion.id, duplicateDeletion.id] }), [])
     assert.deepEqual((await db.query({ ids: [leftoverDeletion.id] })).map(e => e.id), [leftoverDeletion.id])
-    assert.equal(await db.add(event({ id: targetId, pubkey: A, created_at: 10 })), false)
-    assert.equal(await db.add(firstDeletion), true)
+    assertAddNotOk(await db.add(event({ id: targetId, pubkey: A, created_at: 10 })), { code: 'blocked' })
+    assertAddOk(await db.add(firstDeletion))
   })
 
   it('starts deletion compaction on a non-overlapping timer', async () => {
@@ -788,8 +961,8 @@ describe('nostrdb', () => {
     const next = iterator.next()
     const match = event({ id: '1'.repeat(64), kind: 1 })
 
-    assert.equal(await db.add(event({ id: '2'.repeat(64), kind: 7 })), true)
-    assert.equal(await db.add(match), true)
+    assertAddOk(await db.add(event({ id: '2'.repeat(64), kind: 7 })))
+    assertAddOk(await db.add(match))
 
     assert.deepEqual(await withTimeout(next), { value: match, done: false })
     await iterator.return()
@@ -801,8 +974,8 @@ describe('nostrdb', () => {
     const next = iterator.next()
     const match = event({ id: '1'.repeat(64), content: 'nostr search' })
 
-    assert.equal(await db.add(event({ id: '2'.repeat(64), content: 'bitcoin' })), true)
-    assert.equal(await db.add(match), true)
+    assertAddOk(await db.add(event({ id: '2'.repeat(64), content: 'bitcoin' })))
+    assertAddOk(await db.add(match))
 
     assert.deepEqual(await withTimeout(next), { value: match, done: false })
     await iterator.return()
@@ -815,8 +988,8 @@ describe('nostrdb', () => {
     const iterator = db.subscribe({ kinds: [1], '!ids': [excluded.id], ids_only: true })
     const next = iterator.next()
 
-    assert.equal(await db.add(excluded), true)
-    assert.equal(await db.add(match), true)
+    assertAddOk(await db.add(excluded))
+    assertAddOk(await db.add(match))
 
     assert.deepEqual(await withTimeout(next), { value: match.id, done: false })
     await iterator.return()
@@ -829,8 +1002,8 @@ describe('nostrdb', () => {
     const partial = event({ id: '1'.repeat(64), tags: [['t', 'meme']] })
     const match = event({ id: '2'.repeat(64), tags: [['t', 'meme'], ['t', 'cat']] })
 
-    assert.equal(await db.add(partial), true)
-    assert.equal(await db.add(match), true)
+    assertAddOk(await db.add(partial))
+    assertAddOk(await db.add(match))
 
     assert.deepEqual(await withTimeout(next), { value: match.id, done: false })
     await iterator.return()
@@ -851,15 +1024,15 @@ describe('nostrdb', () => {
     const kindMatch = event({ id: '3'.repeat(64), pubkey: B, kind: 7, content: 'nostr kind' })
     const afterLimit = event({ id: '4'.repeat(64), pubkey: A, kind: 7, content: 'nostr later' })
 
-    assert.equal(await db.add(ignored), true)
-    assert.equal(await db.add(authorMatch), true)
-    assert.equal(await db.add(kindMatch), true)
+    assertAddOk(await db.add(ignored))
+    assertAddOk(await db.add(authorMatch))
+    assertAddOk(await db.add(kindMatch))
 
     assert.deepEqual(await withTimeout(first), { value: authorMatch.id, done: false })
     assert.deepEqual(await withTimeout(second), { value: kindMatch.id, done: false })
     assert.deepEqual(await iterator.next(), { done: true })
 
-    assert.equal(await db.add(afterLimit), true)
+    assertAddOk(await db.add(afterLimit))
     assert.deepEqual(await iterator.next(), { done: true })
   })
 
@@ -869,7 +1042,7 @@ describe('nostrdb', () => {
     const next = iterator.next()
     const ephemeral = event({ id: '1'.repeat(64), kind: 20000, created_at: 10 })
 
-    assert.equal(await db.add(ephemeral), false)
+    assertAddOk(await db.add(ephemeral), { code: 'published', stored: false, published: true })
 
     assert.deepEqual(await withTimeout(next), { value: ephemeral, done: false })
     assert.deepEqual(await db.query({ ids: [ephemeral.id] }), [])
@@ -887,7 +1060,7 @@ describe('nostrdb', () => {
         tags: [['expiration', '100']]
       })
 
-      assert.equal(await db.add(honorary), false)
+      assertAddOk(await db.add(honorary), { code: 'published', stored: false, published: true })
 
       assert.deepEqual(await withTimeout(next), { value: honorary, done: false })
       assert.deepEqual(await db.query({ ids: [honorary.id] }), [])
@@ -895,7 +1068,7 @@ describe('nostrdb', () => {
     })
   })
 
-  it('publishes expired events without storing them', async () => {
+  it('rejects expired events without publishing or storing them', async () => {
     await withPatchedNow(200, async () => {
       const db = getNostrDb(`${OWNER}42`)
       const iterator = db.subscribe({ kinds: [1] })
@@ -906,10 +1079,40 @@ describe('nostrdb', () => {
         tags: [['expiration', '150']]
       })
 
-      assert.equal(await db.add(expired), false)
+      assertAddNotOk(await db.add(expired), { code: 'expired' })
 
-      assert.deepEqual(await withTimeout(next), { value: expired, done: false })
+      assert.equal(await settlesWithin(next), false)
       assert.deepEqual(await db.query({ ids: [expired.id] }), [])
+      await iterator.return()
+    })
+  })
+
+  it('accepts honorary ephemeral events within the clock-skew grace period', async () => {
+    const honorary = event({
+      id: '1'.repeat(64),
+      created_at: 100,
+      tags: [['expiration', '100']]
+    })
+
+    await withPatchedNow(159, async () => {
+      const db = getNostrDb(`${OWNER}67`)
+      const iterator = db.subscribe({ kinds: [1] })
+      const next = iterator.next()
+
+      assertAddOk(await db.add(honorary), { code: 'published', stored: false, published: true })
+      assert.deepEqual(await withTimeout(next), { value: honorary, done: false })
+      assert.deepEqual(await db.query({ ids: [honorary.id] }), [])
+      await iterator.return()
+    })
+
+    await withPatchedNow(160, async () => {
+      const db = getNostrDb(`${OWNER}68`)
+      const iterator = db.subscribe({ kinds: [1] })
+      const next = iterator.next()
+
+      assertAddNotOk(await db.add(honorary), { code: 'expired' })
+      assert.equal(await settlesWithin(next), false)
+      assert.deepEqual(await db.query({ ids: [honorary.id] }), [])
       await iterator.return()
     })
   })
@@ -924,7 +1127,7 @@ describe('nostrdb', () => {
         tags: [['expiration', '200']]
       })
 
-      assert.equal(await db.add(expiring), true)
+      assertAddOk(await db.add(expiring))
       assert.deepEqual((await db.query({ ids: [expiring.id] })).map(e => e.id), [expiring.id])
 
       now = 201
@@ -947,8 +1150,8 @@ describe('nostrdb', () => {
         tags: [['expiration', '300']]
       })
 
-      assert.equal(await db.add(expiring), true)
-      assert.equal(await db.add(survivor), true)
+      assertAddOk(await db.add(expiring))
+      assertAddOk(await db.add(survivor))
       assert.equal(await db.purgeExpired({ now: 250 }), 1)
       assert.deepEqual((await db.query({ ids: [expiring.id, survivor.id] })).map(e => e.id), [survivor.id])
       assert.equal(await db.purgeExpired({ now: 250 }), 0)
@@ -967,11 +1170,11 @@ describe('nostrdb', () => {
         tags: [['e', target.id], ['expiration', '2000']]
       })
 
-      assert.equal(await db.add(deletion), true)
-      assert.equal(await db.add(target), false)
+      assertAddOk(await db.add(deletion))
+      assertAddNotOk(await db.add(target), { code: 'blocked' })
       assert.equal(await db.purgeExpired({ now: 2001 }), 1)
       assert.deepEqual(await db.query({ ids: [deletion.id] }), [])
-      assert.equal(await db.add(target), true)
+      assertAddOk(await db.add(target))
     })
   })
 
@@ -1014,7 +1217,7 @@ describe('nostrdb', () => {
     const next = iterator.next()
     const match = event({ id: '1'.repeat(64), kind: 1 })
 
-    assert.equal(await sender.add(match), true)
+    assertAddOk(await sender.add(match))
 
     assert.deepEqual(await withTimeout(next), { value: match, done: false })
     await iterator.return()
@@ -1070,7 +1273,7 @@ describe('nostrdb', () => {
     globalThis.indexedDB = undefined
     const db = new NostrDb(`${OWNER}6`)
 
-    assert.equal(await db.add(event({ id: '1'.repeat(64) })), false)
+    assertAddNotOk(await db.add(event({ id: '1'.repeat(64) })), { code: 'unavailable' })
     assert.deepEqual(await db.query({ kinds: [1] }), [])
     assert.equal(await db.count({ kinds: [1] }), 0)
     assert.deepEqual(await db.supports(), [
@@ -1089,7 +1292,7 @@ describe('nostrdb', () => {
     const owner = `${OWNER}9`
     const db = getNostrDb(owner)
 
-    assert.equal(await db.add(event({ id: '1'.repeat(64) })), true)
+    assertAddOk(await db.add(event({ id: '1'.repeat(64) })))
     assert.equal(await db.count({ kinds: [1] }), 1)
     assert.equal(await deleteNostrDb(owner), true)
     assert.equal(await getNostrDb(owner).count({ kinds: [1] }), 0)
@@ -1099,12 +1302,66 @@ describe('nostrdb', () => {
     const owner = `${OWNER}10`
     const db = getNostrDb(owner)
 
-    assert.equal(await db.add(event({ id: '1'.repeat(64) })), true)
+    assertAddOk(await db.add(event({ id: '1'.repeat(64) })))
     assert.equal(await db.count({ kinds: [1] }), 1)
     assert.equal(await db.deleteDb(), true)
     assert.equal(await getNostrDb(owner).count({ kinds: [1] }), 0)
   })
 })
+
+function assertAddOk (result, { code, stored, published } = {}) {
+  assert.equal(result.ok, true)
+  if (code !== undefined) assert.equal(result.code, code)
+  if (stored !== undefined) assert.equal(result.stored, stored)
+  if (published !== undefined) assert.equal(result.published, published)
+  assert.equal(typeof result.message, 'string')
+  assert.equal(result.message.length > 0, true)
+  return result
+}
+
+function assertAddNotOk (result, { code, stored = false, published = false } = {}) {
+  assert.equal(result.ok, false)
+  if (code !== undefined) assert.equal(result.code, code)
+  assert.equal(result.stored, stored)
+  assert.equal(result.published, published)
+  assert.equal(typeof result.message, 'string')
+  assert.equal(result.message.length > 0, true)
+  return result
+}
+
+function resetConsoleLogs () {
+  consoleErrors = []
+  consoleWarns = []
+}
+
+function assertNoConsoleIssues () {
+  assert.deepEqual(consoleErrors, [])
+  assert.deepEqual(consoleWarns, [])
+}
+
+function assertConsoleIssue (logs, { method, ownerPubkey, code, event, hasError = false }) {
+  assert.equal(logs.length, 1)
+
+  const [prefix, details, error] = logs[0]
+  assert.equal(prefix, '[nostrdb]')
+  assert.equal(details.method, method)
+  assert.equal(details.ownerPubkey, ownerPubkey)
+  if (code !== undefined) assert.equal(details.code, code)
+  if (event !== undefined) assert.deepEqual(details.event, event)
+  assert.equal('content' in (details.event ?? {}), false)
+  assert.equal('tags' in (details.event ?? {}), false)
+  assert.equal('sig' in (details.event ?? {}), false)
+  assert.equal(error instanceof Error, hasError)
+}
+
+function compactEvent (event) {
+  return {
+    id: event.id,
+    pubkey: event.pubkey,
+    kind: event.kind,
+    created_at: event.created_at
+  }
+}
 
 function event ({
   id,
@@ -1121,6 +1378,13 @@ function withTimeout (promise) {
   return Promise.race([
     promise,
     new Promise((resolve, reject) => setTimeout(() => reject(new Error('timed out')), 1000))
+  ])
+}
+
+function settlesWithin (promise, ms = 20) {
+  return Promise.race([
+    promise.then(() => true, () => true),
+    delay(ms).then(() => false)
   ])
 }
 

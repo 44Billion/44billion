@@ -69,9 +69,66 @@ export const DELETION_INDEX = {
 
 const HEX64_RE = /^[0-9a-f]{64}$/i
 const SIG_RE = /^[0-9a-f]{128}$/i
+const HONORARY_EXPIRATION_SKEW = 60
 const textEncoder = new TextEncoder()
 const dbCache = new Map()
 const storeCache = new Map()
+
+const ADD_FAILURE_CODES = new Set(['invalid', 'expired', 'blocked', 'unavailable', 'error'])
+const ADD_MESSAGES = {
+  stored: 'Event was stored.',
+  replaced: 'Event replaced an older stored coordinate event.',
+  duplicate: 'Event is already stored.',
+  superseded: 'A newer or tie-winning coordinate event is already stored.',
+  published: 'Event was published to subscribers without being stored.',
+  invalid: 'Event shape is invalid.',
+  expired: 'Event is expired.',
+  blocked: 'Event is blocked by a deletion request.',
+  unavailable: 'IndexedDB is unavailable.',
+  error: 'IndexedDB transaction failed.'
+}
+
+// add() only reports ok: false for invalid, expired, tombstone-blocked,
+// unavailable, or transaction/write-error cases.
+function addResult (code, { stored = false, published = false, message = ADD_MESSAGES[code] } = {}) {
+  return {
+    ok: !ADD_FAILURE_CODES.has(code),
+    code,
+    message,
+    stored,
+    published
+  }
+}
+
+function publishResult (result) {
+  return { ...result, published: true }
+}
+
+function logNostrDbIssue (method, details, error) {
+  const level = details.code === 'unavailable' || details.code === 'error' || error
+    ? 'error'
+    : 'warn'
+  const logger = console[level]
+  if (typeof logger !== 'function') return
+
+  if (error) {
+    logger.call(console, '[nostrdb]', { method, ...details }, error)
+  } else {
+    logger.call(console, '[nostrdb]', { method, ...details })
+  }
+}
+
+function eventLogSummary (event) {
+  if (!event || typeof event !== 'object') return null
+
+  const summary = {}
+  if (typeof event.id === 'string') summary.id = event.id
+  if (typeof event.pubkey === 'string') summary.pubkey = event.pubkey
+  if (Number.isInteger(event.kind)) summary.kind = event.kind
+  if (Number.isInteger(event.created_at)) summary.created_at = event.created_at
+
+  return Object.keys(summary).length > 0 ? summary : null
+}
 
 export function getNostrDb (ownerPubkey) {
   if (!storeCache.has(ownerPubkey)) {
@@ -118,30 +175,50 @@ export class NostrDb {
   // Public ingest path: valid transient events reach live subscribers, while
   // durable events are persisted through addEvent() before being published.
   async add (event) {
-    if (!isValidEventShape(event)) return false
-
-    if (shouldSkipStorage(event, currentUnixTime())) {
-      this.publish(event, true)
-      return false
+    if (!isValidEventShape(event)) {
+      return this.reportAddResult('add', event, addResult('invalid'))
     }
 
-    const saved = await this.addEvent(event)
-    if (saved) this.publish(event, true)
-    return saved
+    const now = currentUnixTime()
+
+    if (isExpiredForIngest(event, now)) {
+      return this.reportAddResult('add', event, addResult('expired'))
+    }
+
+    if (isNonDurableEvent(event)) {
+      this.publish(event, true)
+      return addResult('published', { published: true })
+    }
+
+    const result = await this.addEvent(event, { now, log: false })
+    if (result.stored) {
+      this.publish(event, true)
+      return publishResult(result)
+    }
+    return this.reportAddResult('add', event, result)
   }
 
   // Durable write path used internally by add() and compaction; it updates
   // IndexedDB/tombstones but does not publish events by itself.
-  async addEvent (event, { consumeDeletionRequestIds = [] } = {}) {
-    if (!isValidEventShape(event)) return false
+  async addEvent (event, { consumeDeletionRequestIds = [], now = currentUnixTime(), log = true } = {}) {
+    if (!isValidEventShape(event)) {
+      return this.reportAddResult('addEvent', event, addResult('invalid'), { log })
+    }
 
-    const now = currentUnixTime()
-    if (shouldSkipStorage(event, now)) return false
+    if (isExpiredForIngest(event, now)) {
+      return this.reportAddResult('addEvent', event, addResult('expired'), { log })
+    }
+    if (isNonDurableEvent(event)) {
+      return addResult('published', {
+        message: 'Event is valid but non-durable; addEvent() does not store or publish it.'
+      })
+    }
 
     const db = await openNostrDb(this.ownerPubkey)
-    if (!db) return false
+    if (!db) return this.reportAddResult('addEvent', event, addResult('unavailable'), { log })
 
     const record = toStoredRecord(event, { now })
+    let replaced = false
 
     try {
       const tx = db.transaction([EVENTS_STORE, DELETIONS_STORE], 'readwrite')
@@ -152,12 +229,12 @@ export class NostrDb {
 
       if (existingById) {
         await done
-        return false
+        return addResult('duplicate')
       }
 
       if (await isBlockedByDeletion(db, tx, event)) {
         await done
-        return false
+        return this.reportAddResult('addEvent', event, addResult('blocked'), { log })
       }
 
       if (record.a) {
@@ -166,10 +243,13 @@ export class NostrDb {
 
         if (existingByAddress && !isNewer(event, existingByAddress.event)) {
           await done
-          return false
+          return addResult('superseded')
         }
 
-        if (existingByAddress) await deleteStoredEvent(db, tx, existingByAddress)
+        if (existingByAddress) {
+          await deleteStoredEvent(db, tx, existingByAddress)
+          replaced = true
+        }
       }
 
       if (event.kind === 5) {
@@ -184,10 +264,22 @@ export class NostrDb {
       await run('put', [record], EVENTS_STORE, null, { db, tx })
       await done
     } catch {
-      return false
+      return this.reportAddResult('addEvent', event, addResult('error'), { log })
     }
 
-    return true
+    return addResult(replaced ? 'replaced' : 'stored', { stored: true })
+  }
+
+  reportAddResult (method, event, result, { log = true } = {}) {
+    if (log && !result.ok) {
+      logNostrDbIssue(method, {
+        ownerPubkey: this.ownerPubkey,
+        code: result.code,
+        message: result.message,
+        event: eventLogSummary(event)
+      })
+    }
+    return result
   }
 
   async compactDeletionRequests ({
@@ -281,7 +373,7 @@ export class NostrDb {
     }
 
     const saved = await this.addEvent(signed, { consumeDeletionRequestIds: consumed })
-    if (!saved) return compactResult()
+    if (!saved.stored) return compactResult()
 
     this.publish(signed, true)
     return compactResult({ compacted: true, created: signed, consumed, targets: tags })
@@ -406,7 +498,8 @@ export class NostrDb {
     try {
       const filters = parseFilterInput(filterOrFilters, options)
       return await queryParsedFilters(db, filters, { countOnly: false, ignoreLimit: false })
-    } catch {
+    } catch (error) {
+      logNostrDbIssue('query', { ownerPubkey: this.ownerPubkey }, error)
       return []
     }
   }
@@ -418,7 +511,8 @@ export class NostrDb {
     try {
       const filters = parseFilterInput(filterOrFilters, options)
       return await queryParsedFilters(db, filters, { countOnly: true, ignoreLimit: false })
-    } catch {
+    } catch (error) {
+      logNostrDbIssue('count', { ownerPubkey: this.ownerPubkey }, error)
       return 0
     }
   }
@@ -1573,15 +1667,28 @@ export function isHonoraryEphemeralEvent (event) {
   return expiration !== null && expiration === event.created_at
 }
 
-export function isExpiredEvent (event, now = currentUnixTime()) {
+export function isExpiredEvent (event, now = currentUnixTime(), { honorarySkew = 0 } = {}) {
   const expiration = getExpiration(event)
-  return expiration !== null && expiration <= now
+  if (expiration === null) return false
+
+  const expiresAt = isHonoraryEphemeralEvent(event)
+    ? expiration + honorarySkew
+    : expiration
+
+  return expiresAt <= now
+}
+
+export function isExpiredForIngest (event, now = currentUnixTime()) {
+  return isExpiredEvent(event, now, { honorarySkew: HONORARY_EXPIRATION_SKEW })
+}
+
+export function isNonDurableEvent (event) {
+  return isEphemeralKind(event.kind) || isHonoraryEphemeralEvent(event)
 }
 
 export function shouldSkipStorage (event, now = currentUnixTime()) {
   return (
-    isEphemeralKind(event.kind) ||
-    isHonoraryEphemeralEvent(event) ||
+    isNonDurableEvent(event) ||
     isExpiredEvent(event, now)
   )
 }
