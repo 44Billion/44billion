@@ -34,6 +34,7 @@ events, keyPath "i"
   p     base64url pubkey bytes
   k     event kind
   ca    created_at timestamp
+  sa    sync anchor in milliseconds, monotonic local score for device-to-device DB sync
   ex    optional NIP-40 expiration timestamp
   ap    optional multiEntry app refs for custom/unknown app-data ownership
   t     multiEntry tag index keys: [tagName, sha256(tagValue), created_at]
@@ -43,6 +44,7 @@ events indexes
   byAddress   a, unique, sparse
   byApp       ap, multiEntry
   byCreatedAt ca
+  bySyncAnchor sa
   byExpiration ex
   byPubkey    [p, ca]
   byKind      [k, ca]
@@ -66,6 +68,7 @@ export const INDEX = {
   address: 'byAddress',
   app: 'byApp',
   createdAt: 'byCreatedAt',
+  syncAnchor: 'bySyncAnchor',
   expiration: 'byExpiration',
   pubkey: 'byPubkey',
   kind: 'byKind',
@@ -80,6 +83,7 @@ export const DELETION_INDEX = {
 const HEX64_RE = /^[0-9a-f]{64}$/i
 const SIG_RE = /^[0-9a-f]{128}$/i
 const HONORARY_EXPIRATION_SKEW = 60
+const SYNC_ANCHOR_FUTURE_SKEW_MS = 5000
 const REGULAR_CUSTOM_APP_DATA_KIND = eventKinds.REGULAR_CUSTOM_APP_DATA ?? 78
 const CUSTOM_APP_DATA_KIND = eventKinds.CUSTOM_APP_DATA ?? 30078
 const APP_NEUTRAL_KINDS_KEY = 'appNeutralKinds'
@@ -88,6 +92,8 @@ const dbCache = new Map()
 const storeCache = new Map()
 
 const ADD_FAILURE_CODES = new Set(['invalid', 'invalid_app', 'expired', 'blocked', 'unavailable', 'error'])
+const QUERY_SCORES = Symbol('nostrdb.queryScores')
+const STORED_RECORD = Symbol('nostrdb.storedRecord')
 const ADD_MESSAGES = {
   stored: 'Event was stored.',
   replaced: 'Event replaced an older stored coordinate event.',
@@ -104,14 +110,17 @@ const ADD_MESSAGES = {
 
 // add() only reports ok: false for invalid, expired, tombstone-blocked,
 // unavailable, or transaction/write-error cases.
-function addResult (code, { stored = false, published = false, message = ADD_MESSAGES[code] } = {}) {
-  return {
+function addResult (code, { stored = false, published = false, message = ADD_MESSAGES[code], storedRecord } = {}) {
+  const result = {
     ok: !ADD_FAILURE_CODES.has(code),
     code,
     message,
     stored,
     published
   }
+
+  if (storedRecord) Object.defineProperty(result, STORED_RECORD, { value: storedRecord })
+  return result
 }
 
 function publishResult (result) {
@@ -157,12 +166,12 @@ Usage:
   const db = getNostrDb(ownerPubkey)
 
   await db.add(event)
-  const events = await db.query({ authors: [pubkey], kinds: [1], limit: 20 })
-  const ids = await db.query({ since, until }, { ids_only: true })
+  const { results: events } = await db.query({ authors: [pubkey], kinds: [1], limit: 20 })
+  const { results: ids } = await db.query({ since, until }, { ids_only: true, search: 'algo:sync sort:asc' })
   const total = await db.count([{ kinds: [1] }, { kinds: [30023] }])
 
   const sub = db.subscribe({ '#t': ['nostr'], search: 'relay' })
-  for await (const event of sub) {
+  for await (const { result: event } of sub) {
     // receives future matching events added through this module or another tab
   }
 
@@ -181,7 +190,11 @@ export class NostrDb {
       this.bc.unref?.()
       this.bc.onmessage = ({ data }) => {
         if (data?.type !== 'event' || data.sender === this.sender) return
-        this.publish(data.event, false)
+        this.publish(
+          data.event,
+          false,
+          Number.isFinite(data.syncAnchor) ? { event: data.event, sa: data.syncAnchor } : undefined
+        )
       }
     }
   }
@@ -209,7 +222,7 @@ export class NostrDb {
 
     const result = await this.addEvent(event, { now, appRef, log: false })
     if (result.stored && (result.code === 'stored' || result.code === 'replaced')) {
-      this.publish(event, true)
+      this.publish(event, true, result[STORED_RECORD])
       return publishResult(result)
     }
     return this.reportAddResult('add', event, result)
@@ -279,9 +292,14 @@ export class NostrDb {
 
         if (existingByAddress) {
           mergeAppRefs(record, existingByAddress.ap)
+          record.sa = await nextSyncAnchor(db, tx, event, now)
           await deleteStoredEvent(db, tx, existingByAddress)
           replaced = true
         }
+      }
+
+      if (record.sa === undefined) {
+        record.sa = await nextSyncAnchor(db, tx, event, now)
       }
 
       if (event.kind === 5) {
@@ -299,7 +317,7 @@ export class NostrDb {
       return this.reportAddResult('addEvent', event, addResult('error'), { log })
     }
 
-    return addResult(replaced ? 'replaced' : 'stored', { stored: true })
+    return addResult(replaced ? 'replaced' : 'stored', { stored: true, storedRecord: record })
   }
 
   reportAddResult (method, event, result, { log = true } = {}) {
@@ -524,15 +542,23 @@ export class NostrDb {
   }
 
   async query (filterOrFilters, options = {}) {
-    const db = await openNostrDb(this.ownerPubkey)
-    if (!db) return []
-
+    let filters
     try {
-      const filters = parseFilterInput(filterOrFilters, options)
-      return await queryParsedFilters(db, filters, { countOnly: false, ignoreLimit: false })
+      filters = parseFilterInput(filterOrFilters, options)
     } catch (error) {
       logNostrDbIssue('query', { ownerPubkey: this.ownerPubkey }, error)
-      return []
+      return queryResult([], undefined)
+    }
+
+    const db = await openNostrDb(this.ownerPubkey)
+    if (!db) return queryResult([], filters[0])
+
+    try {
+      const results = await queryParsedFilters(db, filters, { countOnly: false, ignoreLimit: false })
+      return queryResult(results, filters[0])
+    } catch (error) {
+      logNostrDbIssue('query', { ownerPubkey: this.ownerPubkey }, error)
+      return queryResult([], filters[0])
     }
   }
 
@@ -552,7 +578,12 @@ export class NostrDb {
   async supports () {
     return [
       'search',
-      'search:sort:old',
+      // Note: it could instead be an `algo: "asc"` filter field
+      // but we decided to use search extensions for any custom
+      // behavior we come up with
+      'search:sort:asc',
+      'search:sort:desc',
+      'search:algo:sync',
       'search:autocomplete:true',
       'ids_only',
       '!ids',
@@ -601,13 +632,18 @@ export class NostrDb {
     })
   }
 
-  publish (event, shouldBroadcast) {
+  publish (event, shouldBroadcast, storedRecord) {
     for (const subscription of this.subscriptions) {
-      subscription.push(event)
+      subscription.push(event, storedRecord)
     }
 
     if (shouldBroadcast) {
-      this.bc?.postMessage({ type: 'event', sender: this.sender, event })
+      this.bc?.postMessage({
+        type: 'event',
+        sender: this.sender,
+        event,
+        syncAnchor: storedRecord?.sa
+      })
     }
   }
 }
@@ -684,6 +720,7 @@ function initNostrDb (dbName) {
     createIndexIfMissing(store, INDEX.address, 'a', { unique: true })
     createIndexIfMissing(store, INDEX.app, 'ap', { multiEntry: true })
     createIndexIfMissing(store, INDEX.createdAt, 'ca')
+    createIndexIfMissing(store, INDEX.syncAnchor, 'sa')
     createIndexIfMissing(store, INDEX.expiration, 'ex')
     createIndexIfMissing(store, INDEX.pubkey, ['p', 'ca'])
     createIndexIfMissing(store, INDEX.kind, ['k', 'ca'])
@@ -899,7 +936,7 @@ async function queryParsedFilterRecords (db, filter, { countOnly, ignoreLimit })
   if (limit <= 0) return countOnly ? 0 : []
 
   const plan = planQuery(filter)
-  const direction = filter.sortOld ? 'next' : 'prev'
+  const direction = queryDirection(filter)
   const now = currentUnixTime()
 
   if (filter.searchText) {
@@ -911,7 +948,7 @@ async function queryParsedFilterRecords (db, filter, { countOnly, ignoreLimit })
     const results = ranked
       .slice(0, Number.isFinite(limit) ? limit : ranked.length)
       .map(candidate => candidate.event)
-    return projectQueryResults(results, filter)
+    return projectQueryResults(results, filter, scoreByCandidateId(ranked))
   }
 
   if (!countOnly && canUseKeyOnlyCursor(plan, filter)) {
@@ -929,12 +966,14 @@ async function queryParsedFilterRecords (db, filter, { countOnly, ignoreLimit })
 
   const seen = new Set()
   const results = []
+  const scoreById = new Map()
   let count = 0
 
-  const matches = stored => stored && isStoredRecordLive(stored, now) && filter.matches(stored.event)
+  const matches = stored => stored && isStoredRecordLive(stored, now) && filter.matchesStored(stored)
   const emit = stored => {
     if (!matches(stored) || seen.has(stored.event.id)) return false
     seen.add(stored.event.id)
+    scoreById.set(stored.event.id, storedScore(stored, filter))
     count++
     if (!countOnly) results.push(stored.event)
     return true
@@ -967,8 +1006,8 @@ async function queryParsedFilterRecords (db, filter, { countOnly, ignoreLimit })
 
   if (countOnly) return count
 
-  results.sort(filter.sortOld ? compareOldest : compareNewest)
-  return projectQueryResults(Number.isFinite(limit) ? results.slice(0, limit) : results, filter)
+  results.sort(compareEventsForFilter(filter, scoreById))
+  return projectQueryResults(Number.isFinite(limit) ? results.slice(0, limit) : results, filter, scoreById)
 }
 
 async function queryMultipleParsedFilters (db, filters, { countOnly, ignoreLimit }) {
@@ -986,12 +1025,14 @@ async function queryMultipleParsedFilters (db, filters, { countOnly, ignoreLimit
   const now = currentUnixTime()
   const seen = new Set()
   const results = []
-  const compare = filters[0].sortOld ? compareOldest : compareNewest
+  const scoreById = new Map()
+  const compare = compareEventsForFilter(filters[0], scoreById)
 
-  const emit = event => {
+  const emit = (event, score) => {
     if (seen.has(event.id)) return true
 
     seen.add(event.id)
+    scoreById.set(event.id, score)
     if (countOnly) return !Number.isFinite(limit) || seen.size < limit
 
     results.push(event)
@@ -1010,18 +1051,18 @@ async function queryMultipleParsedFilters (db, filters, { countOnly, ignoreLimit
   if (countOnly) return Number.isFinite(limit) ? Math.min(seen.size, limit) : seen.size
 
   results.sort(compare)
-  return projectQueryResults(Number.isFinite(limit) ? results.slice(0, limit) : results, filters[0])
+  return projectQueryResults(Number.isFinite(limit) ? results.slice(0, limit) : results, filters[0], scoreById)
 }
 
 async function queryMultipleIdsWithKeyCursor (db, filters, { limit }) {
   const now = currentUnixTime()
   const seen = new Set()
   const results = []
-  const compare = filters[0].sortOld ? compareOldest : compareNewest
+  const compare = compareScoredResults(filters[0])
 
   for (const filter of filters) {
     const plan = planQuery(filter)
-    const direction = filter.sortOld ? 'next' : 'prev'
+    const direction = queryDirection(filter)
     const candidates = await collectKeyGateCandidates(db, plan, filter, direction, { limit, now })
 
     for (const candidate of candidates) {
@@ -1037,7 +1078,8 @@ async function queryMultipleIdsWithKeyCursor (db, filters, { limit }) {
   }
 
   results.sort(compare)
-  return (Number.isFinite(limit) ? results.slice(0, limit) : results).map(result => result.id)
+  const selected = Number.isFinite(limit) ? results.slice(0, limit) : results
+  return withQueryScores(selected.map(result => result.id), selected.map(result => result.score))
 }
 
 async function queryMultipleSearchFilters (db, filters, { countOnly, limit }) {
@@ -1046,7 +1088,7 @@ async function queryMultipleSearchFilters (db, filters, { countOnly, limit }) {
 
   for (const filter of filters) {
     const plan = planQuery(filter)
-    const direction = filter.sortOld ? 'next' : 'prev'
+    const direction = queryDirection(filter)
     const candidates = await collectSearchCandidates(db, plan, filter, direction, { countOnly, limit, now })
 
     for (const candidate of candidates) {
@@ -1063,20 +1105,20 @@ async function queryMultipleSearchFilters (db, filters, { countOnly, limit }) {
   const events = ranked
     .slice(0, Number.isFinite(limit) ? limit : ranked.length)
     .map(candidate => candidate.event)
-  return projectQueryResults(events, filters[0])
+  return projectQueryResults(events, filters[0], scoreByCandidateId(ranked))
 }
 
 async function scanParsedFilterEvents (db, filter, { now, limit, countOnly, onEvent }) {
   const plan = planQuery(filter)
-  const direction = filter.sortOld ? 'next' : 'prev'
+  const direction = queryDirection(filter)
   const seen = new Set()
 
   const emit = stored => {
-    if (!stored || !isStoredRecordLive(stored, now) || !filter.matches(stored.event)) return true
+    if (!stored || !isStoredRecordLive(stored, now) || !filter.matchesStored(stored)) return true
     if (seen.has(stored.event.id)) return true
 
     seen.add(stored.event.id)
-    return onEvent(stored.event) !== false
+    return onEvent(stored.event, storedScore(stored, filter)) !== false
   }
 
   if (filter.searchText) {
@@ -1088,7 +1130,8 @@ async function scanParsedFilterEvents (db, filter, { now, limit, countOnly, onEv
     for (const event of events) {
       if (seen.has(event.id)) continue
       seen.add(event.id)
-      if (onEvent(event) === false) return false
+      const candidate = candidates.find(candidate => candidate.event.id === event.id)
+      if (onEvent(event, candidate?.score ?? queryScore(event, null, filter)) === false) return false
     }
     return true
   }
@@ -1122,8 +1165,86 @@ async function scanParsedFilterEvents (db, filter, { now, limit, countOnly, onEv
   return true
 }
 
-function projectQueryResults (events, filter) {
-  return filter.idsOnly ? events.map(event => event.id) : events
+function projectQueryResults (events, filter, scoreById) {
+  const results = filter.idsOnly ? events.map(event => event.id) : events
+  const scores = events.map(event => scoreById?.get(event.id) ?? queryScore(event, null, filter))
+  return withQueryScores(results, scores)
+}
+
+function withQueryScores (results, scores) {
+  Object.defineProperty(results, QUERY_SCORES, {
+    value: scores,
+    configurable: true
+  })
+  return results
+}
+
+function queryResult (results, filter) {
+  const scores = Array.isArray(results)
+    ? results[QUERY_SCORES] ?? results.map(result => queryScoreFromResult(result, filter))
+    : []
+  return {
+    results,
+    meta: {
+      algorithm: queryAlgorithm(filter),
+      sort: querySort(filter),
+      scores,
+      firstScore: scores.length > 0 ? scores[0] : null,
+      lastScore: scores.length > 0 ? scores[scores.length - 1] : null
+    }
+  }
+}
+
+function queryAlgorithm (filter) {
+  return filter?.algorithm === 'sync' ? 'sync' : 'created_at'
+}
+
+function querySort (filter) {
+  return filter?.sort === 'asc' ? 'asc' : 'desc'
+}
+
+function queryDirection (filter) {
+  return querySort(filter) === 'asc' ? 'next' : 'prev'
+}
+
+function queryScoreFromResult (result, filter) {
+  if (typeof result === 'string') return null
+  return queryScore(result, null, filter)
+}
+
+function queryScore (event, stored, filter) {
+  if (queryAlgorithm(filter) === 'sync') {
+    return Number.isFinite(stored?.sa) ? stored.sa : event.created_at
+  }
+  return event.created_at
+}
+
+function storedScore (stored, filter) {
+  return queryScore(stored.event, stored, filter)
+}
+
+function compareEventsForFilter (filter, scoreById) {
+  const direction = querySort(filter)
+  return (a, b) => {
+    const aScore = scoreById?.get(a.id) ?? queryScore(a, null, filter)
+    const bScore = scoreById?.get(b.id) ?? queryScore(b, null, filter)
+    if (aScore !== bScore) return direction === 'asc' ? aScore - bScore : bScore - aScore
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+  }
+}
+
+function compareScoredResults (filter) {
+  const direction = querySort(filter)
+  return (a, b) => {
+    if (a.score !== b.score) return direction === 'asc' ? a.score - b.score : b.score - a.score
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+  }
+}
+
+function scoreByCandidateId (candidates) {
+  const scores = new Map()
+  for (const candidate of candidates) scores.set(candidate.event.id, candidate.score)
+  return scores
 }
 
 async function queryIdsWithKeyCursor (db, plan, filter, direction, { limit, now }) {
@@ -1146,7 +1267,7 @@ async function queryIdsWithKeyCursor (db, plan, filter, direction, { limit, now 
         matchedInCursor++
         results.push({
           id: idKeyToEventId(idKey),
-          created_at: timestampFromIndexKey(item.key, cursor.indexName)
+          score: scoreFromIndexKey(item.key, cursor.indexName)
         })
 
         return matchedInCursor < limit
@@ -1154,8 +1275,9 @@ async function queryIdsWithKeyCursor (db, plan, filter, direction, { limit, now 
     })
   }
 
-  results.sort(filter.sortOld ? compareOldest : compareNewest)
-  return (Number.isFinite(limit) ? results.slice(0, limit) : results).map(result => result.id)
+  results.sort(compareScoredResults(filter))
+  const selected = Number.isFinite(limit) ? results.slice(0, limit) : results
+  return withQueryScores(selected.map(result => result.id), selected.map(result => result.score))
 }
 
 // Unlike the normal value cursor, this scans index keys first and fetches full
@@ -1163,7 +1285,8 @@ async function queryIdsWithKeyCursor (db, plan, filter, direction, { limit, now 
 async function queryFullEventsWithKeyGate (db, plan, filter, direction, { limit, now }) {
   const candidates = await collectKeyGateCandidates(db, plan, filter, direction, { limit, now })
   const results = []
-  const matches = stored => stored && isStoredRecordLive(stored, now) && filter.matches(stored.event)
+  const scoreById = new Map()
+  const matches = stored => stored && isStoredRecordLive(stored, now) && filter.matchesStored(stored)
 
   for (let i = 0; i < candidates.length; i += KEY_GATED_GET_BATCH_SIZE) {
     const batch = candidates.slice(i, i + KEY_GATED_GET_BATCH_SIZE)
@@ -1174,11 +1297,12 @@ async function queryFullEventsWithKeyGate (db, plan, filter, direction, { limit,
       if (!matches(stored)) continue
 
       results.push(stored.event)
+      scoreById.set(stored.event.id, candidate.score)
     }
   }
 
-  results.sort(filter.sortOld ? compareOldest : compareNewest)
-  return Number.isFinite(limit) ? results.slice(0, limit) : results
+  results.sort(compareEventsForFilter(filter, scoreById))
+  return projectQueryResults(Number.isFinite(limit) ? results.slice(0, limit) : results, filter, scoreById)
 }
 
 async function collectKeyGateCandidates (db, plan, filter, direction, { limit, now }) {
@@ -1202,7 +1326,7 @@ async function collectKeyGateCandidates (db, plan, filter, direction, { limit, n
         candidates.push({
           id: idKeyToEventId(idKey),
           idKey,
-          created_at: timestampFromIndexKey(item.key, cursor.indexName)
+          score: scoreFromIndexKey(item.key, cursor.indexName)
         })
 
         return matchedInCursor < limit
@@ -1210,7 +1334,7 @@ async function collectKeyGateCandidates (db, plan, filter, direction, { limit, n
     })
   }
 
-  candidates.sort(filter.sortOld ? compareOldest : compareNewest)
+  candidates.sort(compareScoredResults(filter))
   return Number.isFinite(limit) ? candidates.slice(0, limit) : candidates
 }
 
@@ -1311,14 +1435,24 @@ async function getExpiredIdKeys (db, now) {
 
 function canUseKeyOnlyCursor (plan, filter) {
   // Covers sync inventory queries like:
-  //   local DB A: query({ since, until, ids_only: true })
-  //   local DB B: query({ since, until, "!ids": localDbAIds })
+  //   local device DB A: query({ since, until, ids_only: true, search: 'algo:sync sort:asc' })
+  //   local device DB B: query({ since, until, "!ids": localDbAIds, search: 'algo:sync sort:asc' })
   // Also covers author/kind variants such as:
   //   query({ authors: [pubkey], kinds: [1], ids_only: true })
   // Search and mixed post-filter cases still need full event rows, so they stay on value cursors.
   if (filter.searchText || plan.type !== 'cursor') return false
   if (filter.andTags.length > 0) return false
   if (plan.cursors.length === 0) return false
+
+  if (queryAlgorithm(filter) === 'sync') {
+    return (
+      !filter.ids &&
+      !filter.authors &&
+      !filter.kinds &&
+      filter.tags.length === 0 &&
+      plan.cursors.every(cursor => cursor.indexName === INDEX.syncAnchor)
+    )
+  }
 
   return plan.cursors.every(cursor => {
     if (cursor.indexName === INDEX.createdAt) return true
@@ -1335,8 +1469,9 @@ function canUseKeyOnlyCursor (plan, filter) {
   })
 }
 
-function timestampFromIndexKey (key, indexName) {
+function scoreFromIndexKey (key, indexName) {
   if (indexName === INDEX.createdAt) return key
+  if (indexName === INDEX.syncAnchor) return key
   if (indexName === INDEX.pubkey || indexName === INDEX.kind) return key[1]
   if (indexName === INDEX.pubkeyKind || indexName === INDEX.tag) return key[2]
   return 0
@@ -1349,16 +1484,17 @@ async function collectSearchCandidates (db, plan, filter, direction, { countOnly
   const matchTarget = searchMatchTarget(countOnly, limit)
 
   const toCandidate = stored => {
+    const score = stored ? storedScore(stored, filter) : 0
     if (
       !stored ||
       !isStoredRecordLive(stored, now) ||
       seen.has(stored.event.id) ||
-      !filter.matchesStructured(stored.event)
+      !filter.matchesStructured(stored.event, score)
     ) return null
     seen.add(stored.event.id)
 
     const text = getSearchableText(stored.event)
-    return text ? { event: stored.event, text } : null
+    return text ? { event: stored.event, text, score } : null
   }
 
   if (plan.type === 'direct') {
@@ -1417,7 +1553,13 @@ async function collectSearchCandidates (db, plan, filter, direction, { countOnly
 }
 
 function compareSearchTime (a, b, filter) {
-  return filter.sortOld ? compareOldest(a, b) : compareNewest(a, b)
+  const aScore = Number.isFinite(a?.score) ? a.score : queryScore(a.event ?? a, null, filter)
+  const bScore = Number.isFinite(b?.score) ? b.score : queryScore(b.event ?? b, null, filter)
+  if (aScore !== bScore) return querySort(filter) === 'asc' ? aScore - bScore : bScore - aScore
+
+  const aId = a.event?.id ?? a.id
+  const bId = b.event?.id ?? b.id
+  return aId < bId ? -1 : aId > bId ? 1 : 0
 }
 
 function searchMatchTarget (countOnly, limit) {
@@ -1452,6 +1594,16 @@ export function planQuery (filter) {
   const replaceableCursors = getReplaceableCursors(filter)
   if (replaceableCursors) {
     return { type: 'direct', cursors: replaceableCursors }
+  }
+
+  if (queryAlgorithm(filter) === 'sync') {
+    return {
+      type: 'cursor',
+      cursors: [{
+        indexName: INDEX.syncAnchor,
+        range: IDBKeyRange.bound(filter.since, filter.until)
+      }]
+    }
   }
 
   if (filter.tags.length > 0 || filter.andTags.length > 0) {
@@ -1562,14 +1714,25 @@ function createSubscription (filters, { idsOnly = false, limit = Infinity } = {}
   }
 
   const subscription = {
-    push (event) {
-      if (closed || !filters.some(filter => filter.matches(event))) return
+    push (event, storedRecord) {
+      if (closed) return
+      const filter = filters.find(filter => filter.matches(event, storedRecord))
+      if (!filter) return
+      const score = queryScore(event, storedRecord, filter)
       const value = idsOnly ? event.id : event
+      const wrapped = {
+        result: value,
+        meta: {
+          algorithm: queryAlgorithm(filter),
+          sort: querySort(filter),
+          score
+        }
+      }
       yielded++
       if (waiters.length > 0) {
-        waiters.shift().resolve({ value, done: false })
+        waiters.shift().resolve({ value: wrapped, done: false })
       } else {
-        queue.push(value)
+        queue.push(wrapped)
       }
       if (yielded >= limit) close()
     },
@@ -1616,6 +1779,8 @@ export class ParsedFilter {
     this.limit = Infinity
     this.idsOnly = false
     this.neverMatch = false
+    this.algorithm = 'created_at'
+    this.sort = 'desc'
     this.sortOld = false
     this.autocomplete = false
     this.searchText = ''
@@ -1657,6 +1822,8 @@ export class ParsedFilter {
         this.idsOnly = value === true
       } else if (key === 'search') {
         const search = parseSearch(value)
+        this.algorithm = search.algorithm
+        this.sort = search.sort
         this.sortOld = search.sortOld
         this.autocomplete = search.autocomplete
         this.searchText = search.text
@@ -1674,6 +1841,8 @@ export class ParsedFilter {
     if (controls.hasIdsOnly) this.idsOnly = controls.idsOnly
     if (controls.hasSearch) {
       const search = parseSearch(controls.search)
+      this.algorithm = search.algorithm
+      this.sort = search.sort
       this.sortOld = search.sortOld
       this.autocomplete = search.autocomplete
       this.searchText = search.text
@@ -1698,16 +1867,22 @@ export class ParsedFilter {
     }
   }
 
-  matches (event) {
-    if (!this.matchesStructured(event)) return false
+  matches (event, stored) {
+    const score = queryScore(event, stored, this)
+    if (!this.matchesStructured(event, score)) return false
     if (this.searchText && !eventMatchesSearch(event, this, compareSearchTime)) return false
 
     return true
   }
 
-  matchesStructured (event) {
+  matchesStored (stored) {
+    if (!stored?.event) return false
+    return this.matches(stored.event, stored)
+  }
+
+  matchesStructured (event, score = event.created_at) {
     if (this.neverMatch) return false
-    if (event.created_at < this.since || event.created_at > this.until) return false
+    if (score < this.since || score > this.until) return false
     if (this.ids && !this.ids.includes(event.id)) return false
     if (this.excludeIdSet?.has(event.id)) return false
     if (this.authors && !this.authors.includes(event.pubkey)) return false
@@ -1744,6 +1919,29 @@ export function toStoredRecord (event, { now = currentUnixTime(), appRef } = {})
   if (appRef && isAppTrackableKind(event.kind)) record.ap = [appRef]
 
   return record
+}
+
+// Assign a monotonic millisecond sync anchor for local DB sync: prefer the
+// event's capped created_at time, otherwise advance one tick past the newest row.
+async function nextSyncAnchor (db, tx, event, now = currentUnixTime()) {
+  const newest = await getNewestSyncAnchor(db, tx)
+  const candidate = Math.min(event.created_at * 1000, (now * 1000) + SYNC_ANCHOR_FUTURE_SKEW_MS)
+  return candidate > newest ? candidate : newest + 1
+}
+
+async function getNewestSyncAnchor (db, tx) {
+  let newest = -1
+
+  await scanKeyCursor(db, EVENTS_STORE, INDEX.syncAnchor, null, {
+    tx,
+    direction: 'prev',
+    onItem: ({ key }) => {
+      if (Number.isFinite(key)) newest = key
+      return false
+    }
+  })
+
+  return newest
 }
 
 function normalizeOptionalAppRef (appId) {

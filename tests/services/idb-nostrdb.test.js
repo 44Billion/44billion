@@ -117,7 +117,7 @@ describe('nostrdb', () => {
     const custom = event({ id: '1'.repeat(64), kind: eventKinds.CUSTOM_APP_DATA, tags: [['d', 'settings']] })
 
     assertAddNotOk(await db.add(custom, { appId: 'nope' }), { code: 'invalid_app' })
-    assert.deepEqual(await db.query({ ids: [custom.id] }), [])
+    assert.deepEqual(await queryResults(db, { ids: [custom.id] }), [])
   })
 
   it('merges app refs into duplicate and superseded custom events', async () => {
@@ -134,7 +134,7 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(newer, { appId: APP1 }), { code: 'stored', stored: true })
     assertAddOk(await db.add(stale, { appId: APP2 }), { code: 'superseded', stored: true, published: false })
     assertAppRefs(fakeStore(owner, 'events').records.get(eventIdIndexKey(newer.id)), [APP1, APP2])
-    assert.deepEqual((await db.query({ kinds: [eventKinds.CUSTOM_APP_DATA], '#d': ['settings'] })).map(e => e.id), [newer.id])
+    assert.deepEqual((await queryResults(db, { kinds: [eventKinds.CUSTOM_APP_DATA], '#d': ['settings'] })).map(e => e.id), [newer.id])
   })
 
   it('preserves app refs across coordinate replacement', async () => {
@@ -146,7 +146,7 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(old, { appId: APP1 }), { code: 'stored', stored: true })
     assertAddOk(await db.add(newer, { appId: APP2 }), { code: 'replaced', stored: true })
     assertAppRefs(fakeStore(owner, 'events').records.get(eventIdIndexKey(newer.id)), [APP1, APP2])
-    assert.deepEqual(await db.query({ ids: [old.id] }), [])
+    assert.deepEqual(await queryResults(db, { ids: [old.id] }), [])
   })
 
   it('deletes exclusive app rows and only unlinks shared app rows', async () => {
@@ -160,12 +160,12 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(shared, { appId: APP2 }), { code: 'duplicate', stored: true, published: false })
 
     assert.equal(await db.deleteEventsByApp(APP1), 1)
-    assert.deepEqual(await db.query({ ids: [exclusive.id] }), [])
-    assert.deepEqual((await db.query({ ids: [shared.id] })).map(e => e.id), [shared.id])
+    assert.deepEqual(await queryResults(db, { ids: [exclusive.id] }), [])
+    assert.deepEqual((await queryResults(db, { ids: [shared.id] })).map(e => e.id), [shared.id])
     assertAppRefs(fakeStore(owner, 'events').records.get(eventIdIndexKey(shared.id)), [APP2])
 
     assert.equal(await db.deleteEventsByApp(APP2), 1)
-    assert.deepEqual(await db.query({ ids: [shared.id] }), [])
+    assert.deepEqual(await queryResults(db, { ids: [shared.id] }), [])
     assert.equal(await db.deleteEventsByApp('nope'), 0)
   })
 
@@ -189,8 +189,8 @@ describe('nostrdb', () => {
 
     assert.equal(await db.deleteEventsByApp(APP1), exclusive.length)
     assert.equal(store.openKeyCursorCount > 1, true)
-    assert.deepEqual(await db.query({ ids: exclusive.map(event => event.id) }), [])
-    assert.deepEqual((await db.query({ ids: [shared.id] })).map(e => e.id), [shared.id])
+    assert.deepEqual(await queryResults(db, { ids: exclusive.map(event => event.id) }), [])
+    assert.deepEqual((await queryResults(db, { ids: [shared.id] })).map(e => e.id), [shared.id])
     assertAppRefs(store.records.get(eventIdIndexKey(shared.id)), [APP2])
   })
 
@@ -373,7 +373,7 @@ describe('nostrdb', () => {
       }
 
       resetConsoleLogs()
-      assert.deepEqual(await db.query({ kinds: [1] }), [])
+      assert.deepEqual(await queryResults(db, { kinds: [1] }), [])
       assertConsoleIssue(consoleErrors, { method: 'query', ownerPubkey: owner, hasError: true })
 
       resetConsoleLogs()
@@ -394,7 +394,7 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(newer))
     assertAddOk(await db.add(stale), { code: 'superseded', stored: false, published: false })
 
-    const results = await db.query({ authors: [A], kinds: [30023], '#d': ['post'] })
+    const results = await queryResults(db, { authors: [A], kinds: [30023], '#d': ['post'] })
     assert.deepEqual(results.map(e => e.id), [newer.id])
   })
 
@@ -418,12 +418,12 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(three))
     assertAddOk(await db.add(four))
 
-    assert.deepEqual((await db.query({ ids: [one.id, two.id], kinds: [1] })).map(e => e.id), [one.id])
-    assert.deepEqual((await db.query({ authors: [A] })).map(e => e.id), [four.id, two.id, one.id])
-    assert.deepEqual((await db.query({ kinds: [1] })).map(e => e.id), [four.id, three.id, one.id])
-    assert.deepEqual((await db.query({ authors: [A], kinds: [1], limit: 1 })).map(e => e.id), [four.id])
-    assert.deepEqual((await db.query({ '#e': ['root'] })).map(e => e.id), [three.id, one.id])
-    assert.deepEqual((await db.query({ '#d': ['alpha'] })).map(e => e.id), [three.id, one.id])
+    assert.deepEqual((await queryResults(db, { ids: [one.id, two.id], kinds: [1] })).map(e => e.id), [one.id])
+    assert.deepEqual((await queryResults(db, { authors: [A] })).map(e => e.id), [four.id, two.id, one.id])
+    assert.deepEqual((await queryResults(db, { kinds: [1] })).map(e => e.id), [four.id, three.id, one.id])
+    assert.deepEqual((await queryResults(db, { authors: [A], kinds: [1], limit: 1 })).map(e => e.id), [four.id])
+    assert.deepEqual((await queryResults(db, { '#e': ['root'] })).map(e => e.id), [three.id, one.id])
+    assert.deepEqual((await queryResults(db, { '#d': ['alpha'] })).map(e => e.id), [three.id, one.id])
     assert.equal(await db.count({ kinds: [1] }), 3)
     assert.equal(await db.count({ kinds: [1], limit: 1 }), 1)
   })
@@ -438,9 +438,80 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(newer))
     assertAddOk(await db.add(other))
 
-    assert.deepEqual(await db.query({ authors: [A], ids_only: true }), [newer.id, old.id])
-    assert.deepEqual(await db.query({ ids: [old.id, newer.id], ids_only: true, limit: 1 }), [newer.id])
-    assert.deepEqual(await db.query({ authors: [A], ids_only: true, search: 'sort:old', limit: 1 }), [old.id])
+    assert.deepEqual(await queryResults(db, { authors: [A], ids_only: true }), [newer.id, old.id])
+    assert.deepEqual(await queryResults(db, { ids: [old.id, newer.id], ids_only: true, limit: 1 }), [newer.id])
+    assert.deepEqual(await queryResults(db, { authors: [A], ids_only: true, search: 'sort:asc', limit: 1 }), [old.id])
+  })
+
+  it('derives sync anchors for stored rows and coordinate replacements', async () => {
+    await withPatchedNow(100, async () => {
+      const owner = `${OWNER}80`
+      const db = getNostrDb(owner)
+      const first = event({ id: hexId(1), created_at: 10 })
+      const future = event({ id: hexId(2), created_at: 200 })
+      const backfill = event({ id: hexId(3), created_at: 20 })
+      const oldAddress = event({ id: hexId(4), kind: 30023, created_at: 30, tags: [['d', 'post']] })
+      const newerAddress = event({ id: hexId(5), kind: 30023, created_at: 40, tags: [['d', 'post']] })
+      const staleAddress = event({ id: hexId(6), kind: 30023, created_at: 35, tags: [['d', 'post']] })
+
+      assertAddOk(await db.add(first), { code: 'stored' })
+      assertAddOk(await db.add(future), { code: 'stored' })
+      assertAddOk(await db.add(backfill), { code: 'stored' })
+
+      const store = fakeStore(owner, 'events')
+      assert.equal(store.records.get(eventIdIndexKey(first.id)).sa, 10000)
+      assert.equal(store.records.get(eventIdIndexKey(future.id)).sa, 105000)
+      assert.equal(store.records.get(eventIdIndexKey(backfill.id)).sa, 105001)
+
+      assertAddOk(await db.add(backfill), { code: 'duplicate', stored: false })
+      assert.equal(store.records.get(eventIdIndexKey(backfill.id)).sa, 105001)
+
+      assertAddOk(await db.add(oldAddress), { code: 'stored' })
+      assert.equal(store.records.get(eventIdIndexKey(oldAddress.id)).sa, 105002)
+      assertAddOk(await db.add(newerAddress), { code: 'replaced' })
+      assert.equal(store.records.has(eventIdIndexKey(oldAddress.id)), false)
+      assert.equal(store.records.get(eventIdIndexKey(newerAddress.id)).sa, 105003)
+      assertAddOk(await db.add(staleAddress), { code: 'superseded', stored: false, published: false })
+      assert.equal(store.records.get(eventIdIndexKey(newerAddress.id)).sa, 105003)
+    })
+  })
+
+  it('returns query wrapper metadata and supports sync-anchor ranges', async () => {
+    await withPatchedNow(100, async () => {
+      const db = getNostrDb(`${OWNER}81`)
+      const old = event({ id: hexId(1), created_at: 10 })
+      const future = event({ id: hexId(2), created_at: 200 })
+      const backfill = event({ id: hexId(3), created_at: 20 })
+
+      assertAddOk(await db.add(old))
+      assertAddOk(await db.add(future))
+      assertAddOk(await db.add(backfill))
+
+      const createdAt = await db.query({ ids: [old.id, future.id], search: 'sort:asc' })
+      assert.deepEqual(createdAt.results.map(event => event.id), [old.id, future.id])
+      assert.deepEqual(createdAt.meta, {
+        algorithm: 'created_at',
+        sort: 'asc',
+        scores: [10, 200],
+        firstScore: 10,
+        lastScore: 200
+      })
+
+      assert.deepEqual(await queryResults(db, { since: 100, until: 110 }), [])
+
+      const syncWindow = await db.query({ since: 100000, until: 105010, search: 'algo:sync sort:asc' })
+      assert.deepEqual(syncWindow.results.map(event => event.id), [future.id, backfill.id])
+      assert.deepEqual(syncWindow.meta, {
+        algorithm: 'sync',
+        sort: 'asc',
+        scores: [105000, 105001],
+        firstScore: 105000,
+        lastScore: 105001
+      })
+
+      assert.deepEqual(await queryResults(db, { search: 'algo:sync', ids_only: true }), [backfill.id, future.id, old.id])
+      assert.deepEqual(await queryResults(db, { search: 'algo:sync sort:asc', ids_only: true }), [old.id, future.id, backfill.id])
+    })
   })
 
   it('uses key cursors for sync ids_only time scans without fetching event values', async () => {
@@ -459,7 +530,11 @@ describe('nostrdb', () => {
     store.openCursorCount = 0
     store.openKeyCursorCount = 0
 
-    assert.deepEqual(await db.query({ since: 1, until: 25, ids_only: true }), [newer.id, old.id])
+    const result = await db.query({ since: 1000, until: 25000, ids_only: true, search: 'algo:sync sort:asc' })
+    assert.deepEqual(result.results, [old.id, newer.id])
+    assert.deepEqual(result.meta.scores, [10000, 20000])
+    assert.equal(result.meta.algorithm, 'sync')
+    assert.equal(result.meta.sort, 'asc')
     assert.equal(store.getCount, 0)
     assert.equal(store.openCursorCount, 0)
     assert.equal(store.openKeyCursorCount > 0, true)
@@ -483,7 +558,7 @@ describe('nostrdb', () => {
     store.openCursorCount = 0
     store.openKeyCursorCount = 0
 
-    assert.deepEqual(await db.query({ authors: [A], kinds: [1], ids_only: true }), [two.id, one.id])
+    assert.deepEqual(await queryResults(db, { authors: [A], kinds: [1], ids_only: true }), [two.id, one.id])
     assert.equal(store.getCount, 0)
     assert.equal(store.openCursorCount, 0)
     assert.equal(store.openKeyCursorCount > 0, true)
@@ -506,7 +581,7 @@ describe('nostrdb', () => {
       const store = fakeStore(owner, 'events')
       store.getCount = 0
 
-      assert.deepEqual(await db.query({ ids_only: true, '!ids': [excluded.id] }), [keep.id])
+      assert.deepEqual(await queryResults(db, { ids_only: true, '!ids': [excluded.id] }), [keep.id])
       assert.equal(store.getCount, 0)
     })
   })
@@ -519,7 +594,7 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(laterMatch))
     assertAddOk(await db.add(exactOld))
 
-    assert.deepEqual(await db.query({ search: 'nostr', ids_only: true, limit: 1 }), [exactOld.id])
+    assert.deepEqual(await queryResults(db, { search: 'nostr', ids_only: true, limit: 1 }), [exactOld.id])
   })
 
   it('excludes ids from cursor, direct, and count queries', async () => {
@@ -532,8 +607,8 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(two))
     assertAddOk(await db.add(three))
 
-    assert.deepEqual((await db.query({ authors: [A], '!ids': [two.id] })).map(e => e.id), [three.id, one.id])
-    assert.deepEqual((await db.query({ ids: [one.id, two.id, three.id], '!ids': [one.id, three.id] })).map(e => e.id), [two.id])
+    assert.deepEqual((await queryResults(db, { authors: [A], '!ids': [two.id] })).map(e => e.id), [three.id, one.id])
+    assert.deepEqual((await queryResults(db, { ids: [one.id, two.id, three.id], '!ids': [one.id, three.id] })).map(e => e.id), [two.id])
     assert.equal(await db.count({ authors: [A], '!ids': [one.id], limit: 10 }), 2)
   })
 
@@ -555,8 +630,8 @@ describe('nostrdb', () => {
     store.openKeyCursorCount = 0
 
     assert.deepEqual(
-      (await db.query({ since: 1, until: 132, '!ids': excluded })).map(event => event.id),
-      [events[131].id, events[130].id]
+      (await queryResults(db, { since: 1000, until: 132000, '!ids': excluded, search: 'algo:sync sort:asc' })).map(event => event.id),
+      [events[130].id, events[131].id]
     )
     assert.equal(store.getCount, 2)
     assert.equal(store.openCursorCount, 0)
@@ -575,7 +650,7 @@ describe('nostrdb', () => {
     const store = fakeStore(owner, 'events')
     store.openKeyCursorCount = 0
 
-    assert.deepEqual((await db.query({ '!ids': [one.id] })).map(event => event.id), [two.id])
+    assert.deepEqual((await queryResults(db, { '!ids': [one.id] })).map(event => event.id), [two.id])
     assert.equal(store.openKeyCursorCount, 0)
   })
 
@@ -587,8 +662,8 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(one))
     assertAddOk(await db.add(two))
 
-    assert.deepEqual((await db.query({ authors: [A], '!ids': [] })).map(e => e.id), [two.id, one.id])
-    assert.deepEqual(await db.query({ ids: [one.id], '!ids': [one.id] }), [])
+    assert.deepEqual((await queryResults(db, { authors: [A], '!ids': [] })).map(e => e.id), [two.id, one.id])
+    assert.deepEqual(await queryResults(db, { ids: [one.id], '!ids': [one.id] }), [])
     assert.equal(await db.count({ ids: [one.id], '!ids': [one.id] }), 0)
   })
 
@@ -600,7 +675,7 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(old))
     assertAddOk(await db.add(newer))
 
-    assert.deepEqual((await db.query({ ids: [old.id, newer.id], limit: 1 })).map(e => e.id), [newer.id])
+    assert.deepEqual((await queryResults(db, { ids: [old.id, newer.id], limit: 1 })).map(e => e.id), [newer.id])
   })
 
   it('sorts multi-cursor query results before applying limit', async () => {
@@ -611,7 +686,7 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(old))
     assertAddOk(await db.add(newer))
 
-    assert.deepEqual((await db.query({ '#e': ['a', 'b'], limit: 1 })).map(e => e.id), [newer.id])
+    assert.deepEqual((await queryResults(db, { '#e': ['a', 'b'], limit: 1 })).map(e => e.id), [newer.id])
   })
 
   it('counts only up to the filter limit', async () => {
@@ -638,7 +713,7 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(missingOr))
 
     assert.deepEqual(
-      (await db.query({
+      (await queryResults(db, {
         kinds: [1],
         '&t': ['meme', 'cat'],
         '#t': ['meme', 'cat', 'black', 'white']
@@ -665,14 +740,14 @@ describe('nostrdb', () => {
     store.openCursorCount = 0
     store.openKeyCursorCount = 0
 
-    assert.deepEqual((await db.query({ '&t': ['meme', 'cat'], '&p': [B] })).map(e => e.id), [newer.id, match.id])
-    assert.deepEqual(await db.query({ '&t': ['meme', 'cat'], '&p': [B], ids_only: true }), [newer.id, match.id])
+    assert.deepEqual((await queryResults(db, { '&t': ['meme', 'cat'], '&p': [B] })).map(e => e.id), [newer.id, match.id])
+    assert.deepEqual(await queryResults(db, { '&t': ['meme', 'cat'], '&p': [B], ids_only: true }), [newer.id, match.id])
     assert.equal(store.openKeyCursorCount, 0)
     assert.equal(store.openCursorCount > 0, true)
-    assert.deepEqual((await db.query({ '&t': ['meme', 'cat'], '&p': [B], search: 'memes' })).map(e => e.id), [newer.id])
+    assert.deepEqual((await queryResults(db, { '&t': ['meme', 'cat'], '&p': [B], search: 'memes' })).map(e => e.id), [newer.id])
   })
 
-  it('supports the search sort:old extension', async () => {
+  it('supports the search sort:asc extension', async () => {
     const db = getNostrDb(`${OWNER}21`)
     const old = event({ id: '1'.repeat(64), created_at: 10, tags: [['e', 'thread']], content: 'hello old' })
     const newer = event({ id: '2'.repeat(64), created_at: 20, tags: [['e', 'thread']], content: 'hello newer' })
@@ -680,9 +755,9 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(old))
     assertAddOk(await db.add(newer))
 
-    assert.deepEqual((await db.query({ kinds: [1], search: 'hello unknown:value' })).map(e => e.id), [newer.id, old.id])
-    assert.deepEqual((await db.query({ ids: [newer.id, old.id], search: 'sort:old', limit: 1 })).map(e => e.id), [old.id])
-    assert.deepEqual((await db.query({ '#e': ['thread'], search: 'sort:old', limit: 1 })).map(e => e.id), [old.id])
+    assert.deepEqual((await queryResults(db, { kinds: [1], search: 'hello unknown:value' })).map(e => e.id), [newer.id, old.id])
+    assert.deepEqual((await queryResults(db, { ids: [newer.id, old.id], search: 'sort:asc', limit: 1 })).map(e => e.id), [old.id])
+    assert.deepEqual((await queryResults(db, { '#e': ['thread'], search: 'sort:asc', limit: 1 })).map(e => e.id), [old.id])
   })
 
   it('searches across multiple cursor ranges without pausing live cursor transactions', async () => {
@@ -693,7 +768,7 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(old))
     assertAddOk(await db.add(newer))
 
-    assert.deepEqual((await db.query({ '#e': ['alpha', 'beta'], search: 'nostr' })).map(e => e.id), [newer.id, old.id])
+    assert.deepEqual((await queryResults(db, { '#e': ['alpha', 'beta'], search: 'nostr' })).map(e => e.id), [newer.id, old.id])
   })
 
   it('ranks fuzzy search matches before applying limit', async () => {
@@ -704,11 +779,11 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(laterMatch))
     assertAddOk(await db.add(exactOld))
 
-    assert.deepEqual((await db.query({ search: 'nostr', limit: 1 })).map(e => e.id), [exactOld.id])
+    assert.deepEqual((await queryResults(db, { search: 'nostr', limit: 1 })).map(e => e.id), [exactOld.id])
     assert.equal(await db.count({ search: 'nostr', limit: 1 }), 1)
   })
 
-  it('uses sort:old as the fuzzy search chronological tie-breaker', async () => {
+  it('uses sort:asc as the fuzzy search chronological tie-breaker', async () => {
     const db = getNostrDb(`${OWNER}23`)
     const old = event({ id: '1'.repeat(64), created_at: 10, content: 'nostr' })
     const newer = event({ id: '2'.repeat(64), created_at: 20, content: 'nostr' })
@@ -716,8 +791,8 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(old))
     assertAddOk(await db.add(newer))
 
-    assert.deepEqual((await db.query({ search: 'nostr', limit: 1 })).map(e => e.id), [newer.id])
-    assert.deepEqual((await db.query({ search: 'nostr sort:old', limit: 1 })).map(e => e.id), [old.id])
+    assert.deepEqual((await queryResults(db, { search: 'nostr', limit: 1 })).map(e => e.id), [newer.id])
+    assert.deepEqual((await queryResults(db, { search: 'nostr sort:asc', limit: 1 })).map(e => e.id), [old.id])
   })
 
   it('searches profile names with autocomplete sorting', async () => {
@@ -730,8 +805,8 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(aboutOnly))
     assertAddOk(await db.add(alice))
 
-    assert.deepEqual((await db.query({ kinds: [0], search: 'ali autocomplete:true' })).map(e => e.id), [alice.id, malice.id])
-    assert.deepEqual(await db.query({ kinds: [0], search: 'about' }), [])
+    assert.deepEqual((await queryResults(db, { kinds: [0], search: 'ali autocomplete:true' })).map(e => e.id), [alice.id, malice.id])
+    assert.deepEqual(await queryResults(db, { kinds: [0], search: 'about' }), [])
   })
 
   it('searches long-form title, summary, and content fields', async () => {
@@ -744,9 +819,9 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(summary))
     assertAddOk(await db.add(content))
 
-    assert.deepEqual((await db.query({ kinds: [30023], search: 'solar' })).map(e => e.id), [title.id])
-    assert.deepEqual((await db.query({ kinds: [30023], search: 'guide' })).map(e => e.id), [summary.id])
-    assert.deepEqual((await db.query({ kinds: [30023], search: 'body' })).map(e => e.id), [content.id])
+    assert.deepEqual((await queryResults(db, { kinds: [30023], search: 'solar' })).map(e => e.id), [title.id])
+    assert.deepEqual((await queryResults(db, { kinds: [30023], search: 'guide' })).map(e => e.id), [summary.id])
+    assert.deepEqual((await queryResults(db, { kinds: [30023], search: 'body' })).map(e => e.id), [content.id])
   })
 
   it('supports uFuzzy negative search terms', async () => {
@@ -757,7 +832,7 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(match))
     assertAddOk(await db.add(excluded))
 
-    assert.deepEqual((await db.query({ search: 'nostr -bitcoin' })).map(e => e.id), [match.id])
+    assert.deepEqual((await queryResults(db, { search: 'nostr -bitcoin' })).map(e => e.id), [match.id])
     assert.equal(await db.count({ search: 'nostr -bitcoin' }), 1)
   })
 
@@ -783,7 +858,7 @@ describe('nostrdb', () => {
     assert.equal(await db.count({ search: 'nostr' }), 150)
     assert.equal(await db.count({ search: 'nostr', limit: 25 }), 25)
     assert.deepEqual(
-      (await db.query({ search: 'nostr', limit: 5 })).map(e => e.id),
+      (await queryResults(db, { search: 'nostr', limit: 5 })).map(e => e.id),
       [149, 148, 147, 146, 145].map(i => hexId(1000 + i))
     )
   })
@@ -799,15 +874,15 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(newest))
 
     assert.deepEqual(
-      (await db.query([{ authors: [A] }, { kinds: [1] }])).map(event => event.id),
+      (await queryResults(db, [{ authors: [A] }, { kinds: [1] }])).map(event => event.id),
       [newest.id, shared.id, old.id]
     )
     assert.deepEqual(
-      await db.query([{ authors: [A], ids_only: true, limit: 1 }, { kinds: [1], ids_only: false, limit: 3 }]),
+      await queryResults(db, [{ authors: [A], ids_only: true, limit: 1 }, { kinds: [1], ids_only: false, limit: 3 }]),
       [newest.id]
     )
     assert.deepEqual(
-      (await db.query([{ authors: [A], search: 'sort:old', limit: 3 }, { kinds: [1], search: 'bitcoin' }], {
+      (await queryResults(db, [{ authors: [A], search: 'sort:asc', limit: 3 }, { kinds: [1], search: 'bitcoin' }], {
         search: 'nostr',
         limit: 2,
         ids_only: false
@@ -815,19 +890,19 @@ describe('nostrdb', () => {
       [shared.id, old.id]
     )
     assert.deepEqual(
-      (await db.query([{ authors: [A], search: 'nostr sort:old', limit: 2 }, { kinds: [1], search: 'bitcoin' }])).map(event => event.id),
+      (await queryResults(db, [{ authors: [A], search: 'nostr sort:asc', limit: 2 }, { kinds: [1], search: 'bitcoin' }])).map(event => event.id),
       [old.id, shared.id]
     )
     const store = fakeStore(`${OWNER}3`, 'events')
     store.openCursorCount = 0
     store.openKeyCursorCount = 0
     assert.deepEqual(
-      await db.query([{ authors: [A] }, { kinds: [1] }], { ids_only: true, limit: 2 }),
+      await queryResults(db, [{ authors: [A] }, { kinds: [1] }], { ids_only: true, limit: 2 }),
       [newest.id, shared.id]
     )
     assert.equal(store.openCursorCount, 0)
     assert.equal(store.openKeyCursorCount > 0, true)
-    assert.deepEqual(await db.query([]), [])
+    assert.deepEqual(await queryResults(db, []), [])
   })
 
   it('counts unique matches across multiple filters with global limit and search', async () => {
@@ -862,9 +937,9 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(otherAuthor))
     assertAddOk(await db.add(deletion))
 
-    assert.deepEqual(await db.query({ ids: [owned.id] }), [])
-    assert.deepEqual((await db.query({ ids: [otherAuthor.id] })).map(e => e.id), [otherAuthor.id])
-    assert.deepEqual((await db.query({ ids: [deletion.id] })).map(e => e.id), [deletion.id])
+    assert.deepEqual(await queryResults(db, { ids: [owned.id] }), [])
+    assert.deepEqual((await queryResults(db, { ids: [otherAuthor.id] })).map(e => e.id), [otherAuthor.id])
+    assert.deepEqual((await queryResults(db, { ids: [deletion.id] })).map(e => e.id), [deletion.id])
   })
 
   it('applies NIP-09 a-tag deletion requests by coordinate author', async () => {
@@ -889,9 +964,9 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(newer))
     assertAddOk(await db.add(deletion))
 
-    assert.deepEqual(await db.query({ authors: [A], kinds: [30023], '#d': ['post'] }), [])
-    assert.deepEqual((await db.query({ authors: [A], kinds: [30023], '#d': ['future'] })).map(e => e.id), [newer.id])
-    assert.deepEqual((await db.query({ authors: [B], kinds: [30023], '#d': ['post'] })).map(e => e.id), [otherAuthor.id])
+    assert.deepEqual(await queryResults(db, { authors: [A], kinds: [30023], '#d': ['post'] }), [])
+    assert.deepEqual((await queryResults(db, { authors: [A], kinds: [30023], '#d': ['future'] })).map(e => e.id), [newer.id])
+    assert.deepEqual((await queryResults(db, { authors: [B], kinds: [30023], '#d': ['post'] })).map(e => e.id), [otherAuthor.id])
   })
 
   it('blocks future events with durable e-tag tombstones', async () => {
@@ -909,7 +984,7 @@ describe('nostrdb', () => {
     assertAddNotOk(await db.add(event({ id: targetId, pubkey: A, created_at: 10 })), { code: 'blocked' })
     assertAddOk(await db.add(event({ id: targetId, pubkey: B, created_at: 10 })))
 
-    assert.deepEqual((await db.query({ ids: [targetId] })).map(e => e.pubkey), [B])
+    assert.deepEqual((await queryResults(db, { ids: [targetId] })).map(e => e.pubkey), [B])
   })
 
   it('blocks future coordinate events only up to the deletion timestamp', async () => {
@@ -928,7 +1003,7 @@ describe('nostrdb', () => {
     assertAddNotOk(await db.add(old), { code: 'blocked' })
     assertAddOk(await db.add(newer))
 
-    assert.deepEqual((await db.query({ authors: [A], kinds: [30023], '#d': ['post'] })).map(e => e.id), [newer.id])
+    assert.deepEqual((await queryResults(db, { authors: [A], kinds: [30023], '#d': ['post'] })).map(e => e.id), [newer.id])
   })
 
   it('removes unique tombstones when a deletion request is deleted', async () => {
@@ -952,7 +1027,7 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(firstDeletion))
     assertAddNotOk(await db.add(target), { code: 'blocked' })
     assertAddOk(await db.add(secondDeletion))
-    assert.deepEqual(await db.query({ ids: [firstDeletion.id] }), [])
+    assert.deepEqual(await queryResults(db, { ids: [firstDeletion.id] }), [])
     assertAddOk(await db.add(target))
     assertAddNotOk(await db.add(firstDeletion), { code: 'blocked' })
   })
@@ -986,8 +1061,8 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(sharedDeletion))
     assertAddOk(await db.add(deletingDeletion))
 
-    assert.deepEqual(await db.query({ ids: [firstDeletion.id] }), [])
-    assert.deepEqual((await db.query({ ids: [sharedDeletion.id] })).map(e => e.id), [sharedDeletion.id])
+    assert.deepEqual(await queryResults(db, { ids: [firstDeletion.id] }), [])
+    assert.deepEqual((await queryResults(db, { ids: [sharedDeletion.id] })).map(e => e.id), [sharedDeletion.id])
     assertAddNotOk(await db.add(target), { code: 'blocked' })
   })
 
@@ -1012,7 +1087,7 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(firstDeletion))
     assertAddOk(await db.add(replacingDeletion))
 
-    assert.deepEqual(await db.query({ ids: [firstDeletion.id] }), [])
+    assert.deepEqual(await queryResults(db, { ids: [firstDeletion.id] }), [])
     assertAddNotOk(await db.add(target), { code: 'blocked' })
   })
 
@@ -1066,8 +1141,8 @@ describe('nostrdb', () => {
     assert.equal(result.created.id, signed.id)
     assert.deepEqual(result.consumed, [firstDeletion.id, duplicateDeletion.id])
     assert.deepEqual(result.targets, [['e', targetId]])
-    assert.deepEqual(await db.query({ ids: [firstDeletion.id, duplicateDeletion.id] }), [])
-    assert.deepEqual((await db.query({ ids: [leftoverDeletion.id] })).map(e => e.id), [leftoverDeletion.id])
+    assert.deepEqual(await queryResults(db, { ids: [firstDeletion.id, duplicateDeletion.id] }), [])
+    assert.deepEqual((await queryResults(db, { ids: [leftoverDeletion.id] })).map(e => e.id), [leftoverDeletion.id])
     assertAddNotOk(await db.add(event({ id: targetId, pubkey: A, created_at: 10 })), { code: 'blocked' })
     assertAddOk(await db.add(firstDeletion))
   })
@@ -1111,8 +1186,32 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(event({ id: '2'.repeat(64), kind: 7 })))
     assertAddOk(await db.add(match))
 
-    assert.deepEqual(await withTimeout(next), { value: match, done: false })
+    assert.deepEqual(await subscriptionResult(next), match)
     await iterator.return()
+  })
+
+  it('wraps subscription results with sync metadata', async () => {
+    await withPatchedNow(100, async () => {
+      const db = getNostrDb(`${OWNER}82`)
+      const iterator = db.subscribe({ search: 'algo:sync sort:asc', since: 10000, until: 10000 })
+      const next = iterator.next()
+      const match = event({ id: '1'.repeat(64), created_at: 10 })
+
+      assertAddOk(await db.add(match))
+
+      assert.deepEqual(await withTimeout(next), {
+        value: {
+          result: match,
+          meta: {
+            algorithm: 'sync',
+            sort: 'asc',
+            score: 10000
+          }
+        },
+        done: false
+      })
+      await iterator.return()
+    })
   })
 
   it('subscribes to future fuzzy search matches', async () => {
@@ -1124,7 +1223,7 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(event({ id: '2'.repeat(64), content: 'bitcoin' })))
     assertAddOk(await db.add(match))
 
-    assert.deepEqual(await withTimeout(next), { value: match, done: false })
+    assert.deepEqual(await subscriptionResult(next), match)
     await iterator.return()
   })
 
@@ -1138,7 +1237,7 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(excluded))
     assertAddOk(await db.add(match))
 
-    assert.deepEqual(await withTimeout(next), { value: match.id, done: false })
+    assert.deepEqual(await subscriptionResult(next), match.id)
     await iterator.return()
   })
 
@@ -1152,7 +1251,7 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(partial))
     assertAddOk(await db.add(match))
 
-    assert.deepEqual(await withTimeout(next), { value: match.id, done: false })
+    assert.deepEqual(await subscriptionResult(next), match.id)
     await iterator.return()
   })
 
@@ -1175,8 +1274,8 @@ describe('nostrdb', () => {
     assertAddOk(await db.add(authorMatch))
     assertAddOk(await db.add(kindMatch))
 
-    assert.deepEqual(await withTimeout(first), { value: authorMatch.id, done: false })
-    assert.deepEqual(await withTimeout(second), { value: kindMatch.id, done: false })
+    assert.deepEqual(await subscriptionResult(first), authorMatch.id)
+    assert.deepEqual(await subscriptionResult(second), kindMatch.id)
     assert.deepEqual(await iterator.next(), { done: true })
 
     assertAddOk(await db.add(afterLimit))
@@ -1191,8 +1290,8 @@ describe('nostrdb', () => {
 
     assertAddOk(await db.add(ephemeral), { code: 'published', stored: false, published: true })
 
-    assert.deepEqual(await withTimeout(next), { value: ephemeral, done: false })
-    assert.deepEqual(await db.query({ ids: [ephemeral.id] }), [])
+    assert.deepEqual(await subscriptionResult(next), ephemeral)
+    assert.deepEqual(await queryResults(db, { ids: [ephemeral.id] }), [])
     await iterator.return()
   })
 
@@ -1209,8 +1308,8 @@ describe('nostrdb', () => {
 
       assertAddOk(await db.add(honorary), { code: 'published', stored: false, published: true })
 
-      assert.deepEqual(await withTimeout(next), { value: honorary, done: false })
-      assert.deepEqual(await db.query({ ids: [honorary.id] }), [])
+      assert.deepEqual(await subscriptionResult(next), honorary)
+      assert.deepEqual(await queryResults(db, { ids: [honorary.id] }), [])
       await iterator.return()
     })
   })
@@ -1229,7 +1328,7 @@ describe('nostrdb', () => {
       assertAddNotOk(await db.add(expired), { code: 'expired' })
 
       assert.equal(await settlesWithin(next), false)
-      assert.deepEqual(await db.query({ ids: [expired.id] }), [])
+      assert.deepEqual(await queryResults(db, { ids: [expired.id] }), [])
       await iterator.return()
     })
   })
@@ -1247,8 +1346,8 @@ describe('nostrdb', () => {
       const next = iterator.next()
 
       assertAddOk(await db.add(honorary), { code: 'published', stored: false, published: true })
-      assert.deepEqual(await withTimeout(next), { value: honorary, done: false })
-      assert.deepEqual(await db.query({ ids: [honorary.id] }), [])
+      assert.deepEqual(await subscriptionResult(next), honorary)
+      assert.deepEqual(await queryResults(db, { ids: [honorary.id] }), [])
       await iterator.return()
     })
 
@@ -1259,7 +1358,7 @@ describe('nostrdb', () => {
 
       assertAddNotOk(await db.add(honorary), { code: 'expired' })
       assert.equal(await settlesWithin(next), false)
-      assert.deepEqual(await db.query({ ids: [honorary.id] }), [])
+      assert.deepEqual(await queryResults(db, { ids: [honorary.id] }), [])
       await iterator.return()
     })
   })
@@ -1275,10 +1374,10 @@ describe('nostrdb', () => {
       })
 
       assertAddOk(await db.add(expiring))
-      assert.deepEqual((await db.query({ ids: [expiring.id] })).map(e => e.id), [expiring.id])
+      assert.deepEqual((await queryResults(db, { ids: [expiring.id] })).map(e => e.id), [expiring.id])
 
       now = 201
-      assert.deepEqual(await db.query({ ids: [expiring.id] }), [])
+      assert.deepEqual(await queryResults(db, { ids: [expiring.id] }), [])
       assert.equal(await db.count({ ids: [expiring.id] }), 0)
     })
   })
@@ -1300,7 +1399,7 @@ describe('nostrdb', () => {
       assertAddOk(await db.add(expiring))
       assertAddOk(await db.add(survivor))
       assert.equal(await db.purgeExpired({ now: 250 }), 1)
-      assert.deepEqual((await db.query({ ids: [expiring.id, survivor.id] })).map(e => e.id), [survivor.id])
+      assert.deepEqual((await queryResults(db, { ids: [expiring.id, survivor.id] })).map(e => e.id), [survivor.id])
       assert.equal(await db.purgeExpired({ now: 250 }), 0)
     })
   })
@@ -1320,7 +1419,7 @@ describe('nostrdb', () => {
       assertAddOk(await db.add(deletion))
       assertAddNotOk(await db.add(target), { code: 'blocked' })
       assert.equal(await db.purgeExpired({ now: 2001 }), 1)
-      assert.deepEqual(await db.query({ ids: [deletion.id] }), [])
+      assert.deepEqual(await queryResults(db, { ids: [deletion.id] }), [])
       assertAddOk(await db.add(target))
     })
   })
@@ -1366,7 +1465,7 @@ describe('nostrdb', () => {
 
     assertAddOk(await sender.add(match))
 
-    assert.deepEqual(await withTimeout(next), { value: match, done: false })
+    assert.deepEqual(await subscriptionResult(next), match)
     await iterator.return()
     receiver.bc.close()
     sender.bc.close()
@@ -1405,15 +1504,24 @@ describe('nostrdb', () => {
     assert.equal(ignored.autocomplete, false)
     assert.equal(ignored.searchText, 'hello')
 
-    const oldest = new ParsedFilter({ search: 'hello sort:old autocomplete:true unknown:value' })
-    assert.equal(oldest.neverMatch, false)
-    assert.equal(oldest.sortOld, true)
-    assert.equal(oldest.autocomplete, true)
-    assert.equal(oldest.searchText, 'hello')
+    const ascending = new ParsedFilter({ search: 'hello sort:asc autocomplete:true unknown:value' })
+    assert.equal(ascending.neverMatch, false)
+    assert.equal(ascending.sortOld, true)
+    assert.equal(ascending.sort, 'asc')
+    assert.equal(ascending.autocomplete, true)
+    assert.equal(ascending.searchText, 'hello')
 
-    const extensionOnly = new ParsedFilter({ search: 'sort:old unknown:value' })
+    const extensionOnly = new ParsedFilter({ search: 'algo:sync sort:asc unknown:value' })
+    assert.equal(extensionOnly.algorithm, 'sync')
+    assert.equal(extensionOnly.sort, 'asc')
     assert.equal(extensionOnly.sortOld, true)
     assert.equal(extensionOnly.searchText, '')
+
+    const descending = new ParsedFilter({ search: 'hello sort:desc' })
+    assert.equal(descending.algorithm, 'created_at')
+    assert.equal(descending.sort, 'desc')
+    assert.equal(descending.sortOld, false)
+    assert.equal(descending.searchText, 'hello')
   })
 
   it('noops when IndexedDB is unavailable', async () => {
@@ -1421,11 +1529,13 @@ describe('nostrdb', () => {
     const db = new NostrDb(`${OWNER}6`)
 
     assertAddNotOk(await db.add(event({ id: '1'.repeat(64) })), { code: 'unavailable' })
-    assert.deepEqual(await db.query({ kinds: [1] }), [])
+    assert.deepEqual(await queryResults(db, { kinds: [1] }), [])
     assert.equal(await db.count({ kinds: [1] }), 0)
     assert.deepEqual(await db.supports(), [
       'search',
-      'search:sort:old',
+      'search:sort:asc',
+      'search:sort:desc',
+      'search:algo:sync',
       'search:autocomplete:true',
       'ids_only',
       '!ids',
@@ -1474,6 +1584,16 @@ function assertAddNotOk (result, { code, stored = false, published = false } = {
   assert.equal(typeof result.message, 'string')
   assert.equal(result.message.length > 0, true)
   return result
+}
+
+async function queryResults (db, ...args) {
+  return (await db.query(...args)).results
+}
+
+async function subscriptionResult (promise) {
+  const next = await withTimeout(promise)
+  assert.equal(next.done, false)
+  return next.value.result
 }
 
 function resetConsoleLogs () {
@@ -1552,6 +1672,7 @@ function createNostrDbSchema (db) {
   store.createIndex(INDEX.address, 'a', { unique: true })
   store.createIndex(INDEX.app, 'ap', { multiEntry: true })
   store.createIndex(INDEX.createdAt, 'ca')
+  store.createIndex(INDEX.syncAnchor, 'sa')
   store.createIndex(INDEX.expiration, 'ex')
   store.createIndex(INDEX.pubkey, ['p', 'ca'])
   store.createIndex(INDEX.kind, ['k', 'ca'])

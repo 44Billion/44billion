@@ -30,14 +30,20 @@ const SEARCH_FIELD_CONFIG = {
 
 // Parse NIP-50 search text into uFuzzy input and the extensions this DB knows.
 export function parseSearch (value) {
-  const parsed = { text: '', sortOld: false, autocomplete: false }
+  const parsed = { text: '', algorithm: 'created_at', sort: 'desc', sortOld: false, autocomplete: false }
   if (typeof value !== 'string') return parsed
 
   const terms = []
   for (const token of value.trim().split(/\s+/)) {
     if (!token) continue
-    if (token === 'sort:old') {
+    if (token === 'sort:asc') {
+      parsed.sort = 'asc'
       parsed.sortOld = true
+    } else if (token === 'sort:desc') {
+      parsed.sort = 'desc'
+      parsed.sortOld = false
+    } else if (token === 'algo:sync') {
+      parsed.algorithm = 'sync'
     } else if (token === 'autocomplete:true') {
       parsed.autocomplete = true
     } else if (!isSearchExtensionToken(token)) {
@@ -70,13 +76,12 @@ export function rankSearchCandidates (candidates, filter, compareTime) {
 
   const needle = uFuzzy.latinize(filter.searchText)
   const haystack = uFuzzy.latinize(candidates.map(candidate => candidate.text))
-  const events = candidates.map(candidate => candidate.event)
   // eslint-disable-next-line new-cap
   const searcher = new uFuzzy({
     compare: compareSearchStrings,
     sort: filter.autocomplete
-      ? typeaheadSearchSort(events, filter, compareTime)
-      : regularSearchSort(events, filter, compareTime)
+      ? typeaheadSearchSort(candidates, filter, compareTime)
+      : regularSearchSort(candidates, filter, compareTime)
   })
   const [idxs, info, order] = searcher.search(haystack, needle, true, SEARCH_MAX_CANDIDATES)
 
@@ -88,7 +93,7 @@ export function rankSearchCandidates (candidates, filter, compareTime) {
 
   return idxs
     .map(idx => candidates[idx])
-    .sort((a, b) => compareTime(a.event, b.event, filter))
+    .sort((a, b) => compareTime(a, b, filter))
 }
 
 export function eventMatchesSearch (event, filter, compareTime) {
@@ -128,7 +133,7 @@ export function getSearchableText (event) {
     .join('\n')
 }
 
-function regularSearchSort (events, filter, compareTime) {
+function regularSearchSort (candidates, filter, compareTime) {
   return (info, haystack, _needle, compare = compareSearchStrings) => {
     const {
       idx,
@@ -152,13 +157,13 @@ function regularSearchSort (events, filter, compareTime) {
       interIns[ia] - interIns[ib] ||
       start[ia] - start[ib] ||
       cases[ib] - cases[ia] ||
-      compareTime(events[idx[ia]], events[idx[ib]], filter) ||
+      compareTime(candidates[idx[ia]], candidates[idx[ib]], filter) ||
       compare(haystack[idx[ia]], haystack[idx[ib]])
     ))
   }
 }
 
-function typeaheadSearchSort (events, filter, compareTime) {
+function typeaheadSearchSort (candidates, filter, compareTime) {
   return (info, haystack, _needle, compare = compareSearchStrings) => {
     const {
       idx,
@@ -181,7 +186,7 @@ function typeaheadSearchSort (events, filter, compareTime) {
         (terms[ia] + interLft2[ia] + 0.5 * interLft1[ia])
       ) ||
       interIns[ia] - interIns[ib] ||
-      compareTime(events[idx[ia]], events[idx[ib]], filter) ||
+      compareTime(candidates[idx[ia]], candidates[idx[ib]], filter) ||
       compare(haystack[idx[ia]], haystack[idx[ib]])
     ))
   }
