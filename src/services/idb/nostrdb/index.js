@@ -57,6 +57,8 @@ events indexes
 deletions, keyPath "ref"
   ref   "e:<base64url-id>:<base64url-pubkey>" or "a:<base64url-sha256-coordinate>"
   tag   deletion target tag to preserve when compacting: ["e", id] or ["a", address]
+        e-tag requests may be stored as canonical a-tag tombstones when the
+        referenced stored event has an address
   ca    max created_at among stored deletion requests contributing this tombstone
   c     multiEntry contributors: [requestIdKey, requestCreatedAt]
 
@@ -336,13 +338,13 @@ export class NostrDb {
   }
 
   async compactDeletionRequests ({
-    sign,
+    signEvent,
     author = this.ownerPubkey,
     maxTargetRefs = 1000,
     createdAt,
     signal
   } = {}) {
-    if (typeof sign !== 'function') throw new TypeError('compactDeletionRequests requires a sign function')
+    if (typeof signEvent !== 'function') throw new TypeError('compactDeletionRequests requires a sign function')
     if (!HEX64_RE.test(author)) return compactResult()
 
     throwIfAborted(signal)
@@ -381,28 +383,16 @@ export class NostrDb {
       return compactResult()
     }
 
-    const selected = []
-    const targets = new Map()
+    const selection = selectDeletionCompaction(infos, maxRefs)
+    if (!selection) return compactResult()
 
-    for (const info of infos) {
-      const newRefs = info.targets.filter(row => !targets.has(row.ref))
-      if (targets.size + newRefs.length > maxRefs) continue
-
-      selected.push(info)
-      for (const row of info.targets) {
-        if (!targets.has(row.ref)) targets.set(row.ref, row)
-      }
-    }
-
-    if (selected.length < 2 || targets.size === 0) return compactResult()
-
-    const consumed = selected.map(info => info.event.id)
-    const maxConsumedCreatedAt = Math.max(...selected.map(info => info.event.created_at))
-    const templateCreatedAt = Math.max(
+    const consumed = selection.selected.map(info => info.event.id)
+    const maxConsumedCreatedAt = Math.max(...selection.selected.map(info => info.event.created_at))
+    const templateCreatedAt = selection.createdAt ?? Math.max(
       normalizeTimestamp(createdAt, Math.floor(Date.now() / 1000)),
       maxConsumedCreatedAt
     )
-    const tags = [...targets.values()].map(row => [...row.tag])
+    const tags = [...selection.targets.values()].map(row => [...row.tag])
     const template = {
       kind: 5,
       created_at: templateCreatedAt,
@@ -411,14 +401,14 @@ export class NostrDb {
     }
 
     throwIfAborted(signal)
-    const signed = await sign(template)
+    const signed = await signEvent(template)
     throwIfAborted(signal)
 
     if (
       !isValidEventShape(signed) ||
       signed.kind !== 5 ||
       signed.pubkey !== author ||
-      signed.created_at < maxConsumedCreatedAt ||
+      (selection.createdAt === null ? signed.created_at < maxConsumedCreatedAt : signed.created_at !== templateCreatedAt) ||
       signed.content !== '' ||
       !sameTags(signed.tags, tags)
     ) {
@@ -2247,49 +2237,91 @@ async function isBlockedByDeletion (db, tx, event) {
 }
 
 async function applyDeletionRequest (db, tx, request) {
-  for (const tag of request.tags) {
-    const target = deletionTargetFromTag(request, tag)
-    if (!target) continue
-
+  const targets = await deletionTargetsFromRequest(db, tx, request)
+  for (const target of targets) {
     await addDeletionContribution(db, tx, target, request)
     await deleteDeletionTarget(db, tx, request, target)
   }
 }
 
-function deletionTargetFromTag (request, tag) {
-  if (tag[0] === 'e') {
-    const id = tag[1]
-    if (!HEX64_RE.test(id)) return null
-    if (id === request.id) return null
+// Address tags are canonical when present. Event tags may be promoted to the
+// stored target's address so compaction can preserve coordinate cutoffs.
+async function deletionTargetsFromRequest (db, tx, request) {
+  const targets = new Map()
+  const eventIds = new Set()
 
-    return {
-      ref: deletionEventRef(id, request.pubkey),
-      tag: ['e', id],
-      type: 'e',
-      id,
-      upToCreatedAt: Infinity
-    }
+  for (const tag of request.tags) {
+    const target = deletionTargetFromAddressTag(request, tag)
+    if (target) targets.set(target.ref, target)
   }
 
+  for (const tag of request.tags) {
+    if (tag[0] === 'e') {
+      if (eventIds.has(tag[1])) continue
+      eventIds.add(tag[1])
+    }
+    const target = await deletionTargetFromEventTag(db, tx, request, tag)
+    if (target && !targets.has(target.ref)) targets.set(target.ref, target)
+  }
+
+  return [...targets.values()]
+}
+
+async function deletionTargetFromEventTag (db, tx, request, tag) {
+  if (tag[0] !== 'e') return null
+
+  const id = tag[1]
+  if (!HEX64_RE.test(id)) return null
+  if (id === request.id) return null
+
+  const stored = await run('get', [eventIdIndexKey(id)], EVENTS_STORE, null, { db, tx })
+    .then(v => v.result)
+  const addressTarget = deletionTargetFromStoredAddress(request, stored)
+  if (addressTarget) return addressTarget
+
+  return {
+    ref: deletionEventRef(id, request.pubkey),
+    tag: ['e', id],
+    type: 'e',
+    id,
+    upToCreatedAt: Infinity
+  }
+}
+
+function deletionTargetFromAddressTag (request, tag) {
   if (tag[0] !== 'a') return null
 
   const parsed = parseAddress(tag[1])
   if (!parsed || parsed.pubkey !== request.pubkey) return null
 
+  return deletionTargetFromAddress(request, parsed.kind, parsed.pubkey, parsed.dtag)
+}
+
+function deletionTargetFromStoredAddress (request, stored) {
+  if (!stored || stored.i === eventIdIndexKey(request.id)) return null
+  if (stored.event.pubkey !== request.pubkey) return null
+
+  const dtag = getCoordinate(stored.event)
+  if (dtag === null) return null
+
+  return deletionTargetFromAddress(request, stored.event.kind, stored.event.pubkey, dtag)
+}
+
+function deletionTargetFromAddress (request, kind, pubkey, dtag) {
   const requestAddress = getCoordinate(request)
   if (
     requestAddress !== null &&
-    compareKeys(addressKey(parsed.kind, parsed.pubkey, parsed.dtag), addressKey(request.kind, request.pubkey, requestAddress)) === 0
+    compareKeys(addressKey(kind, pubkey, dtag), addressKey(request.kind, request.pubkey, requestAddress)) === 0
   ) return null
 
-  const address = `${parsed.kind}:${parsed.pubkey}:${parsed.dtag}`
+  const address = `${kind}:${pubkey}:${dtag}`
   return {
-    ref: deletionCoordinateRef(parsed.kind, parsed.pubkey, parsed.dtag),
+    ref: deletionCoordinateRef(kind, pubkey, dtag),
     tag: ['a', address],
     type: 'a',
-    kind: parsed.kind,
-    pubkey: parsed.pubkey,
-    dtag: parsed.dtag,
+    kind,
+    pubkey,
+    dtag,
     upToCreatedAt: request.created_at
   }
 }
@@ -2397,6 +2429,82 @@ async function getDeletionRowsForRequest (db, tx, requestIdKey) {
 
 function uniqueDeletionRows (rows) {
   return [...new Map(rows.map(row => [row.ref, row])).values()]
+}
+
+// Address tombstones are compacted only with requests at the same cutoff.
+// Event-only tombstones have no cutoff, so they can fill the selected group.
+function selectDeletionCompaction (infos, maxRefs) {
+  const addressGroups = new Map()
+  const eventOnlyInfos = []
+
+  for (const info of infos) {
+    if (info.targets.some(isAddressDeletionRow)) {
+      const group = addressGroups.get(info.event.created_at) ?? []
+      group.push(info)
+      addressGroups.set(info.event.created_at, group)
+    } else {
+      eventOnlyInfos.push(info)
+    }
+  }
+
+  const addressCandidate = selectAddressDeletionCompaction(addressGroups, eventOnlyInfos, maxRefs)
+  if (addressCandidate) return addressCandidate
+
+  const eventOnlyCandidate = buildDeletionCompaction(eventOnlyInfos, maxRefs, null)
+  return eventOnlyCandidate.selected.length >= 2 ? eventOnlyCandidate : null
+}
+
+function selectAddressDeletionCompaction (addressGroups, eventOnlyInfos, maxRefs) {
+  let best = null
+
+  for (const [createdAt, infos] of [...addressGroups.entries()].sort((a, b) => a[0] - b[0])) {
+    const candidate = buildDeletionCompaction(infos, maxRefs, createdAt)
+    if (candidate.selected.length < 2) continue
+    if (!best || compareDeletionCompaction(candidate, best) > 0) best = candidate
+  }
+
+  if (!best) return null
+
+  for (const info of eventOnlyInfos) {
+    addInfoToDeletionCompaction(best, info, maxRefs)
+  }
+
+  return best
+}
+
+function buildDeletionCompaction (infos, maxRefs, createdAt) {
+  const candidate = {
+    selected: [],
+    targets: new Map(),
+    createdAt
+  }
+
+  for (const info of infos) {
+    addInfoToDeletionCompaction(candidate, info, maxRefs)
+  }
+
+  return candidate
+}
+
+function addInfoToDeletionCompaction (candidate, info, maxRefs) {
+  const newTargets = info.targets.filter(row => !candidate.targets.has(row.ref))
+  if (candidate.targets.size + newTargets.length > maxRefs) return false
+
+  candidate.selected.push(info)
+  for (const row of info.targets) {
+    if (!candidate.targets.has(row.ref)) candidate.targets.set(row.ref, row)
+  }
+  return true
+}
+
+function compareDeletionCompaction (a, b) {
+  if (a.selected.length !== b.selected.length) return a.selected.length - b.selected.length
+  if (a.targets.size !== b.targets.size) return a.targets.size - b.targets.size
+  return b.createdAt - a.createdAt
+}
+
+function isAddressDeletionRow (row) {
+  return row?.tag?.[0] === 'a'
 }
 
 function validContributors (contributors) {

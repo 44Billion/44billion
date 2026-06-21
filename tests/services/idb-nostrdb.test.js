@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   INDEX,
+  DELETIONS_STORE,
   KIND_REGISTRY_STORE,
   NostrDb,
   NOSTRDB_PREFIX,
@@ -987,6 +988,62 @@ describe('nostrdb', () => {
     assert.deepEqual((await queryResults(db, { authors: [B], kinds: [30023], '#d': ['post'] })).map(e => e.id), [otherAuthor.id])
   })
 
+  it('canonicalizes e-tag deletions of stored addressable events to address tombstones', async () => {
+    const owner = `${OWNER}91`
+    const db = getNostrDb(owner)
+    const target = event({ id: '1'.repeat(64), pubkey: A, kind: 30023, created_at: 10, tags: [['d', 'post']] })
+    const equal = event({ id: '2'.repeat(64), pubkey: A, kind: 30023, created_at: 10, tags: [['d', 'post']] })
+    const newer = event({ id: '3'.repeat(64), pubkey: A, kind: 30023, created_at: 11, tags: [['d', 'post']] })
+    const deletion = event({
+      id: '5'.repeat(64),
+      pubkey: A,
+      kind: 5,
+      created_at: 10,
+      tags: [['a', `30023:${A}:post`], ['e', target.id]]
+    })
+
+    assertAddOk(await db.add(target))
+    assertAddOk(await db.add(deletion))
+
+    const store = fakeStore(owner, DELETIONS_STORE)
+    const addressRef = deletionCoordinateRef(30023, A, 'post')
+    assert.equal(store.records.has(addressRef), true)
+    assert.equal(store.records.has(deletionEventRef(target.id, A)), false)
+    assert.equal(store.records.get(addressRef).c.length, 1)
+    assert.deepEqual(await queryResults(db, { ids: [target.id] }), [])
+    assertAddNotOk(await db.add(equal), { code: 'blocked' })
+    assertAddOk(await db.add(newer))
+  })
+
+  it('canonicalizes e-tag deletions of replaceable events but keeps regular e tombstones', async () => {
+    const owner = `${OWNER}92`
+    const db = getNostrDb(owner)
+    const profile = event({ id: '1'.repeat(64), pubkey: A, kind: 0, created_at: 10, tags: [['d', 'ignored']] })
+    const regular = event({ id: '2'.repeat(64), pubkey: A, kind: 1, created_at: 10 })
+    const oldProfile = event({ id: '3'.repeat(64), pubkey: A, kind: 0, created_at: 10 })
+    const newProfile = event({ id: '4'.repeat(64), pubkey: A, kind: 0, created_at: 11 })
+    const deletion = event({
+      id: '5'.repeat(64),
+      pubkey: A,
+      kind: 5,
+      created_at: 10,
+      tags: [['e', profile.id], ['e', regular.id]]
+    })
+
+    assertAddOk(await db.add(profile))
+    assertAddOk(await db.add(regular))
+    assertAddOk(await db.add(deletion))
+
+    const store = fakeStore(owner, DELETIONS_STORE)
+    assert.equal(store.records.has(deletionCoordinateRef(0, A, '')), true)
+    assert.equal(store.records.has(deletionEventRef(profile.id, A)), false)
+    assert.equal(store.records.has(deletionEventRef(regular.id, A)), true)
+    assert.deepEqual(await queryResults(db, { ids: [profile.id, regular.id] }), [])
+    assertAddNotOk(await db.add(oldProfile), { code: 'blocked' })
+    assertAddOk(await db.add(newProfile))
+    assertAddNotOk(await db.add(regular), { code: 'blocked' })
+  })
+
   it('blocks future events with durable e-tag tombstones', async () => {
     const db = getNostrDb(`${OWNER}11`)
     const targetId = '1'.repeat(64)
@@ -1149,7 +1206,8 @@ describe('nostrdb', () => {
       author: A,
       maxTargetRefs: 1,
       createdAt: 100,
-      sign: template => {
+      signEvent: template => {
+        assert.equal(template.created_at, 100)
         assert.deepEqual(template.tags, [['e', targetId]])
         return { ...signed, tags: template.tags, created_at: template.created_at }
       }
@@ -1163,6 +1221,80 @@ describe('nostrdb', () => {
     assert.deepEqual((await queryResults(db, { ids: [leftoverDeletion.id] })).map(e => e.id), [leftoverDeletion.id])
     assertAddNotOk(await db.add(event({ id: targetId, pubkey: A, created_at: 10 })), { code: 'blocked' })
     assertAddOk(await db.add(firstDeletion))
+  })
+
+  it('compacts same-cutoff address deletions with e-only filler exactly', async () => {
+    const db = getNostrDb(`${OWNER}18`)
+    const firstAddress = `30023:${A}:one`
+    const secondAddress = `30023:${A}:two`
+    const leftoverAddress = `30023:${A}:three`
+    const eventTargetId = hexId(301)
+    const firstDeletion = event({
+      id: hexId(101),
+      pubkey: A,
+      kind: 5,
+      created_at: 10,
+      tags: [['a', firstAddress]]
+    })
+    const secondDeletion = event({
+      id: hexId(102),
+      pubkey: A,
+      kind: 5,
+      created_at: 10,
+      tags: [['a', secondAddress]]
+    })
+    const eventDeletion = event({
+      id: hexId(103),
+      pubkey: A,
+      kind: 5,
+      created_at: 50,
+      tags: [['e', eventTargetId]]
+    })
+    const differentCutoffDeletion = event({
+      id: hexId(104),
+      pubkey: A,
+      kind: 5,
+      created_at: 20,
+      tags: [['a', leftoverAddress]]
+    })
+    const signed = event({
+      id: hexId(200),
+      pubkey: A,
+      kind: 5,
+      created_at: 10,
+      tags: []
+    })
+    const expectedTags = [
+      ['a', firstAddress],
+      ['a', secondAddress],
+      ['e', eventTargetId]
+    ]
+
+    assertAddOk(await db.add(firstDeletion))
+    assertAddOk(await db.add(secondDeletion))
+    assertAddOk(await db.add(eventDeletion))
+    assertAddOk(await db.add(differentCutoffDeletion))
+
+    const result = await db.compactDeletionRequests({
+      author: A,
+      maxTargetRefs: 3,
+      createdAt: 100,
+      signEvent: template => {
+        assert.equal(template.created_at, 10)
+        assert.deepEqual(template.tags, expectedTags)
+        return { ...signed, tags: template.tags, created_at: template.created_at }
+      }
+    })
+
+    assert.equal(result.compacted, true)
+    assert.equal(result.created.id, signed.id)
+    assert.deepEqual(result.consumed, [firstDeletion.id, secondDeletion.id, eventDeletion.id])
+    assert.deepEqual(result.targets, expectedTags)
+    assert.deepEqual(await queryResults(db, { ids: [firstDeletion.id, secondDeletion.id, eventDeletion.id] }), [])
+    assert.deepEqual((await queryResults(db, { ids: [differentCutoffDeletion.id] })).map(e => e.id), [differentCutoffDeletion.id])
+    assertAddNotOk(await db.add(event({ id: hexId(401), pubkey: A, kind: 30023, created_at: 10, tags: [['d', 'one']] })), { code: 'blocked' })
+    assertAddOk(await db.add(event({ id: hexId(402), pubkey: A, kind: 30023, created_at: 11, tags: [['d', 'one']] })))
+    assertAddNotOk(await db.add(event({ id: eventTargetId, pubkey: A, created_at: 100 })), { code: 'blocked' })
   })
 
   it('starts deletion compaction on a non-overlapping timer', async () => {
@@ -1180,7 +1312,7 @@ describe('nostrdb', () => {
     }
 
     const abort = db.startDeletionCompaction({
-      sign: () => event({ id: '9'.repeat(64), pubkey: A, kind: 5 }),
+      signEvent: () => event({ id: '9'.repeat(64), pubkey: A, kind: 5 }),
       intervalMs: 1,
       runImmediately: true
     })
