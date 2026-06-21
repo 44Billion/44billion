@@ -20,6 +20,7 @@ import {
   pubkeyIndexKey,
   toStoredRecord
 } from '../../src/services/idb/nostrdb/index.js'
+import { isScheduledDurableFuture } from '../../src/services/idb/nostrdb/scheduled.js'
 import { eventKinds } from '../../src/constants/event.js'
 import { appIdToDbAppRef } from '../../src/helpers/app.js'
 
@@ -81,6 +82,23 @@ describe('nostrdb', () => {
 
     assert.equal(deletionEventRef(id, A), `e:${eventIdIndexKey(id)}:${pubkeyIndexKey(A)}`)
     assert.equal(deletionCoordinateRef(30023, A, 'post'), `a:${addressKey(30023, A, 'post').join(':')}`)
+  })
+
+  it('detects scheduled durable future events', () => {
+    const isNonDurableEvent = event => event.kind >= 20000 && event.kind < 30000
+
+    assert.equal(isScheduledDurableFuture(event({ id: '1'.repeat(64), created_at: 103 }), {
+      now: 100,
+      isNonDurableEvent
+    }), true)
+    assert.equal(isScheduledDurableFuture(event({ id: '2'.repeat(64), created_at: 102 }), {
+      now: 100,
+      isNonDurableEvent
+    }), false)
+    assert.equal(isScheduledDurableFuture(event({ id: '3'.repeat(64), kind: 20000, created_at: 103 }), {
+      now: 100,
+      isNonDurableEvent
+    }), false)
   })
 
   it('stores app refs only for custom app-data and unknown kinds', async () => {
@@ -1190,6 +1208,158 @@ describe('nostrdb', () => {
     await iterator.return()
   })
 
+  it('delays future durable events for scheduled subscriptions', async () => {
+    let now = 100.9
+    await withMutableNow(() => now, async () => {
+      const db = getNostrDb(`${OWNER}83`)
+      const iterator = db.subscribe({ kinds: [1] }, { scheduled: true })
+      const next = iterator.next()
+      const future = event({ id: '1'.repeat(64), kind: 1, created_at: 103 })
+
+      assertAddOk(await db.add(future))
+      assert.equal(await settlesWithin(next, 40), false)
+
+      now = 101
+      assert.deepEqual(await subscriptionResult(next, 1000), future)
+      await iterator.return()
+    })
+  })
+
+  it('keeps normal subscriptions immediate for future durable events', async () => {
+    await withPatchedNow(100, async () => {
+      const db = getNostrDb(`${OWNER}84`)
+      const iterator = db.subscribe({ kinds: [1] })
+      const next = iterator.next()
+      const future = event({ id: '1'.repeat(64), kind: 1, created_at: 1000 })
+
+      assertAddOk(await db.add(future))
+
+      assert.deepEqual(await subscriptionResult(next), future)
+      await iterator.return()
+    })
+  })
+
+  it('streams scheduled events immediately inside skew and for non-durable events', async () => {
+    await withPatchedNow(100, async () => {
+      const db = getNostrDb(`${OWNER}85`)
+      const withinSkew = event({ id: '1'.repeat(64), kind: 1, created_at: 102 })
+      const ephemeral = event({ id: '2'.repeat(64), kind: 20000, created_at: 1000 })
+      const honorary = event({ id: '3'.repeat(64), kind: 1, created_at: 1000, tags: [['expiration', '1000']] })
+      const dueIterator = db.subscribe({ kinds: [1] }, { scheduled: true })
+      const ephemeralIterator = db.subscribe({ kinds: [20000] }, { scheduled: true })
+      const honoraryIterator = db.subscribe({ ids: [honorary.id] }, { scheduled: true })
+      const dueNext = dueIterator.next()
+      const ephemeralNext = ephemeralIterator.next()
+      const honoraryNext = honoraryIterator.next()
+
+      assertAddOk(await db.add(withinSkew))
+      assertAddOk(await db.add(ephemeral), { code: 'published', stored: false, published: true })
+      assertAddOk(await db.add(honorary), { code: 'published', stored: false, published: true })
+
+      assert.deepEqual(await subscriptionResult(dueNext), withinSkew)
+      assert.deepEqual(await subscriptionResult(ephemeralNext), ephemeral)
+      assert.deepEqual(await subscriptionResult(honoraryNext), honorary)
+      await dueIterator.return()
+      await ephemeralIterator.return()
+      await honoraryIterator.return()
+    })
+  })
+
+  it('catches already stored future events when scheduled subscriptions become due', async () => {
+    let now = 100.9
+    await withMutableNow(() => now, async () => {
+      const db = getNostrDb(`${OWNER}86`)
+      const future = event({ id: '1'.repeat(64), kind: 1, created_at: 103 })
+
+      assertAddOk(await db.add(future))
+
+      const iterator = db.subscribe({ kinds: [1] }, { scheduled: true })
+      const next = iterator.next()
+      assert.equal(await settlesWithin(next, 40), false)
+
+      now = 101
+      assert.deepEqual(await subscriptionResult(next, 1000), future)
+      await iterator.return()
+    })
+  })
+
+  it('does not leak replaced or deleted scheduled future events', async () => {
+    let now = 100.9
+    await withMutableNow(() => now, async () => {
+      const replacedDb = getNostrDb(`${OWNER}87`)
+      const old = event({ id: '2'.repeat(64), kind: 30023, created_at: 103, tags: [['d', 'post']] })
+      const newer = event({ id: '1'.repeat(64), kind: 30023, created_at: 103, tags: [['d', 'post']] })
+
+      assertAddOk(await replacedDb.add(old))
+      const replacedIterator = replacedDb.subscribe({ kinds: [30023], '#d': ['post'] }, { scheduled: true })
+      const replacedNext = replacedIterator.next()
+      assertAddOk(await replacedDb.add(newer), { code: 'replaced' })
+
+      const deletedDb = getNostrDb(`${OWNER}88`)
+      const target = event({ id: '3'.repeat(64), pubkey: A, kind: 1, created_at: 103 })
+      const deletion = event({ id: '4'.repeat(64), pubkey: A, kind: 5, created_at: 101, tags: [['e', target.id]] })
+
+      assertAddOk(await deletedDb.add(target))
+      const deletedIterator = deletedDb.subscribe({ ids: [target.id] }, { scheduled: true })
+      const deletedNext = deletedIterator.next()
+      assertAddOk(await deletedDb.add(deletion))
+
+      now = 101
+      assert.deepEqual(await subscriptionResult(replacedNext, 1000), newer)
+      assert.equal(await settlesWithin(deletedNext, 200), false)
+      await replacedIterator.return()
+      await deletedIterator.return()
+    })
+  })
+
+  it('applies scheduled delivery to complex subscription filters and limit cleanup', async () => {
+    let now = 100.9
+    await withMutableNow(() => now, async () => {
+      const db = getNostrDb(`${OWNER}89`)
+      const excluded = event({ id: '1'.repeat(64), pubkey: A, kind: 1, created_at: 103, tags: [['t', 'meme'], ['t', 'cat']], content: 'nostr excluded' })
+      const match = event({ id: '2'.repeat(64), pubkey: A, kind: 1, created_at: 103, tags: [['t', 'meme'], ['t', 'cat']], content: 'nostr match' })
+      const wrongSearch = event({ id: '3'.repeat(64), pubkey: A, kind: 7, created_at: 103, content: 'bitcoin' })
+      const afterLimit = event({ id: '4'.repeat(64), pubkey: A, kind: 7, created_at: 104, content: 'nostr later' })
+      const iterator = db.subscribe([
+        { '&t': ['meme', 'cat'], '!ids': [excluded.id] },
+        { kinds: [7] }
+      ], {
+        scheduled: true,
+        ids_only: true,
+        search: 'nostr',
+        limit: 1
+      })
+      const next = iterator.next()
+
+      assertAddOk(await db.add(excluded))
+      assertAddOk(await db.add(match))
+      assertAddOk(await db.add(wrongSearch))
+      assertAddOk(await db.add(afterLimit))
+
+      now = 101
+      assert.deepEqual(await subscriptionResult(next, 1000), match.id)
+      assert.deepEqual(await iterator.next(), { done: true })
+    })
+  })
+
+  it('clears scheduled timers when subscriptions are returned', async () => {
+    let now = 100.9
+    await withMutableNow(() => now, async () => {
+      const db = getNostrDb(`${OWNER}90`)
+      const iterator = db.subscribe({ kinds: [1] }, { scheduled: true })
+      const next = iterator.next()
+      const future = event({ id: '1'.repeat(64), kind: 1, created_at: 103 })
+
+      assertAddOk(await db.add(future))
+      await iterator.return()
+      assert.deepEqual(await next, { done: true })
+
+      now = 101
+      await delay(150)
+      assert.deepEqual(await iterator.next(), { done: true })
+    })
+  })
+
   it('wraps subscription results with sync metadata', async () => {
     await withPatchedNow(100, async () => {
       const db = getNostrDb(`${OWNER}82`)
@@ -1540,7 +1710,8 @@ describe('nostrdb', () => {
       'ids_only',
       '!ids',
       '&tags',
-      'multi_filters'
+      'multi_filters',
+      'subscribe:scheduled'
     ])
     db.bc?.close()
   })
@@ -1590,8 +1761,8 @@ async function queryResults (db, ...args) {
   return (await db.query(...args)).results
 }
 
-async function subscriptionResult (promise) {
-  const next = await withTimeout(promise)
+async function subscriptionResult (promise, ms) {
+  const next = await withTimeout(promise, ms)
   assert.equal(next.done, false)
   return next.value.result
 }
@@ -1645,10 +1816,10 @@ function event ({
   return { id, pubkey, kind, created_at, tags, content, sig: SIG }
 }
 
-function withTimeout (promise) {
+function withTimeout (promise, ms = 1000) {
   return Promise.race([
     promise,
-    new Promise((resolve, reject) => setTimeout(() => reject(new Error('timed out')), 1000))
+    new Promise((resolve, reject) => setTimeout(() => reject(new Error('timed out')), ms))
   ])
 }
 
@@ -1973,6 +2144,10 @@ class FakeIDBKeyRange {
 
   static upperBound (upper, open = false) {
     return new FakeIDBKeyRange(undefined, upper, true, open)
+  }
+
+  static lowerBound (lower, open = false) {
+    return new FakeIDBKeyRange(lower, undefined, open, true)
   }
 
   constructor (lower, upper, lowerOpen, upperOpen) {

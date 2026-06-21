@@ -18,6 +18,9 @@ import {
   parseSearch,
   rankSearchCandidates
 } from './search.js'
+import {
+  createScheduledDelivery
+} from './scheduled.js'
 
 export const NOSTRDB_VERSION = 1
 export const NOSTRDB_PREFIX = '44billion_nostrdb:'
@@ -578,17 +581,18 @@ export class NostrDb {
   async supports () {
     return [
       'search',
-      // Note: it could instead be an `algo: "asc"` filter field
-      // but we decided to use search extensions for any custom
-      // behavior we come up with
       'search:sort:asc',
       'search:sort:desc',
+      // Note: it could instead be an `algo: "sync"` filter field
+      // but we decided to use search extensions for any custom
+      // behavior we come up with
       'search:algo:sync',
       'search:autocomplete:true',
       'ids_only',
       '!ids',
       '&tags',
-      'multi_filters'
+      'multi_filters',
+      'subscribe:scheduled'
     ]
   }
 
@@ -619,11 +623,16 @@ export class NostrDb {
     }
   }
 
+  // Normal subscriptions stream matching added events immediately. With
+  // { scheduled: true }, durable future events wait until created_at <= now + 2;
+  // regular and honorary ephemeral events are still streamed immediately.
   subscribe (filterOrFilters, options = {}) {
     const filters = parseFilterInput(filterOrFilters, options)
     const subscription = createSubscription(filters, {
       idsOnly: filters[0]?.idsOnly === true,
-      limit: filters[0]?.limit ?? Infinity
+      limit: filters[0]?.limit ?? Infinity,
+      ownerPubkey: this.ownerPubkey,
+      scheduled: options?.scheduled === true
     })
     this.subscriptions.add(subscription)
 
@@ -1697,7 +1706,12 @@ function getReplaceableCursors (filter) {
   return cursors
 }
 
-function createSubscription (filters, { idsOnly = false, limit = Infinity } = {}) {
+function createSubscription (filters, {
+  idsOnly = false,
+  limit = Infinity,
+  ownerPubkey,
+  scheduled = false
+} = {}) {
   const queue = []
   const waiters = []
   let closed = false
@@ -1707,38 +1721,70 @@ function createSubscription (filters, { idsOnly = false, limit = Infinity } = {}
   const close = () => {
     if (closed) return
     closed = true
+    scheduler?.close()
     onClose?.()
     while (waiters.length > 0) {
       waiters.shift().resolve({ done: true })
     }
   }
 
+  const matchingFilter = (event, storedRecord) => filters.find(filter => filter.matches(event, storedRecord))
+  const logScheduledError = (message, error) => {
+    logNostrDbIssue('subscribe', { ownerPubkey, code: 'error', message }, error)
+  }
+
+  const emit = (filter, event, storedRecord) => {
+    const score = queryScore(event, storedRecord, filter)
+    const value = idsOnly ? event.id : event
+    const wrapped = {
+      result: value,
+      meta: {
+        algorithm: queryAlgorithm(filter),
+        sort: querySort(filter),
+        score
+      }
+    }
+
+    yielded++
+    if (waiters.length > 0) {
+      waiters.shift().resolve({ value: wrapped, done: false })
+    } else {
+      queue.push(wrapped)
+    }
+    if (yielded >= limit) close()
+  }
+
+  const scheduler = scheduled
+    ? createScheduledDelivery({
+      openDb: () => ownerPubkey ? openNostrDb(ownerPubkey) : null,
+      scanCreatedAt: (db, range, options) => scanCursor(db, EVENTS_STORE, INDEX.createdAt, range, options),
+      now: currentUnixTime,
+      isClosed: () => closed || filters.length === 0 || limit <= 0,
+      isNonDurableEvent,
+      isStoredRecordLive,
+      matchStored: stored => matchingFilter(stored.event, stored),
+      emitStored: (filter, stored) => emit(filter, stored.event, stored),
+      logError: logScheduledError
+    })
+    : null
+
   const subscription = {
     push (event, storedRecord) {
       if (closed) return
-      const filter = filters.find(filter => filter.matches(event, storedRecord))
+      const filter = matchingFilter(event, storedRecord)
       if (!filter) return
-      const score = queryScore(event, storedRecord, filter)
-      const value = idsOnly ? event.id : event
-      const wrapped = {
-        result: value,
-        meta: {
-          algorithm: queryAlgorithm(filter),
-          sort: querySort(filter),
-          score
-        }
+
+      if (scheduler?.shouldDelay(event)) {
+        scheduler.arm(event.created_at)
+        return
       }
-      yielded++
-      if (waiters.length > 0) {
-        waiters.shift().resolve({ value: wrapped, done: false })
-      } else {
-        queue.push(wrapped)
-      }
-      if (yielded >= limit) close()
+
+      emit(filter, event, storedRecord)
     },
     iterator (closeSubscription) {
       onClose = closeSubscription
       if (limit <= 0 || filters.length === 0) close()
+      scheduler?.start()
       return {
         [Symbol.asyncIterator] () {
           return this
