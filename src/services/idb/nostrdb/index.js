@@ -582,7 +582,8 @@ export class NostrDb {
       '!ids',
       '&tags',
       'multi_filters',
-      'subscribe:scheduled'
+      'subscribe:scheduled',
+      'app_export'
     ]
   }
 
@@ -592,6 +593,48 @@ export class NostrDb {
     return deleteNostrDb(this.ownerPubkey)
   }
 
+  // App reinstall backfill flow: a device that still has app-scoped rows can
+  // stream them to another device, which re-imports each event with add(event, { appId }).
+  // Resume interrupted transfers with either skip: receivedCount or after: lastReceivedEventId
+  async * exportEventsByApp (appId, { batchSize = APP_EXPORT_BATCH_SIZE, skip = 0, after } = {}) {
+    const appRef = normalizeOptionalAppRef(appId)
+    if (!appRef) return
+
+    const db = await openNostrDb(this.ownerPubkey)
+    if (!db) return
+
+    const size = normalizeBatchSize(batchSize, APP_EXPORT_BATCH_SIZE, APP_EXPORT_MAX_BATCH_SIZE)
+    let remainingSkip = normalizeSkip(skip)
+    let afterIdKey = typeof after === 'string' && HEX64_RE.test(after) ? eventIdIndexKey(after) : null
+
+    try {
+      while (true) {
+        const { idKeys, skipped, afterMatched } = await collectAppEventIdKeyBatch(db, appRef, {
+          batchSize: size,
+          skip: remainingSkip,
+          afterIdKey
+        })
+        remainingSkip -= skipped
+        if (afterIdKey && !afterMatched) return
+        if (idKeys.length === 0) return
+
+        afterIdKey = idKeys[idKeys.length - 1]
+        const records = await getStoredRecordsByIdKeys(db, idKeys)
+        const events = idKeys
+          .map(idKey => records.get(idKey))
+          .filter(stored => stored?.event && hasAppRef(stored.ap, appRef))
+          .map(stored => stored.event)
+
+        if (events.length > 0) yield events
+        if (idKeys.length < size) return
+      }
+    } catch (error) {
+      logNostrDbIssue('exportEventsByApp', { ownerPubkey: this.ownerPubkey }, error)
+    }
+  }
+
+  // Used by the app uninstall flow. Exclusive app-owned rows are physically
+  // deleted; shared rows only lose this app's ownership ref.
   async deleteEventsByApp (appId) {
     const appRef = normalizeOptionalAppRef(appId)
     if (!appRef) return 0
@@ -603,7 +646,9 @@ export class NostrDb {
       let deleted = 0
 
       while (true) {
-        const idKeys = await collectAppEventIdKeyBatch(db, appRef)
+        const { idKeys } = await collectAppEventIdKeyBatch(db, appRef, {
+          batchSize: APP_DELETE_BATCH_SIZE
+        })
         if (idKeys.length === 0) return deleted
 
         deleted += await deleteAppEventBatch(db, appRef, idKeys)
@@ -809,19 +854,33 @@ async function removeAppRefsFromKinds (db, kinds) {
   await done
 }
 
-async function collectAppEventIdKeyBatch (db, appRef) {
+async function collectAppEventIdKeyBatch (db, appRef, {
+  batchSize,
+  skip = 0,
+  afterIdKey = null
+} = {}) {
   const idKeys = []
+  let skipped = 0
+  let afterMatched = afterIdKey === null
 
   await scanKeyCursor(db, EVENTS_STORE, INDEX.app, IDBKeyRange.only(appRef), {
     onItem: cursor => {
+      if (!afterMatched) {
+        afterMatched = compareKeys(cursor.primaryKey, afterIdKey) === 0
+        return true
+      }
+      if (skipped < skip) {
+        skipped++
+        return true
+      }
       if (!idKeys.some(idKey => compareKeys(idKey, cursor.primaryKey) === 0)) {
         idKeys.push(cursor.primaryKey)
       }
-      return idKeys.length < APP_DELETE_BATCH_SIZE
+      return idKeys.length < batchSize
     }
   })
 
-  return idKeys
+  return { idKeys, skipped, afterMatched }
 }
 
 async function deleteAppEventBatch (db, appRef, idKeys) {
@@ -864,6 +923,8 @@ const MAX_LIMIT = 200
 const KEY_GATED_EXCLUDE_THRESHOLD = 128
 const KEY_GATED_GET_BATCH_SIZE = 64
 const APP_DELETE_BATCH_SIZE = 64
+const APP_EXPORT_BATCH_SIZE = 64
+const APP_EXPORT_MAX_BATCH_SIZE = 1000
 
 function parseFilterInput (filterOrFilters, options = {}) {
   const rawFilters = normalizeFilterList(filterOrFilters)
@@ -2016,6 +2077,10 @@ function removeAppRef (refs, appRef) {
     .filter(ref => !sameAppRef(ref, appRef))
 }
 
+function hasAppRef (refs, appRef) {
+  return normalizeAppRefs(refs).some(ref => sameAppRef(ref, appRef))
+}
+
 function normalizeAppRefs (refs) {
   if (!Array.isArray(refs)) return []
 
@@ -2051,6 +2116,16 @@ function isAppTrackableKind (kind) {
 
 function isCustomAppDataKind (kind) {
   return kind === REGULAR_CUSTOM_APP_DATA_KIND || kind === CUSTOM_APP_DATA_KIND
+}
+
+function normalizeBatchSize (value, fallback, max) {
+  return Number.isInteger(value) && value > 0
+    ? Math.min(value, max)
+    : fallback
+}
+
+function normalizeSkip (value) {
+  return Number.isInteger(value) && value > 0 ? value : 0
 }
 
 let appNeutralKindsCache

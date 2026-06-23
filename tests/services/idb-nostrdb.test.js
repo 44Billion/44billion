@@ -213,6 +213,39 @@ describe('nostrdb', () => {
     assertAppRefs(store.records.get(eventIdIndexKey(shared.id)), [APP2])
   })
 
+  it('exports app rows in resumable batches', async () => {
+    const owner = `${OWNER}93`
+    const db = getNostrDb(owner)
+    const events = []
+
+    for (let i = 1; i <= 5; i++) {
+      const item = event({ id: hexId(i), kind: eventKinds.REGULAR_CUSTOM_APP_DATA })
+      events.push(item)
+      assertAddOk(await db.add(item, { appId: APP1 }))
+    }
+
+    const otherApp = event({ id: hexId(100), kind: eventKinds.REGULAR_CUSTOM_APP_DATA })
+    const known = event({ id: hexId(101), kind: eventKinds.TEXT_NOTE })
+    assertAddOk(await db.add(otherApp, { appId: APP2 }))
+    assertAddOk(await db.add(known, { appId: APP1 }))
+
+    const batches = await exportEventBatches(db, APP1, { batchSize: 2 })
+    const ids = batches.flat().map(event => event.id)
+    assert.deepEqual(batches.map(batch => batch.length), [2, 2, 1])
+    assert.deepEqual([...ids].sort(), events.map(event => event.id).sort())
+
+    assert.deepEqual(
+      (await exportEventBatches(db, APP1, { batchSize: 2, skip: 2 })).flat().map(event => event.id),
+      ids.slice(2)
+    )
+    assert.deepEqual(
+      (await exportEventBatches(db, APP1, { batchSize: 2, after: ids[1] })).flat().map(event => event.id),
+      ids.slice(2)
+    )
+    assert.deepEqual(await exportEventBatches(db, APP1, { after: hexId(999) }), [])
+    assert.deepEqual(await exportEventBatches(db, 'nope'), [])
+  })
+
   it('removes app refs when stored unknown kinds become known', async () => {
     const owner = `${OWNER}77`
     const dbName = `${NOSTRDB_PREFIX}${owner}`
@@ -1843,7 +1876,8 @@ describe('nostrdb', () => {
       '!ids',
       '&tags',
       'multi_filters',
-      'subscribe:scheduled'
+      'subscribe:scheduled',
+      'app_export'
     ])
     db.bc?.close()
   })
@@ -1891,6 +1925,12 @@ function assertAddNotOk (result, { code, stored = false, published = false } = {
 
 async function queryResults (db, ...args) {
   return (await db.query(...args)).results
+}
+
+async function exportEventBatches (db, appId, options) {
+  const batches = []
+  for await (const batch of db.exportEventsByApp(appId, options)) batches.push(batch)
+  return batches
 }
 
 async function subscriptionResult (promise, ms) {
