@@ -21,6 +21,7 @@ import {
 import {
   createScheduledDelivery
 } from './scheduled.js'
+import { buildCrdtMergeTemplate } from './crdt.js'
 
 export const NOSTRDB_VERSION = 1
 export const NOSTRDB_PREFIX = '44billion_nostrdb:'
@@ -115,13 +116,20 @@ const ADD_MESSAGES = {
 
 // add() only reports ok: false for invalid, expired, tombstone-blocked,
 // unavailable, or transaction/write-error cases.
-function addResult (code, { stored = false, published = false, message = ADD_MESSAGES[code], storedRecord } = {}) {
+function addResult (code, {
+  stored = false,
+  published = false,
+  message = ADD_MESSAGES[code],
+  storedRecord,
+  ...metadata
+} = {}) {
   const result = {
     ok: !ADD_FAILURE_CODES.has(code),
     code,
     message,
     stored,
-    published
+    published,
+    ...metadata
   }
 
   if (storedRecord) Object.defineProperty(result, STORED_RECORD, { value: storedRecord })
@@ -204,9 +212,18 @@ export class NostrDb {
     }
   }
 
-  // Public ingest path: valid transient events reach live subscribers, while
-  // durable events are persisted through addEvent() before being published.
-  async add (event, { appId } = {}) {
+  // Public ingest path. Valid transient events reach live subscribers, and
+  // durable events may first be CRDT-merged/signed for local owner-authored
+  // coordinates before addEvent() persists them and add() publishes them.
+  async add (event, {
+    appId,
+    signEvent,
+    mergeReplaceable,
+    tagIdentity,
+    tombstoneGraceSeconds,
+    maxTombstoneTags,
+    tombstoneTagName
+  } = {}) {
     if (!isValidEventShape(event)) {
       return this.reportAddResult('add', event, addResult('invalid'))
     }
@@ -225,12 +242,74 @@ export class NostrDb {
       return addResult('published', { published: true })
     }
 
-    const result = await this.addEvent(event, { now, appRef, log: false })
+    let eventToStore = event
+    const shouldMergeReplaceable = mergeReplaceable ?? (typeof signEvent === 'function' && event.pubkey === this.ownerPubkey)
+    const mergedEvent = shouldMergeReplaceable
+      ? await this.signMergedReplaceableEvent(event, {
+        signEvent,
+        tagIdentity,
+        tombstoneGraceSeconds,
+        maxTombstoneTags,
+        tombstoneTagName,
+        now
+      })
+      : null
+
+    if (mergedEvent) eventToStore = mergedEvent
+
+    const result = await this.addEvent(eventToStore, { now, appRef, log: false })
+    if (mergedEvent && result.stored && (result.code === 'stored' || result.code === 'replaced')) {
+      result.merged = true
+      result.inputId = event.id
+      result.storedId = mergedEvent.id
+    }
     if (result.stored && (result.code === 'stored' || result.code === 'replaced')) {
-      this.publish(event, true, result[STORED_RECORD])
+      this.publish(eventToStore, true, result[STORED_RECORD])
       return publishResult(result)
     }
     return this.reportAddResult('add', event, result)
+  }
+
+  async signMergedReplaceableEvent (event, {
+    signEvent,
+    tagIdentity,
+    tombstoneGraceSeconds,
+    maxTombstoneTags,
+    tombstoneTagName,
+    now
+  }) {
+    if (typeof signEvent !== 'function') return null
+    if (event.pubkey !== this.ownerPubkey) return null
+
+    const coordinate = getCoordinate(event)
+    if (coordinate === null) return null
+
+    const expectedAddress = addressKey(event.kind, event.pubkey, coordinate)
+    const db = await openNostrDb(this.ownerPubkey)
+    if (!db) return null
+
+    let base = await getStoredRecordByAddress(db, expectedAddress)
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const template = buildCrdtMergeTemplate(event, base?.event, {
+        tagIdentity,
+        tombstoneGraceSeconds,
+        maxTombstoneTags,
+        tombstoneTagName,
+        now
+      })
+      if (!template) return null
+
+      const signed = await signCrdtTemplate(signEvent, template)
+      if (!isValidCrdtSignedEvent(signed, template, expectedAddress, this.ownerPubkey)) return null
+
+      const latest = await getStoredRecordByAddress(db, expectedAddress)
+      if (sameStoredVersion(base, latest)) return signed
+
+      base = latest
+    }
+
+    return null
   }
 
   // Durable write path used internally by add() and compaction; it updates
@@ -2018,6 +2097,44 @@ export function toStoredRecord (event, { now = currentUnixTime(), appRef } = {})
   if (appRef && isAppTrackableKind(event.kind)) record.ap = [appRef]
 
   return record
+}
+
+async function getStoredRecordByAddress (db, address) {
+  return run('get', [address], EVENTS_STORE, INDEX.address, { db })
+    .then(value => value.result)
+}
+
+async function signCrdtTemplate (signEvent, template) {
+  const before = JSON.stringify(template)
+  let signed
+
+  try {
+    signed = await signEvent(template)
+  } catch {
+    return null
+  }
+
+  // The signer may fill id/sig in the returned event, but must not mutate the
+  // merge template we later validate against.
+  return JSON.stringify(template) === before ? signed : null
+}
+
+function isValidCrdtSignedEvent (signed, template, expectedAddress, ownerPubkey) {
+  if (!isValidEventShape(signed)) return false
+  if (signed.pubkey !== ownerPubkey) return false
+  if (signed.kind !== template.kind) return false
+  if (signed.created_at !== template.created_at) return false
+  if (signed.content !== template.content) return false
+  if (!sameTags(signed.tags, template.tags)) return false
+
+  const coordinate = getCoordinate(signed)
+  if (coordinate === null) return false
+
+  return compareKeys(addressKey(signed.kind, signed.pubkey, coordinate), expectedAddress) === 0
+}
+
+function sameStoredVersion (a, b) {
+  return (a?.i ?? null) === (b?.i ?? null)
 }
 
 // Assign a monotonic millisecond sync anchor for local DB sync: prefer the

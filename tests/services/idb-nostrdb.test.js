@@ -308,6 +308,332 @@ describe('nostrdb', () => {
     fake.transaction = originalTransaction
   })
 
+  it('enriches and signs owner-authored coordinate events when CRDT merge is enabled', async () => {
+    const owner = hexId(30000)
+    const db = getNostrDb(owner)
+    const input = event({
+      id: hexId(1),
+      pubkey: owner,
+      kind: 30023,
+      created_at: 10,
+      tags: [['d', 'post'], ['p', B]],
+      content: 'hello'
+    })
+    let seenTemplate
+
+    const result = await db.add(input, {
+      signEvent: template => {
+        seenTemplate = cloneJson(template)
+        return signedFromTemplate(template, { id: hexId(2), pubkey: owner })
+      }
+    })
+
+    assertAddOk(result, { code: 'stored', stored: true, published: true })
+    assert.equal(result.merged, true)
+    assert.equal(result.inputId, input.id)
+    assert.equal(result.storedId, hexId(2))
+    assert.deepEqual(seenTemplate, {
+      kind: 30023,
+      pubkey: owner,
+      created_at: 10,
+      tags: [['d', 'post', 'u@ 10'], ['p', B, 'u@ 10'], ['u@', '10']],
+      content: 'hello'
+    })
+    assert.deepEqual(await queryResults(db, { ids: [input.id] }), [])
+    assert.deepEqual((await queryResults(db, { ids: [hexId(2)] })).map(event => event.id), [hexId(2)])
+  })
+
+  it('caps explicit CRDT clocks to now or event created_at plus skew', async () => {
+    await withPatchedNow(100, async () => {
+      const owner = hexId(30006)
+      const db = getNostrDb(owner)
+      const input = event({
+        id: hexId(1),
+        pubkey: owner,
+        kind: 30023,
+        created_at: 10,
+        tags: [['d', 'post', 'u@ 999'], ['p', B, 'u@ 999'], ['u@', '999']],
+        content: 'capped'
+      })
+      let seenTemplate
+
+      await db.add(input, {
+        signEvent: template => {
+          seenTemplate = cloneJson(template)
+          return signedFromTemplate(template, { id: hexId(2), pubkey: owner })
+        }
+      })
+
+      assert.deepEqual(seenTemplate.tags, [
+        ['d', 'post', 'u@ 160'],
+        ['p', B, 'u@ 160'],
+        ['u@', '160']
+      ])
+    })
+  })
+
+  it('allows CRDT clocks that fit a scheduled event created_at plus skew', async () => {
+    await withPatchedNow(100, async () => {
+      const owner = hexId(30007)
+      const db = getNostrDb(owner)
+      const input = event({
+        id: hexId(1),
+        pubkey: owner,
+        kind: 30023,
+        created_at: 1000,
+        tags: [['d', 'post'], ['p', B, 'u@ 1055'], ['t', 'too-far', 'u@ 2000'], ['u@', '1055']],
+        content: 'scheduled'
+      })
+      let seenTemplate
+
+      await db.add(input, {
+        signEvent: template => {
+          seenTemplate = cloneJson(template)
+          return signedFromTemplate(template, { id: hexId(2), pubkey: owner })
+        }
+      })
+
+      assert.deepEqual(seenTemplate.tags, [
+        ['d', 'post', 'u@ 1000'],
+        ['p', B, 'u@ 1055'],
+        ['t', 'too-far', 'u@ 1060'],
+        ['u@', '1055']
+      ])
+    })
+  })
+
+  it('caps preserved CRDT tombstone clocks while keeping their tag name', async () => {
+    await withPatchedNow(100, async () => {
+      const owner = hexId(30008)
+      const db = getNostrDb(owner)
+      const old = event({
+        id: hexId(1),
+        pubkey: owner,
+        kind: 30023,
+        created_at: 10,
+        tags: [['d', 'post'], ['z', `p^${B}`, 'u@ 999:0:1']]
+      })
+      const incoming = event({
+        id: hexId(2),
+        pubkey: owner,
+        kind: 30023,
+        created_at: 20,
+        tags: [['d', 'post']]
+      })
+
+      assertAddOk(await db.add(old))
+      await db.add(incoming, {
+        signEvent: template => signedFromTemplate(template, { id: hexId(3), pubkey: owner })
+      })
+
+      const [stored] = await queryResults(db, { ids: [hexId(3)] })
+      assert.deepEqual(stored.tags.at(-1), ['z', `p^${B}`, 'u@ 160:0:1'])
+    })
+  })
+
+  it('merges replaceable fields and records deleted tags as tombstones', async () => {
+    const owner = hexId(30001)
+    const db = getNostrDb(owner)
+    const old = event({
+      id: hexId(1),
+      pubkey: owner,
+      kind: 30023,
+      created_at: 10,
+      tags: [['d', 'post', 'u@ 10'], ['p', B, 'u@ 10'], ['t', 'old', 'u@ 10'], ['u@', '10']],
+      content: 'old'
+    })
+    const incoming = event({
+      id: hexId(2),
+      pubkey: owner,
+      kind: 30023,
+      created_at: 20,
+      tags: [['d', 'post'], ['p', B], ['p', C]],
+      content: 'new'
+    })
+
+    assertAddOk(await db.add(old))
+    const result = await db.add(incoming, {
+      signEvent: template => signedFromTemplate(template, { id: hexId(3), pubkey: owner })
+    })
+
+    assertAddOk(result, { code: 'replaced', stored: true, published: true })
+    assert.equal(result.merged, true)
+
+    const [stored] = await queryResults(db, { ids: [hexId(3)] })
+    assert.equal(stored.content, 'new')
+    assert.deepEqual(stored.tags, [
+      ['d', 'post', 'u@ 20'],
+      ['p', B, 'u@ 20'],
+      ['p', C, 'u@ 20'],
+      ['u@', '20'],
+      ['zz', 't^old', 'u@ 20:0:1']
+    ])
+  })
+
+  it('applies tombstone naming, grace, and cap options during CRDT merge', async () => {
+    await withPatchedNow(100, async () => {
+      const owner = hexId(30002)
+      const db = getNostrDb(owner)
+      const old = event({
+        id: hexId(1),
+        pubkey: owner,
+        kind: 30023,
+        created_at: 1,
+        tags: [
+          ['d', 'post', 'u@ 1'],
+          ['p', B, 'u@ 1'],
+          ['t', 'old', 'u@ 2'],
+          ['zz', 'x^gone', 'u@ 1:0:1']
+        ]
+      })
+      const incoming = event({
+        id: hexId(2),
+        pubkey: owner,
+        kind: 30023,
+        created_at: 50,
+        tags: [['d', 'post']]
+      })
+
+      assertAddOk(await db.add(old))
+      await db.add(incoming, {
+        signEvent: template => signedFromTemplate(template, { id: hexId(3), pubkey: owner }),
+        tombstoneTagName: { byName: { p: 'z' } },
+        tombstoneGraceSeconds: 10,
+        maxTombstoneTags: 1
+      })
+
+      const [stored] = await queryResults(db, { ids: [hexId(3)] })
+      assert.deepEqual(stored.tags.at(-1), ['z', `p^${B}`, 'u@ 50:0:1'])
+      assert.equal(stored.tags.filter(tag => tag[0] === 'z' || tag[0] === 'zz').length, 1)
+    })
+  })
+
+  it('uses tag identity overrides and deterministic equal-timestamp wins', async () => {
+    const owner = hexId(30003)
+    const db = getNostrDb(owner)
+    const old = event({
+      id: hexId(1),
+      pubkey: owner,
+      kind: 30023,
+      created_at: 10,
+      tags: [
+        ['d', 'post', 'u@ 10'],
+        ['x', 'same', 'a', 'u@ 10'],
+        ['x', 'same', 'b', 'u@ 10']
+      ]
+    })
+    const incoming = event({
+      id: hexId(2),
+      pubkey: owner,
+      kind: 30023,
+      created_at: 10,
+      tags: [['d', 'post'], ['x', 'same', 'a'], ['x', 'same', 'c', 'u@ 10']]
+    })
+
+    assertAddOk(await db.add(old))
+    await db.add(incoming, {
+      signEvent: template => signedFromTemplate(template, { id: hexId(3), pubkey: owner }),
+      tagIdentity: { byName: { x: [0, 1, 2] } }
+    })
+
+    const [stored] = await queryResults(db, { ids: [hexId(3)] })
+    assert.equal(stored.created_at, 11)
+    assert.deepEqual(stored.tags.filter(tag => tag[0] === 'x'), [
+      ['x', 'same', 'a', 'u@ 10'],
+      ['x', 'same', 'c', 'u@ 10']
+    ])
+    assert.deepEqual(stored.tags.filter(tag => tag[0] === 'zz'), [
+      ['zz', 'x^same^b', 'u@ 10:0:1:2']
+    ])
+  })
+
+  it('falls back to original ingest when CRDT signing is invalid or ineligible', async () => {
+    const owner = hexId(30004)
+    const db = getNostrDb(owner)
+    const input = event({
+      id: hexId(1),
+      pubkey: owner,
+      kind: 30023,
+      created_at: 10,
+      tags: [['d', 'post'], ['p', B]]
+    })
+    const otherAuthor = event({
+      id: hexId(2),
+      pubkey: B,
+      kind: 30023,
+      created_at: 20,
+      tags: [['d', 'post']]
+    })
+    let calls = 0
+
+    assertAddOk(await db.add(input, {
+      signEvent: template => signedFromTemplate(template, { id: hexId(3), pubkey: B })
+    }), { code: 'stored', stored: true })
+    assert.deepEqual((await queryResults(db, { ids: [input.id] }))[0].tags, input.tags)
+
+    assertAddOk(await db.add(otherAuthor, {
+      signEvent: () => {
+        calls++
+        return signedFromTemplate(otherAuthor, { id: hexId(4), pubkey: B })
+      }
+    }), { code: 'stored', stored: true })
+    assert.equal(calls, 0)
+    assert.deepEqual((await queryResults(db, { ids: [otherAuthor.id] }))[0].tags, otherAuthor.tags)
+  })
+
+  it('retries CRDT signing once if the coordinate row changes while signing', async () => {
+    const owner = hexId(30005)
+    const db = getNostrDb(owner)
+    const old = event({
+      id: hexId(1),
+      pubkey: owner,
+      kind: 30023,
+      created_at: 10,
+      tags: [['d', 'post'], ['p', B, 'u@ 10']],
+      content: 'old'
+    })
+    const incoming = event({
+      id: hexId(2),
+      pubkey: owner,
+      kind: 30023,
+      created_at: 20,
+      tags: [['d', 'post'], ['p', B]],
+      content: 'incoming'
+    })
+    const race = event({
+      id: hexId(3),
+      pubkey: owner,
+      kind: 30023,
+      created_at: 30,
+      tags: [['d', 'post'], ['p', C]],
+      content: 'race'
+    })
+    let calls = 0
+
+    assertAddOk(await db.add(old))
+    const result = await db.add(incoming, {
+      signEvent: async template => {
+        calls++
+        if (calls === 1) {
+          assertAddOk(await db.add(race, { mergeReplaceable: false }))
+        }
+        return signedFromTemplate(template, { id: calls === 1 ? hexId(4) : hexId(5), pubkey: owner })
+      }
+    })
+
+    assertAddOk(result, { code: 'replaced', stored: true, published: true })
+    assert.equal(calls, 2)
+    assert.equal(result.storedId, hexId(5))
+
+    const [stored] = await queryResults(db, { ids: [hexId(5)] })
+    assert.equal(stored.created_at, 31)
+    assert.equal(stored.content, 'race')
+    assert.deepEqual(stored.tags.filter(tag => tag[0] === 'p'), [
+      ['p', C, 'u@ 30'],
+      ['p', B, 'u@ 20']
+    ])
+  })
+
   it('logs failed add operations without logging accepted benign outcomes', async () => {
     const owner = `${OWNER}69`
     const db = getNostrDb(owner)
@@ -2015,14 +2341,31 @@ function compactEvent (event) {
   }
 }
 
+function signedFromTemplate (template, { id, pubkey = template.pubkey }) {
+  return event({
+    id,
+    pubkey,
+    kind: template.kind,
+    created_at: template.created_at,
+    tags: template.tags.map(tag => [...tag]),
+    content: template.content
+  })
+}
+
+function cloneJson (value) {
+  return JSON.parse(JSON.stringify(value))
+}
+
 function event ({
   id,
   pubkey = A,
   kind = 1,
+  // eslint-disable-next-line camelcase
   created_at = 1,
   tags = [],
   content = ''
 }) {
+  // eslint-disable-next-line camelcase
   return { id, pubkey, kind, created_at, tags, content, sig: SIG }
 }
 
