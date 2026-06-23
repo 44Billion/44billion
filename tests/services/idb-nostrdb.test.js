@@ -1330,6 +1330,44 @@ describe('nostrdb', () => {
     assertAddNotOk(await db.add(event({ id: eventTargetId, pubkey: A, created_at: 100 })), { code: 'blocked' })
   })
 
+  it('defaults deletion compaction to the relay-safe 100-tag limit', async () => {
+    const db = getNostrDb(`${OWNER}94`)
+    const deletions = []
+
+    for (let i = 0; i < 101; i++) {
+      const deletion = event({
+        id: hexId(500 + i),
+        pubkey: A,
+        kind: 5,
+        created_at: i + 1,
+        tags: [['e', hexId(1000 + i)]]
+      })
+      deletions.push(deletion)
+      assertAddOk(await db.add(deletion))
+    }
+
+    const signed = event({
+      id: hexId(900),
+      pubkey: A,
+      kind: 5,
+      created_at: 200,
+      tags: []
+    })
+    const result = await db.compactDeletionRequests({
+      author: A,
+      createdAt: 200,
+      signEvent: template => {
+        assert.equal(template.tags.length, 100)
+        return { ...signed, tags: template.tags, created_at: template.created_at }
+      }
+    })
+
+    assert.equal(result.compacted, true)
+    assert.equal(result.targets.length, 100)
+    assert.equal(result.consumed.length, 100)
+    assert.deepEqual((await queryResults(db, { ids: [deletions[100].id] })).map(e => e.id), [deletions[100].id])
+  })
+
   it('starts deletion compaction on a non-overlapping timer', async () => {
     const db = new NostrDb(`${OWNER}17`)
     let calls = 0

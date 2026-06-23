@@ -340,7 +340,7 @@ export class NostrDb {
   async compactDeletionRequests ({
     signEvent,
     author = this.ownerPubkey,
-    maxTargetRefs = 1000,
+    maxTargetRefs = DELETION_COMPACTION_MAX_TAGS,
     createdAt,
     signal
   } = {}) {
@@ -352,7 +352,7 @@ export class NostrDb {
     const db = await openNostrDb(this.ownerPubkey)
     if (!db) return compactResult()
 
-    const maxRefs = Number.isInteger(maxTargetRefs) && maxTargetRefs > 0 ? maxTargetRefs : 1000
+    const maxRefs = Number.isInteger(maxTargetRefs) && maxTargetRefs > 0 ? maxTargetRefs : DELETION_COMPACTION_MAX_TAGS
     let requests
     let infos
 
@@ -925,6 +925,8 @@ const KEY_GATED_GET_BATCH_SIZE = 64
 const APP_DELETE_BATCH_SIZE = 64
 const APP_EXPORT_BATCH_SIZE = 64
 const APP_EXPORT_MAX_BATCH_SIZE = 1000
+// Keep compacted kind 5 events publishable to relays with a 100-tag cap.
+const DELETION_COMPACTION_MAX_TAGS = 100
 
 function parseFilterInput (filterOrFilters, options = {}) {
   const rawFilters = normalizeFilterList(filterOrFilters)
