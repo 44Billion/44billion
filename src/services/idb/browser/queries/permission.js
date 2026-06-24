@@ -1,7 +1,7 @@
+import { permissionNamesForLookup } from '#helpers/window-message/browser/event-permissions.js'
 import { run } from '#services/idb/browser/index.js'
 
-export async function hasPermission (appId, name, eKind) {
-  if (!appId || !name || eKind == null) throw new Error('appId, name and eKind are required')
+async function hasPermissionForName (appId, name, eKind) {
   if (eKind === -1 /* wildcard */) {
     return run('get', [[appId, name, -1]], 'permissions').then(v => !!v.result)
   }
@@ -19,6 +19,14 @@ export async function hasPermission (appId, name, eKind) {
 
     Object.assign(p, Promise.withResolvers())
     cursor.continue(continueKey)
+  }
+  return false
+}
+
+export async function hasPermission (appId, name, eKind) {
+  if (!appId || !name || eKind == null) throw new Error('appId, name and eKind are required')
+  for (const lookupName of permissionNamesForLookup(name)) {
+    if (await hasPermissionForName(appId, lookupName, eKind)) return true
   }
   return false
 }

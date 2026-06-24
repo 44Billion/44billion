@@ -1,6 +1,6 @@
 import { /* handleMessageReply, */ tell, reply } from '../index.js'
 import { nostrDbStreamDonePayload } from '../nostrdb-protocol.js'
-import { createNostrDbSignEvent, runNostrDbMethod } from './nostrdb.js'
+import { createNostrDbSignEvent, createNostrDbSubscriptionAuthorizer, runNostrDbMethod } from './nostrdb.js'
 import { needsNip07Permission, nip07PermissionContext } from './nip07-permission-context.js'
 import { appIdToAddressObj, addressObjToAppId } from '#helpers/app.js'
 import { base36ToBase16 } from '#helpers/base36.js'
@@ -443,13 +443,20 @@ export async function initMessageListener (
         case 'NOSTRDB': {
           const { method, params = [], subscriptionId } = e.data.payload || {}
           const db = getNostrDb(userPkB16)
+          const appMetadata = await getAppMetadata(appId, appAddress, { timeoutMs: 0 })
           if (method === 'subscribe') {
+            const authorizer = createNostrDbSubscriptionAuthorizer({
+              app: appMetadata,
+              requestPermission,
+              params
+            })
             streamNostrDbSubscription(e, {
               db,
               params,
               subscriptionId,
               subscriptions: nostrDbSubscriptions,
-              appPagePort
+              appPagePort,
+              authorizer
             })
             break
           }
@@ -457,12 +464,20 @@ export async function initMessageListener (
             askNip07,
             askVault,
             pubkey: userPkB16,
-            app: () => getAppMetadata(appId, appAddress, { timeoutMs: 0 }),
+            app: appMetadata,
             isDefaultUser
           })
           try {
             reply(e, {
-              payload: await runNostrDbMethod({ db, method, params, appId, signEvent })
+              payload: await runNostrDbMethod({
+                db,
+                method,
+                params,
+                appId,
+                signEvent,
+                requestPermission,
+                app: appMetadata
+              })
             }, { to: appPagePort })
           } catch (error) {
             reply(e, { error }, { to: appPagePort })
@@ -592,7 +607,7 @@ function cancelNostrDbSubscription (subscriptions, subscriptionId) {
   const subscription = subscriptions.get(subscriptionId)
   if (!subscription) return
   subscription.cancelled = true
-  subscription.iterator.return?.()
+  subscription.iterator?.return?.()
 }
 
 function closeNostrDbSubscriptions (subscriptions) {
@@ -601,17 +616,23 @@ function closeNostrDbSubscriptions (subscriptions) {
   }
 }
 
-async function streamNostrDbSubscription (e, { db, params = [], subscriptionId, subscriptions, appPagePort }) {
+async function streamNostrDbSubscription (e, { db, params = [], subscriptionId, subscriptions, appPagePort, authorizer }) {
   let subscription
   try {
     if (!subscriptionId) throw new Error('NOSTRDB_SUBSCRIPTION_ID_REQUIRED')
     if (subscriptions.has(subscriptionId)) throw new Error('NOSTRDB_SUBSCRIPTION_EXISTS')
 
-    const iterator = db.subscribe(...(Array.isArray(params) ? params : []))
-    subscription = { iterator, cancelled: false }
+    subscription = { iterator: null, cancelled: false }
     subscriptions.set(subscriptionId, subscription)
 
+    await authorizer?.authorizeBeforeStart?.()
+    if (subscription.cancelled) return
+
+    const iterator = db.subscribe(...(Array.isArray(params) ? params : []))
+    subscription.iterator = iterator
+
     for await (const item of iterator) {
+      await authorizer?.authorizeItem?.(item)
       reply(e, { payload: item, isLast: false }, { to: appPagePort })
     }
     if (!subscription.cancelled) {
@@ -631,38 +652,25 @@ function handleNappRequest (e) {
   return reply(e, { error: new Error('Not implemented yet') })
 }
 
-const methodNameToPermissionName = {
-  signEvent: 'signEvent',
-  doubleSignEvent: 'signEvent',
-  nip04Encrypt: 'encrypt',
-  nip04Decrypt: 'decrypt',
-  nip44Encrypt: 'encrypt',
-  nip44Decrypt: 'decrypt',
-  nip44v3Encrypt: 'encrypt',
-  nip44v3Decrypt: 'decrypt',
-  nip44v3EncryptDoubleDH: 'encrypt',
-  nip44v3DecryptDoubleDH: 'decrypt'
-}
-function toPermissionName (method) {
-  return methodNameToPermissionName[method] ||
-    (() => { throw new Error(`Unknown method ${method}`) })()
-}
 export async function askNip07 (
   askVault, pubkey, { ns = [''], withSharedKey = null, method, params = [], context = '' }, { isDefaultUser, requestPermission, app } = {}
 ) {
   if (isDefaultUser) throw new Error('Please login')
   if (requestPermission && needsNip07Permission(method)) {
-    const { method: camelCaseMethod, eKind, scope } = nip07PermissionContext({ method, params })
+    const { permissions, scope } = nip07PermissionContext({ method, params })
+    if (!permissions.length) throw new Error(`Unknown method ${method}`)
 
-    await requestPermission({
-      app,
-      name: toPermissionName(camelCaseMethod),
-      eKind,
-      meta: {
-        params,
-        ...(scope === undefined ? {} : { scope })
-      }
-    })
+    for (const permission of permissions) {
+      await requestPermission({
+        app,
+        ...permission,
+        meta: {
+          params,
+          ...(scope === undefined ? {} : { scope }),
+          ...permission.meta
+        }
+      })
+    }
   }
 
   const { napp, ...appRest } = app

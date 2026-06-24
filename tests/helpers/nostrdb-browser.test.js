@@ -2,22 +2,35 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  BROAD_EVENT_KIND,
+  EVENT_READ_PERMISSION,
+  EVENT_WRITE_PERMISSION,
+  ONE_TIME_DELETE_PERMISSION
+} from '../../src/helpers/window-message/browser/event-permissions.js'
+import {
   buildNostrDbAddOptions,
   createNostrDbSignEvent,
+  createNostrDbSubscriptionAuthorizer,
+  explicitFilterKinds,
   nostrDbSignMethodForTemplate,
   runNostrDbMethod
 } from '../../src/helpers/window-message/browser/nostrdb.js'
 
 describe('nostrdb browser bridge helpers', () => {
-  it('forces add appId, mergeSource, and signEvent', async () => {
-    const event = { id: 'event' }
+  it('forces add appId, mergeSource, and signEvent after write permission', async () => {
+    const event = { id: 'event', kind: 1, tags: [] }
     const forcedSignEvent = async () => ({ id: 'signed' })
+    const calls = []
     let seen
     const db = {
       async add (addedEvent, options) {
+        calls.push('add')
         seen = { addedEvent, options }
         return { ok: true }
       }
+    }
+    const requestPermission = async req => {
+      calls.push(['permission', req.name, req.eKind])
     }
 
     assert.deepEqual(await runNostrDbMethod({
@@ -30,9 +43,12 @@ describe('nostrdb browser bridge helpers', () => {
         mergeReplaceable: false
       }],
       appId: 'real-app',
-      signEvent: forcedSignEvent
+      signEvent: forcedSignEvent,
+      requestPermission,
+      app: { id: 'app' }
     }), { ok: true })
 
+    assert.deepEqual(calls, [['permission', EVENT_WRITE_PERMISSION, 1], 'add'])
     assert.equal(seen.addedEvent, event)
     assert.equal(seen.options.appId, 'real-app')
     assert.equal(seen.options.mergeSource, 'local')
@@ -40,8 +56,35 @@ describe('nostrdb browser bridge helpers', () => {
     assert.equal(seen.options.mergeReplaceable, false)
   })
 
-  it('delegates query, count, and supports to the scoped db', async () => {
+  it('uses deletion target permissions for nostrdb add', async () => {
+    const seen = []
+    const db = { async add () { return { ok: true } } }
+    const requestPermission = async req => { seen.push([req.name, req.eKind, req.remember]) }
+
+    await runNostrDbMethod({
+      db,
+      method: 'add',
+      params: [{ kind: 5, tags: [['a', `30023:${'a'.repeat(64)}:article`]] }],
+      requestPermission,
+      app: { id: 'app' }
+    })
+    await runNostrDbMethod({
+      db,
+      method: 'add',
+      params: [{ kind: 5, tags: [['e', 'b'.repeat(64)]] }],
+      requestPermission,
+      app: { id: 'app' }
+    })
+
+    assert.deepEqual(seen, [
+      [EVENT_WRITE_PERMISSION, 30023, undefined],
+      [ONE_TIME_DELETE_PERMISSION, 5, false]
+    ])
+  })
+
+  it('delegates query, count, and supports with read permissions', async () => {
     const calls = []
+    const requestPermission = async req => { calls.push(['permission', req.name, req.eKind]) }
     const db = {
       async query (...args) {
         calls.push(['query', args])
@@ -57,13 +100,53 @@ describe('nostrdb browser bridge helpers', () => {
       }
     }
 
-    assert.deepEqual(await runNostrDbMethod({ db, method: 'query', params: [{ kinds: [1] }] }), { results: ['event'] })
-    assert.equal(await runNostrDbMethod({ db, method: 'count', params: [{ kinds: [1] }] }), 7)
+    assert.deepEqual(await runNostrDbMethod({
+      db,
+      method: 'query',
+      params: [{ kinds: [1] }],
+      requestPermission,
+      app: { id: 'app' }
+    }), { results: ['event'] })
+    assert.equal(await runNostrDbMethod({
+      db,
+      method: 'count',
+      params: [{ authors: ['a'.repeat(64)] }],
+      requestPermission,
+      app: { id: 'app' }
+    }), 7)
     assert.deepEqual(await runNostrDbMethod({ db, method: 'supports', params: [] }), ['search'])
     assert.deepEqual(calls, [
+      ['permission', EVENT_READ_PERMISSION, 1],
       ['query', [{ kinds: [1] }]],
-      ['count', [{ kinds: [1] }]],
+      ['permission', EVENT_READ_PERMISSION, BROAD_EVENT_KIND],
+      ['count', [{ authors: ['a'.repeat(64)] }]],
       ['supports', []]
+    ])
+  })
+
+  it('gates query results by returned kinds when filters do not declare kinds', async () => {
+    const seen = []
+    const db = {
+      async query () {
+        seen.push('query')
+        return { results: [{ kind: 1 }, { kind: 30023 }, 'id-only'] }
+      }
+    }
+    const requestPermission = async req => { seen.push([req.name, req.eKind]) }
+
+    await runNostrDbMethod({
+      db,
+      method: 'query',
+      params: [{ authors: ['a'.repeat(64)] }],
+      requestPermission,
+      app: { id: 'app' }
+    })
+
+    assert.deepEqual(seen, [
+      'query',
+      [EVENT_READ_PERMISSION, 1],
+      [EVENT_READ_PERMISSION, 30023],
+      [EVENT_READ_PERMISSION, BROAD_EVENT_KIND]
     ])
   })
 
@@ -72,6 +155,58 @@ describe('nostrdb browser bridge helpers', () => {
       () => runNostrDbMethod({ db: {}, method: 'deleteDb' }),
       /Unknown nostrdb method deleteDb/
     )
+  })
+
+  it('extracts explicit filter kinds only when every filter declares kinds', () => {
+    assert.deepEqual(explicitFilterKinds({ kinds: [2, 1, 2] }), [1, 2])
+    assert.deepEqual(explicitFilterKinds([{ kinds: [1] }, { kinds: [30023] }]), [1, 30023])
+    assert.equal(explicitFilterKinds([{ kinds: [1] }, { authors: ['a'.repeat(64)] }]), null)
+    assert.equal(explicitFilterKinds({ authors: ['a'.repeat(64)] }), null)
+  })
+
+  it('authorizes subscriptions before start or per streamed item', async () => {
+    const explicitCalls = []
+    const explicit = createNostrDbSubscriptionAuthorizer({
+      app: { id: 'app' },
+      requestPermission: async req => { explicitCalls.push([req.name, req.eKind]) },
+      params: [{ kinds: [1, 30023] }]
+    })
+    await explicit.authorizeBeforeStart()
+    await explicit.authorizeItem({ result: { kind: 1 } })
+    assert.deepEqual(explicitCalls, [
+      [EVENT_READ_PERMISSION, 1],
+      [EVENT_READ_PERMISSION, 30023]
+    ])
+
+    const dynamicCalls = []
+    const dynamic = createNostrDbSubscriptionAuthorizer({
+      app: { id: 'app' },
+      requestPermission: async req => { dynamicCalls.push([req.name, req.eKind]) },
+      params: [{ authors: ['a'.repeat(64)] }]
+    })
+    await dynamic.authorizeBeforeStart()
+    await dynamic.authorizeItem({ result: { kind: 1 } })
+    await dynamic.authorizeItem({ result: { kind: 1 } })
+    await dynamic.authorizeItem({ result: 'id-only' })
+    assert.deepEqual(dynamicCalls, [
+      [EVENT_READ_PERMISSION, 1],
+      [EVENT_READ_PERMISSION, BROAD_EVENT_KIND]
+    ])
+  })
+
+  it('propagates permission denial before nostrdb add', async () => {
+    let added = false
+    await assert.rejects(
+      () => runNostrDbMethod({
+        db: { async add () { added = true } },
+        method: 'add',
+        params: [{ kind: 1, tags: [] }],
+        requestPermission: async () => { throw new Error('Permission denied') },
+        app: { id: 'app' }
+      }),
+      /Permission denied/
+    )
+    assert.equal(added, false)
   })
 
   it('selects regular or double signing from the template imkc tag', async () => {

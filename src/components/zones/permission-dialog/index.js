@@ -2,6 +2,7 @@ import { f, useGlobalStore, useClosestStore, useStore, useCallback } from '#f'
 import '#f/components/f-to-signals.js'
 import '#shared/modal.js'
 import { hasPermission, createOrUpdatePermission } from '#services/idb/browser/queries/permission.js'
+import { BROAD_EVENT_KIND, EVENT_READ_PERMISSION, EVENT_WRITE_PERMISSION, ONE_TIME_DELETE_PERMISSION } from '#helpers/window-message/browser/event-permissions.js'
 import { cssStrings, cssClasses, cssVars, jsVars } from '#assets/styles/theme.js'
 import '#shared/app-icon.js'
 import '#shared/icons/icon-x.js'
@@ -21,14 +22,13 @@ f('permissionDialog', function () {
     queue$: [],
     getPermissionId (req) { return `${req.app.id}:${req.name}:${req.eKind ?? ''}` },
     isSingularPermission (req) {
-      return req.eKind == null || req.eKind === 5 || req.eKind === 62
+      return req.remember === false || req.eKind == null || (req.app.id && req.name === 'openApp')
     },
     addPermissionRequest (req) {
       this.queue$(v => {
         let duplicate
         if (
-          // can't deduplicate singular permissions
-          this.isSingularPermission(req) &&
+          !this.isSingularPermission(req) &&
           (duplicate = v.find(v2 => v2.id === req.id))
         ) {
           duplicate.promise.then(req.resolve).catch(req.reject)
@@ -92,7 +92,7 @@ f('permissionDialog', function () {
       }
     },
     async queryPermission (req) {
-      if (req.eKind == null || (req.app.id && req.name === 'openApp')) return false
+      if (this.isSingularPermission(req)) return false
       return hasPermission(req.app.id, req.name, req.eKind)
     },
     async requestPermission (req) {
@@ -103,7 +103,9 @@ f('permissionDialog', function () {
       this.addPermissionRequest({
         ...req,
         ...p,
-        id: this.getPermissionId(req)
+        id: this.isSingularPermission(req)
+          ? `${this.getPermissionId(req)}:${Date.now()}:${Math.random()}`
+          : this.getPermissionId(req)
       })
       return p.promise
     }
@@ -130,6 +132,7 @@ f('permissionDialogStack', function () {
       1: 'short text notes',
       3: 'follow lists',
       4: '(legacy) direct messages',
+      5: 'deletion requests',
       6: 'short text renotes',
       7: 'reactions',
       13: 'message seals',
@@ -139,6 +142,7 @@ f('permissionDialogStack', function () {
       20: 'pictures',
       21: 'videos',
       22: 'short vertical videos',
+      62: 'delete-all requests',
       263: 'private-channel router rows',
       1018: 'poll responses',
       1059: 'recipient directions',
@@ -175,18 +179,19 @@ f('permissionDialogStack', function () {
     },
     getEKindToText (kind, name) {
       if (name === 'readProfile') return 'your profile'
+      if (kind === BROAD_EVENT_KIND) return 'all app data'
       let result = this.eKindToText[kind]
       if (!result) {
-        if (kind == null) result = 'an item'
-        else result = `kind ${kind} items`
+        if (kind == null) result = 'app data'
+        else result = `app data type ${kind}`
       }
       return result
     },
     nameToText: {
       readProfile: 'read',
-      signEvent: 'publish',
-      encrypt: 'encrypt',
-      decrypt: 'decrypt',
+      [EVENT_READ_PERMISSION]: 'read',
+      [EVENT_WRITE_PERMISSION]: 'read and write',
+      [ONE_TIME_DELETE_PERMISSION]: 'delete',
       openApp: 'open'
     },
     getNameToText (name) {
@@ -208,14 +213,16 @@ f('permissionDialogStack', function () {
     getPemissionText (name, eKind, meta) {
       let dynText
       if (eKind === 22242) dynText = 'access content that needs login'
-      else if (eKind === 5) {
+      else if (name === ONE_TIME_DELETE_PERMISSION && eKind === 5) {
         const event = meta?.params?.[0]
         if (!event) throw new Error('Missing event parameter for eKind 5 permission')
 
         const deleteTags = ['e', 'a']
         const deleteCount = event.tags.filter(t => deleteTags.includes(t[0])).length || 1
         dynText = `delete ${deleteCount} ${deleteCount === 1 ? 'item' : 'items'}`
-      } else if (eKind === 62) {
+      } else if (name === ONE_TIME_DELETE_PERMISSION && eKind === 62) {
+        const event = meta?.params?.[0]
+        if (!event) throw new Error('Missing event parameter for eKind 62 permission')
         const relayTags = event.tags.filter(t => t[0] === 'relay')
         const relayCount = relayTags.some(v => v === 'ALL_RELAYS')
           ? Infinity
