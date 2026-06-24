@@ -32,11 +32,11 @@ export function buildCrdtMergeTemplate (incoming, existing, options = {}) {
     if (action.type === 'delete') tombstones.push(action)
   }
 
-  normalTags.sort(compareNormalTagOrder(existingState, incomingState))
+  const orderedNormalTags = orderNormalTags(normalTags, existingState, incomingState)
   tombstones.sort(compareTombstones)
 
   const tags = [
-    ...normalTags.map(action => cloneTag(action.tag)),
+    ...orderedNormalTags.map(action => cloneTag(action.tag)),
     [CONTENT_U_AT_TAG, String(content.timestamp)],
     ...tombstones.slice(0, config.maxTombstoneTags).map(action => cloneTag(action.tag))
   ]
@@ -329,20 +329,92 @@ function winningAction (a, b) {
   return a.payload >= b.payload ? a : b
 }
 
-function compareNormalTagOrder (existingState, incomingState) {
-  return (a, b) => compareOrder(orderRank(a.key, existingState, incomingState), orderRank(b.key, existingState, incomingState))
+function orderNormalTags (actions, existingState, incomingState) {
+  const byKey = new Map(actions.map(action => [action.key, action]))
+  const existingKeys = orderedKeys(existingState, byKey)
+  const incomingKeys = orderedKeys(incomingState, byKey)
+  const incomingKeySet = new Set(incomingKeys)
+  const existingKeySet = new Set(existingKeys)
+  const anchors = existingKeys.filter(key => incomingKeySet.has(key))
+  const emitted = new Set()
+  const output = []
+
+  if (anchors.length === 0) {
+    pushWoven(output, emitted, existingKeys, incomingKeys, byKey)
+    return output
+  }
+
+  const existingSegments = segmentExistingKeys(existingKeys, anchors, incomingKeySet)
+  const incomingSegments = segmentIncomingKeys(incomingKeys, anchors, existingKeySet)
+
+  for (let index = 0; index <= anchors.length; index++) {
+    pushWoven(output, emitted, existingSegments[index], incomingSegments[index], byKey)
+    if (index < anchors.length) pushAction(output, emitted, anchors[index], byKey)
+  }
+
+  return output
 }
 
-function orderRank (key, existingState, incomingState) {
-  if (existingState.order.has(key)) return [0, existingState.order.get(key)]
-  if (incomingState.order.has(key)) return [1, incomingState.order.get(key)]
-  return [2, key]
+function orderedKeys (state, byKey) {
+  return [...state.order.entries()]
+    .filter(([key]) => byKey.has(key))
+    .sort((a, b) => a[1] - b[1])
+    .map(([key]) => key)
 }
 
-function compareOrder (a, b) {
-  if (a[0] !== b[0]) return a[0] - b[0]
-  if (a[1] === b[1]) return 0
-  return a[1] < b[1] ? -1 : 1
+function segmentExistingKeys (keys, anchors, incomingKeySet) {
+  const anchorIndexes = new Map(anchors.map((key, index) => [key, index]))
+  const segments = emptySegments(anchors.length + 1)
+  let segment = 0
+
+  for (const key of keys) {
+    if (anchorIndexes.has(key)) {
+      segment = anchorIndexes.get(key) + 1
+    } else if (!incomingKeySet.has(key)) {
+      segments[segment].push(key)
+    }
+  }
+
+  return segments
+}
+
+function segmentIncomingKeys (keys, anchors, existingKeySet) {
+  const anchorIndexes = new Map(anchors.map((key, index) => [key, index]))
+  const segments = emptySegments(anchors.length + 1)
+  let segment = 0
+
+  for (const key of keys) {
+    if (anchorIndexes.has(key)) {
+      segment = Math.max(segment, anchorIndexes.get(key) + 1)
+    } else if (!existingKeySet.has(key)) {
+      segments[segment].push(key)
+    }
+  }
+
+  return segments
+}
+
+function emptySegments (length) {
+  return Array.from({ length }, () => [])
+}
+
+function pushWoven (output, emitted, existingKeys, incomingKeys, byKey) {
+  const length = Math.max(existingKeys.length, incomingKeys.length)
+
+  for (let index = 0; index < length; index++) {
+    pushAction(output, emitted, existingKeys[index], byKey)
+    pushAction(output, emitted, incomingKeys[index], byKey)
+  }
+}
+
+function pushAction (output, emitted, key, byKey) {
+  if (!key || emitted.has(key)) return
+
+  const action = byKey.get(key)
+  if (!action) return
+
+  emitted.add(key)
+  output.push(action)
 }
 
 function compareTombstones (a, b) {

@@ -431,6 +431,64 @@ describe('nostrdb', () => {
     })
   })
 
+  it('interleaves CRDT normal tag order while leaving content and tombstones last', async () => {
+    assert.deepEqual(await mergedTagOrder({
+      owner: hexId(30009),
+      oldTags: [
+        ['x', 'A', 'u@ 10'],
+        ['x', 'B', 'u@ 30'],
+        ['x', 'C', 'u@ 30'],
+        ['x', 'D', 'u@ 10']
+      ],
+      incomingTags: [['x', 'A'], ['x', 'X'], ['x', 'Y'], ['x', 'D']]
+    }), [
+      ['x', 'A', 'u@ 20'],
+      ['x', 'B', 'u@ 30'],
+      ['x', 'X', 'u@ 20'],
+      ['x', 'C', 'u@ 30'],
+      ['x', 'Y', 'u@ 20'],
+      ['x', 'D', 'u@ 20'],
+      ['u@', '20']
+    ])
+
+    assert.deepEqual(await mergedTagOrder({
+      owner: hexId(30010),
+      oldTags: [['x', 'A', 'u@ 30'], ['x', 'B', 'u@ 10'], ['x', 'C', 'u@ 30']],
+      incomingTags: [['x', 'X'], ['x', 'B'], ['x', 'Y']]
+    }), [
+      ['x', 'A', 'u@ 30'],
+      ['x', 'X', 'u@ 20'],
+      ['x', 'B', 'u@ 20'],
+      ['x', 'C', 'u@ 30'],
+      ['x', 'Y', 'u@ 20'],
+      ['u@', '20']
+    ])
+
+    assert.deepEqual(await mergedTagOrder({
+      owner: hexId(30011),
+      oldTags: [['x', 'A', 'u@ 30'], ['x', 'B', 'u@ 30'], ['x', 'C', 'u@ 30']],
+      incomingTags: [['x', 'X'], ['x', 'Y']]
+    }), [
+      ['x', 'A', 'u@ 30'],
+      ['x', 'X', 'u@ 20'],
+      ['x', 'B', 'u@ 30'],
+      ['x', 'Y', 'u@ 20'],
+      ['x', 'C', 'u@ 30'],
+      ['u@', '20']
+    ])
+
+    assert.deepEqual(await mergedTagOrder({
+      owner: hexId(30012),
+      oldTags: [['x', 'A', 'u@ 30'], ['x', 'B', 'u@ 10']],
+      incomingTags: [['x', 'X']]
+    }), [
+      ['x', 'A', 'u@ 30'],
+      ['x', 'X', 'u@ 20'],
+      ['u@', '20'],
+      ['zz', 'x^B', 'u@ 20:0:1']
+    ])
+  })
+
   it('merges replaceable fields and records deleted tags as tombstones', async () => {
     const owner = hexId(30001)
     const db = getNostrDb(owner)
@@ -2354,6 +2412,35 @@ function signedFromTemplate (template, { id, pubkey = template.pubkey }) {
 
 function cloneJson (value) {
   return JSON.parse(JSON.stringify(value))
+}
+
+async function mergedTagOrder ({ owner, oldTags, incomingTags }) {
+  const db = getNostrDb(owner)
+  const old = event({
+    id: hexId(1),
+    pubkey: owner,
+    kind: 0,
+    created_at: 10,
+    tags: oldTags
+  })
+  const incoming = event({
+    id: hexId(2),
+    pubkey: owner,
+    kind: 0,
+    created_at: 20,
+    tags: incomingTags
+  })
+  let seenTemplate
+
+  assertAddOk(await db.add(old))
+  assertAddOk(await db.add(incoming, {
+    signEvent: template => {
+      seenTemplate = cloneJson(template)
+      return signedFromTemplate(template, { id: hexId(3), pubkey: owner })
+    }
+  }), { code: 'replaced', stored: true })
+
+  return seenTemplate.tags
 }
 
 function event ({
