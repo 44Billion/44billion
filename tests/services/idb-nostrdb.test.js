@@ -344,6 +344,64 @@ describe('nostrdb', () => {
     assert.deepEqual((await queryResults(db, { ids: [hexId(2)] })).map(event => event.id), [hexId(2)])
   })
 
+  it('accepts double-signed CRDT merge results with only an imkc rewrite', async () => {
+    const owner = hexId(30021)
+    const db = getNostrDb(owner)
+    const input = event({
+      id: hexId(1),
+      pubkey: owner,
+      kind: 30023,
+      created_at: 10,
+      tags: [['d', 'post'], ['imkc', B, 'old-proof'], ['p', C]],
+      content: 'double'
+    })
+    let seenTemplate
+
+    const result = await db.add(input, {
+      signEvent: template => {
+        seenTemplate = cloneJson(template)
+        return signedFromTemplate({
+          ...template,
+          tags: template.tags.map(tag => tag[0] === 'imkc'
+            ? ['imkc', C, '1'.repeat(128)]
+            : [...tag])
+        }, { id: hexId(2), pubkey: owner })
+      }
+    })
+
+    assertAddOk(result, { code: 'stored', stored: true, published: true })
+    assert.equal(result.merged, true)
+    assert.equal(seenTemplate.tags.filter(tag => tag[0] === 'imkc').length, 1)
+    const [stored] = await queryResults(db, { ids: [hexId(2)] })
+    assert.deepEqual(stored.tags.find(tag => tag[0] === 'imkc'), ['imkc', C, '1'.repeat(128)])
+  })
+
+  it('rejects CRDT merge signatures with unexpected non-imkc tag rewrites', async () => {
+    const owner = hexId(30022)
+    const db = getNostrDb(owner)
+    const input = event({
+      id: hexId(1),
+      pubkey: owner,
+      kind: 30023,
+      created_at: 10,
+      tags: [['d', 'post'], ['imkc', B, 'old-proof'], ['p', C]],
+      content: 'double'
+    })
+
+    const result = await db.add(input, {
+      signEvent: template => signedFromTemplate({
+        ...template,
+        tags: template.tags.map(tag => tag[0] === 'p' ? ['p', B, tag.at(-1)] : [...tag])
+      }, { id: hexId(2), pubkey: owner })
+    })
+
+    assertAddOk(result, { code: 'stored', stored: true, published: true })
+    assert.equal(result.merged, undefined)
+    assert.equal(result.storedId, undefined)
+    assert.deepEqual((await queryResults(db, { ids: [hexId(2)] })).map(event => event.id), [])
+    assert.deepEqual((await queryResults(db, { ids: [input.id] })).map(event => event.id), [input.id])
+  })
+
   it('uses only canonical CRDT metadata and treats old u@ strings as ordinary values', async () => {
     const owner = hexId(30020)
     const db = getNostrDb(owner)

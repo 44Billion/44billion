@@ -1,10 +1,13 @@
 import { /* handleMessageReply, */ tell, reply } from '../index.js'
+import { nostrDbStreamDonePayload } from '../nostrdb-protocol.js'
+import { createNostrDbSignEvent, runNostrDbMethod } from './nostrdb.js'
 import { needsNip07Permission, nip07PermissionContext } from './nip07-permission-context.js'
 import { appIdToAddressObj, addressObjToAppId } from '#helpers/app.js'
 import { base36ToBase16 } from '#helpers/base36.js'
 import { base16ToBase62 } from '#helpers/base62.js'
 import { appEncode, appDecode } from '#helpers/nip19.js'
 import { streamFileChunksFromDb, getFileChunksFromDb, deleteFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
+import { getNostrDb } from '#services/idb/nostrdb/index.js'
 import AppFileManager from '#services/app-file-manager/index.js'
 import { setWebStorageItem } from '#hooks/use-web-storage.js'
 import { decode } from '#services/base93-decoder.js'
@@ -77,6 +80,7 @@ export async function initMessageListener (
 
   let currentTrustedAppPagePort = null
   let currentAppPagePort = null
+  const nostrDbSubscriptions = new Map()
   // Setup cleanup
   componentSignal?.addEventListener('abort', () => {
     if (currentTrustedAppPagePort) {
@@ -87,6 +91,7 @@ export async function initMessageListener (
       currentAppPagePort.close()
       currentAppPagePort = null
     }
+    closeNostrDbSubscriptions(nostrDbSubscriptions)
   }, { once: true })
 
   let ac
@@ -435,6 +440,39 @@ export async function initMessageListener (
           reply(e, msg, { to: appPagePort })
           break
         }
+        case 'NOSTRDB': {
+          const { method, params = [], subscriptionId } = e.data.payload || {}
+          const db = getNostrDb(userPkB16)
+          if (method === 'subscribe') {
+            streamNostrDbSubscription(e, {
+              db,
+              params,
+              subscriptionId,
+              subscriptions: nostrDbSubscriptions,
+              appPagePort
+            })
+            break
+          }
+          const signEvent = createNostrDbSignEvent({
+            askNip07,
+            askVault,
+            pubkey: userPkB16,
+            app: () => getAppMetadata(appId, appAddress, { timeoutMs: 0 }),
+            isDefaultUser
+          })
+          try {
+            reply(e, {
+              payload: await runNostrDbMethod({ db, method, params, appId, signEvent })
+            }, { to: appPagePort })
+          } catch (error) {
+            reply(e, { error }, { to: appPagePort })
+          }
+          break
+        }
+        case 'NOSTRDB_CANCEL': {
+          cancelNostrDbSubscription(nostrDbSubscriptions, e.data.payload?.subscriptionId)
+          break
+        }
         // window.napp extras
         case 'WINDOW_NAPP': {
           handleNappRequest(e)
@@ -550,6 +588,45 @@ export async function initMessageListener (
   }
 }
 
+function cancelNostrDbSubscription (subscriptions, subscriptionId) {
+  const subscription = subscriptions.get(subscriptionId)
+  if (!subscription) return
+  subscription.cancelled = true
+  subscription.iterator.return?.()
+}
+
+function closeNostrDbSubscriptions (subscriptions) {
+  for (const subscriptionId of subscriptions.keys()) {
+    cancelNostrDbSubscription(subscriptions, subscriptionId)
+  }
+}
+
+async function streamNostrDbSubscription (e, { db, params = [], subscriptionId, subscriptions, appPagePort }) {
+  let subscription
+  try {
+    if (!subscriptionId) throw new Error('NOSTRDB_SUBSCRIPTION_ID_REQUIRED')
+    if (subscriptions.has(subscriptionId)) throw new Error('NOSTRDB_SUBSCRIPTION_EXISTS')
+
+    const iterator = db.subscribe(...(Array.isArray(params) ? params : []))
+    subscription = { iterator, cancelled: false }
+    subscriptions.set(subscriptionId, subscription)
+
+    for await (const item of iterator) {
+      reply(e, { payload: item, isLast: false }, { to: appPagePort })
+    }
+    if (!subscription.cancelled) {
+      reply(e, {
+        payload: nostrDbStreamDonePayload(subscriptionId),
+        isLast: true
+      }, { to: appPagePort })
+    }
+  } catch (error) {
+    if (!subscription?.cancelled) reply(e, { error, isLast: true }, { to: appPagePort })
+  } finally {
+    if (subscriptions.get(subscriptionId) === subscription) subscriptions.delete(subscriptionId)
+  }
+}
+
 function handleNappRequest (e) {
   return reply(e, { error: new Error('Not implemented yet') })
 }
@@ -571,7 +648,7 @@ function toPermissionName (method) {
     (() => { throw new Error(`Unknown method ${method}`) })()
 }
 export async function askNip07 (
-  askVault, pubkey, { ns = [''], withSharedKey = null, method, params = [] }, { isDefaultUser, requestPermission, app } = {}
+  askVault, pubkey, { ns = [''], withSharedKey = null, method, params = [], context = '' }, { isDefaultUser, requestPermission, app } = {}
 ) {
   if (isDefaultUser) throw new Error('Please login')
   if (requestPermission && needsNip07Permission(method)) {
@@ -600,7 +677,8 @@ export async function askNip07 (
       ns, // [name, ...optionalArgs]
       ...(withSharedKey ? { with_shared_key: withSharedKey } : {}),
       method,
-      params
+      params,
+      ...(context ? { context } : {})
     }
   }
   return askVault(msg, { timeout: 120000 })

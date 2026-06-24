@@ -2138,7 +2138,7 @@ function isValidCrdtSignedEvent (signed, template, expectedAddress, ownerPubkey)
   if (signed.kind !== template.kind) return false
   if (signed.created_at !== template.created_at) return false
   if (signed.content !== template.content) return false
-  if (!sameTags(signed.tags, template.tags)) return false
+  if (!sameTags(signed.tags, template.tags) && !sameTagsAllowingImkcRewrite(signed.tags, template.tags)) return false
 
   const coordinate = getCoordinate(signed)
   if (coordinate === null) return false
@@ -2832,11 +2832,42 @@ function isBinaryKey (value) {
 function sameTags (a, b) {
   if (!Array.isArray(a) || a.length !== b.length) return false
 
-  return a.every((tag, index) => (
-    Array.isArray(tag) &&
-    tag.length === b[index].length &&
-    tag.every((value, valueIndex) => value === b[index][valueIndex])
-  ))
+  return a.every((tag, index) => sameTag(tag, b[index]))
+}
+
+function sameTag (a, b) {
+  return Array.isArray(a) &&
+    Array.isArray(b) &&
+    a.length === b.length &&
+    a.every((value, valueIndex) => value === b[valueIndex])
+}
+
+function imkcTagIndexes (tags) {
+  if (!Array.isArray(tags)) return []
+  return tags
+    .map((tag, index) => Array.isArray(tag) && tag[0] === 'imkc' ? index : -1)
+    .filter(index => index >= 0)
+}
+
+function isExpectedDoubleSignedImkcTag (tag) {
+  return Array.isArray(tag) &&
+    tag.length === 3 &&
+    tag[0] === 'imkc' &&
+    HEX64_RE.test(tag[1] || '') &&
+    SIG_RE.test(tag[2] || '')
+}
+
+function sameTagsAllowingImkcRewrite (signedTags, templateTags) {
+  if (!Array.isArray(signedTags) || !Array.isArray(templateTags) || signedTags.length !== templateTags.length) return false
+  const signedImkcIndexes = imkcTagIndexes(signedTags)
+  const templateImkcIndexes = imkcTagIndexes(templateTags)
+  if (signedImkcIndexes.length !== 1 || templateImkcIndexes.length !== 1) return false
+  if (signedImkcIndexes[0] !== templateImkcIndexes[0]) return false
+
+  return signedTags.every((tag, index) => {
+    if (index === signedImkcIndexes[0]) return isExpectedDoubleSignedImkcTag(tag)
+    return sameTag(tag, templateTags[index])
+  })
 }
 
 function compactResult ({

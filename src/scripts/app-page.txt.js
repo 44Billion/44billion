@@ -1,10 +1,12 @@
 import { tell, ask } from '#helpers/window-message/index.js'
+import { createNostrDb } from '#helpers/window-message/nostrdb-client.js'
 
 // ERROR: Top-level await is currently not supported with the "iife" output format [plugin js-text]
 // https://github.com/evanw/esbuild/issues/253
 (async () => {
   const p = Promise.withResolvers()
   injectNip07(p.promise) // first thing
+  injectNostrDb(p.promise)
   interceptNavigations(p.promise)
   tellParentImReady(p)
   await preventSwUsage()
@@ -54,6 +56,10 @@ function tellParentImReady (p) {
   }, { once: true })
   browserPort.start()
   tell(window.parent, readyMsg, { targetOrigin: '*', transfer: [appPagePortForBrowser] })
+}
+
+function injectNostrDb (promise) {
+  Object.assign(window, { nostrdb: createNostrDb(promise) })
 }
 
 function injectNip07 (promise) {
