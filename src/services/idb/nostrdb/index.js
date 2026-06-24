@@ -214,11 +214,14 @@ export class NostrDb {
 
   // Public ingest path. Valid transient events reach live subscribers, and
   // durable events may first be CRDT-merged/signed for local owner-authored
-  // coordinates before addEvent() persists them and add() publishes them.
+  // coordinates before addEvent() persists them and add() publishes them. Pass
+  // mergeSource: 'sync' when merging versions received from another local DB so
+  // the CRDT layer uses deterministic ordering instead of authoring-time order.
   async add (event, {
     appId,
     signEvent,
     mergeReplaceable,
+    mergeSource,
     tagIdentity,
     tombstoneGraceSeconds,
     maxTombstoneTags,
@@ -243,10 +246,12 @@ export class NostrDb {
     }
 
     let eventToStore = event
+    const crdtMergeSource = normalizeCrdtMergeSource(mergeSource)
     const shouldMergeReplaceable = mergeReplaceable ?? (typeof signEvent === 'function' && event.pubkey === this.ownerPubkey)
     const mergedEvent = shouldMergeReplaceable
       ? await this.signMergedReplaceableEvent(event, {
         signEvent,
+        mergeSource: crdtMergeSource,
         tagIdentity,
         tombstoneGraceSeconds,
         maxTombstoneTags,
@@ -257,7 +262,12 @@ export class NostrDb {
 
     if (mergedEvent) eventToStore = mergedEvent
 
-    const result = await this.addEvent(eventToStore, { now, appRef, log: false })
+    const result = await this.addEvent(eventToStore, {
+      now,
+      appRef,
+      forceCoordinateReplace: !!mergedEvent && crdtMergeSource === 'sync',
+      log: false
+    })
     if (mergedEvent && result.stored && (result.code === 'stored' || result.code === 'replaced')) {
       result.merged = true
       result.inputId = event.id
@@ -272,6 +282,7 @@ export class NostrDb {
 
   async signMergedReplaceableEvent (event, {
     signEvent,
+    mergeSource,
     tagIdentity,
     tombstoneGraceSeconds,
     maxTombstoneTags,
@@ -296,6 +307,7 @@ export class NostrDb {
         tombstoneGraceSeconds,
         maxTombstoneTags,
         tombstoneTagName,
+        mergeSource,
         now
       })
       if (!template) return null
@@ -319,6 +331,7 @@ export class NostrDb {
     appRef = normalizeOptionalAppRef(appId),
     consumeDeletionRequestIds = [],
     now = currentUnixTime(),
+    forceCoordinateReplace = false,
     log = true
   } = {}) {
     if (!isValidEventShape(event)) {
@@ -367,7 +380,7 @@ export class NostrDb {
         const existingByAddress = await run('get', [record.a], EVENTS_STORE, INDEX.address, { db, tx })
           .then(v => v.result)
 
-        if (existingByAddress && !isNewer(event, existingByAddress.event)) {
+        if (existingByAddress && !forceCoordinateReplace && !isNewer(event, existingByAddress.event)) {
           const changed = mergeAppRef(existingByAddress, appRef)
           if (changed) await run('put', [existingByAddress], EVENTS_STORE, null, { db, tx })
           await done
@@ -1842,7 +1855,7 @@ function createSubscription (filters, {
   idsOnly = false,
   limit = Infinity,
   ownerPubkey,
-  scheduled = false
+  scheduled = true
 } = {}) {
   const queue = []
   const waiters = []
@@ -2135,6 +2148,10 @@ function isValidCrdtSignedEvent (signed, template, expectedAddress, ownerPubkey)
 
 function sameStoredVersion (a, b) {
   return (a?.i ?? null) === (b?.i ?? null)
+}
+
+function normalizeCrdtMergeSource (mergeSource) {
+  return mergeSource === 'sync' ? 'sync' : 'local'
 }
 
 // Assign a monotonic millisecond sync anchor for local DB sync: prefer the
