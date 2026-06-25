@@ -3,9 +3,9 @@ import useWebStorage from '#hooks/use-web-storage.js'
 import { tell, ask, reply } from '#helpers/window-message/index.js'
 import { setAccountsState } from '#zones/screen/use-init-or-reset-screen.js'
 import {
-  accountPubkeysFromVaultAccounts,
   cancelTrustedVaultNostrDbSubscription,
   closeTrustedVaultNostrDbSubscriptions,
+  pruneNostrDbsForVaultAccounts,
   runTrustedVaultNostrDbMethod,
   streamTrustedVaultNostrDbSubscription
 } from '#helpers/window-message/browser/vault-nostrdb.js'
@@ -268,7 +268,6 @@ function initMessageListener ({
   vaultModalStore
 }) {
   let currentVaultPort = null
-  let vaultAccountPubkeys = new Set()
   const vaultNostrDbSubscriptions = new Map()
   // Setup cleanup
   componentSignal?.addEventListener('abort', () => {
@@ -278,12 +277,11 @@ function initMessageListener ({
       _activeVaultPort = null
       _pendingVaultMessages.length = 0
       closeTrustedVaultNostrDbSubscriptions(vaultNostrDbSubscriptions)
-      vaultAccountPubkeys = new Set()
     }
   }, { once: true })
 
   let ac
-  window.addEventListener('message', e => {
+  window.addEventListener('message', async e => {
     if (
       e.data.code !== 'VAULT_READY' ||
       e.source !== vaultIframe.contentWindow ||
@@ -291,13 +289,8 @@ function initMessageListener ({
       !e.ports[0]
     ) return
 
-    if (!e.data.payload.accounts) {
-      console.log('Missing account data on vault startup')
-      vaultAccountPubkeys = new Set()
-    } else {
-      setAccountsState(e.data.payload.accounts, storage, tabStorage)
-      vaultAccountPubkeys = accountPubkeysFromVaultAccounts(e.data.payload.accounts)
-    }
+    if (!e.data.payload.accounts) console.log('Missing account data on vault startup')
+    else await applyVaultAccountsState(e.data.payload.accounts)
 
     // vault iframe's page may reload on sw controller change (and send a new 'VAULT_READY' msg)
     ac?.abort()
@@ -317,6 +310,15 @@ function initMessageListener ({
     vaultPort$(currentVaultPort)
   }, { signal: componentSignal })
 
+  async function applyVaultAccountsState (accounts) {
+    try {
+      await pruneNostrDbsForVaultAccounts(accounts)
+    } catch (err) {
+      console.warn('Failed to prune stale NostrDB databases', err)
+    }
+    setAccountsState(accounts, storage, tabStorage)
+  }
+
   function listenToVaultMessages ({ vaultPort, signal }) {
     vaultPort.addEventListener('message', async e => {
       switch (e.data.code) {
@@ -331,11 +333,9 @@ function initMessageListener ({
         case 'SET_ACCOUNTS_STATE': {
           if (!e.data.payload.accounts) {
             console.log('Missing account data on vault message')
-            vaultAccountPubkeys = new Set()
             break
           }
-          setAccountsState(e.data.payload.accounts, storage, tabStorage)
-          vaultAccountPubkeys = accountPubkeysFromVaultAccounts(e.data.payload.accounts)
+          await applyVaultAccountsState(e.data.payload.accounts)
           break
         }
         case 'NOSTRDB': {
@@ -346,7 +346,6 @@ function initMessageListener ({
               ownerPubkey,
               params,
               subscriptionId,
-              allowedPubkeys: vaultAccountPubkeys,
               subscriptions: vaultNostrDbSubscriptions
             })
             break
@@ -357,8 +356,7 @@ function initMessageListener ({
                 vaultPort,
                 ownerPubkey,
                 method,
-                params,
-                allowedPubkeys: vaultAccountPubkeys
+                params
               })
             }, { to: vaultPort })
           } catch (error) {

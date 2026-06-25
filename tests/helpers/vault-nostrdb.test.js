@@ -4,25 +4,14 @@ import assert from 'node:assert/strict'
 globalThis.IS_DEVELOPMENT = true
 
 const {
-  accountPubkeysFromVaultAccounts,
   cancelTrustedVaultNostrDbSubscription,
   createTrustedVaultNostrDbSignEvent,
+  pruneNostrDbsForVaultAccounts,
   runTrustedVaultNostrDbMethod,
   streamTrustedVaultNostrDbSubscription
 } = await import('../../src/helpers/window-message/browser/vault-nostrdb.js')
 
 describe('trusted vault nostrdb bridge helpers', () => {
-  it('extracts vault account pubkeys for owner validation', () => {
-    assert.deepEqual(
-      [...accountPubkeysFromVaultAccounts([
-        { pubkey: 'A'.repeat(64) },
-        { pubkey: 'not-a-pubkey' },
-        null
-      ])],
-      ['a'.repeat(64)]
-    )
-  })
-
   it('runs app-neutral one-shot methods for vault-selected owners', async () => {
     const ownerPubkey = 'b'.repeat(64)
     const event = { kind: 1, tags: [] }
@@ -37,7 +26,6 @@ describe('trusted vault nostrdb bridge helpers', () => {
     assert.deepEqual(await runTrustedVaultNostrDbMethod({
       vaultPort: 'vault-port',
       ownerPubkey,
-      allowedPubkeys: new Set([ownerPubkey]),
       getNostrDb: pubkey => {
         assert.equal(pubkey, ownerPubkey)
         return db
@@ -59,17 +47,28 @@ describe('trusted vault nostrdb bridge helpers', () => {
     assert.equal(seen.options.mergeReplaceable, false)
   })
 
-  it('rejects owners not advertised by the vault', async () => {
-    await assert.rejects(
-      () => runTrustedVaultNostrDbMethod({
-        vaultPort: 'vault-port',
-        ownerPubkey: 'c'.repeat(64),
-        allowedPubkeys: new Set(['d'.repeat(64)]),
-        getNostrDb: () => ({ async supports () {} }),
-        method: 'supports'
-      }),
-      /NOSTRDB_OWNER_NOT_AVAILABLE/
-    )
+  it('prunes nostrdb databases for accounts no longer advertised by the vault', async () => {
+    const deleted = []
+    assert.deepEqual(await pruneNostrDbsForVaultAccounts([
+      { pubkey: 'a'.repeat(64) },
+      { pubkey: 'B'.repeat(64) }
+    ], {
+      indexedDB: {
+        async databases () {
+          return [
+            { name: `44billion_nostrdb:${'a'.repeat(64)}` },
+            { name: `44billion_nostrdb:${'b'.repeat(64)}` },
+            { name: `44billion_nostrdb:${'c'.repeat(64)}` },
+            { name: 'other-db' }
+          ]
+        }
+      },
+      deleteNostrDb: async pubkey => {
+        deleted.push(pubkey)
+        return true
+      }
+    }), ['c'.repeat(64)])
+    assert.deepEqual(deleted, ['c'.repeat(64)])
   })
 
   it('uses permissionless vault signing with nostrdb merge context', async () => {
@@ -110,7 +109,6 @@ describe('trusted vault nostrdb bridge helpers', () => {
       ownerPubkey,
       params: [{ kinds: [1] }],
       subscriptionId: 'sub-1',
-      allowedPubkeys: new Set([ownerPubkey]),
       subscriptions,
       getNostrDb: pubkey => {
         assert.equal(pubkey, ownerPubkey)

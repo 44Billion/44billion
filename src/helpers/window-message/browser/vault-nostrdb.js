@@ -1,6 +1,10 @@
 import { ask as defaultAsk, reply as defaultReply } from '../index.js'
 import { nostrDbStreamDonePayload } from '../nostrdb-protocol.js'
-import { getNostrDb as defaultGetNostrDb } from '#services/idb/nostrdb/index.js'
+import {
+  deleteNostrDb as defaultDeleteNostrDb,
+  getNostrDb as defaultGetNostrDb,
+  NOSTRDB_PREFIX
+} from '#services/idb/nostrdb/index.js'
 import { nostrDbSignMethodForTemplate, runNostrDbMethod } from './nostrdb.js'
 
 const HEX32 = /^[0-9a-f]{64}$/i
@@ -11,16 +15,40 @@ function normalizePubkey (value) {
   return HEX32.test(pubkey) ? pubkey : ''
 }
 
-export function accountPubkeysFromVaultAccounts (accounts) {
+function accountPubkeysFromVaultAccounts (accounts) {
   return new Set((Array.isArray(accounts) ? accounts : [])
     .map(account => normalizePubkey(account?.pubkey))
     .filter(Boolean))
 }
 
-export function assertTrustedVaultNostrDbOwner (ownerPubkey, allowedPubkeys) {
+export async function pruneNostrDbsForVaultAccounts (accounts, {
+  indexedDB = globalThis.indexedDB,
+  deleteNostrDb = defaultDeleteNostrDb
+} = {}) {
+  if (typeof indexedDB?.databases !== 'function') return []
+
+  const keepPubkeys = accountPubkeysFromVaultAccounts(accounts)
+  let databases
+  try {
+    databases = await indexedDB.databases()
+  } catch {
+    return []
+  }
+
+  const deleted = []
+  for (const database of Array.isArray(databases) ? databases : []) {
+    const name = database?.name
+    if (typeof name !== 'string' || !name.startsWith(NOSTRDB_PREFIX)) continue
+    const ownerPubkey = normalizePubkey(name.slice(NOSTRDB_PREFIX.length))
+    if (!ownerPubkey || keepPubkeys.has(ownerPubkey)) continue
+    if (await deleteNostrDb(ownerPubkey)) deleted.push(ownerPubkey)
+  }
+  return deleted
+}
+
+export function normalizeTrustedVaultNostrDbOwner (ownerPubkey) {
   const pubkey = normalizePubkey(ownerPubkey)
   if (!pubkey) throw new Error('NOSTRDB_OWNER_REQUIRED')
-  if (allowedPubkeys && !allowedPubkeys.has(pubkey)) throw new Error('NOSTRDB_OWNER_NOT_AVAILABLE')
   return pubkey
 }
 
@@ -51,11 +79,10 @@ export async function runTrustedVaultNostrDbMethod ({
   ownerPubkey,
   method,
   params = [],
-  allowedPubkeys,
   getNostrDb = defaultGetNostrDb,
   ask = defaultAsk
 }) {
-  const pubkey = assertTrustedVaultNostrDbOwner(ownerPubkey, allowedPubkeys)
+  const pubkey = normalizeTrustedVaultNostrDbOwner(ownerPubkey)
   const db = getNostrDb(pubkey)
   const signEvent = createTrustedVaultNostrDbSignEvent({
     vaultPort,
@@ -88,7 +115,6 @@ export async function streamTrustedVaultNostrDbSubscription (e, {
   ownerPubkey,
   params = [],
   subscriptionId,
-  allowedPubkeys,
   subscriptions,
   getNostrDb = defaultGetNostrDb,
   reply = defaultReply
@@ -98,7 +124,7 @@ export async function streamTrustedVaultNostrDbSubscription (e, {
     if (!subscriptionId) throw new Error('NOSTRDB_SUBSCRIPTION_ID_REQUIRED')
     if (subscriptions.has(subscriptionId)) throw new Error('NOSTRDB_SUBSCRIPTION_EXISTS')
 
-    const pubkey = assertTrustedVaultNostrDbOwner(ownerPubkey, allowedPubkeys)
+    const pubkey = normalizeTrustedVaultNostrDbOwner(ownerPubkey)
     const db = getNostrDb(pubkey)
     subscription = { iterator: null, cancelled: false }
     subscriptions.set(subscriptionId, subscription)
