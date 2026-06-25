@@ -7,7 +7,6 @@ import { NOSTRDB_ONE_SHOT_METHODS } from '../nostrdb-protocol.js'
 
 export const NOSTRDB_MERGE_CONTEXT = 'nostrdb_merge'
 export const NOSTRDB_MAINTENANCE_CONTEXT = 'nostrdb_maintenance'
-export const NOSTRDB_MAINTENANCE_APP = { id: '44billion', name: '44billion' }
 
 export function nostrDbSignMethodForTemplate (event) {
   return event?.tags?.some(tag => Array.isArray(tag) && tag[0] === 'imkc')
@@ -58,13 +57,11 @@ export function createNostrDbSignEvent ({ askNip07, askVault, pubkey, app, isDef
   }
 }
 
-export function createNostrDbMaintenanceSignEvent ({ askVault, pubkey, app = NOSTRDB_MAINTENANCE_APP }) {
+export function createNostrDbMaintenanceSignEvent ({ askVault, pubkey }) {
   return async event => {
-    const resolvedApp = typeof app === 'function' ? await app() : app
     const { payload, error } = await askVault({
       code: 'NIP07',
       payload: {
-        app: resolvedApp,
         pubkey,
         ns: [''],
         method: nostrDbSignMethodForTemplate(event),

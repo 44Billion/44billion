@@ -257,7 +257,7 @@ describe('nostrdb browser bridge helpers', () => {
     assert.equal(calls[0].message.code, 'NIP07')
     assert.equal(calls[0].message.payload.method, 'sign_event')
     assert.equal(calls[0].message.payload.context, NOSTRDB_MAINTENANCE_CONTEXT)
-    assert.equal(calls[0].message.payload.app.id, '44billion')
+    assert.equal(Object.hasOwn(calls[0].message.payload, 'app'), false)
     assert.deepEqual(calls[0].options, { timeout: 120000 })
   })
 

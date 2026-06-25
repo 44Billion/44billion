@@ -62,10 +62,13 @@ export function createTrustedVaultNostrDbSignEvent ({
   vaultPort,
   ownerPubkey,
   context = NOSTRDB_MERGE_CONTEXT,
+  getVaultPort = () => vaultPort,
   ask = defaultAsk
 }) {
   return async event => {
-    const { payload, error } = await ask(vaultPort, {
+    const port = getVaultPort()
+    if (!port) throw new Error('Vault not connected')
+    const { payload, error } = await ask(port, {
       code: 'NIP07',
       payload: {
         app: VAULT_APP,
@@ -87,6 +90,7 @@ export async function runTrustedVaultNostrDbMethod ({
   method,
   params = [],
   getNostrDb = defaultGetNostrDb,
+  getVaultPort,
   ask = defaultAsk
 }) {
   const pubkey = normalizeTrustedVaultNostrDbOwner(ownerPubkey)
@@ -94,6 +98,7 @@ export async function runTrustedVaultNostrDbMethod ({
     vaultPort,
     ownerPubkey: pubkey,
     context: NOSTRDB_MAINTENANCE_CONTEXT,
+    ...(getVaultPort ? { getVaultPort } : {}),
     ask
   })
   const db = getNostrDb(pubkey, nostrDbMaintenanceOptions(maintenanceSignEvent))
@@ -130,6 +135,7 @@ export async function streamTrustedVaultNostrDbSubscription (e, {
   subscriptionId,
   subscriptions,
   getNostrDb = defaultGetNostrDb,
+  getVaultPort,
   ask = defaultAsk,
   reply = defaultReply
 }) {
@@ -143,6 +149,7 @@ export async function streamTrustedVaultNostrDbSubscription (e, {
       vaultPort,
       ownerPubkey: pubkey,
       context: NOSTRDB_MAINTENANCE_CONTEXT,
+      ...(getVaultPort ? { getVaultPort } : {}),
       ask
     })
     const db = getNostrDb(pubkey, nostrDbMaintenanceOptions(maintenanceSignEvent))

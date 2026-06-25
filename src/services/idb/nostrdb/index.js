@@ -210,6 +210,7 @@ export class NostrDb {
     this.appClaimRunning = false
     this.appClaimFlushAgain = false
     this.maintenanceStops = new Map()
+    this.deletionCompactionSignEvent = null
     this.bc = null
 
     if (typeof BroadcastChannel === 'function') {
@@ -953,7 +954,13 @@ function startNostrDbMaintenance (db, { signEvent } = {}) {
   }))
   startMaintenanceTask(db, 'expiration', () => db.startExpirationPurge())
   if (typeof signEvent === 'function') {
-    startMaintenanceTask(db, 'deletionCompaction', () => db.startDeletionCompaction({ signEvent }))
+    db.deletionCompactionSignEvent = signEvent
+    startMaintenanceTask(db, 'deletionCompaction', () => db.startDeletionCompaction({
+      signEvent: event => {
+        if (typeof db.deletionCompactionSignEvent !== 'function') throw new TypeError('compactDeletionRequests requires a sign function')
+        return db.deletionCompactionSignEvent(event)
+      }
+    }))
   }
 }
 
@@ -969,6 +976,7 @@ function stopNostrDbMaintenance (db) {
     try { stop() } catch {}
   }
   db.maintenanceStops.clear()
+  db.deletionCompactionSignEvent = null
 }
 
 export async function openNostrDb (ownerPubkey) {

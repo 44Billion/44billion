@@ -17,6 +17,7 @@ describe('trusted vault nostrdb bridge helpers', () => {
     const event = { kind: 1, tags: [] }
     let seen
     let dbOptions
+    let activeVaultPort = 'old-vault-port'
     const signCalls = []
     const db = {
       async add (addedEvent, options) {
@@ -28,6 +29,7 @@ describe('trusted vault nostrdb bridge helpers', () => {
     assert.deepEqual(await runTrustedVaultNostrDbMethod({
       vaultPort: 'vault-port',
       ownerPubkey,
+      getVaultPort: () => activeVaultPort,
       getNostrDb: (pubkey, options) => {
         assert.equal(pubkey, ownerPubkey)
         dbOptions = options
@@ -52,8 +54,10 @@ describe('trusted vault nostrdb bridge helpers', () => {
     assert.equal(typeof seen.options.signEvent, 'function')
     assert.equal(seen.options.mergeReplaceable, false)
     assert.equal(typeof dbOptions.maintenanceOptions.signEvent, 'function')
+    activeVaultPort = 'new-vault-port'
     assert.deepEqual(await dbOptions.maintenanceOptions.signEvent({ kind: 5, tags: [['e', 'target']] }), { id: 'sign_event:signed' })
     assert.equal(signCalls.length, 1)
+    assert.equal(signCalls[0].port, 'new-vault-port')
     assert.equal(signCalls[0].message.payload.method, 'sign_event')
     assert.equal(signCalls[0].message.payload.context, 'nostrdb_maintenance')
   })

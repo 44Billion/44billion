@@ -346,7 +346,8 @@ function initMessageListener ({
               ownerPubkey,
               params,
               subscriptionId,
-              subscriptions: vaultNostrDbSubscriptions
+              subscriptions: vaultNostrDbSubscriptions,
+              getVaultPort: () => _activeVaultPort
             })
             break
           }
@@ -356,7 +357,8 @@ function initMessageListener ({
                 vaultPort,
                 ownerPubkey,
                 method,
-                params
+                params,
+                getVaultPort: () => _activeVaultPort
               })
             }, { to: vaultPort })
           } catch (error) {

@@ -2531,9 +2531,10 @@ describe('nostrdb', () => {
     db.bc?.close()
   })
 
-  it('starts default maintenance once and deletion compaction only with a signer', () => {
+  it('starts default maintenance once and refreshes deletion compaction signer', async () => {
     const db = new NostrDb(`${OWNER}102`)
     const calls = []
+    let compactionOptions
 
     db.startUnclaimedAppDataPurge = options => {
       calls.push(['unclaimed', options.runImmediately, options.intervalMs])
@@ -2545,6 +2546,7 @@ describe('nostrdb', () => {
     }
     db.startDeletionCompaction = options => {
       calls.push(['compaction', typeof options.signEvent])
+      compactionOptions = options
       return () => calls.push(['stop', 'compaction'])
     }
 
@@ -2558,8 +2560,13 @@ describe('nostrdb', () => {
       ['expiration', undefined],
       ['compaction', 'function']
     ])
+    assert.deepEqual(await compactionOptions.signEvent({ kind: 5, tags: [] }), event({ id: hexId(10), pubkey: db.ownerPubkey, kind: 5 }))
+
+    __nostrDbInternals.startNostrDbMaintenance(db)
+    assert.deepEqual(await compactionOptions.signEvent({ kind: 5, tags: [] }), event({ id: hexId(10), pubkey: db.ownerPubkey, kind: 5 }))
 
     db.stopMaintenance()
+    assert.equal(db.deletionCompactionSignEvent, null)
     assert.deepEqual(calls.slice(3), [
       ['stop', 'unclaimed'],
       ['stop', 'expiration'],
