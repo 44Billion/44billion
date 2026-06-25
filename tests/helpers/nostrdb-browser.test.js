@@ -9,6 +9,7 @@ import {
 } from '../../src/helpers/window-message/browser/event-permissions.js'
 import {
   buildNostrDbAddOptions,
+  buildNostrDbReadOptions,
   createNostrDbSignEvent,
   createNostrDbSubscriptionAuthorizer,
   explicitFilterKinds,
@@ -105,6 +106,7 @@ describe('nostrdb browser bridge helpers', () => {
       method: 'query',
       params: [{ kinds: [1] }],
       requestPermission,
+      appId: 'real-app',
       app: { id: 'app' }
     }), { results: ['event'] })
     assert.equal(await runNostrDbMethod({
@@ -117,7 +119,7 @@ describe('nostrdb browser bridge helpers', () => {
     assert.deepEqual(await runNostrDbMethod({ db, method: 'supports', params: [] }), ['search'])
     assert.deepEqual(calls, [
       ['permission', EVENT_READ_PERMISSION, 1],
-      ['query', [{ kinds: [1] }]],
+      ['query', [{ kinds: [1] }, { appId: 'real-app' }]],
       ['permission', EVENT_READ_PERMISSION, BROAD_EVENT_KIND],
       ['count', [{ authors: ['a'.repeat(64)] }]],
       ['supports', []]
@@ -243,6 +245,16 @@ describe('nostrdb browser bridge helpers', () => {
       appId: 'app',
       mergeSource: 'local',
       signEvent
+    })
+  })
+
+  it('buildNostrDbReadOptions forces the launcher app id', () => {
+    assert.deepEqual(buildNostrDbReadOptions({
+      appId: 'evil-app',
+      limit: 10
+    }, { appId: 'real-app' }), {
+      appId: 'real-app',
+      limit: 10
     })
   })
 })

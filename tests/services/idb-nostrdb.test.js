@@ -19,7 +19,8 @@ import {
   isNewer,
   openNostrDb,
   pubkeyIndexKey,
-  toStoredRecord
+  toStoredRecord,
+  __nostrDbInternals
 } from '../../src/services/idb/nostrdb/index.js'
 import { buildCrdtMergeTemplate } from '../../src/services/idb/nostrdb/crdt.js'
 import { isScheduledDurableFuture } from '../../src/services/idb/nostrdb/scheduled.js'
@@ -76,6 +77,7 @@ describe('nostrdb', () => {
     assert.deepEqual(toStoredRecord(replaceable).a, addressKey(0, A, ''))
     assert.deepEqual(toStoredRecord(addressable).a, addressKey(30023, A, 'article'))
     assert.equal(toStoredRecord(expiring, { now: 50 }).ex, 100)
+    assert.equal(toStoredRecord(regular, { now: 50 }).ra, 50000)
     assert.equal('ex' in toStoredRecord(regular), false)
   })
 
@@ -138,6 +140,89 @@ describe('nostrdb', () => {
 
     assertAddNotOk(await db.add(custom, { appId: 'nope' }), { code: 'invalid_app' })
     assert.deepEqual(await queryResults(db, { ids: [custom.id] }), [])
+  })
+
+  it('auto-claims app-trackable query results for the reading app', async () => {
+    const owner = `${OWNER}95`
+    const db = getNostrDb(owner)
+    const custom = event({ id: hexId(1), kind: eventKinds.REGULAR_CUSTOM_APP_DATA })
+    const unknown = event({ id: hexId(2), kind: 40000 })
+    const known = event({ id: hexId(3), kind: eventKinds.TEXT_NOTE })
+
+    assertAddOk(await db.add(custom))
+    assertAddOk(await db.add(unknown))
+    assertAddOk(await db.add(known))
+
+    assert.deepEqual((await queryResults(db, { ids: [custom.id, unknown.id, known.id] }, { appId: APP1 })).map(e => e.id).sort(), [
+      custom.id,
+      known.id,
+      unknown.id
+    ].sort())
+    assert.equal(await db.flushAppClaims(), 2)
+
+    const store = fakeStore(owner, 'events')
+    assertAppRefs(store.records.get(eventIdIndexKey(custom.id)), [APP1])
+    assertAppRefs(store.records.get(eventIdIndexKey(unknown.id)), [APP1])
+    assert.equal('ap' in store.records.get(eventIdIndexKey(known.id)), false)
+
+    await db.query({ ids: [custom.id] }, { appId: APP2 })
+    assert.equal(await db.flushAppClaims(), 1)
+    assertAppRefs(store.records.get(eventIdIndexKey(custom.id)), [APP1, APP2])
+  })
+
+  it('does not auto-claim ids-only, invalid-app, missing-app, or vault-style reads', async () => {
+    const owner = `${OWNER}96`
+    const db = getNostrDb(owner)
+    const custom = event({ id: hexId(1), kind: eventKinds.REGULAR_CUSTOM_APP_DATA })
+    const missingApp = event({ id: hexId(2), kind: eventKinds.REGULAR_CUSTOM_APP_DATA })
+    const invalidApp = event({ id: hexId(3), kind: eventKinds.REGULAR_CUSTOM_APP_DATA })
+    const idsOnly = event({ id: hexId(4), kind: eventKinds.REGULAR_CUSTOM_APP_DATA })
+
+    assertAddOk(await db.add(custom))
+    assertAddOk(await db.add(missingApp))
+    assertAddOk(await db.add(invalidApp))
+    assertAddOk(await db.add(idsOnly))
+
+    await db.query({ ids: [custom.id] })
+    await db.query({ ids: [missingApp.id] }, {})
+    await db.query({ ids: [invalidApp.id] }, { appId: 'not-an-app' })
+    await db.query({ ids: [idsOnly.id], ids_only: true }, { appId: APP1 })
+    assert.equal(await db.flushAppClaims(), 0)
+
+    const store = fakeStore(owner, 'events')
+    assert.equal('ap' in store.records.get(eventIdIndexKey(custom.id)), false)
+    assert.equal('ap' in store.records.get(eventIdIndexKey(missingApp.id)), false)
+    assert.equal('ap' in store.records.get(eventIdIndexKey(invalidApp.id)), false)
+    assert.equal('ap' in store.records.get(eventIdIndexKey(idsOnly.id)), false)
+  })
+
+  it('auto-claims app-trackable subscription results for the reading app', async () => {
+    const owner = `${OWNER}97`
+    const db = getNostrDb(owner)
+    const iterator = db.subscribe({ kinds: [eventKinds.REGULAR_CUSTOM_APP_DATA] }, { appId: APP1 })
+    const next = iterator.next()
+    const custom = event({ id: hexId(1), kind: eventKinds.REGULAR_CUSTOM_APP_DATA })
+
+    assertAddOk(await db.add(custom))
+    assert.deepEqual(await subscriptionResult(next), custom)
+    assert.equal(await db.flushAppClaims(), 1)
+    assertAppRefs(fakeStore(owner, 'events').records.get(eventIdIndexKey(custom.id)), [APP1])
+    await iterator.return()
+  })
+
+  it('auto-claim batching preserves sync and received anchors', async () => {
+    const owner = `${OWNER}98`
+    const db = getNostrDb(owner)
+    const custom = event({ id: hexId(1), kind: eventKinds.REGULAR_CUSTOM_APP_DATA })
+
+    assertAddOk(await db.add(custom))
+    const stored = fakeStore(owner, 'events').records.get(eventIdIndexKey(custom.id))
+    const before = { sa: stored.sa, ra: stored.ra }
+
+    await db.query({ ids: [custom.id] }, { appId: APP1 })
+    assert.equal(await db.flushAppClaims(), 1)
+    assert.equal(stored.sa, before.sa)
+    assert.equal(stored.ra, before.ra)
   })
 
   it('merges app refs into duplicate and superseded custom events', async () => {
@@ -1266,7 +1351,7 @@ describe('nostrdb', () => {
 
   it('keeps the normal cursor path for small negative id filters', async () => {
     const owner = `${OWNER}59`
-    const db = getNostrDb(owner)
+    const db = getNostrDb(owner, { maintenance: false })
     const one = event({ id: '1'.repeat(64), created_at: 10 })
     const two = event({ id: '2'.repeat(64), created_at: 20 })
 
@@ -2371,8 +2456,120 @@ describe('nostrdb', () => {
     })
   })
 
+  it('purges old unclaimed app-trackable rows without deletion requests', async () => {
+    const owner = `${OWNER}99`
+    const db = getNostrDb(owner)
+    const old = event({ id: hexId(1), kind: eventKinds.REGULAR_CUSTOM_APP_DATA })
+    const claimed = event({ id: hexId(2), kind: eventKinds.REGULAR_CUSTOM_APP_DATA })
+    const recent = event({ id: hexId(3), kind: eventKinds.REGULAR_CUSTOM_APP_DATA })
+    const known = event({ id: hexId(4), kind: eventKinds.TEXT_NOTE })
+    const missingRa = event({ id: hexId(5), kind: eventKinds.REGULAR_CUSTOM_APP_DATA })
+
+    assertAddOk(await db.add(old))
+    assertAddOk(await db.add(claimed, { appId: APP1 }))
+    assertAddOk(await db.add(recent))
+    assertAddOk(await db.add(known))
+    assertAddOk(await db.add(missingRa))
+
+    const store = fakeStore(owner, 'events')
+    store.records.get(eventIdIndexKey(old.id)).ra = 1000
+    store.records.get(eventIdIndexKey(claimed.id)).ra = 1000
+    store.records.get(eventIdIndexKey(recent.id)).ra = 9000
+    store.records.get(eventIdIndexKey(known.id)).ra = 1000
+    delete store.records.get(eventIdIndexKey(missingRa.id)).ra
+
+    assert.equal(await db.purgeUnclaimedAppData({ now: 10, graceMs: 5000, maxScanned: 10 }), 2)
+    assert.deepEqual((await queryResults(db, { ids: [old.id, claimed.id, recent.id, known.id, missingRa.id] })).map(e => e.id).sort(), [
+      claimed.id,
+      known.id,
+      recent.id
+    ].sort())
+  })
+
+  it('purges unclaimed app data in bounded batches', async () => {
+    const owner = `${OWNER}100`
+    const db = getNostrDb(owner)
+
+    for (let i = 1; i <= 3; i++) {
+      const item = event({ id: hexId(i), kind: eventKinds.REGULAR_CUSTOM_APP_DATA })
+      assertAddOk(await db.add(item))
+      fakeStore(owner, 'events').records.get(eventIdIndexKey(item.id)).ra = 1000
+    }
+
+    assert.equal(await db.purgeUnclaimedAppData({ now: 10, graceMs: 5000, batchSize: 2, maxScanned: 10 }), 2)
+    assert.equal(await db.count({ kinds: [eventKinds.REGULAR_CUSTOM_APP_DATA] }), 1)
+    assert.equal(await db.purgeUnclaimedAppData({ now: 10, graceMs: 5000, batchSize: 2, maxScanned: 10 }), 1)
+    assert.equal(await db.count({ kinds: [eventKinds.REGULAR_CUSTOM_APP_DATA] }), 0)
+  })
+
+  it('starts unclaimed app-data purge on a non-overlapping timer', async () => {
+    const db = new NostrDb(`${OWNER}101`)
+    let calls = 0
+    let running = 0
+    let maxRunning = 0
+
+    db.purgeUnclaimedAppData = async () => {
+      calls++
+      running++
+      maxRunning = Math.max(maxRunning, running)
+      await delay(20)
+      running--
+    }
+
+    const abort = db.startUnclaimedAppDataPurge({
+      intervalMs: 1,
+      runImmediately: true
+    })
+
+    await delay(35)
+    abort()
+    const callsAfterAbort = calls
+    await delay(10)
+
+    assert.equal(maxRunning, 1)
+    assert.equal(calls, callsAfterAbort)
+    db.bc?.close()
+  })
+
+  it('starts default maintenance once and deletion compaction only with a signer', () => {
+    const db = new NostrDb(`${OWNER}102`)
+    const calls = []
+
+    db.startUnclaimedAppDataPurge = options => {
+      calls.push(['unclaimed', options.runImmediately, options.intervalMs])
+      return () => calls.push(['stop', 'unclaimed'])
+    }
+    db.startExpirationPurge = options => {
+      calls.push(['expiration', options])
+      return () => calls.push(['stop', 'expiration'])
+    }
+    db.startDeletionCompaction = options => {
+      calls.push(['compaction', typeof options.signEvent])
+      return () => calls.push(['stop', 'compaction'])
+    }
+
+    __nostrDbInternals.startNostrDbMaintenance(db)
+    __nostrDbInternals.startNostrDbMaintenance(db)
+    __nostrDbInternals.startNostrDbMaintenance(db, { signEvent: async () => event({ id: hexId(9), pubkey: db.ownerPubkey, kind: 5 }) })
+    __nostrDbInternals.startNostrDbMaintenance(db, { signEvent: async () => event({ id: hexId(10), pubkey: db.ownerPubkey, kind: 5 }) })
+
+    assert.deepEqual(calls, [
+      ['unclaimed', false, 24 * 60 * 60 * 1000],
+      ['expiration', undefined],
+      ['compaction', 'function']
+    ])
+
+    db.stopMaintenance()
+    assert.deepEqual(calls.slice(3), [
+      ['stop', 'unclaimed'],
+      ['stop', 'expiration'],
+      ['stop', 'compaction']
+    ])
+    db.bc?.close()
+  })
+
   it('starts expiration purge on a non-overlapping timer', async () => {
-    const db = getNostrDb(`${OWNER}46`)
+    const db = new NostrDb(`${OWNER}46`)
     let calls = 0
     let running = 0
     let maxRunning = 0

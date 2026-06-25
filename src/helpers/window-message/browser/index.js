@@ -1,6 +1,11 @@
 import { /* handleMessageReply, */ tell, reply } from '../index.js'
 import { nostrDbStreamDonePayload } from '../nostrdb-protocol.js'
-import { createNostrDbSignEvent, createNostrDbSubscriptionAuthorizer, runNostrDbMethod } from './nostrdb.js'
+import {
+  createNostrDbSignEvent,
+  createNostrDbSubscriptionAuthorizer,
+  nostrDbReadParamsWithAppId,
+  runNostrDbMethod
+} from './nostrdb.js'
 import { needsNip07Permission, nip07PermissionContext } from './nip07-permission-context.js'
 import { appIdToAddressObj, addressObjToAppId } from '#helpers/app.js'
 import { base36ToBase16 } from '#helpers/base36.js'
@@ -456,7 +461,8 @@ export async function initMessageListener (
               subscriptionId,
               subscriptions: nostrDbSubscriptions,
               appPagePort,
-              authorizer
+              authorizer,
+              appId
             })
             break
           }
@@ -616,7 +622,7 @@ function closeNostrDbSubscriptions (subscriptions) {
   }
 }
 
-async function streamNostrDbSubscription (e, { db, params = [], subscriptionId, subscriptions, appPagePort, authorizer }) {
+async function streamNostrDbSubscription (e, { db, params = [], subscriptionId, subscriptions, appPagePort, authorizer, appId }) {
   let subscription
   try {
     if (!subscriptionId) throw new Error('NOSTRDB_SUBSCRIPTION_ID_REQUIRED')
@@ -628,7 +634,7 @@ async function streamNostrDbSubscription (e, { db, params = [], subscriptionId, 
     await authorizer?.authorizeBeforeStart?.()
     if (subscription.cancelled) return
 
-    const iterator = db.subscribe(...(Array.isArray(params) ? params : []))
+    const iterator = db.subscribe(...nostrDbReadParamsWithAppId(params, { appId }))
     subscription.iterator = iterator
 
     for await (const item of iterator) {

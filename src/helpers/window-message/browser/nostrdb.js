@@ -20,6 +20,23 @@ export function buildNostrDbAddOptions (options, { appId, signEvent }) {
   }
 }
 
+export function buildNostrDbReadOptions (options, { appId }) {
+  return {
+    ...(options && typeof options === 'object' && !Array.isArray(options) ? options : {}),
+    ...(appId === undefined ? {} : { appId })
+  }
+}
+
+export function nostrDbReadParamsWithAppId (params = [], { appId } = {}) {
+  const args = Array.isArray(params) ? [...params] : []
+  if (appId === undefined) return args
+
+  return [
+    args[0],
+    buildNostrDbReadOptions(args[1], { appId })
+  ]
+}
+
 export function createNostrDbSignEvent ({ askNip07, askVault, pubkey, app, isDefaultUser }) {
   return async event => {
     const resolvedApp = typeof app === 'function' ? await app() : app
@@ -154,7 +171,7 @@ export async function runNostrDbMethod ({ db, method, params = [], appId, signEv
     const explicitKinds = explicitKindsFromParams(args)
     if (explicitKinds !== null) await requestReadKinds(explicitKinds, permissionContext)
 
-    const payload = await db.query(...args)
+    const payload = await db.query(...nostrDbReadParamsWithAppId(args, { appId }))
     if (explicitKinds === null) await requestReadForQueryResult(payload, permissionContext)
     return payload
   }

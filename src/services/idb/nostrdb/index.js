@@ -39,6 +39,7 @@ events, keyPath "i"
   k     event kind
   ca    created_at timestamp
   sa    sync anchor in milliseconds, monotonic local score for device-to-device DB sync
+  ra    received/stored-at time in milliseconds, local-only cleanup grace anchor
   ex    optional NIP-40 expiration timestamp
   ap    optional multiEntry app refs for custom/unknown app-data ownership
   t     multiEntry tag index keys: [tagName, sha256(tagValue), created_at]
@@ -93,6 +94,12 @@ const SYNC_ANCHOR_FUTURE_SKEW_MS = 5000
 const REGULAR_CUSTOM_APP_DATA_KIND = eventKinds.REGULAR_CUSTOM_APP_DATA ?? 78
 const CUSTOM_APP_DATA_KIND = eventKinds.CUSTOM_APP_DATA ?? 30078
 const APP_NEUTRAL_KINDS_KEY = 'appNeutralKinds'
+const APP_CLAIM_DEBOUNCE_MS = 250
+const APP_CLAIM_BATCH_SIZE = 100
+const UNCLAIMED_APP_DATA_GRACE_MS = 30 * 24 * 60 * 60 * 1000
+const UNCLAIMED_APP_DATA_BATCH_SIZE = 100
+const UNCLAIMED_APP_DATA_MAX_SCANNED = 1000
+const UNCLAIMED_APP_DATA_PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000
 const textEncoder = new TextEncoder()
 const dbCache = new Map()
 const storeCache = new Map()
@@ -166,11 +173,13 @@ function eventLogSummary (event) {
   return Object.keys(summary).length > 0 ? summary : null
 }
 
-export function getNostrDb (ownerPubkey) {
+export function getNostrDb (ownerPubkey, { maintenance = true, maintenanceOptions = {} } = {}) {
   if (!storeCache.has(ownerPubkey)) {
     storeCache.set(ownerPubkey, new NostrDb(ownerPubkey))
   }
-  return storeCache.get(ownerPubkey)
+  const db = storeCache.get(ownerPubkey)
+  if (maintenance) startNostrDbMaintenance(db, maintenanceOptions)
+  return db
 }
 
 /*
@@ -196,6 +205,11 @@ export class NostrDb {
     this.ownerPubkey = ownerPubkey
     this.sender = `${Date.now()}:${Math.random()}`
     this.subscriptions = new Set()
+    this.appClaimQueues = new Map()
+    this.appClaimTimer = null
+    this.appClaimRunning = false
+    this.appClaimFlushAgain = false
+    this.maintenanceStops = new Map()
     this.bc = null
 
     if (typeof BroadcastChannel === 'function') {
@@ -585,6 +599,79 @@ export class NostrDb {
     }
   }
 
+  async purgeUnclaimedAppData ({
+    graceMs = UNCLAIMED_APP_DATA_GRACE_MS,
+    batchSize = UNCLAIMED_APP_DATA_BATCH_SIZE,
+    maxScanned = UNCLAIMED_APP_DATA_MAX_SCANNED,
+    now
+  } = {}) {
+    const db = await openNostrDb(this.ownerPubkey)
+    if (!db) return 0
+
+    const cutoffMs = (Number.isFinite(now) ? now * 1000 : currentUnixTime() * 1000) -
+      normalizeDurationMs(graceMs, UNCLAIMED_APP_DATA_GRACE_MS)
+    const scanLimit = normalizePositiveInteger(maxScanned, UNCLAIMED_APP_DATA_MAX_SCANNED)
+    const deleteLimit = normalizePositiveInteger(batchSize, UNCLAIMED_APP_DATA_BATCH_SIZE)
+    const idKeys = []
+    let scanned = 0
+
+    try {
+      await scanCursor(db, EVENTS_STORE, null, null, {
+        onItem: stored => {
+          scanned++
+          if (isUnclaimedAppDataCleanupCandidate(stored, cutoffMs)) idKeys.push(stored.i)
+          return scanned < scanLimit && idKeys.length < deleteLimit
+        }
+      })
+
+      if (idKeys.length === 0) return 0
+      return deleteUnclaimedAppDataBatch(db, idKeys, cutoffMs)
+    } catch {
+      return 0
+    }
+  }
+
+  startUnclaimedAppDataPurge ({
+    intervalMs = UNCLAIMED_APP_DATA_PURGE_INTERVAL_MS,
+    runImmediately = true,
+    ...options
+  } = {}) {
+    const delay = Number.isInteger(intervalMs) && intervalMs > 0 ? intervalMs : UNCLAIMED_APP_DATA_PURGE_INTERVAL_MS
+    let stopped = false
+    let running = false
+    let timer = null
+
+    const schedule = ms => {
+      if (stopped) return
+      timer = setTimeout(tick, ms)
+      timer.unref?.()
+    }
+
+    const tick = async () => {
+      if (stopped) return
+      if (running) {
+        schedule(delay)
+        return
+      }
+
+      running = true
+      try {
+        await this.purgeUnclaimedAppData(options)
+      } catch {
+      } finally {
+        running = false
+        schedule(delay)
+      }
+    }
+
+    schedule(runImmediately ? 0 : delay)
+
+    return () => {
+      stopped = true
+      if (timer) clearTimeout(timer)
+    }
+  }
+
   startExpirationPurge ({
     intervalMs = 3600000,
     runImmediately = true,
@@ -627,6 +714,7 @@ export class NostrDb {
   }
 
   async query (filterOrFilters, options = {}) {
+    const appRef = normalizeReadAppRef(options)
     let filters
     try {
       filters = parseFilterInput(filterOrFilters, options)
@@ -640,6 +728,7 @@ export class NostrDb {
 
     try {
       const results = await queryParsedFilters(db, filters, { countOnly: false, ignoreLimit: false })
+      this.queueAppClaimsFromResults(results, appRef)
       return queryResult(results, filters[0])
     } catch (error) {
       logNostrDbIssue('query', { ownerPubkey: this.ownerPubkey }, error)
@@ -680,9 +769,14 @@ export class NostrDb {
   }
 
   async deleteDb () {
+    this.stopMaintenance()
     this.bc?.close()
     this.bc = null
     return deleteNostrDb(this.ownerPubkey)
+  }
+
+  stopMaintenance () {
+    stopNostrDbMaintenance(this)
   }
 
   // App reinstall backfill flow: a device that still has app-scoped rows can
@@ -755,17 +849,85 @@ export class NostrDb {
   // regular and honorary ephemeral events are still streamed immediately.
   subscribe (filterOrFilters, options = {}) {
     const filters = parseFilterInput(filterOrFilters, options)
+    const idsOnly = filters[0]?.idsOnly === true
+    const appRef = idsOnly ? undefined : normalizeReadAppRef(options)
     const subscription = createSubscription(filters, {
-      idsOnly: filters[0]?.idsOnly === true,
+      idsOnly,
       limit: filters[0]?.limit ?? Infinity,
       ownerPubkey: this.ownerPubkey,
-      scheduled: options?.scheduled === true
+      scheduled: options?.scheduled === true,
+      claimEvent: appRef ? event => this.queueAppClaim(event, appRef) : null
     })
     this.subscriptions.add(subscription)
 
     return subscription.iterator(() => {
       this.subscriptions.delete(subscription)
     })
+  }
+
+  queueAppClaimsFromResults (results, appRef) {
+    if (!appRef || !Array.isArray(results)) return
+    for (const result of results) this.queueAppClaim(result, appRef)
+  }
+
+  queueAppClaim (event, appRef) {
+    if (!appRef || !event || typeof event !== 'object') return
+    if (!HEX64_RE.test(event.id) || !isAppTrackableKind(event.kind)) return
+
+    const key = appClaimQueueKey(appRef)
+    let queue = this.appClaimQueues.get(key)
+    if (!queue) {
+      queue = { appRef, idKeys: new Set() }
+      this.appClaimQueues.set(key, queue)
+    }
+    queue.idKeys.add(eventIdIndexKey(event.id))
+
+    if (appClaimQueueSize(this.appClaimQueues) >= APP_CLAIM_BATCH_SIZE) {
+      this.flushAppClaims().catch(() => {})
+    } else {
+      this.scheduleAppClaimFlush()
+    }
+  }
+
+  scheduleAppClaimFlush (delay = APP_CLAIM_DEBOUNCE_MS) {
+    if (this.appClaimTimer || this.appClaimQueues.size === 0) return
+    this.appClaimTimer = setTimeout(() => {
+      this.appClaimTimer = null
+      this.flushAppClaims().catch(() => {})
+    }, delay)
+    this.appClaimTimer.unref?.()
+  }
+
+  async flushAppClaims () {
+    if (this.appClaimTimer) {
+      clearTimeout(this.appClaimTimer)
+      this.appClaimTimer = null
+    }
+
+    if (this.appClaimRunning) {
+      this.appClaimFlushAgain = true
+      return 0
+    }
+    if (this.appClaimQueues.size === 0) return 0
+
+    const queues = this.appClaimQueues
+    this.appClaimQueues = new Map()
+    this.appClaimRunning = true
+    let changed = 0
+
+    try {
+      changed = await writeAppClaimQueues(this.ownerPubkey, queues)
+    } catch {
+      changed = 0
+    } finally {
+      this.appClaimRunning = false
+      if (this.appClaimQueues.size > 0 || this.appClaimFlushAgain) {
+        this.appClaimFlushAgain = false
+        this.scheduleAppClaimFlush(0)
+      }
+    }
+
+    return changed
   }
 
   publish (event, shouldBroadcast, storedRecord) {
@@ -784,6 +946,31 @@ export class NostrDb {
   }
 }
 
+function startNostrDbMaintenance (db, { signEvent } = {}) {
+  startMaintenanceTask(db, 'unclaimedAppData', () => db.startUnclaimedAppDataPurge({
+    intervalMs: UNCLAIMED_APP_DATA_PURGE_INTERVAL_MS,
+    runImmediately: false
+  }))
+  startMaintenanceTask(db, 'expiration', () => db.startExpirationPurge())
+  if (typeof signEvent === 'function') {
+    startMaintenanceTask(db, 'deletionCompaction', () => db.startDeletionCompaction({ signEvent }))
+  }
+}
+
+function startMaintenanceTask (db, key, start) {
+  if (db.maintenanceStops.has(key)) return
+  const stop = start()
+  if (typeof stop === 'function') db.maintenanceStops.set(key, stop)
+}
+
+function stopNostrDbMaintenance (db) {
+  if (!db?.maintenanceStops) return
+  for (const stop of db.maintenanceStops.values()) {
+    try { stop() } catch {}
+  }
+  db.maintenanceStops.clear()
+}
+
 export async function openNostrDb (ownerPubkey) {
   if (typeof indexedDB === 'undefined') return null
 
@@ -799,6 +986,7 @@ export async function deleteNostrDb (ownerPubkey) {
 
   const dbName = `${NOSTRDB_PREFIX}${ownerPubkey}`
   const store = storeCache.get(ownerPubkey)
+  store?.stopMaintenance?.()
   store?.bc?.close()
   if (store) store.bc = null
   storeCache.delete(ownerPubkey)
@@ -973,6 +1161,71 @@ async function collectAppEventIdKeyBatch (db, appRef, {
   })
 
   return { idKeys, skipped, afterMatched }
+}
+
+function appClaimQueueKey (appRef) {
+  return JSON.stringify(appRef)
+}
+
+function appClaimQueueSize (queues) {
+  let size = 0
+  for (const queue of queues.values()) size += queue.idKeys.size
+  return size
+}
+
+async function writeAppClaimQueues (ownerPubkey, queues) {
+  const db = await openNostrDb(ownerPubkey)
+  if (!db || queues.size === 0) return 0
+
+  const tx = db.transaction([EVENTS_STORE], 'readwrite')
+  const done = txDone(tx)
+  let changedCount = 0
+
+  for (const { appRef, idKeys } of queues.values()) {
+    for (const idKey of idKeys) {
+      const stored = await run('get', [idKey], EVENTS_STORE, null, { db, tx })
+        .then(v => v.result)
+      if (!stored) continue
+
+      const beforeSa = stored.sa
+      const beforeRa = stored.ra
+      const changed = mergeAppRef(stored, appRef)
+      if (!changed) continue
+
+      stored.sa = beforeSa
+      stored.ra = beforeRa
+      await run('put', [stored], EVENTS_STORE, null, { db, tx })
+      changedCount++
+    }
+  }
+
+  await done
+  return changedCount
+}
+
+function isUnclaimedAppDataCleanupCandidate (stored, cutoffMs) {
+  if (!stored?.event || !isAppTrackableKind(stored.k)) return false
+  if (normalizeAppRefs(stored.ap).length > 0) return false
+  const receivedAt = Number.isFinite(stored.ra) ? stored.ra : -Infinity
+  return receivedAt <= cutoffMs
+}
+
+async function deleteUnclaimedAppDataBatch (db, idKeys, cutoffMs) {
+  const tx = db.transaction([EVENTS_STORE, DELETIONS_STORE], 'readwrite')
+  const done = txDone(tx)
+  let deleted = 0
+
+  for (const idKey of idKeys) {
+    const stored = await run('get', [idKey], EVENTS_STORE, null, { db, tx })
+      .then(v => v.result)
+    if (!isUnclaimedAppDataCleanupCandidate(stored, cutoffMs)) continue
+
+    await deleteStoredEvent(db, tx, stored)
+    deleted++
+  }
+
+  await done
+  return deleted
 }
 
 async function deleteAppEventBatch (db, appRef, idKeys) {
@@ -1855,7 +2108,8 @@ function createSubscription (filters, {
   idsOnly = false,
   limit = Infinity,
   ownerPubkey,
-  scheduled = true
+  scheduled = true,
+  claimEvent = null
 } = {}) {
   const queue = []
   const waiters = []
@@ -1890,6 +2144,7 @@ function createSubscription (filters, {
       }
     }
 
+    if (!idsOnly) claimEvent?.(event)
     yielded++
     if (waiters.length > 0) {
       waiters.shift().resolve({ value: wrapped, done: false })
@@ -2100,6 +2355,7 @@ export function toStoredRecord (event, { now = currentUnixTime(), appRef } = {})
     p: pubkeyIndexKey(event.pubkey),
     k: event.kind,
     ca: event.created_at,
+    ra: now * 1000,
     t: tagIndexKeys(event),
     event
   }
@@ -2187,6 +2443,11 @@ function normalizeOptionalAppRef (appId) {
   }
 }
 
+function normalizeReadAppRef (options) {
+  const appRef = normalizeOptionalAppRef(normalizeOptions(options).appId)
+  return appRef === false ? undefined : appRef
+}
+
 function mergeAppRef (stored, appRef) {
   if (!stored?.event || !appRef || !isAppTrackableKind(stored.event.kind)) return false
 
@@ -2258,6 +2519,14 @@ function normalizeBatchSize (value, fallback, max) {
   return Number.isInteger(value) && value > 0
     ? Math.min(value, max)
     : fallback
+}
+
+function normalizePositiveInteger (value, fallback) {
+  return Number.isInteger(value) && value > 0 ? value : fallback
+}
+
+function normalizeDurationMs (value, fallback) {
+  return Number.isFinite(value) && value >= 0 ? value : fallback
 }
 
 function normalizeSkip (value) {
@@ -2919,5 +3188,7 @@ export const __nostrDbInternals = {
   getCoordinate,
   isAddressableKind,
   isRegularReplaceableKind,
-  kindUsesDCoordinate
+  kindUsesDCoordinate,
+  startNostrDbMaintenance,
+  stopNostrDbMaintenance
 }
