@@ -10,9 +10,11 @@ import {
 import {
   buildNostrDbAddOptions,
   buildNostrDbReadOptions,
+  createNostrDbMaintenanceSignEvent,
   createNostrDbSignEvent,
   createNostrDbSubscriptionAuthorizer,
   explicitFilterKinds,
+  NOSTRDB_MAINTENANCE_CONTEXT,
   nostrDbSignMethodForTemplate,
   runNostrDbMethod
 } from '../../src/helpers/window-message/browser/nostrdb.js'
@@ -213,6 +215,7 @@ describe('nostrdb browser bridge helpers', () => {
 
   it('selects regular or double signing from the template imkc tag', async () => {
     assert.equal(nostrDbSignMethodForTemplate({ tags: [] }), 'sign_event')
+    assert.equal(nostrDbSignMethodForTemplate({ kind: 5, tags: [['e', 'target']] }), 'sign_event')
     assert.equal(nostrDbSignMethodForTemplate({ tags: [['imkc', 'pubkey', 'proof']] }), 'double_sign_event')
   })
 
@@ -237,6 +240,25 @@ describe('nostrdb browser bridge helpers', () => {
     assert.deepEqual(calls.map(call => call.request.context), ['nostrdb_merge', 'nostrdb_merge'])
     assert.equal(calls.every(call => !('requestPermission' in call.options)), true)
     assert.deepEqual(calls.map(call => call.options.app.napp), ['+app', '+app'])
+  })
+
+  it('creates a permissionless vault maintenance signer wrapper', async () => {
+    const calls = []
+    const signEvent = createNostrDbMaintenanceSignEvent({
+      askVault: async (message, options) => {
+        calls.push({ message, options })
+        return { payload: { id: `${message.payload.method}:signed` } }
+      },
+      pubkey: 'owner'
+    })
+
+    assert.deepEqual(await signEvent({ kind: 5, tags: [['e', 'target']] }), { id: 'sign_event:signed' })
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].message.code, 'NIP07')
+    assert.equal(calls[0].message.payload.method, 'sign_event')
+    assert.equal(calls[0].message.payload.context, NOSTRDB_MAINTENANCE_CONTEXT)
+    assert.equal(calls[0].message.payload.app.id, '44billion')
+    assert.deepEqual(calls[0].options, { timeout: 120000 })
   })
 
   it('buildNostrDbAddOptions ignores non-object app options', () => {

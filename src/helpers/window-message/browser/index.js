@@ -1,8 +1,10 @@
 import { /* handleMessageReply, */ tell, reply } from '../index.js'
 import { nostrDbStreamDonePayload } from '../nostrdb-protocol.js'
 import {
+  createNostrDbMaintenanceSignEvent,
   createNostrDbSignEvent,
   createNostrDbSubscriptionAuthorizer,
+  nostrDbMaintenanceOptions,
   nostrDbReadParamsWithAppId,
   runNostrDbMethod
 } from './nostrdb.js'
@@ -447,7 +449,10 @@ export async function initMessageListener (
         }
         case 'NOSTRDB': {
           const { method, params = [], subscriptionId } = e.data.payload || {}
-          const db = getNostrDb(userPkB16)
+          const maintenanceSignEvent = isDefaultUser
+            ? null
+            : createNostrDbMaintenanceSignEvent({ askVault, pubkey: userPkB16 })
+          const db = getNostrDb(userPkB16, nostrDbMaintenanceOptions(maintenanceSignEvent))
           const appMetadata = await getAppMetadata(appId, appAddress, { timeoutMs: 0 })
           if (method === 'subscribe') {
             const authorizer = createNostrDbSubscriptionAuthorizer({

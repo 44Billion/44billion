@@ -5,7 +5,13 @@ import {
   getNostrDb as defaultGetNostrDb,
   NOSTRDB_PREFIX
 } from '#services/idb/nostrdb/index.js'
-import { nostrDbSignMethodForTemplate, runNostrDbMethod } from './nostrdb.js'
+import {
+  NOSTRDB_MAINTENANCE_CONTEXT,
+  NOSTRDB_MERGE_CONTEXT,
+  nostrDbMaintenanceOptions,
+  nostrDbSignMethodForTemplate,
+  runNostrDbMethod
+} from './nostrdb.js'
 
 const HEX32 = /^[0-9a-f]{64}$/i
 const VAULT_APP = { id: 'ez-vault', name: 'Vault' }
@@ -55,6 +61,7 @@ export function normalizeTrustedVaultNostrDbOwner (ownerPubkey) {
 export function createTrustedVaultNostrDbSignEvent ({
   vaultPort,
   ownerPubkey,
+  context = NOSTRDB_MERGE_CONTEXT,
   ask = defaultAsk
 }) {
   return async event => {
@@ -66,7 +73,7 @@ export function createTrustedVaultNostrDbSignEvent ({
         ns: [''],
         method: nostrDbSignMethodForTemplate(event),
         params: [event],
-        context: 'nostrdb_merge'
+        context
       }
     }, { timeout: 120000 })
     if (error) throw error
@@ -83,7 +90,13 @@ export async function runTrustedVaultNostrDbMethod ({
   ask = defaultAsk
 }) {
   const pubkey = normalizeTrustedVaultNostrDbOwner(ownerPubkey)
-  const db = getNostrDb(pubkey)
+  const maintenanceSignEvent = createTrustedVaultNostrDbSignEvent({
+    vaultPort,
+    ownerPubkey: pubkey,
+    context: NOSTRDB_MAINTENANCE_CONTEXT,
+    ask
+  })
+  const db = getNostrDb(pubkey, nostrDbMaintenanceOptions(maintenanceSignEvent))
   const signEvent = createTrustedVaultNostrDbSignEvent({
     vaultPort,
     ownerPubkey: pubkey,
@@ -117,6 +130,7 @@ export async function streamTrustedVaultNostrDbSubscription (e, {
   subscriptionId,
   subscriptions,
   getNostrDb = defaultGetNostrDb,
+  ask = defaultAsk,
   reply = defaultReply
 }) {
   let subscription
@@ -125,7 +139,13 @@ export async function streamTrustedVaultNostrDbSubscription (e, {
     if (subscriptions.has(subscriptionId)) throw new Error('NOSTRDB_SUBSCRIPTION_EXISTS')
 
     const pubkey = normalizeTrustedVaultNostrDbOwner(ownerPubkey)
-    const db = getNostrDb(pubkey)
+    const maintenanceSignEvent = createTrustedVaultNostrDbSignEvent({
+      vaultPort,
+      ownerPubkey: pubkey,
+      context: NOSTRDB_MAINTENANCE_CONTEXT,
+      ask
+    })
+    const db = getNostrDb(pubkey, nostrDbMaintenanceOptions(maintenanceSignEvent))
     subscription = { iterator: null, cancelled: false }
     subscriptions.set(subscriptionId, subscription)
 

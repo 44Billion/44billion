@@ -16,6 +16,8 @@ describe('trusted vault nostrdb bridge helpers', () => {
     const ownerPubkey = 'b'.repeat(64)
     const event = { kind: 1, tags: [] }
     let seen
+    let dbOptions
+    const signCalls = []
     const db = {
       async add (addedEvent, options) {
         seen = { addedEvent, options }
@@ -26,8 +28,9 @@ describe('trusted vault nostrdb bridge helpers', () => {
     assert.deepEqual(await runTrustedVaultNostrDbMethod({
       vaultPort: 'vault-port',
       ownerPubkey,
-      getNostrDb: pubkey => {
+      getNostrDb: (pubkey, options) => {
         assert.equal(pubkey, ownerPubkey)
+        dbOptions = options
         return db
       },
       method: 'add',
@@ -37,7 +40,10 @@ describe('trusted vault nostrdb bridge helpers', () => {
         signEvent: async () => ({ id: 'app-signed' }),
         mergeReplaceable: false
       }],
-      ask: async () => ({ payload: { id: 'signed' } })
+      ask: async (port, message, options) => {
+        signCalls.push({ port, message, options })
+        return { payload: { id: `${message.payload.method}:signed` } }
+      }
     }), { ok: true })
 
     assert.equal(seen.addedEvent, event)
@@ -45,6 +51,11 @@ describe('trusted vault nostrdb bridge helpers', () => {
     assert.equal(seen.options.mergeSource, 'local')
     assert.equal(typeof seen.options.signEvent, 'function')
     assert.equal(seen.options.mergeReplaceable, false)
+    assert.equal(typeof dbOptions.maintenanceOptions.signEvent, 'function')
+    assert.deepEqual(await dbOptions.maintenanceOptions.signEvent({ kind: 5, tags: [['e', 'target']] }), { id: 'sign_event:signed' })
+    assert.equal(signCalls.length, 1)
+    assert.equal(signCalls[0].message.payload.method, 'sign_event')
+    assert.equal(signCalls[0].message.payload.context, 'nostrdb_maintenance')
   })
 
   it('prunes nostrdb databases for accounts no longer advertised by the vault', async () => {
@@ -94,6 +105,7 @@ describe('trusted vault nostrdb bridge helpers', () => {
     const ownerPubkey = 'f'.repeat(64)
     const replies = []
     const subscriptions = new Map()
+    let dbOptions
     const db = {
       async * subscribe (...params) {
         assert.deepEqual(params, [{ kinds: [1] }])
@@ -110,8 +122,9 @@ describe('trusted vault nostrdb bridge helpers', () => {
       params: [{ kinds: [1] }],
       subscriptionId: 'sub-1',
       subscriptions,
-      getNostrDb: pubkey => {
+      getNostrDb: (pubkey, options) => {
         assert.equal(pubkey, ownerPubkey)
+        dbOptions = options
         return db
       },
       reply: (_e, message, options) => replies.push({ message, options })
@@ -128,6 +141,7 @@ describe('trusted vault nostrdb bridge helpers', () => {
       }
     ])
     assert.equal(subscriptions.size, 0)
+    assert.equal(typeof dbOptions.maintenanceOptions.signEvent, 'function')
   })
 
   it('cancels active subscriptions', async () => {
