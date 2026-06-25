@@ -2027,6 +2027,179 @@ describe('nostrdb', () => {
     assert.deepEqual((await queryResults(db, { ids: [deletions[100].id] })).map(e => e.id), [deletions[100].id])
   })
 
+  it('maintains deletion requests by compacting before pruning', async () => {
+    const db = getNostrDb(`${OWNER}103`)
+    const targetId = hexId(901)
+    const firstDeletion = event({ id: hexId(902), pubkey: A, kind: 5, created_at: 10, tags: [['e', targetId]] })
+    const duplicateDeletion = event({ id: hexId(903), pubkey: A, kind: 5, created_at: 11, tags: [['e', targetId]] })
+    const signed = event({ id: hexId(904), pubkey: A, kind: 5, created_at: 20, tags: [['e', targetId]] })
+
+    assertAddOk(await db.addEvent(firstDeletion, { now: 1 }))
+    assertAddOk(await db.addEvent(duplicateDeletion, { now: 1 }))
+
+    const result = await db.maintainDeletionRequests({
+      author: A,
+      createdAt: 20,
+      maxDeletionRequests: 10,
+      signEvent: template => ({ ...signed, tags: template.tags, created_at: template.created_at })
+    })
+
+    assert.equal(result.compacted, true)
+    assert.deepEqual(result.consumed, [firstDeletion.id, duplicateDeletion.id])
+    assert.deepEqual(result.deleted, [])
+    assert.deepEqual((await queryResults(db, { ids: [signed.id] })).map(e => e.id), [signed.id])
+  })
+
+  it('prunes old low-score deletion requests when over the cap', async () => {
+    const db = getNostrDb(`${OWNER}104`)
+    const lowTarget = hexId(910)
+    const eOnly = event({
+      id: hexId(911),
+      pubkey: A,
+      kind: 5,
+      created_at: 10,
+      tags: [['e', lowTarget], ['e', hexId(912)], ['e', hexId(913)]]
+    })
+    const address = `30023:${A}:important`
+    const addressDeletion = event({
+      id: hexId(914),
+      pubkey: A,
+      kind: 5,
+      created_at: 11,
+      tags: [['a', address]]
+    })
+
+    assertAddOk(await db.addEvent(eOnly, { now: 1 }))
+    assertAddOk(await db.addEvent(addressDeletion, { now: 1 }))
+
+    const result = await db.pruneDeletionRequests({
+      author: A,
+      maxDeletionRequests: 1,
+      pruneGraceMs: 0,
+      now: 100
+    })
+
+    assert.equal(result.pruned, true)
+    assert.deepEqual(result.deleted, [eOnly.id])
+    assert.deepEqual(await queryResults(db, { ids: [eOnly.id] }), [])
+    assert.deepEqual((await queryResults(db, { ids: [addressDeletion.id] })).map(e => e.id), [addressDeletion.id])
+    assertAddOk(await db.add(event({ id: lowTarget, pubkey: A, created_at: 20 })))
+    assertAddNotOk(await db.add(event({ id: hexId(915), pubkey: A, kind: 30023, created_at: 10, tags: [['d', 'important']] })), { code: 'blocked' })
+  })
+
+  it('protects recent deletion requests even when over the cap', async () => {
+    const db = getNostrDb(`${OWNER}105`)
+    const deletions = [
+      event({ id: hexId(920), pubkey: A, kind: 5, created_at: 10, tags: [['e', hexId(921)]] }),
+      event({ id: hexId(922), pubkey: A, kind: 5, created_at: 11, tags: [['e', hexId(923)]] }),
+      event({ id: hexId(924), pubkey: A, kind: 5, created_at: 12, tags: [['e', hexId(925)]] })
+    ]
+
+    for (const deletion of deletions) {
+      assertAddOk(await db.addEvent(deletion, { now: 100 }))
+    }
+
+    const result = await db.pruneDeletionRequests({
+      author: A,
+      maxDeletionRequests: 1,
+      pruneGraceMs: 30 * 24 * 60 * 60 * 1000,
+      now: 100
+    })
+
+    assert.equal(result.pruned, false)
+    assert.deepEqual(result.deleted, [])
+    assert.deepEqual((await queryResults(db, { ids: deletions.map(event => event.id) })).map(e => e.id).sort(), deletions.map(event => event.id).sort())
+  })
+
+  it('treats missing received-at as old when pruning deletion requests', async () => {
+    const owner = `${OWNER}106`
+    const db = getNostrDb(owner)
+    const missingRa = event({ id: hexId(930), pubkey: A, kind: 5, created_at: 10, tags: [['e', hexId(931)]] })
+    const recent = event({ id: hexId(932), pubkey: A, kind: 5, created_at: 11, tags: [['e', hexId(933)]] })
+
+    assertAddOk(await db.addEvent(missingRa, { now: 1 }))
+    assertAddOk(await db.addEvent(recent, { now: 100 }))
+    delete fakeStore(owner, 'events').records.get(eventIdIndexKey(missingRa.id)).ra
+
+    const result = await db.pruneDeletionRequests({
+      author: A,
+      maxDeletionRequests: 1,
+      pruneGraceMs: 30 * 24 * 60 * 60 * 1000,
+      now: 100
+    })
+
+    assert.deepEqual(result.deleted, [missingRa.id])
+    assert.deepEqual(await queryResults(db, { ids: [missingRa.id] }), [])
+    assert.deepEqual((await queryResults(db, { ids: [recent.id] })).map(e => e.id), [recent.id])
+  })
+
+  it('pruning a deletion request cleans only its tombstone contributions', async () => {
+    const owner = `${OWNER}107`
+    const db = getNostrDb(owner)
+    const targetId = hexId(940)
+    const older = event({ id: hexId(941), pubkey: A, kind: 5, created_at: 10, tags: [['e', targetId]] })
+    const newer = event({ id: hexId(942), pubkey: A, kind: 5, created_at: 11, tags: [['e', targetId]] })
+
+    assertAddOk(await db.addEvent(older, { now: 1 }))
+    assertAddOk(await db.addEvent(newer, { now: 1 }))
+
+    const result = await db.pruneDeletionRequests({
+      author: A,
+      maxDeletionRequests: 1,
+      pruneGraceMs: 0,
+      now: 100
+    })
+
+    assert.deepEqual(result.deleted, [older.id])
+    assert.deepEqual(await queryResults(db, { ids: [older.id] }), [])
+    assert.deepEqual((await queryResults(db, { ids: [newer.id] })).map(e => e.id), [newer.id])
+    assertAddNotOk(await db.add(event({ id: targetId, pubkey: A, created_at: 20 })), { code: 'blocked' })
+
+    const tombstone = fakeStore(owner, 'deletions').records.get(deletionEventRef(targetId, A))
+    assert.deepEqual(tombstone.c, [[eventIdIndexKey(newer.id), newer.created_at]])
+  })
+
+  it('prunes deletion requests in bounded batches across maintenance runs', async () => {
+    const db = getNostrDb(`${OWNER}108`)
+    const deletions = []
+
+    for (let i = 0; i < 5; i++) {
+      const deletion = event({
+        id: hexId(950 + i),
+        pubkey: A,
+        kind: 5,
+        created_at: 10 + i,
+        tags: [['e', hexId(960 + i)]]
+      })
+      deletions.push(deletion)
+      assertAddOk(await db.addEvent(deletion, { now: 1 }))
+    }
+
+    const first = await db.pruneDeletionRequests({
+      author: A,
+      maxDeletionRequests: 1,
+      pruneBatchSize: 2,
+      pruneGraceMs: 0,
+      now: 100
+    })
+    assert.deepEqual(first.deleted, [deletions[0].id, deletions[1].id])
+    assert.deepEqual((await queryResults(db, { kinds: [5] })).map(event => event.id), [
+      deletions[4].id,
+      deletions[3].id,
+      deletions[2].id
+    ])
+
+    const second = await db.pruneDeletionRequests({
+      author: A,
+      maxDeletionRequests: 1,
+      pruneBatchSize: 2,
+      pruneGraceMs: 0,
+      now: 100
+    })
+    assert.deepEqual(second.deleted, [deletions[2].id, deletions[3].id])
+    assert.deepEqual((await queryResults(db, { kinds: [5] })).map(event => event.id), [deletions[4].id])
+  })
+
   it('starts deletion compaction on a non-overlapping timer', async () => {
     const db = new NostrDb(`${OWNER}17`)
     let calls = 0
@@ -2531,10 +2704,10 @@ describe('nostrdb', () => {
     db.bc?.close()
   })
 
-  it('starts default maintenance once and refreshes deletion compaction signer', async () => {
+  it('starts default maintenance once and refreshes deletion request maintenance signer', async () => {
     const db = new NostrDb(`${OWNER}102`)
     const calls = []
-    let compactionOptions
+    let deletionRequestOptions
 
     db.startUnclaimedAppDataPurge = options => {
       calls.push(['unclaimed', options.runImmediately, options.intervalMs])
@@ -2544,10 +2717,10 @@ describe('nostrdb', () => {
       calls.push(['expiration', options])
       return () => calls.push(['stop', 'expiration'])
     }
-    db.startDeletionCompaction = options => {
-      calls.push(['compaction', typeof options.signEvent])
-      compactionOptions = options
-      return () => calls.push(['stop', 'compaction'])
+    db.startDeletionRequestMaintenance = options => {
+      calls.push(['deletionRequests', typeof options.signEvent])
+      deletionRequestOptions = options
+      return () => calls.push(['stop', 'deletionRequests'])
     }
 
     __nostrDbInternals.startNostrDbMaintenance(db)
@@ -2558,19 +2731,19 @@ describe('nostrdb', () => {
     assert.deepEqual(calls, [
       ['unclaimed', false, 24 * 60 * 60 * 1000],
       ['expiration', undefined],
-      ['compaction', 'function']
+      ['deletionRequests', 'function']
     ])
-    assert.deepEqual(await compactionOptions.signEvent({ kind: 5, tags: [] }), event({ id: hexId(10), pubkey: db.ownerPubkey, kind: 5 }))
+    assert.deepEqual(await deletionRequestOptions.signEvent({ kind: 5, tags: [] }), event({ id: hexId(10), pubkey: db.ownerPubkey, kind: 5 }))
 
     __nostrDbInternals.startNostrDbMaintenance(db)
-    assert.deepEqual(await compactionOptions.signEvent({ kind: 5, tags: [] }), event({ id: hexId(10), pubkey: db.ownerPubkey, kind: 5 }))
+    assert.deepEqual(await deletionRequestOptions.signEvent({ kind: 5, tags: [] }), event({ id: hexId(10), pubkey: db.ownerPubkey, kind: 5 }))
 
     db.stopMaintenance()
-    assert.equal(db.deletionCompactionSignEvent, null)
+    assert.equal(db.deletionRequestMaintenanceSignEvent, null)
     assert.deepEqual(calls.slice(3), [
       ['stop', 'unclaimed'],
       ['stop', 'expiration'],
-      ['stop', 'compaction']
+      ['stop', 'deletionRequests']
     ])
     db.bc?.close()
   })

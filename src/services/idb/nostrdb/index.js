@@ -210,7 +210,7 @@ export class NostrDb {
     this.appClaimRunning = false
     this.appClaimFlushAgain = false
     this.maintenanceStops = new Map()
-    this.deletionCompactionSignEvent = null
+    this.deletionRequestMaintenanceSignEvent = null
     this.bc = null
 
     if (typeof BroadcastChannel === 'function') {
@@ -529,6 +529,35 @@ export class NostrDb {
     return compactResult({ compacted: true, created: signed, consumed, targets: tags })
   }
 
+  async maintainDeletionRequests ({
+    signEvent,
+    author = this.ownerPubkey,
+    maxTargetRefs = DELETION_COMPACTION_MAX_TAGS,
+    maxDeletionRequests = DELETION_REQUEST_MAINTENANCE_MAX_REQUESTS,
+    pruneGraceMs = DELETION_REQUEST_PRUNE_GRACE_MS,
+    pruneBatchSize = DELETION_REQUEST_PRUNE_DELETE_BATCH_SIZE,
+    createdAt,
+    now,
+    signal
+  } = {}) {
+    const compaction = await this.compactDeletionRequests({
+      signEvent,
+      author,
+      maxTargetRefs,
+      createdAt,
+      signal
+    })
+    const pruning = await this.pruneDeletionRequests({
+      author,
+      maxDeletionRequests,
+      pruneGraceMs,
+      pruneBatchSize,
+      now,
+      signal
+    })
+    return { ...compaction, ...pruning }
+  }
+
   startDeletionCompaction ({
     intervalMs = 3600000,
     runImmediately = true,
@@ -568,6 +597,110 @@ export class NostrDb {
       stopped = true
       if (timer) clearTimeout(timer)
     }
+  }
+
+  startDeletionRequestMaintenance ({
+    intervalMs = 3600000,
+    runImmediately = true,
+    ...options
+  } = {}) {
+    const delay = Number.isInteger(intervalMs) && intervalMs > 0 ? intervalMs : 3600000
+    let stopped = false
+    let running = false
+    let timer = null
+
+    const schedule = ms => {
+      if (stopped) return
+      timer = setTimeout(tick, ms)
+      timer.unref?.()
+    }
+
+    const tick = async () => {
+      if (stopped) return
+      if (running) {
+        schedule(delay)
+        return
+      }
+
+      running = true
+      try {
+        await this.maintainDeletionRequests(options)
+      } catch {
+      } finally {
+        running = false
+        schedule(delay)
+      }
+    }
+
+    schedule(runImmediately ? 0 : delay)
+
+    return () => {
+      stopped = true
+      if (timer) clearTimeout(timer)
+    }
+  }
+
+  async pruneDeletionRequests ({
+    author = this.ownerPubkey,
+    maxDeletionRequests = DELETION_REQUEST_MAINTENANCE_MAX_REQUESTS,
+    pruneGraceMs = DELETION_REQUEST_PRUNE_GRACE_MS,
+    pruneBatchSize = DELETION_REQUEST_PRUNE_DELETE_BATCH_SIZE,
+    now,
+    signal
+  } = {}) {
+    if (!HEX64_RE.test(author)) return deletionPruneResult()
+
+    throwIfAborted(signal)
+
+    const db = await openNostrDb(this.ownerPubkey)
+    if (!db) return deletionPruneResult()
+
+    const maxRequests = normalizeNonNegativeInteger(maxDeletionRequests, DELETION_REQUEST_MAINTENANCE_MAX_REQUESTS)
+    const cutoffMs = (Number.isFinite(now) ? now * 1000 : currentUnixTime() * 1000) -
+      normalizeDurationMs(pruneGraceMs, DELETION_REQUEST_PRUNE_GRACE_MS)
+    const deleteLimit = normalizePositiveInteger(pruneBatchSize, DELETION_REQUEST_PRUNE_DELETE_BATCH_SIZE)
+    let total
+
+    try {
+      total = await countDeletionRequestKeys(db, author, signal)
+    } catch {
+      throwIfAborted(signal)
+      return deletionPruneResult()
+    }
+
+    if (total <= maxRequests) return deletionPruneResult()
+
+    const deleteCount = Math.min(total - maxRequests, deleteLimit)
+    if (deleteCount <= 0) return deletionPruneResult()
+
+    let ids
+
+    try {
+      ids = await selectDeletionRequestPruneIds(db, author, {
+        cutoffMs,
+        limit: deleteCount,
+        signal
+      })
+    } catch {
+      throwIfAborted(signal)
+      return deletionPruneResult()
+    }
+    if (ids.length === 0) return deletionPruneResult()
+
+    const deleted = []
+
+    try {
+      await deleteDeletionRequestIdsInBatches(db, ids, author, {
+        batchSize: DELETION_REQUEST_PRUNE_DELETE_BATCH_SIZE,
+        deleted,
+        signal
+      })
+    } catch {
+      throwIfAborted(signal)
+      return deletionPruneResult({ deleted })
+    }
+
+    return deletionPruneResult({ deleted })
   }
 
   async purgeExpired ({ now } = {}) {
@@ -954,11 +1087,11 @@ function startNostrDbMaintenance (db, { signEvent } = {}) {
   }))
   startMaintenanceTask(db, 'expiration', () => db.startExpirationPurge())
   if (typeof signEvent === 'function') {
-    db.deletionCompactionSignEvent = signEvent
-    startMaintenanceTask(db, 'deletionCompaction', () => db.startDeletionCompaction({
+    db.deletionRequestMaintenanceSignEvent = signEvent
+    startMaintenanceTask(db, 'deletionRequests', () => db.startDeletionRequestMaintenance({
       signEvent: event => {
-        if (typeof db.deletionCompactionSignEvent !== 'function') throw new TypeError('compactDeletionRequests requires a sign function')
-        return db.deletionCompactionSignEvent(event)
+        if (typeof db.deletionRequestMaintenanceSignEvent !== 'function') throw new TypeError('compactDeletionRequests requires a sign function')
+        return db.deletionRequestMaintenanceSignEvent(event)
       }
     }))
   }
@@ -976,7 +1109,7 @@ function stopNostrDbMaintenance (db) {
     try { stop() } catch {}
   }
   db.maintenanceStops.clear()
-  db.deletionCompactionSignEvent = null
+  db.deletionRequestMaintenanceSignEvent = null
 }
 
 export async function openNostrDb (ownerPubkey) {
@@ -1280,6 +1413,11 @@ const APP_EXPORT_BATCH_SIZE = 64
 const APP_EXPORT_MAX_BATCH_SIZE = 1000
 // Keep compacted kind 5 events publishable to relays with a 100-tag cap.
 const DELETION_COMPACTION_MAX_TAGS = 100
+const DELETION_REQUEST_MAINTENANCE_MAX_REQUESTS = 1000
+const DELETION_REQUEST_PRUNE_GRACE_MS = 30 * 24 * 60 * 60 * 1000
+const DELETION_REQUEST_ADDRESS_TARGET_WEIGHT = 4
+const DELETION_REQUEST_PRUNE_SCAN_BATCH_SIZE = 500
+const DELETION_REQUEST_PRUNE_DELETE_BATCH_SIZE = 100
 
 function parseFilterInput (filterOrFilters, options = {}) {
   const rawFilters = normalizeFilterList(filterOrFilters)
@@ -2533,6 +2671,10 @@ function normalizePositiveInteger (value, fallback) {
   return Number.isInteger(value) && value > 0 ? value : fallback
 }
 
+function normalizeNonNegativeInteger (value, fallback) {
+  return Number.isInteger(value) && value >= 0 ? value : fallback
+}
+
 function normalizeDurationMs (value, fallback) {
   return Number.isFinite(value) && value >= 0 ? value : fallback
 }
@@ -2919,6 +3061,135 @@ function uniqueDeletionRows (rows) {
   return [...new Map(rows.map(row => [row.ref, row])).values()]
 }
 
+async function countDeletionRequestKeys (db, author, signal) {
+  let count = 0
+  await scanKeyCursor(db, EVENTS_STORE, INDEX.pubkeyKind, deletionRequestKeyRange(author), {
+    onItem: () => {
+      throwIfAborted(signal)
+      count++
+      return true
+    }
+  })
+  return count
+}
+
+async function selectDeletionRequestPruneIds (db, author, { cutoffMs, limit, signal }) {
+  const selected = []
+  let after = null
+
+  while (selected.length < limit || after) {
+    const batch = await deletionRequestKeyBatch(db, author, {
+      after,
+      batchSize: DELETION_REQUEST_PRUNE_SCAN_BATCH_SIZE,
+      signal
+    })
+    after = batch.after
+    if (batch.items.length === 0) break
+
+    const infos = await scoreDeletionRequestKeyBatch(db, batch.items, cutoffMs, signal)
+    for (const info of infos) {
+      addDeletionPruneCandidate(selected, info, limit)
+    }
+    if (batch.done) break
+  }
+
+  selected.sort(compareDeletionPruneInfo)
+  return selected.map(info => info.id)
+}
+
+async function deletionRequestKeyBatch (db, author, { after = null, batchSize, signal }) {
+  const items = []
+  const range = deletionRequestKeyRange(author, after?.key)
+
+  await scanKeyCursor(db, EVENTS_STORE, INDEX.pubkeyKind, range, {
+    onItem: item => {
+      throwIfAborted(signal)
+      if (after && compareDeletionRequestKeyCursorItem(item, after) <= 0) return true
+
+      items.push({ key: item.key, primaryKey: item.primaryKey })
+      return items.length < batchSize
+    }
+  })
+
+  return {
+    items,
+    after: items.length ? items[items.length - 1] : after,
+    done: items.length < batchSize
+  }
+}
+
+async function scoreDeletionRequestKeyBatch (db, items, cutoffMs, signal) {
+  const tx = db.transaction([EVENTS_STORE, DELETIONS_STORE], 'readonly')
+  const done = txDone(tx)
+  const infos = []
+
+  for (const item of items) {
+    throwIfAborted(signal)
+
+    const stored = await run('get', [item.primaryKey], EVENTS_STORE, null, { db, tx })
+      .then(v => v.result)
+    if (!stored?.event || stored.event.kind !== 5) continue
+
+    const receivedAt = Number.isFinite(stored.ra) ? stored.ra : -Infinity
+    if (receivedAt > cutoffMs) continue
+
+    const rows = uniqueDeletionRows(await getDeletionRowsForRequest(db, tx, item.primaryKey))
+    const addressTargetCount = rows.filter(isAddressDeletionRow).length
+    const eventTargetCount = rows.length - addressTargetCount
+
+    infos.push({
+      id: stored.event.id,
+      createdAt: stored.event.created_at,
+      receivedAt,
+      score: (addressTargetCount * DELETION_REQUEST_ADDRESS_TARGET_WEIGHT) + eventTargetCount
+    })
+  }
+
+  await done
+  return infos
+}
+
+async function deleteDeletionRequestIdsInBatches (db, ids, author, { batchSize, deleted, signal }) {
+  for (let i = 0; i < ids.length; i += batchSize) {
+    const batch = ids.slice(i, i + batchSize)
+    const tx = db.transaction([EVENTS_STORE, DELETIONS_STORE], 'readwrite')
+    const done = txDone(tx)
+
+    for (const id of batch) {
+      throwIfAborted(signal)
+      if (await deleteStoredDeletionRequestById(db, tx, id, author)) deleted.push(id)
+    }
+
+    await done
+  }
+}
+
+function addDeletionPruneCandidate (selected, info, limit) {
+  if (limit <= 0) return
+  selected.push(info)
+  selected.sort(compareDeletionPruneInfo)
+  if (selected.length > limit) selected.pop()
+}
+
+function deletionRequestKeyRange (author, lowerKey = null) {
+  const pubkey = pubkeyIndexKey(author)
+  const lower = lowerKey || [pubkey, 5, 0]
+  return IDBKeyRange.bound(lower, [pubkey, 5, 0xffffffff])
+}
+
+function compareDeletionRequestKeyCursorItem (a, b) {
+  const keyOrder = compareKeys(a.key, b.key)
+  if (keyOrder !== 0) return keyOrder
+  return compareKeys(a.primaryKey, b.primaryKey)
+}
+
+function compareDeletionPruneInfo (a, b) {
+  if (a.score !== b.score) return a.score - b.score
+  if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt
+  if (a.receivedAt !== b.receivedAt) return a.receivedAt - b.receivedAt
+  return a.id.localeCompare(b.id)
+}
+
 // Address tombstones are compacted only with requests at the same cutoff.
 // Event-only tombstones have no cutoff, so they can fill the selected group.
 function selectDeletionCompaction (infos, maxRefs) {
@@ -3154,6 +3425,10 @@ function compactResult ({
   targets = []
 } = {}) {
   return { compacted, created, consumed, targets }
+}
+
+function deletionPruneResult ({ deleted = [] } = {}) {
+  return { pruned: deleted.length > 0, deleted }
 }
 
 function throwIfAborted (signal) {
