@@ -16,6 +16,10 @@ import {
 const HEX32 = /^[0-9a-f]{64}$/i
 const VAULT_APP = { id: 'ez-vault', name: 'Vault' }
 
+function isPlainObject (value) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+}
+
 function normalizePubkey (value) {
   const pubkey = typeof value === 'string' ? value.toLowerCase() : ''
   return HEX32.test(pubkey) ? pubkey : ''
@@ -107,6 +111,16 @@ export async function runTrustedVaultNostrDbMethod ({
     ownerPubkey: pubkey,
     ask
   })
+  if (method === 'add') {
+    const [event, options] = Array.isArray(params) ? params : []
+    const normalizedOptions = isPlainObject(options) ? options : {}
+    return db.add(event, {
+      ...normalizedOptions,
+      appId: undefined,
+      mergeSource: normalizedOptions.mergeSource === 'sync' ? 'sync' : 'local',
+      signEvent
+    })
+  }
   return runNostrDbMethod({
     db,
     method,

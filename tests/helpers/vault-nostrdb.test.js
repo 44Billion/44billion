@@ -50,7 +50,7 @@ describe('trusted vault nostrdb bridge helpers', () => {
 
     assert.equal(seen.addedEvent, event)
     assert.equal(seen.options.appId, undefined)
-    assert.equal(seen.options.mergeSource, 'local')
+    assert.equal(seen.options.mergeSource, 'sync')
     assert.equal(typeof seen.options.signEvent, 'function')
     assert.equal(seen.options.mergeReplaceable, false)
     assert.equal(typeof dbOptions.maintenanceOptions.signEvent, 'function')
