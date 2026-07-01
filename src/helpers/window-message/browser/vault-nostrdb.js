@@ -108,6 +108,7 @@ export async function runTrustedVaultNostrDbMethod ({
   params = [],
   getNostrDb = defaultGetNostrDb,
   getVaultPort,
+  isAppInstalled = () => true,
   ask = defaultAsk
 }) {
   const pubkey = normalizeTrustedVaultNostrDbOwner(ownerPubkey)
@@ -159,9 +160,13 @@ export async function runTrustedVaultNostrDbMethod ({
   }
   if (method === 'addEventsForApp') {
     const [appId, events] = Array.isArray(params) ? params : []
+    const eventRows = Array.isArray(events) ? events : []
+    if (!isAppInstalled({ ownerPubkey: pubkey, appId })) {
+      return { added: 0, skipped: eventRows.length }
+    }
     let added = 0
     let skipped = 0
-    for (const event of Array.isArray(events) ? events : []) {
+    for (const event of eventRows) {
       const result = await db.add(event, {
         appId,
         mergeSource: 'sync',

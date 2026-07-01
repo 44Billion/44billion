@@ -10,6 +10,7 @@ import {
   streamTrustedVaultNostrDbSubscription
 } from '#helpers/window-message/browser/vault-nostrdb.js'
 import { flushVaultAcceptedMessageQueue } from '#helpers/window-message/browser/vault-accepted-message-queue.js'
+import { isNostrDbAppInstalledForOwner } from '#zones/screen/helpers/nostrdb-app-lifecycle.js'
 import '#shared/modal.js'
 
 export function useVaultModalStore (init) {
@@ -366,7 +367,12 @@ function initMessageListener ({
                 ownerPubkey,
                 method,
                 params,
-                getVaultPort: () => _activeVaultPort
+                getVaultPort: () => _activeVaultPort,
+                isAppInstalled: ({ ownerPubkey, appId }) => isNostrDbAppInstalledForOwner({
+                  storage,
+                  ownerPubkey,
+                  appId
+                })
               })
             }, { to: vaultPort })
           } catch (error) {

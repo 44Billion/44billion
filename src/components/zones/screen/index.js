@@ -16,6 +16,7 @@ import {
 import windowsBackgroundImage from '#assets/media/bg-ostrich-stained-glass.webp'
 import useAppRouter from './use-app-router.js'
 import useSystemRouter from './use-system-router.js'
+import { cleanupNostrDbAppForWorkspace } from './helpers/nostrdb-app-lifecycle.js'
 import '#shared/route.js'
 import { initMessageListener } from '#helpers/window-message/browser/index.js'
 import { isOnline } from '#helpers/network.js'
@@ -378,6 +379,13 @@ f('appWindow', function () {
           // servers, so remove the app entirely. (mirrors _deleteApp + simplified maybeClearAppStorage)
           const appSubdomain = appSubdomain$()
           const userPk = userPk$()
+
+          await cleanupNostrDbAppForWorkspace({
+            storage,
+            wsKey,
+            appId,
+            excludeWorkspaceKeys: [wsKey]
+          })
 
           tabStorage[`session_workspaceByKey_${wsKey}_openAppKeys$`]((v, eqKey) => {
             if (!v) return v
@@ -1300,6 +1308,12 @@ f('appLaunchersMenu', function () {
       const { id: appId, workspaceKey } = this.app$()
       const appKeys = storage[`session_workspaceByKey_${workspaceKey}_appById_${appId}_appKeys$`]()
       if (appKeys.length !== 1) throw new Error('Can only delete an app that has a single instance')
+      await cleanupNostrDbAppForWorkspace({
+        storage,
+        wsKey: workspaceKey,
+        appId,
+        excludeWorkspaceKeys: [workspaceKey]
+      })
       this.removeApp({ isDeleteStep: true }) // may throw
 
       this.close() // close menu

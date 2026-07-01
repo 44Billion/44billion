@@ -5,7 +5,7 @@ import { NAPP_ENTITY_REGEX, appDecode } from '#helpers/nip19.js'
 import { addressObjToAppId } from '#helpers/app.js'
 import { isValidRelayUrl } from '#helpers/relay.js'
 import router from '#zones/multi-napp/router.js'
-import { requestNostrDbAppBackfillForWorkspace } from './nostrdb-app-backfill.js'
+import { requestNostrDbAppBackfillForWorkspace } from './helpers/nostrdb-app-backfill.js'
 
 export default function useAppRouter () {
   const loc = useLocation()

@@ -5,6 +5,7 @@ import {
   enqueueVaultAcceptedMessage,
   flushVaultAcceptedMessageQueue,
   readVaultAcceptedMessageQueue,
+  removeVaultAcceptedMessage,
   vaultAcceptedMessageQueueInternals
 } from '../../src/helpers/window-message/browser/vault-accepted-message-queue.js'
 
@@ -199,44 +200,18 @@ describe('durable vault accepted-message queue', () => {
     }])
   })
 
-  it('migrates legacy app-backfill queue rows into the generic queue', () => {
-    const {
-      KEY,
-      LEGACY_APP_BACKFILL_KEY
-    } = vaultAcceptedMessageQueueInternals
+  it('removes queued messages by configured dedupe fields', () => {
     const ownerPubkey = 'a'.repeat(64)
     const otherOwnerPubkey = 'b'.repeat(64)
 
-    storage.setItem(KEY, JSON.stringify([{
-      code: NOSTRDB_APP_BACKFILL_CODE,
-      payload: { ownerPubkey, appId: 'app-1' },
-      createdAt: 2000,
-      lastAttemptAt: 0
-    }]))
-    storage.setItem(LEGACY_APP_BACKFILL_KEY, JSON.stringify([
-      {
-        ownerPubkey: ownerPubkey.toUpperCase(),
-        appId: 'app-1',
-        createdAt: 1000,
-        lastAttemptAt: 500
-      },
-      {
-        ownerPubkey: otherOwnerPubkey,
-        appId: 'app-2',
-        createdAt: 1500,
-        lastAttemptAt: 0
-      }
-    ]))
+    enqueueVaultAcceptedMessage(appBackfillMessage(ownerPubkey, 'app-1'), { storage, now: 1000 })
+    enqueueVaultAcceptedMessage(appBackfillMessage(otherOwnerPubkey, 'app-2'), { storage, now: 1500 })
 
-    const queue = readVaultAcceptedMessageQueue({ storage, now: 3000 })
-
-    assert.deepEqual(queue, [
-      {
-        code: NOSTRDB_APP_BACKFILL_CODE,
-        payload: { ownerPubkey, appId: 'app-1' },
-        createdAt: 1000,
-        lastAttemptAt: 500
-      },
+    assert.equal(removeVaultAcceptedMessage(appBackfillMessage(ownerPubkey.toUpperCase(), 'app-1'), {
+      storage,
+      now: 2000
+    }), true)
+    assert.deepEqual(readVaultAcceptedMessageQueue({ storage, now: 2000 }), [
       {
         code: NOSTRDB_APP_BACKFILL_CODE,
         payload: { ownerPubkey: otherOwnerPubkey, appId: 'app-2' },
@@ -244,7 +219,17 @@ describe('durable vault accepted-message queue', () => {
         lastAttemptAt: 0
       }
     ])
-    assert.equal(storage.data.has(LEGACY_APP_BACKFILL_KEY), false)
-    assert.equal(storage.data.has(KEY), true)
+  })
+
+  it('keeps non-matching queued messages when removing one app request', () => {
+    const ownerPubkey = 'a'.repeat(64)
+
+    enqueueVaultAcceptedMessage(appBackfillMessage(ownerPubkey, 'app-1'), { storage, now: 1000 })
+
+    assert.equal(removeVaultAcceptedMessage(appBackfillMessage(ownerPubkey, 'app-2'), {
+      storage,
+      now: 2000
+    }), false)
+    assert.equal(readVaultAcceptedMessageQueue({ storage, now: 2000 }).length, 1)
   })
 })

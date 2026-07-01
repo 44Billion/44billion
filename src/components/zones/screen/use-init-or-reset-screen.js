@@ -5,7 +5,8 @@ import { generateB62SecretKey as getB62PublicKeyStub } from '#helpers/nip01.js'
 import { addressObjToAppId } from '#helpers/app.js'
 import { base16ToBase62, base62ToBase16 } from '#helpers/base62.js'
 import { jsVars } from '#assets/styles/theme.js'
-import { requestNostrDbAppBackfillsForWorkspace } from './nostrdb-app-backfill.js'
+import { cleanupNostrDbAppForWorkspace } from './helpers/nostrdb-app-lifecycle.js'
+import { requestNostrDbAppBackfillsForWorkspace } from './helpers/nostrdb-app-backfill.js'
 
 // Mobile devices are more likely on metered/cellular data, so we default to
 // 'wifi' for them. Prefer UA Client Hints (Chromium); fall back to the same
@@ -313,10 +314,24 @@ export async function setAccountsState (nextAccountState, storage, tabStorage) {
     storage.session_workspaceKeys$(nextWorkspaceKeys)
 
     // Remove all apps and workspace data for unused workspaces
+    const cleanedOwnerApps = new Set()
     for (const wsKey of workspacesToRemove) {
       const pinnedAppIds = storage[`session_workspaceByKey_${wsKey}_pinnedAppIds$`]() || []
       const unpinnedAppIds = storage[`session_workspaceByKey_${wsKey}_unpinnedAppIds$`]() || []
       const allAppIds = [...new Set([...pinnedAppIds, ...unpinnedAppIds])]
+      const userPk = storage[`session_workspaceByKey_${wsKey}_userPk$`]()
+
+      for (const appId of allAppIds) {
+        const cleanupKey = `${userPk}:${appId}`
+        if (cleanedOwnerApps.has(cleanupKey)) continue
+        cleanedOwnerApps.add(cleanupKey)
+        await cleanupNostrDbAppForWorkspace({
+          storage,
+          wsKey,
+          appId,
+          excludeWorkspaceKeys: workspacesToRemoveSet
+        })
+      }
 
       storage[`session_workspaceByKey_${wsKey}_unpinnedCoreAppIdsObj$`](undefined)
       storage[`session_workspaceByKey_${wsKey}_pinnedAppIds$`](undefined)

@@ -160,6 +160,54 @@ describe('trusted vault nostrdb bridge helpers', () => {
     assert.equal(typeof added[0].options.signEvent, 'function')
   })
 
+  it('skips trusted-vault app event imports when app is no longer installed', async () => {
+    const ownerPubkey = 'a'.repeat(64)
+    const events = [{ id: '1'.repeat(64), kind: 30078 }, { id: '2'.repeat(64), kind: 30078 }]
+    const added = []
+
+    assert.deepEqual(await runTrustedVaultNostrDbMethod({
+      vaultPort: 'vault-port',
+      ownerPubkey,
+      isAppInstalled: ({ ownerPubkey: seenOwnerPubkey, appId }) => {
+        assert.equal(seenOwnerPubkey, ownerPubkey)
+        assert.equal(appId, 'app-1')
+        return false
+      },
+      getNostrDb: () => ({
+        async add (event, options) {
+          added.push({ event, options })
+          return { ok: true }
+        }
+      }),
+      method: 'addEventsForApp',
+      params: ['app-1', events]
+    }), { added: 0, skipped: 2 })
+
+    assert.deepEqual(added, [])
+  })
+
+  it('imports trusted-vault app events when app is still installed', async () => {
+    const ownerPubkey = 'a'.repeat(64)
+    const events = [{ id: '1'.repeat(64), kind: 30078 }]
+    const added = []
+
+    assert.deepEqual(await runTrustedVaultNostrDbMethod({
+      vaultPort: 'vault-port',
+      ownerPubkey,
+      isAppInstalled: () => true,
+      getNostrDb: () => ({
+        async add (event, options) {
+          added.push({ event, options })
+          return { ok: true }
+        }
+      }),
+      method: 'addEventsForApp',
+      params: ['app-1', events]
+    }), { added: 1, skipped: 0 })
+
+    assert.deepEqual(added.map(call => call.event), events)
+  })
+
   it('streams subscription items and sends a done sentinel', async () => {
     const ownerPubkey = 'f'.repeat(64)
     const replies = []

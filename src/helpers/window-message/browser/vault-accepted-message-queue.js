@@ -1,5 +1,4 @@
 const KEY = '44billion:vault-accepted-message-queue:v1'
-const LEGACY_APP_BACKFILL_KEY = '44billion:nostrdb-app-backfill-queue:v1'
 const NOSTRDB_APP_BACKFILL_CODE = 'NOSTRDB_APP_BACKFILL'
 const HEX32 = /^[0-9a-f]{64}$/i
 const MAX_ITEMS = 100
@@ -55,19 +54,6 @@ function normalizeItem (value) {
   }
 }
 
-function normalizeLegacyAppBackfillItem (value) {
-  if (!value || typeof value !== 'object') return null
-  return normalizeItem({
-    code: NOSTRDB_APP_BACKFILL_CODE,
-    payload: {
-      ownerPubkey: value.ownerPubkey,
-      appId: value.appId
-    },
-    createdAt: value.createdAt,
-    lastAttemptAt: value.lastAttemptAt
-  })
-}
-
 function parseQueue (storage, key, normalize) {
   try {
     const parsed = JSON.parse(storage?.getItem?.(key) || '[]')
@@ -79,10 +65,6 @@ function parseQueue (storage, key, normalize) {
 
 function readStoredQueue (storage = globalThis.localStorage) {
   return parseQueue(storage, KEY, normalizeItem)
-}
-
-function readLegacyQueue (storage = globalThis.localStorage) {
-  return parseQueue(storage, LEGACY_APP_BACKFILL_KEY, normalizeLegacyAppBackfillItem)
 }
 
 function writeQueue (items, storage = globalThis.localStorage) {
@@ -109,12 +91,8 @@ function pruneQueue (items, now = nowMs()) {
 }
 
 function readQueue (storage = globalThis.localStorage, now = nowMs()) {
-  const queue = pruneQueue([
-    ...readStoredQueue(storage),
-    ...readLegacyQueue(storage)
-  ], now)
+  const queue = pruneQueue(readStoredQueue(storage), now)
   writeQueue(queue, storage)
-  storage?.removeItem?.(LEGACY_APP_BACKFILL_KEY)
   return queue
 }
 
@@ -141,6 +119,19 @@ export function enqueueVaultAcceptedMessage (message, {
 
 export function readVaultAcceptedMessageQueue ({ storage = globalThis.localStorage, now = nowMs() } = {}) {
   return readQueue(storage, now)
+}
+
+export function removeVaultAcceptedMessage (message, {
+  storage = globalThis.localStorage,
+  now = nowMs()
+} = {}) {
+  const normalized = normalizeItem({ ...message, createdAt: now, lastAttemptAt: 0 })
+  if (!normalized) return false
+  const queue = readQueue(storage, now)
+  const nextQueue = removeItem(queue, normalized)
+  if (nextQueue.length === queue.length) return false
+  writeQueue(pruneQueue(nextQueue, now), storage)
+  return true
 }
 
 export async function flushVaultAcceptedMessageQueue ({
@@ -189,7 +180,6 @@ export async function flushVaultAcceptedMessageQueue ({
 
 export const vaultAcceptedMessageQueueInternals = {
   KEY,
-  LEGACY_APP_BACKFILL_KEY,
   MAX_ITEMS,
   SIX_MONTHS_MS,
   RETRY_THROTTLE_MS,
