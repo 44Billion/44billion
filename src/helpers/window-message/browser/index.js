@@ -14,6 +14,7 @@ import { base36ToBase16 } from '#helpers/base36.js'
 import { base16ToBase62 } from '#helpers/base62.js'
 import { appEncode, appDecode } from '#helpers/nip19.js'
 import { streamFileChunksFromDb, getFileChunksFromDb, deleteFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
+import { withSingleNappOpenedAtByOwner } from '#services/idb/browser/queries/site-manifest.js'
 import { getNostrDb } from '#services/idb/nostrdb/index.js'
 import AppFileManager from '#services/app-file-manager/index.js'
 import { setWebStorageItem } from '#hooks/use-web-storage.js'
@@ -83,7 +84,9 @@ export async function initMessageListener (
     if (onFileNotCached) onFileNotCached()
     return
   }
-  if (isSingleNapp) appFiles.updateSiteManifestMetadata({ lastOpenedAsSingleNappAt: Date.now() })
+  if (isSingleNapp) {
+    appFiles.updateSiteManifestMetadata(withSingleNappOpenedAtByOwner(appFiles.siteManifest.meta, userPkB16))
+  }
 
   let currentTrustedAppPagePort = null
   let currentAppPagePort = null

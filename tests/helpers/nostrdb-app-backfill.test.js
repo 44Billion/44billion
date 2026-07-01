@@ -138,7 +138,8 @@ describe('nostrdb app backfill launcher helper', () => {
           deletes.push({ owner, appId })
           return 1
         }
-      })
+      }),
+      getSiteManifestFromDb: async () => null
     }), true)
 
     assert.deepEqual(readVaultAcceptedMessageQueue(), [])
@@ -166,7 +167,8 @@ describe('nostrdb app backfill launcher helper', () => {
           deletes.push(appId)
           return 1
         }
-      })
+      }),
+      getSiteManifestFromDb: async () => null
     }), false)
 
     assert.equal(readVaultAcceptedMessageQueue().length, 1)
@@ -198,8 +200,113 @@ describe('nostrdb app backfill launcher helper', () => {
       excludeWorkspaceKeys: ['ws1'],
       getNostrDb: () => {
         throw new Error('should not open db')
-      }
+      },
+      getSiteManifestFromDb: async () => null
     }), false)
+  })
+
+  it('keeps owner app data when that owner recently opened the app as a single napp', async () => {
+    const ownerPubkey = '3'.repeat(64)
+    const userPk = base16ToBase62(ownerPubkey)
+    const now = 100_000
+    const storage = storageFor({
+      userPk,
+      appKeysByWorkspace: { ws1: { 'app-1': ['key-1'] } }
+    })
+    const deletes = []
+
+    requestNostrDbAppBackfillForWorkspace({ storage, wsKey: 'ws1', appId: 'app-1' })
+
+    assert.equal(await cleanupNostrDbAppForWorkspace({
+      storage,
+      wsKey: 'ws1',
+      appId: 'app-1',
+      excludeWorkspaceKeys: ['ws1'],
+      getSiteManifestFromDb: async () => ({
+        meta: { singleNappOpenedAtByOwner: { [ownerPubkey]: now } }
+      }),
+      getNostrDb: () => ({
+        async deleteEventsByApp (appId) {
+          deletes.push(appId)
+          return 1
+        }
+      }),
+      now
+    }), false)
+
+    assert.equal(readVaultAcceptedMessageQueue().length, 1)
+    assert.deepEqual(deletes, [])
+  })
+
+  it('does not let another owner single-napp usage preserve this owner app data', async () => {
+    const ownerPubkey = '4'.repeat(64)
+    const otherOwnerPubkey = '5'.repeat(64)
+    const userPk = base16ToBase62(ownerPubkey)
+    const now = 100_000
+    const storage = storageFor({
+      userPk,
+      appKeysByWorkspace: { ws1: { 'app-1': ['key-1'] } }
+    })
+    const deletes = []
+
+    assert.equal(await cleanupNostrDbAppForWorkspace({
+      storage,
+      wsKey: 'ws1',
+      appId: 'app-1',
+      excludeWorkspaceKeys: ['ws1'],
+      getSiteManifestFromDb: async () => ({
+        meta: { singleNappOpenedAtByOwner: { [otherOwnerPubkey]: now } }
+      }),
+      getNostrDb: owner => ({
+        async deleteEventsByApp (appId) {
+          deletes.push({ owner, appId })
+          return 1
+        }
+      }),
+      now
+    }), true)
+
+    assert.deepEqual(deletes, [{ owner: ownerPubkey, appId: 'app-1' }])
+  })
+
+  it('removes the owner single-napp entry when deleting owner app data', async () => {
+    const ownerPubkey = '6'.repeat(64)
+    const otherOwnerPubkey = '7'.repeat(64)
+    const userPk = base16ToBase62(ownerPubkey)
+    const manifest = {
+      meta: {
+        singleNappOpenedAtByOwner: {
+          [ownerPubkey]: 1,
+          [otherOwnerPubkey]: 2
+        }
+      }
+    }
+    const storage = storageFor({
+      userPk,
+      appKeysByWorkspace: { ws1: { 'app-1': ['key-1'] } }
+    })
+    const saved = []
+
+    assert.equal(await cleanupNostrDbAppForWorkspace({
+      storage,
+      wsKey: 'ws1',
+      appId: 'app-1',
+      excludeWorkspaceKeys: ['ws1'],
+      getSiteManifestFromDb: async () => manifest,
+      saveSiteManifestToDb: async (event, metadata) => saved.push({ event, metadata }),
+      getNostrDb: () => ({
+        async deleteEventsByApp () {
+          return 1
+        }
+      })
+    }), true)
+
+    assert.deepEqual(saved, [{
+      event: manifest,
+      metadata: {
+        singleNappOpenedAtByOwner: { [otherOwnerPubkey]: 2 }
+      }
+    }])
   })
 
   it('treats removed owner workspaces as absent during cleanup', async () => {
@@ -225,7 +332,8 @@ describe('nostrdb app backfill launcher helper', () => {
           deletes.push({ owner, appId })
           return 2
         }
-      })
+      }),
+      getSiteManifestFromDb: async () => null
     }), true)
     assert.deepEqual(deletes, [{ owner: ownerPubkey, appId: 'app-1' }])
   })

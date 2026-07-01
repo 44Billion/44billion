@@ -1,9 +1,21 @@
 import AppFileDownloader from '#services/app-file-downloader/index.js'
-import { getSiteManifestFromDb, saveSiteManifestToDb } from '#services/idb/browser/queries/site-manifest.js'
+import {
+  getSiteManifestFromDb,
+  listSiteManifestsFromDb,
+  normalizeSingleNappOpenedAtByOwner,
+  saveSiteManifestToDb
+} from '#services/idb/browser/queries/site-manifest.js'
 import { deleteStaleFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
 import { addressObjToAppId } from '#helpers/app.js'
+import { base62ToBase16 } from '#helpers/base62.js'
 import { getUserRelays } from '#helpers/nostr-queries.js'
+import { cleanupNostrDbAppForOwner as cleanupNostrDbAppForOwnerBase } from '#helpers/nostrdb-app-cleanup.js'
 import { setWebStorageItem } from '#helpers/web-storage.js'
+import { removeVaultAcceptedMessage } from '#helpers/window-message/browser/vault-accepted-message-queue.js'
+import { getNostrDb } from '#services/idb/nostrdb/index.js'
+
+const HEX_PUBKEY = /^[0-9a-f]{64}$/i
+const SINGLE_NAPP_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 
 export default class AppUpdater {
   static _pendingSearches = new Map()
@@ -43,6 +55,114 @@ export default class AppUpdater {
     })
 
     return Array.from(appIds)
+  }
+
+  static _readJsonStorage (storage, key, fallback) {
+    try {
+      const raw = storage?.getItem?.(key)
+      return raw == null ? fallback : JSON.parse(raw)
+    } catch {
+      return fallback
+    }
+  }
+
+  static getInstalledOwnerPubkeysForApp (appId, { _localStorage } = {}) {
+    const storage = _localStorage || (typeof localStorage !== 'undefined' ? localStorage : null)
+    if (!storage || !appId) return new Set()
+
+    const defaultUserPk = this._readJsonStorage(storage, 'session_defaultUserPk', null)
+    const workspaceKeys = this._readJsonStorage(storage, 'session_workspaceKeys', [])
+    const owners = new Set()
+
+    for (const wsKey of workspaceKeys) {
+      const pinned = this._readJsonStorage(storage, `session_workspaceByKey_${wsKey}_pinnedAppIds`, [])
+      const unpinned = this._readJsonStorage(storage, `session_workspaceByKey_${wsKey}_unpinnedAppIds`, [])
+      if (!pinned.includes(appId) && !unpinned.includes(appId)) continue
+
+      const userPk = this._readJsonStorage(storage, `session_workspaceByKey_${wsKey}_userPk`, null)
+      if (!userPk || userPk === defaultUserPk) continue
+
+      try {
+        const owner = base62ToBase16(userPk).toLowerCase()
+        if (HEX_PUBKEY.test(owner)) owners.add(owner)
+      } catch (_err) {
+        continue
+      }
+    }
+
+    return owners
+  }
+
+  static async getCleanupAppIds ({
+    _localStorage,
+    _listSiteManifestsFromDb = listSiteManifestsFromDb,
+    _addressObjToAppId = addressObjToAppId
+  } = {}) {
+    const appIds = new Set(this.getInstalledAppIds({ _localStorage }))
+    for (const manifest of await _listSiteManifestsFromDb()) {
+      const dTag = manifest.tags.find(t => t[0] === 'd')?.[1] ?? ''
+      try {
+        appIds.add(_addressObjToAppId({
+          kind: manifest.kind,
+          pubkey: manifest.pubkey,
+          dTag
+        }))
+      } catch (_err) {
+        continue
+      }
+    }
+    return Array.from(appIds)
+  }
+
+  static partitionSingleNappOwners (singleNappOpenedAtByOwner, {
+    now = Date.now(),
+    retentionMs = SINGLE_NAPP_RETENTION_MS
+  } = {}) {
+    const owners = normalizeSingleNappOpenedAtByOwner(singleNappOpenedAtByOwner)
+    const cutoff = now - retentionMs
+    const recent = {}
+    const stale = []
+
+    for (const [owner, openedAt] of Object.entries(owners)) {
+      if (openedAt >= cutoff) recent[owner] = openedAt
+      else stale.push(owner)
+    }
+
+    return {
+      recent,
+      stale,
+      changed: Object.keys(recent).length !== Object.keys(owners).length
+    }
+  }
+
+  static async cleanupOwnerAppData (ownerPubkey, appId, {
+    _getNostrDb = getNostrDb,
+    _getSiteManifestFromDb = getSiteManifestFromDb,
+    _saveSiteManifestToDb = saveSiteManifestToDb,
+    _removeVaultAcceptedMessage = removeVaultAcceptedMessage,
+    _updateSingleNappManifest = true
+  } = {}) {
+    return cleanupNostrDbAppForOwnerBase({
+      ownerPubkey,
+      appId,
+      getNostrDb: _getNostrDb,
+      getSiteManifestFromDb: _getSiteManifestFromDb,
+      saveSiteManifestToDb: _saveSiteManifestToDb,
+      removeAcceptedMessage: _removeVaultAcceptedMessage,
+      updateSingleNappManifest: _updateSingleNappManifest,
+      logPrefix: 'Failed to clean up stale single-napp app data'
+    })
+  }
+
+  static clearCachedAppMetadata (appId, {
+    _localStorage,
+    _setWebStorageItem = setWebStorageItem
+  } = {}) {
+    const storage = _localStorage || (typeof localStorage !== 'undefined' ? localStorage : null)
+    if (!storage || !appId) return
+    for (const key of ['icon', 'name', 'description', 'relayHints']) {
+      _setWebStorageItem(storage, `session_appById_${appId}_${key}`, undefined)
+    }
   }
 
   // If appIds is empty, search for all apps
@@ -184,9 +304,18 @@ export default class AppUpdater {
     _localStorage,
     _sessionStorage,
     _getSiteManifestFromDb = getSiteManifestFromDb,
+    _listSiteManifestsFromDb = listSiteManifestsFromDb,
+    _saveSiteManifestToDb = saveSiteManifestToDb,
     _deleteStaleFileChunksFromDb = deleteStaleFileChunksFromDb,
+    _clearCachedFilesById = async appId => (await import('#services/app-file-manager/index.js')).default.clearCachedFilesById(appId),
+    _getNostrDb = getNostrDb,
+    _removeVaultAcceptedMessage = removeVaultAcceptedMessage,
+    _setWebStorageItem = setWebStorageItem,
+    _addressObjToAppId = addressObjToAppId,
     _navigator = (typeof navigator !== 'undefined' ? navigator : null),
     _setTimeout = setTimeout,
+    _now = Date.now,
+    singleNappRetentionMs = SINGLE_NAPP_RETENTION_MS,
     ifAvailable = false
   } = {}) {
     if (!_navigator?.locks) return
@@ -195,7 +324,12 @@ export default class AppUpdater {
     return _navigator.locks.request('app-cleanup-job', { ifAvailable }, async (lock) => {
       if (!lock) return
 
-      const idsToCheck = appIds || this.getInstalledAppIds({ _localStorage })
+      const now = _now()
+      const idsToCheck = appIds || await this.getCleanupAppIds({
+        _localStorage,
+        _listSiteManifestsFromDb,
+        _addressObjToAppId
+      })
       const openApps = []
 
       for (const appId of idsToCheck) {
@@ -204,6 +338,41 @@ export default class AppUpdater {
         } else {
           const manifest = await _getSiteManifestFromDb(appId)
           if (manifest) {
+            const installedOwners = this.getInstalledOwnerPubkeysForApp(appId, { _localStorage })
+            const { recent, stale, changed } = this.partitionSingleNappOwners(
+              manifest.meta?.singleNappOpenedAtByOwner,
+              { now, retentionMs: singleNappRetentionMs }
+            )
+
+            for (const ownerPubkey of stale) {
+              if (installedOwners.has(ownerPubkey)) continue
+              await this.cleanupOwnerAppData(ownerPubkey, appId, {
+                _getNostrDb,
+                _getSiteManifestFromDb,
+                _saveSiteManifestToDb,
+                _removeVaultAcceptedMessage,
+                _updateSingleNappManifest: false
+              })
+            }
+
+            const hasInstalledOwner = installedOwners.size > 0
+            const hasRecentSingleNappOwner = Object.keys(recent).length > 0
+            if (!hasInstalledOwner && !hasRecentSingleNappOwner) {
+              await _clearCachedFilesById(appId)
+              this.clearCachedAppMetadata(appId, {
+                _localStorage,
+                _setWebStorageItem
+              })
+              continue
+            }
+
+            if (changed) {
+              await _saveSiteManifestToDb(manifest, {
+                ...manifest.meta,
+                singleNappOpenedAtByOwner: recent
+              })
+            }
+
             const fileRootHashes = manifest.tags
               .filter(t => t[0] === 'path')
               .map(t => t[2])
@@ -218,9 +387,18 @@ export default class AppUpdater {
             _localStorage,
             _sessionStorage,
             _getSiteManifestFromDb,
+            _listSiteManifestsFromDb,
+            _saveSiteManifestToDb,
             _deleteStaleFileChunksFromDb,
+            _clearCachedFilesById,
+            _getNostrDb,
+            _removeVaultAcceptedMessage,
+            _setWebStorageItem,
+            _addressObjToAppId,
             _navigator,
-            _setTimeout
+            _setTimeout,
+            _now,
+            singleNappRetentionMs
           })
         }, 5 * 60 * 1000)
       }
@@ -350,9 +528,11 @@ export default class AppUpdater {
       }
 
       const localManifest = await _getSiteManifestFromDb(appId)
-      const lastOpenedAsSingleNappAt = localManifest?.meta?.lastOpenedAsSingleNappAt || 0
+      const singleNappOpenedAtByOwner = normalizeSingleNappOpenedAtByOwner(
+        localManifest?.meta?.singleNappOpenedAtByOwner
+      )
 
-      await _saveSiteManifestToDb(nextSiteManifestEvent, { lastOpenedAsSingleNappAt })
+      await _saveSiteManifestToDb(nextSiteManifestEvent, { singleNappOpenedAtByOwner })
     } finally {
       this._releaseUpdateSlot()
     }

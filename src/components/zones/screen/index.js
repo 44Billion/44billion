@@ -16,7 +16,11 @@ import {
 import windowsBackgroundImage from '#assets/media/bg-ostrich-stained-glass.webp'
 import useAppRouter from './use-app-router.js'
 import useSystemRouter from './use-system-router.js'
-import { cleanupNostrDbAppForWorkspace } from './helpers/nostrdb-app-lifecycle.js'
+import {
+  cleanupNostrDbAppForWorkspace,
+  hasAnyRecentSingleNappOpen,
+  hasRecentSingleNappOpenForOwner
+} from './helpers/nostrdb-app-lifecycle.js'
 import '#shared/route.js'
 import { initMessageListener } from '#helpers/window-message/browser/index.js'
 import { isOnline } from '#helpers/network.js'
@@ -407,19 +411,27 @@ f('appWindow', function () {
             if (hasOtherInstances) break
           }
 
-          if (!hasOtherInstances) {
+          let ownerPubkey = ''
+          try { ownerPubkey = base62ToBase16(userPk).toLowerCase() } catch (_err) { ownerPubkey = '' }
+          const recentForOwner = await hasRecentSingleNappOpenForOwner({ appId, ownerPubkey })
+          const anyRecentSingleNapp = recentForOwner || await hasAnyRecentSingleNappOpen({ appId })
+
+          if (!hasOtherInstances && !anyRecentSingleNapp) {
             storage[`session_appById_${appId}_icon$`](undefined)
             storage[`session_appById_${appId}_name$`](undefined)
             storage[`session_appById_${appId}_description$`](undefined)
             storage[`session_appById_${appId}_relayHints$`](undefined)
-            if (appSubdomain != null) {
-              storage[`session_subdomainByUserAndApp_${userPk}_${appId}$`](undefined)
-              storage[`session_subdomainToApp_${appSubdomain}$`](undefined)
-            }
             try {
               await AppFileManager.clearCachedFilesById(appId)
             } catch (err) {
               console.error('Failed to clear app files:', err)
+            }
+          }
+
+          if (!hasOtherInstances && !recentForOwner) {
+            if (appSubdomain != null) {
+              storage[`session_subdomainByUserAndApp_${userPk}_${appId}$`](undefined)
+              storage[`session_subdomainToApp_${appSubdomain}$`](undefined)
             }
           }
         } else {
@@ -1192,7 +1204,7 @@ f('appLaunchersMenu', function () {
         return v
       })
     },
-    removeApp ({ isDeleteStep = false } = {}) {
+    removeApp ({ isDeleteStep = false, preserveAppMetadata = false } = {}) {
       const { id: appId, key: appKey, workspaceKey } = this.app$()
       const appKeys = storage[`session_workspaceByKey_${workspaceKey}_appById_${appId}_appKeys$`]()
       if (!isDeleteStep && appKeys.length <= 1) throw new Error('Cannot remove the last instance of an app')
@@ -1220,6 +1232,7 @@ f('appLaunchersMenu', function () {
         if (hasOtherInstances) break
       }
       if (hasOtherInstances) return
+      if (preserveAppMetadata) return
 
       storage[`session_appById_${appId}_icon$`](undefined)
       storage[`session_appById_${appId}_name$`](undefined)
@@ -1232,9 +1245,14 @@ f('appLaunchersMenu', function () {
       const { id: appId, workspaceKey } = this.app$()
       const userPk = storage[`session_workspaceByKey_${workspaceKey}_userPk$`]()
 
+      let ownerPubkey = ''
+      try { ownerPubkey = base62ToBase16(userPk).toLowerCase() } catch (_err) { ownerPubkey = '' }
+      const recentForOwner = await hasRecentSingleNappOpenForOwner({ appId, ownerPubkey })
+      const anyRecentSingleNapp = recentForOwner || await hasAnyRecentSingleNappOpen({ appId })
+
       const otherWorkspaces = storage.session_workspaceKeys$().filter(wsKey => wsKey !== workspaceKey)
-      let shouldClearAppData = true
-      let shouldClearAppFiles = true
+      let shouldClearAppData = !recentForOwner
+      let shouldClearAppFiles = !anyRecentSingleNapp
       for (const wsKey of otherWorkspaces) {
         const hasApp = storage[`session_workspaceByKey_${wsKey}_appById_${appId}_appKeys$`]()?.length > 0
         if (hasApp) {
@@ -1308,13 +1326,14 @@ f('appLaunchersMenu', function () {
       const { id: appId, workspaceKey } = this.app$()
       const appKeys = storage[`session_workspaceByKey_${workspaceKey}_appById_${appId}_appKeys$`]()
       if (appKeys.length !== 1) throw new Error('Can only delete an app that has a single instance')
+      const preserveAppMetadata = await hasAnyRecentSingleNappOpen({ appId })
       await cleanupNostrDbAppForWorkspace({
         storage,
         wsKey: workspaceKey,
         appId,
         excludeWorkspaceKeys: [workspaceKey]
       })
-      this.removeApp({ isDeleteStep: true }) // may throw
+      this.removeApp({ isDeleteStep: true, preserveAppMetadata }) // may throw
 
       this.close() // close menu
       storage[`session_workspaceByKey_${workspaceKey}_pinnedAppIds$`](v => (v ?? []).filter(v2 => v2 !== appId))

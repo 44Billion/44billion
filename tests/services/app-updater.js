@@ -1,6 +1,7 @@
 import { describe, it, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import AppUpdater from '../../src/services/app-updater/index.js'
+import { base16ToBase62 } from '../../src/helpers/base62.js'
 
 describe('AppUpdater', () => {
   describe('getInstalledAppIds', () => {
@@ -477,7 +478,8 @@ describe('AppUpdater', () => {
 
       const mockDeleteStale = mock.fn(async () => {})
       const mockSaveManifest = mock.fn(async () => {})
-      const mockGetManifest = mock.fn(async () => ({ meta: { lastOpenedAsSingleNappAt: 123 } }))
+      const ownerPubkey = 'a'.repeat(64)
+      const mockGetManifest = mock.fn(async () => ({ meta: { singleNappOpenedAtByOwner: { [ownerPubkey]: 123 } } }))
       const mockAddressToId = mock.fn(() => appId)
 
       const iterator = AppUpdater.updateApp(nextSiteManifestEvent, {
@@ -511,7 +513,7 @@ describe('AppUpdater', () => {
       assert.equal(mockSaveManifest.mock.callCount(), 1)
       const [savedEvent, savedMeta] = mockSaveManifest.mock.calls[0].arguments
       assert.deepEqual(savedEvent, nextSiteManifestEvent)
-      assert.equal(savedMeta.lastOpenedAsSingleNappAt, 123)
+      assert.deepEqual(savedMeta.singleNappOpenedAtByOwner, { [ownerPubkey]: 123 })
     })
 
     it('should stop on download error', async () => {
@@ -706,7 +708,48 @@ describe('AppUpdater', () => {
   })
 
   describe('scheduleCleanup', () => {
+    it('should remove single-napp owner metadata during direct owner app cleanup', async () => {
+      const ownerPubkey = '8'.repeat(64)
+      const otherOwnerPubkey = '9'.repeat(64)
+      const manifest = {
+        meta: {
+          singleNappOpenedAtByOwner: {
+            [ownerPubkey]: 1,
+            [otherOwnerPubkey]: 2
+          }
+        }
+      }
+      const removedMessages = []
+      const deletes = []
+      const saved = []
+
+      assert.equal(await AppUpdater.cleanupOwnerAppData(ownerPubkey, 'app1', {
+        _removeVaultAcceptedMessage: message => { removedMessages.push(message); return true },
+        _getNostrDb: owner => ({
+          async deleteEventsByApp (appId) {
+            deletes.push({ owner, appId })
+          }
+        }),
+        _getSiteManifestFromDb: async () => manifest,
+        _saveSiteManifestToDb: async (event, metadata) => saved.push({ event, metadata })
+      }), true)
+
+      assert.deepEqual(removedMessages, [{
+        code: 'NOSTRDB_APP_BACKFILL',
+        payload: { ownerPubkey, appId: 'app1' }
+      }])
+      assert.deepEqual(deletes, [{ owner: ownerPubkey, appId: 'app1' }])
+      assert.deepEqual(saved, [{
+        event: manifest,
+        metadata: {
+          singleNappOpenedAtByOwner: { [otherOwnerPubkey]: 2 }
+        }
+      }])
+    })
+
     it('should request lock and cleanup closed apps', async () => {
+      const ownerPubkey = '1'.repeat(64)
+      const userPk = base16ToBase62(ownerPubkey)
       const mockNavigator = {
         locks: {
           request: mock.fn(async (name, options, callback) => {
@@ -716,7 +759,14 @@ describe('AppUpdater', () => {
       }
       // Mock isAppOpen to return false (closed)
       const mockLocalStorage = {
-        getItem: mock.fn(() => JSON.stringify([]))
+        getItem: mock.fn((key) => {
+          if (key === 'session_workspaceKeys') return JSON.stringify(['ws1'])
+          if (key === 'session_defaultUserPk') return JSON.stringify('default-user')
+          if (key === 'session_workspaceByKey_ws1_userPk') return JSON.stringify(userPk)
+          if (key === 'session_workspaceByKey_ws1_pinnedAppIds') return JSON.stringify(['app1'])
+          if (key === 'session_workspaceByKey_ws1_unpinnedAppIds') return JSON.stringify([])
+          return null
+        })
       }
       const mockSessionStorage = {
         getItem: mock.fn(() => JSON.stringify([]))
@@ -735,6 +785,119 @@ describe('AppUpdater', () => {
       assert.equal(mockNavigator.locks.request.mock.callCount(), 1)
       assert.equal(mockDeleteStale.mock.callCount(), 1)
       assert.deepEqual(mockDeleteStale.mock.calls[0].arguments, ['app1', ['hash1']])
+    })
+
+    it('should prune stale single-napp owners while keeping recent owner caches', async () => {
+      const staleOwner = '2'.repeat(64)
+      const recentOwner = '3'.repeat(64)
+      const now = 100 * 24 * 60 * 60 * 1000
+      const mockNavigator = {
+        locks: {
+          request: mock.fn(async (name, options, callback) => callback({ name }))
+        }
+      }
+      const mockLocalStorage = {
+        getItem: mock.fn(() => JSON.stringify([]))
+      }
+      const mockSessionStorage = {
+        getItem: mock.fn(() => JSON.stringify([]))
+      }
+      const mockGetManifest = mock.fn(async () => ({
+        tags: [['path', 'file1.js', 'hash1']],
+        meta: {
+          singleNappOpenedAtByOwner: {
+            [staleOwner]: 1,
+            [recentOwner]: now - 1
+          }
+        }
+      }))
+      const mockSaveManifest = mock.fn(async () => {})
+      const mockDeleteStale = mock.fn(async () => {})
+      const mockClearCachedFiles = mock.fn(async () => {})
+      const removedMessages = []
+      const deletes = []
+
+      await AppUpdater.scheduleCleanup(['app1'], {
+        _navigator: mockNavigator,
+        _localStorage: mockLocalStorage,
+        _sessionStorage: mockSessionStorage,
+        _getSiteManifestFromDb: mockGetManifest,
+        _saveSiteManifestToDb: mockSaveManifest,
+        _deleteStaleFileChunksFromDb: mockDeleteStale,
+        _clearCachedFilesById: mockClearCachedFiles,
+        _removeVaultAcceptedMessage: message => { removedMessages.push(message); return true },
+        _getNostrDb: owner => ({
+          async deleteEventsByApp (appId) {
+            deletes.push({ owner, appId })
+          }
+        }),
+        _now: () => now
+      })
+
+      assert.deepEqual(deletes, [{ owner: staleOwner, appId: 'app1' }])
+      assert.deepEqual(removedMessages, [{
+        code: 'NOSTRDB_APP_BACKFILL',
+        payload: { ownerPubkey: staleOwner, appId: 'app1' }
+      }])
+      assert.equal(mockSaveManifest.mock.callCount(), 1)
+      assert.deepEqual(mockSaveManifest.mock.calls[0].arguments[1].singleNappOpenedAtByOwner, {
+        [recentOwner]: now - 1
+      })
+      assert.equal(mockDeleteStale.mock.callCount(), 1)
+      assert.equal(mockClearCachedFiles.mock.callCount(), 0)
+    })
+
+    it('should delete stale single-napp app data and cached files when no owner remains', async () => {
+      const staleOwner = '4'.repeat(64)
+      const now = 100 * 24 * 60 * 60 * 1000
+      const mockNavigator = {
+        locks: {
+          request: mock.fn(async (name, options, callback) => callback({ name }))
+        }
+      }
+      const mockLocalStorage = {
+        getItem: mock.fn(() => JSON.stringify([]))
+      }
+      const mockSessionStorage = {
+        getItem: mock.fn(() => JSON.stringify([]))
+      }
+      const mockGetManifest = mock.fn(async () => ({
+        tags: [['path', 'file1.js', 'hash1']],
+        meta: {
+          singleNappOpenedAtByOwner: { [staleOwner]: 1 }
+        }
+      }))
+      const mockDeleteStale = mock.fn(async () => {})
+      const mockClearCachedFiles = mock.fn(async () => {})
+      const clearedMetadata = []
+      const deletes = []
+
+      await AppUpdater.scheduleCleanup(['app1'], {
+        _navigator: mockNavigator,
+        _localStorage: mockLocalStorage,
+        _sessionStorage: mockSessionStorage,
+        _getSiteManifestFromDb: mockGetManifest,
+        _deleteStaleFileChunksFromDb: mockDeleteStale,
+        _clearCachedFilesById: mockClearCachedFiles,
+        _setWebStorageItem: (storage, key, value) => clearedMetadata.push({ key, value }),
+        _removeVaultAcceptedMessage: () => true,
+        _getNostrDb: owner => ({
+          async deleteEventsByApp (appId) {
+            deletes.push({ owner, appId })
+          }
+        }),
+        _now: () => now
+      })
+
+      assert.deepEqual(deletes, [{ owner: staleOwner, appId: 'app1' }])
+      assert.equal(mockDeleteStale.mock.callCount(), 0)
+      assert.deepEqual(mockClearCachedFiles.mock.calls[0].arguments, ['app1'])
+      assert.deepEqual(clearedMetadata.map(v => v.key), [
+        'session_appById_app1_icon',
+        'session_appById_app1_name',
+        'session_appById_app1_description',
+        'session_appById_app1_relayHints'
+      ])
     })
 
     it('should reschedule if app is open', async () => {
