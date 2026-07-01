@@ -13,9 +13,11 @@ import { cleanupNostrDbAppForOwner as cleanupNostrDbAppForOwnerBase } from '#hel
 import { setWebStorageItem } from '#helpers/web-storage.js'
 import { removeVaultAcceptedMessage } from '#helpers/window-message/browser/vault-accepted-message-queue.js'
 import { getNostrDb } from '#services/idb/nostrdb/index.js'
+import { jsVars } from '#assets/styles/theme.js'
 
 const HEX_PUBKEY = /^[0-9a-f]{64}$/i
 const SINGLE_NAPP_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
+const SINGLE_NAPP_OPEN_COUNTS_KEY = 'session_singleNappOpenAppCounts'
 
 export default class AppUpdater {
   static _pendingSearches = new Map()
@@ -66,6 +68,12 @@ export default class AppUpdater {
     }
   }
 
+  static _writeJsonStorage (storage, key, value) {
+    if (!storage) return
+    if (value === undefined) storage.removeItem?.(key)
+    else storage.setItem?.(key, JSON.stringify(value))
+  }
+
   static getInstalledOwnerPubkeysForApp (appId, { _localStorage } = {}) {
     const storage = _localStorage || (typeof localStorage !== 'undefined' ? localStorage : null)
     if (!storage || !appId) return new Set()
@@ -112,6 +120,40 @@ export default class AppUpdater {
       }
     }
     return Array.from(appIds)
+  }
+
+  static async getEmbeddedOnlyAppIds ({
+    _localStorage,
+    _listSiteManifestsFromDb = listSiteManifestsFromDb,
+    _addressObjToAppId = addressObjToAppId,
+    _now = Date.now,
+    singleNappRetentionMs = SINGLE_NAPP_RETENTION_MS
+  } = {}) {
+    const installedAppIds = new Set(this.getInstalledAppIds({ _localStorage }))
+    const embeddedAppIds = new Set()
+    const now = _now()
+
+    for (const manifest of await _listSiteManifestsFromDb()) {
+      const { recent } = this.partitionSingleNappOwners(
+        manifest.meta?.singleNappOpenedAtByOwner,
+        { now, retentionMs: singleNappRetentionMs }
+      )
+      if (Object.keys(recent).length === 0) continue
+
+      const dTag = manifest.tags.find(t => t[0] === 'd')?.[1] ?? ''
+      try {
+        const appId = _addressObjToAppId({
+          kind: manifest.kind,
+          pubkey: manifest.pubkey,
+          dTag
+        })
+        if (!installedAppIds.has(appId)) embeddedAppIds.add(appId)
+      } catch (_err) {
+        continue
+      }
+    }
+
+    return Array.from(embeddedAppIds)
   }
 
   static partitionSingleNappOwners (singleNappOpenedAtByOwner, {
@@ -163,6 +205,62 @@ export default class AppUpdater {
     for (const key of ['icon', 'name', 'description', 'relayHints']) {
       _setWebStorageItem(storage, `session_appById_${appId}_${key}`, undefined)
     }
+  }
+
+  // Mobile devices are more likely on metered/cellular data, so we default to
+  // 'wifi' for them. Prefer UA Client Hints (Chromium); fall back to the same
+  // viewport breakpoint the UI uses for "mobile".
+  static getDefaultUpdateMode ({
+    _navigator = (typeof navigator !== 'undefined' ? navigator : null),
+    _window = (typeof window !== 'undefined' ? window : null)
+  } = {}) {
+    let isMobile = false
+    if (typeof _navigator?.userAgentData?.mobile === 'boolean') {
+      isMobile = _navigator.userAgentData.mobile
+    } else if (typeof _window?.matchMedia === 'function') {
+      isMobile = _window.matchMedia(jsVars.breakpoints.mobile).matches
+    }
+    return isMobile ? 'wifi' : 'always'
+  }
+
+  static _singleNappOpenCounts ({ _sessionStorage } = {}) {
+    const session = _sessionStorage || (typeof sessionStorage !== 'undefined' ? sessionStorage : null)
+    const raw = this._readJsonStorage(session, SINGLE_NAPP_OPEN_COUNTS_KEY, {})
+    const counts = {}
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return counts
+    for (const [appId, count] of Object.entries(raw)) {
+      const parsed = Number(count)
+      if (appId && Number.isSafeInteger(parsed) && parsed > 0) counts[appId] = parsed
+    }
+    return counts
+  }
+
+  static markSingleNappOpen (appId, { _sessionStorage } = {}) {
+    const session = _sessionStorage || (typeof sessionStorage !== 'undefined' ? sessionStorage : null)
+    if (!session || !appId) return () => {}
+
+    const counts = this._singleNappOpenCounts({ _sessionStorage: session })
+    counts[appId] = (counts[appId] || 0) + 1
+    this._writeJsonStorage(session, SINGLE_NAPP_OPEN_COUNTS_KEY, counts)
+
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      const nextCounts = this._singleNappOpenCounts({ _sessionStorage: session })
+      const nextCount = (nextCounts[appId] || 0) - 1
+      if (nextCount > 0) nextCounts[appId] = nextCount
+      else delete nextCounts[appId]
+      this._writeJsonStorage(
+        session,
+        SINGLE_NAPP_OPEN_COUNTS_KEY,
+        Object.keys(nextCounts).length ? nextCounts : undefined
+      )
+    }
+  }
+
+  static isSingleNappOpen (appId, { _sessionStorage } = {}) {
+    return (this._singleNappOpenCounts({ _sessionStorage })[appId] || 0) > 0
   }
 
   // If appIds is empty, search for all apps
@@ -289,6 +387,8 @@ export default class AppUpdater {
 
   static isAppOpen (appId, { _sessionStorage, _localStorage } = {}) {
     const session = _sessionStorage || (typeof sessionStorage !== 'undefined' ? sessionStorage : null)
+    if (this.isSingleNappOpen(appId, { _sessionStorage: session })) return true
+
     const local = _localStorage || (typeof localStorage !== 'undefined' ? localStorage : null)
     if (!session || !local) return false
     const workspaceKeys = JSON.parse(local.getItem('session_workspaceKeys') || '[]')
@@ -411,6 +511,7 @@ export default class AppUpdater {
 
   static async scheduleUpdateCheck ({
     _navigator = (typeof navigator !== 'undefined' ? navigator : null),
+    _window = (typeof window !== 'undefined' ? window : null),
     _setTimeout = setTimeout,
     ifAvailable = false,
     interval = 15 * 60 * 1000,
@@ -434,6 +535,23 @@ export default class AppUpdater {
             }
           }
         }
+
+        const embeddedMode = this.getDefaultUpdateMode({ _navigator, _window })
+        const shouldAutoApplyEmbedded = embeddedMode === 'always' ||
+          (embeddedMode === 'wifi' && !this._isMetered({ _navigator }))
+        if (shouldAutoApplyEmbedded) {
+          const embeddedAppIds = await this.getEmbeddedOnlyAppIds(deps)
+          if (embeddedAppIds.length > 0) {
+            const embeddedUpdates = await this.searchForUpdates(embeddedAppIds, deps)
+            const embeddedEvents = Object.values(embeddedUpdates).map(u => u.event)
+            if (embeddedEvents.length > 0) {
+              for await (const report of this.updateApps(embeddedEvents, deps)) {
+                if (report.error) console.error(`Auto update of embedded app ${report.appId} failed`, report.error)
+              }
+            }
+          }
+        }
+
         await this.refreshUnreadCount(deps)
       } catch (err) {
         console.error('Update check failed', err)
@@ -442,6 +560,7 @@ export default class AppUpdater {
       _setTimeout(() => {
         this.scheduleUpdateCheck({
           _navigator,
+          _window,
           _setTimeout,
           interval,
           ...deps

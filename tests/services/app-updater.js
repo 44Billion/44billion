@@ -3,6 +3,25 @@ import assert from 'node:assert/strict'
 import AppUpdater from '../../src/services/app-updater/index.js'
 import { base16ToBase62 } from '../../src/helpers/base62.js'
 
+function storageFromEntries (entries = {}) {
+  const data = new Map(Object.entries(entries).map(([key, value]) => [key, JSON.stringify(value)]))
+  return {
+    getItem: key => data.get(String(key)) ?? null,
+    removeItem: key => { data.delete(String(key)) },
+    setItem: (key, value) => { data.set(String(key), String(value)) }
+  }
+}
+
+function siteManifest (appId, meta = {}) {
+  return {
+    kind: 35128,
+    pubkey: 'a'.repeat(64),
+    created_at: 100,
+    tags: [['d', appId], ['path', `${appId}.js`, `${appId}-hash`]],
+    meta
+  }
+}
+
 describe('AppUpdater', () => {
   describe('getInstalledAppIds', () => {
     it('should return unique app ids from all workspaces', () => {
@@ -277,6 +296,25 @@ describe('AppUpdater', () => {
       assert.equal(mockSet.mock.callCount(), 1)
       assert.equal(mockSet.mock.calls[0].arguments[2], undefined)
     })
+
+    it('does not count embedded-only cached app updates', async () => {
+      const mockGet = mock.fn(async () => {
+        throw new Error('no installed apps should be read')
+      })
+      const mockSet = mock.fn()
+
+      AppUpdater.isUserViewingUpdates = false
+      await AppUpdater.refreshUnreadCount({
+        _getSiteManifestFromDb: mockGet,
+        _setWebStorageItem: mockSet,
+        _localStorage: storageFromEntries({
+          session_workspaceKeys: []
+        })
+      })
+
+      assert.equal(mockGet.mock.callCount(), 0)
+      assert.equal(mockSet.mock.calls[0].arguments[2], undefined)
+    })
   })
 
   describe('markUpdateAsSeen', () => {
@@ -338,6 +376,148 @@ describe('AppUpdater', () => {
       assert.equal(AppUpdater._appUpdateMode({ _localStorage: unknown }), 'always')
       const broken = { getItem: mock.fn(() => '{not json') }
       assert.equal(AppUpdater._appUpdateMode({ _localStorage: broken }), 'always')
+    })
+  })
+
+  describe('getDefaultUpdateMode', () => {
+    it('defaults embedded updates to wifi on mobile devices', () => {
+      assert.equal(AppUpdater.getDefaultUpdateMode({
+        _navigator: { userAgentData: { mobile: true } },
+        _window: null
+      }), 'wifi')
+    })
+
+    it('defaults embedded updates to always on desktop devices', () => {
+      assert.equal(AppUpdater.getDefaultUpdateMode({
+        _navigator: { userAgentData: { mobile: false } },
+        _window: null
+      }), 'always')
+    })
+
+    it('falls back to the mobile media query when UA hints are unavailable', () => {
+      assert.equal(AppUpdater.getDefaultUpdateMode({
+        _navigator: {},
+        _window: { matchMedia: mock.fn(() => ({ matches: true })) }
+      }), 'wifi')
+    })
+  })
+
+  describe('getEmbeddedOnlyAppIds', () => {
+    it('returns recent single-napp-only apps and excludes stale or installed apps', async () => {
+      const now = 100 * 24 * 60 * 60 * 1000
+      const recentOwner = 'a'.repeat(64)
+      const staleOwner = 'b'.repeat(64)
+
+      const ids = await AppUpdater.getEmbeddedOnlyAppIds({
+        _localStorage: storageFromEntries({
+          session_workspaceKeys: ['ws1'],
+          session_workspaceByKey_ws1_pinnedAppIds: ['installed-app'],
+          session_workspaceByKey_ws1_unpinnedAppIds: []
+        }),
+        _listSiteManifestsFromDb: async () => [
+          siteManifest('embedded-app', {
+            singleNappOpenedAtByOwner: { [recentOwner]: now - 1 }
+          }),
+          siteManifest('stale-app', {
+            singleNappOpenedAtByOwner: { [staleOwner]: 1 }
+          }),
+          siteManifest('installed-app', {
+            singleNappOpenedAtByOwner: { [recentOwner]: now - 1 }
+          })
+        ],
+        _addressObjToAppId: ({ dTag }) => dTag,
+        _now: () => now
+      })
+
+      assert.deepEqual(ids, ['embedded-app'])
+    })
+  })
+
+  describe('scheduleUpdateCheck', () => {
+    function lockNavigator (extras = {}) {
+      return {
+        ...extras,
+        locks: {
+          request: mock.fn(async (name, options, callback) => callback({ name }))
+        }
+      }
+    }
+
+    it('auto-applies embedded-only updates even when normal updates are manual', async () => {
+      const originalUpdateApps = AppUpdater.updateApps
+      const applied = []
+      AppUpdater.updateApps = mock.fn(async function * (events) {
+        applied.push(events.map(event => event.tags.find(t => t[0] === 'd')?.[1]))
+        yield { appId: 'embedded-app', error: null }
+      })
+
+      try {
+        await AppUpdater.scheduleUpdateCheck({
+          _navigator: lockNavigator({ userAgentData: { mobile: false } }),
+          _window: null,
+          _setTimeout: mock.fn(),
+          _localStorage: storageFromEntries({
+            config_appUpdateMode: 'manual',
+            session_workspaceKeys: ['ws1'],
+            session_workspaceByKey_ws1_pinnedAppIds: ['installed-app'],
+            session_workspaceByKey_ws1_unpinnedAppIds: []
+          }),
+          _listSiteManifestsFromDb: async () => [
+            siteManifest('embedded-app', {
+              singleNappOpenedAtByOwner: { ['c'.repeat(64)]: 1000 }
+            })
+          ],
+          _addressObjToAppId: ({ dTag }) => dTag,
+          _AppFileDownloader: {
+            getSiteManifestEvents: mock.fn(async ids => Object.fromEntries(ids.map(id => [id, {
+              event: { ...siteManifest(id), id: `remote-${id}`, created_at: 200 }
+            }])))
+          },
+          _getSiteManifestFromDb: async id => siteManifest(id),
+          _saveSiteManifestToDb: async () => {},
+          _now: () => 1000
+        })
+
+        assert.deepEqual(applied, [['embedded-app']])
+      } finally {
+        AppUpdater.updateApps = originalUpdateApps
+      }
+    })
+
+    it('skips embedded-only updates on mobile metered connections', async () => {
+      const originalUpdateApps = AppUpdater.updateApps
+      const listManifests = mock.fn(async () => {
+        throw new Error('embedded app scan should be skipped')
+      })
+      AppUpdater.updateApps = mock.fn(async function * () {
+        yield { error: null }
+      })
+
+      try {
+        await AppUpdater.scheduleUpdateCheck({
+          _navigator: lockNavigator({
+            userAgentData: { mobile: true },
+            connection: { metered: true }
+          }),
+          _window: null,
+          _setTimeout: mock.fn(),
+          _localStorage: storageFromEntries({
+            config_appUpdateMode: 'manual',
+            session_workspaceKeys: []
+          }),
+          _listSiteManifestsFromDb: listManifests,
+          _AppFileDownloader: {
+            getSiteManifestEvents: mock.fn(async () => ({}))
+          },
+          _getSiteManifestFromDb: async () => null,
+          _saveSiteManifestToDb: async () => {}
+        })
+
+        assert.equal(listManifests.mock.callCount(), 0)
+        assert.equal(AppUpdater.updateApps.mock.callCount(), 0)
+      } finally {
+        AppUpdater.updateApps = originalUpdateApps
+      }
     })
   })
 
@@ -582,6 +762,45 @@ describe('AppUpdater', () => {
 
       assert.equal(mockGetUserRelays.mock.callCount(), 1)
     })
+
+    it('should defer stale chunk deletion for active embedded single-napp sessions', async () => {
+      const originalScheduleCleanup = AppUpdater.scheduleCleanup
+      const sessionStorage = storageFromEntries()
+      const release = AppUpdater.markSingleNappOpen(appId, { _sessionStorage: sessionStorage })
+      const mockDownloaderInstance = {
+        run: async function * () { yield { progress: 100, error: null } }
+      }
+      const MockAppFileDownloader = class {
+        constructor () { return mockDownloaderInstance }
+      }
+      const mockScheduleCleanup = mock.fn(async () => {})
+      const mockDeleteStale = mock.fn(async () => {})
+
+      AppUpdater.scheduleCleanup = mockScheduleCleanup
+      try {
+        const iterator = AppUpdater.updateApp(nextSiteManifestEvent, {
+          _AppFileDownloader: MockAppFileDownloader,
+          _addressObjToAppId: () => appId,
+          _deleteStaleFileChunksFromDb: mockDeleteStale,
+          _saveSiteManifestToDb: async () => {},
+          _getSiteManifestFromDb: async () => ({ meta: {} }),
+          _sessionStorage: sessionStorage,
+          _localStorage: null,
+          writeRelays
+        })
+
+        for await (const _ of iterator) {
+          // consume iterator
+        }
+
+        assert.equal(mockDeleteStale.mock.callCount(), 0)
+        assert.equal(mockScheduleCleanup.mock.callCount(), 1)
+        assert.equal(mockScheduleCleanup.mock.calls[0].arguments[0][0], appId)
+      } finally {
+        release()
+        AppUpdater.scheduleCleanup = originalScheduleCleanup
+      }
+    })
   })
 
   describe('updateApps', () => {
@@ -704,6 +923,25 @@ describe('AppUpdater', () => {
 
     it('should return false if storage is missing', () => {
       assert.equal(AppUpdater.isAppOpen('app1', { _sessionStorage: null, _localStorage: null }), false)
+    })
+
+    it('should return true for active embedded single-napp sessions', () => {
+      const sessionStorage = storageFromEntries()
+      const release = AppUpdater.markSingleNappOpen('app1', { _sessionStorage: sessionStorage })
+
+      try {
+        assert.equal(AppUpdater.isAppOpen('app1', {
+          _sessionStorage: sessionStorage,
+          _localStorage: null
+        }), true)
+      } finally {
+        release()
+      }
+
+      assert.equal(AppUpdater.isAppOpen('app1', {
+        _sessionStorage: sessionStorage,
+        _localStorage: null
+      }), false)
     })
   })
 

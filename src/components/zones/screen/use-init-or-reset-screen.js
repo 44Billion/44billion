@@ -4,22 +4,9 @@ import { appDecode, npubEncode } from '#helpers/nip19.js'
 import { generateB62SecretKey as getB62PublicKeyStub } from '#helpers/nip01.js'
 import { addressObjToAppId } from '#helpers/app.js'
 import { base16ToBase62, base62ToBase16 } from '#helpers/base62.js'
-import { jsVars } from '#assets/styles/theme.js'
+import AppUpdater from '#services/app-updater/index.js'
 import { cleanupNostrDbAppForWorkspace } from './helpers/nostrdb-app-lifecycle.js'
 import { requestNostrDbAppBackfillsForWorkspace } from './helpers/nostrdb-app-backfill.js'
-
-// Mobile devices are more likely on metered/cellular data, so we default to
-// 'wifi' for them. Prefer UA Client Hints (Chromium); fall back to the same
-// viewport breakpoint the rest of the UI uses for "mobile".
-function getDefaultUpdateMode () {
-  let isMobile = false
-  if (typeof navigator !== 'undefined' && typeof navigator.userAgentData?.mobile === 'boolean') {
-    isMobile = navigator.userAgentData.mobile
-  } else if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
-    isMobile = window.matchMedia(jsVars.breakpoints.mobile).matches
-  }
-  return isMobile ? 'wifi' : 'always'
-}
 
 // the screen has
 // 1 active (active as in last clicked) user (pk) at all times (defaultUserPk is the default user pk)
@@ -112,7 +99,7 @@ function addUser ({ userPk, storage, tabStorage, isFirstTimeUser: _ }) {
 
   const wsKey = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
   if (storage.config_isSingleWindow$() === undefined) storage.config_isSingleWindow$(false)
-  if (storage.config_appUpdateMode$() === undefined) storage.config_appUpdateMode$(getDefaultUpdateMode())
+  if (storage.config_appUpdateMode$() === undefined) storage.config_appUpdateMode$(AppUpdater.getDefaultUpdateMode())
 
   // de-normalized from `session_appByKey_${app.key}_visibility$` (open or minimized)
   // const openAppKeys = isFirstTimeUser ? [defaultPinnedApps[0].key] : []

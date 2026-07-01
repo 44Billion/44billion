@@ -4,6 +4,7 @@ import { appDecode } from '#helpers/nip19.js'
 import { addressObjToAppId } from '#helpers/app.js'
 import { base62ToBase36 } from '#helpers/base36.js'
 import { initMessageListener } from '#helpers/window-message/browser/index.js'
+import AppUpdater from '#services/app-updater/index.js'
 import { useVaultModalStore, useVaultActor } from '#zones/vault-modal/index.js'
 import '#shared/napp-assets-caching-progress-bar.js'
 
@@ -87,7 +88,11 @@ f('singleNappLauncher', function () {
       }
 
       const ac = new AbortController()
-      cleanup(() => ac.abort())
+      const releaseSingleNappOpen = AppUpdater.markSingleNappOpen(appId)
+      cleanup(() => {
+        releaseSingleNappOpen()
+        ac.abort()
+      })
       await initMessageListener(
         userPkB36$(), appId, appSubdomain$(), initialRoute,
         trustedAppIframeRef$(), appIframeRef$(), appIframeSrc$,
