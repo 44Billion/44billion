@@ -9,6 +9,7 @@ import {
   runTrustedVaultNostrDbMethod,
   streamTrustedVaultNostrDbSubscription
 } from '#helpers/window-message/browser/vault-nostrdb.js'
+import { flushVaultAcceptedMessageQueue } from '#helpers/window-message/browser/vault-accepted-message-queue.js'
 import '#shared/modal.js'
 
 export function useVaultModalStore (init) {
@@ -256,6 +257,11 @@ export function tellVault (msg) {
   tell(_activeVaultPort, msg)
 }
 
+export function flushQueuedVaultAcceptedMessages ({ vaultPort = _activeVaultPort } = {}) {
+  if (!vaultPort) return Promise.resolve(false)
+  return flushVaultAcceptedMessageQueue({ vaultPort, ask })
+}
+
 function initMessageListener ({
   vaultIframe,
   vaultOrigin,
@@ -307,6 +313,8 @@ function initMessageListener ({
     // Make it work with ez-vault's simplified messenger
     if (e.data.reqId) reply(e, { payload: true })
     _pendingVaultMessages.splice(0).forEach(msg => tell(_activeVaultPort, msg))
+    flushQueuedVaultAcceptedMessages({ vaultPort: currentVaultPort })
+      .catch(err => console.warn('Failed to flush queued vault messages', err))
     vaultPort$(currentVaultPort)
   }, { signal: componentSignal })
 

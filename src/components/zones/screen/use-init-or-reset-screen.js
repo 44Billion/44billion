@@ -5,6 +5,7 @@ import { generateB62SecretKey as getB62PublicKeyStub } from '#helpers/nip01.js'
 import { addressObjToAppId } from '#helpers/app.js'
 import { base16ToBase62, base62ToBase16 } from '#helpers/base62.js'
 import { jsVars } from '#assets/styles/theme.js'
+import { requestNostrDbAppBackfillsForWorkspace } from './nostrdb-app-backfill.js'
 
 // Mobile devices are more likely on metered/cellular data, so we default to
 // 'wifi' for them. Prefer UA Client Hints (Chromium); fall back to the same
@@ -226,6 +227,11 @@ export async function setAccountsState (nextAccountState, storage, tabStorage) {
     tabStorage[`session_workspaceByKey_${defaultWorkspaceKey}_openAppKeys$`](appsToOpen)
 
     storage.session_defaultUserPk$(undefined)
+    requestNostrDbAppBackfillsForWorkspace({
+      storage,
+      wsKey: defaultWorkspaceKey,
+      appIds: storage[`session_workspaceByKey_${defaultWorkspaceKey}_pinnedAppIds$`]() || []
+    })
   } else {
     // Regular case: handle multiple users or complex transitions
 
@@ -275,6 +281,11 @@ export async function setAccountsState (nextAccountState, storage, tabStorage) {
       storage[`session_workspaceByKey_${wsKey}_unpinnedCoreAppIdsObj$`]({})
       storage[`session_workspaceByKey_${wsKey}_pinnedAppIds$`](defaultPinnedApps.map(({ id }) => id))
       storage[`session_workspaceByKey_${wsKey}_unpinnedAppIds$`]([])
+      requestNostrDbAppBackfillsForWorkspace({
+        storage,
+        wsKey,
+        appIds: defaultPinnedApps.map(({ id }) => id)
+      })
     }
 
     const workspacesToRemoveSet = new Set(workspacesToRemove)

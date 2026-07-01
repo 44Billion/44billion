@@ -15,9 +15,22 @@ import {
 
 const HEX32 = /^[0-9a-f]{64}$/i
 const VAULT_APP = { id: 'ez-vault', name: 'Vault' }
+const HEX64 = /^[0-9a-f]{64}$/i
+const APP_EXPORT_PAGE_LIMIT = 200
+const APP_EXPORT_PAGE_MAX = 999
 
 function isPlainObject (value) {
   return value && typeof value === 'object' && !Array.isArray(value)
+}
+
+function normalizePositiveInteger (value, fallback, max = Number.MAX_SAFE_INTEGER) {
+  const number = Math.floor(Number(value))
+  return Number.isSafeInteger(number) && number > 0 ? Math.min(number, max) : fallback
+}
+
+function normalizeEventId (value) {
+  const id = typeof value === 'string' ? value.toLowerCase() : ''
+  return HEX64.test(id) ? id : ''
 }
 
 function normalizePubkey (value) {
@@ -120,6 +133,44 @@ export async function runTrustedVaultNostrDbMethod ({
       mergeSource: normalizedOptions.mergeSource === 'sync' ? 'sync' : 'local',
       signEvent
     })
+  }
+  if (method === 'exportEventsByAppPage') {
+    const [appId, options] = Array.isArray(params) ? params : []
+    const normalizedOptions = isPlainObject(options) ? options : {}
+    const requested = normalizePositiveInteger(
+      normalizedOptions.batchSize,
+      APP_EXPORT_PAGE_LIMIT,
+      APP_EXPORT_PAGE_MAX
+    )
+    const after = normalizeEventId(normalizedOptions.after)
+    const iterator = db.exportEventsByApp(appId, {
+      batchSize: requested + 1,
+      ...(after ? { after } : {})
+    })?.[Symbol.asyncIterator]?.()
+    const next = iterator ? await iterator.next() : { done: true }
+    await iterator?.return?.()
+    const batch = Array.isArray(next.value) ? next.value : []
+    const events = batch.slice(0, requested)
+    return {
+      events,
+      nextAfter: events.at(-1)?.id || after || '',
+      hasMore: batch.length > requested
+    }
+  }
+  if (method === 'addEventsForApp') {
+    const [appId, events] = Array.isArray(params) ? params : []
+    let added = 0
+    let skipped = 0
+    for (const event of Array.isArray(events) ? events : []) {
+      const result = await db.add(event, {
+        appId,
+        mergeSource: 'sync',
+        signEvent
+      })
+      if (result?.ok === false) skipped++
+      else added++
+    }
+    return { added, skipped }
   }
   return runNostrDbMethod({
     db,

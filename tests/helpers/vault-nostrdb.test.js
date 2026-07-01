@@ -105,6 +105,61 @@ describe('trusted vault nostrdb bridge helpers', () => {
     assert.deepEqual(calls.map(call => call.options), [{ timeout: 120000 }, { timeout: 120000 }])
   })
 
+  it('exports one trusted-vault app page with an after cursor', async () => {
+    const ownerPubkey = 'a'.repeat(64)
+    const events = [
+      { id: '1'.repeat(64), kind: 30078 },
+      { id: '2'.repeat(64), kind: 30078 },
+      { id: '3'.repeat(64), kind: 30078 }
+    ]
+    let seenAppId
+    let seenOptions
+
+    const result = await runTrustedVaultNostrDbMethod({
+      vaultPort: 'vault-port',
+      ownerPubkey,
+      getNostrDb: () => ({
+        async * exportEventsByApp (appId, options) {
+          seenAppId = appId
+          seenOptions = options
+          yield events
+        }
+      }),
+      method: 'exportEventsByAppPage',
+      params: ['app-1', { batchSize: 2, after: 'f'.repeat(64) }]
+    })
+
+    assert.equal(seenAppId, 'app-1')
+    assert.deepEqual(seenOptions, { batchSize: 3, after: 'f'.repeat(64) })
+    assert.deepEqual(result.events, events.slice(0, 2))
+    assert.equal(result.nextAfter, '2'.repeat(64))
+    assert.equal(result.hasMore, true)
+  })
+
+  it('imports trusted-vault app events with app ownership and sync merge source', async () => {
+    const ownerPubkey = 'a'.repeat(64)
+    const events = [{ id: '1'.repeat(64), kind: 30078 }, { id: '2'.repeat(64), kind: 30078 }]
+    const added = []
+
+    assert.deepEqual(await runTrustedVaultNostrDbMethod({
+      vaultPort: 'vault-port',
+      ownerPubkey,
+      getNostrDb: () => ({
+        async add (event, options) {
+          added.push({ event, options })
+          return event.id === events[1].id ? { ok: false } : { ok: true }
+        }
+      }),
+      method: 'addEventsForApp',
+      params: ['app-1', events]
+    }), { added: 1, skipped: 1 })
+
+    assert.deepEqual(added.map(call => call.event), events)
+    assert.deepEqual(added.map(call => call.options.appId), ['app-1', 'app-1'])
+    assert.deepEqual(added.map(call => call.options.mergeSource), ['sync', 'sync'])
+    assert.equal(typeof added[0].options.signEvent, 'function')
+  })
+
   it('streams subscription items and sends a done sentinel', async () => {
     const ownerPubkey = 'f'.repeat(64)
     const replies = []
