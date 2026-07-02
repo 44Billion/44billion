@@ -1,6 +1,10 @@
 import { describe, it, mock } from 'node:test'
 import assert from 'node:assert/strict'
-import AppUpdater from '../../src/services/app-updater/index.js'
+import AppUpdater, {
+  MAX_ACTIVE_EMBEDDED_APPS,
+  MAX_NEW_RETAINED_EMBEDDED_APPS_PER_HOUR,
+  MAX_RETAINED_EMBEDDED_APPS
+} from '../../src/services/app-updater/index.js'
 import { base16ToBase62 } from '../../src/helpers/base62.js'
 
 function storageFromEntries (entries = {}) {
@@ -8,7 +12,9 @@ function storageFromEntries (entries = {}) {
   return {
     getItem: key => data.get(String(key)) ?? null,
     removeItem: key => { data.delete(String(key)) },
-    setItem: (key, value) => { data.set(String(key), String(value)) }
+    setItem: (key, value) => { data.set(String(key), String(value)) },
+    key: index => Array.from(data.keys())[index] ?? null,
+    get length () { return data.size }
   }
 }
 
@@ -430,6 +436,174 @@ describe('AppUpdater', () => {
       })
 
       assert.deepEqual(ids, ['embedded-app'])
+    })
+  })
+
+  describe('embedded-only retention limits', () => {
+    it('exports the configured embedded app guardrails', () => {
+      assert.equal(MAX_RETAINED_EMBEDDED_APPS, 50)
+      assert.equal(MAX_NEW_RETAINED_EMBEDDED_APPS_PER_HOUR, 10)
+      assert.equal(MAX_ACTIVE_EMBEDDED_APPS, 50)
+    })
+
+    it('records a new embedded-only app owner timestamp', async () => {
+      const ownerPubkey = 'a'.repeat(64)
+      const now = 1234
+      const localStorage = storageFromEntries({
+        session_workspaceKeys: []
+      })
+      const manifest = siteManifest('embedded-app')
+      let savedMeta = manifest.meta
+
+      const result = await AppUpdater.recordEmbeddedOnlyRetention({
+        appId: 'embedded-app',
+        ownerPubkey,
+        siteManifest: manifest,
+        updateSiteManifestMetadata: async metadata => { savedMeta = metadata },
+        _localStorage: localStorage,
+        _listSiteManifestsFromDb: async () => [{ ...manifest, meta: savedMeta }],
+        _addressObjToAppId: ({ dTag }) => dTag,
+        _now: () => now
+      })
+
+      assert.equal(result.retained, true)
+      assert.deepEqual(savedMeta.singleNappOpenedAtByOwner, { [ownerPubkey]: now })
+      assert.deepEqual(JSON.parse(localStorage.getItem('local_embeddedOnlyRetentionAdmissions')), [{
+        appId: 'embedded-app',
+        at: now
+      }])
+    })
+
+    it('refreshes an already-retained app without consuming hourly admission', async () => {
+      const ownerPubkey = 'b'.repeat(64)
+      const now = 2000
+      const manifest = siteManifest('embedded-app', {
+        singleNappOpenedAtByOwner: { [ownerPubkey]: 1000 }
+      })
+      let savedMeta
+
+      const result = await AppUpdater.recordEmbeddedOnlyRetention({
+        appId: 'embedded-app',
+        ownerPubkey,
+        siteManifest: manifest,
+        updateSiteManifestMetadata: async metadata => { savedMeta = metadata },
+        _localStorage: storageFromEntries({ session_workspaceKeys: [] }),
+        _listSiteManifestsFromDb: async () => [{ ...manifest, meta: savedMeta || manifest.meta }],
+        _addressObjToAppId: ({ dTag }) => dTag,
+        _now: () => now,
+        maxNewPerHour: 0
+      })
+
+      assert.equal(result.retained, true)
+      assert.deepEqual(savedMeta.singleNappOpenedAtByOwner, { [ownerPubkey]: now })
+    })
+
+    it('rejects new embedded-only retention after the hourly throttle is spent', async () => {
+      const ownerPubkey = 'c'.repeat(64)
+      const now = 3000
+      const localStorage = storageFromEntries({
+        session_workspaceKeys: [],
+        local_embeddedOnlyRetentionAdmissions: [{ appId: 'other-app', at: now - 1 }]
+      })
+      const manifest = siteManifest('new-app')
+      const save = mock.fn(async () => {})
+
+      const result = await AppUpdater.recordEmbeddedOnlyRetention({
+        appId: 'new-app',
+        ownerPubkey,
+        siteManifest: manifest,
+        updateSiteManifestMetadata: save,
+        _localStorage: localStorage,
+        _listSiteManifestsFromDb: async () => [manifest],
+        _addressObjToAppId: ({ dTag }) => dTag,
+        _now: () => now,
+        maxNewPerHour: 1
+      })
+
+      assert.equal(result.retained, false)
+      assert.equal(result.reason, 'throttled')
+      assert.equal(save.mock.callCount(), 0)
+    })
+
+    it('exempts workspace-installed apps from embedded-only admission throttle', async () => {
+      const ownerPubkey = 'd'.repeat(64)
+      const now = 4000
+      const manifest = siteManifest('installed-app')
+      let savedMeta
+
+      const result = await AppUpdater.recordEmbeddedOnlyRetention({
+        appId: 'installed-app',
+        ownerPubkey,
+        siteManifest: manifest,
+        updateSiteManifestMetadata: async metadata => { savedMeta = metadata },
+        _localStorage: storageFromEntries({
+          session_workspaceKeys: ['ws1'],
+          session_workspaceByKey_ws1_pinnedAppIds: ['installed-app'],
+          session_workspaceByKey_ws1_unpinnedAppIds: []
+        }),
+        _listSiteManifestsFromDb: async () => [{ ...manifest, meta: savedMeta || manifest.meta }],
+        _addressObjToAppId: ({ dTag }) => dTag,
+        _now: () => now,
+        maxNewPerHour: 0
+      })
+
+      assert.equal(result.retained, true)
+      assert.deepEqual(savedMeta.singleNappOpenedAtByOwner, { [ownerPubkey]: now })
+    })
+
+    it('evicts the least recently used embedded-only app over the retention cap', async () => {
+      const oldOwner = 'e'.repeat(64)
+      const newOwner = 'f'.repeat(64)
+      const now = 5000
+      const oldManifest = siteManifest('old-app', {
+        singleNappOpenedAtByOwner: { [oldOwner]: now - 1000 }
+      })
+      const newManifest = siteManifest('new-app')
+      let newMeta = newManifest.meta
+      const deletedRows = []
+      const clearedFiles = []
+      const clearedStorageKeys = []
+
+      const localStorage = storageFromEntries({
+        session_workspaceKeys: [],
+        'session_subdomainByUserAndApp_user_old-app': '12',
+        session_subdomainToApp_12: { appId: 'old-app', userPk: 'user' }
+      })
+
+      const result = await AppUpdater.recordEmbeddedOnlyRetention({
+        appId: 'new-app',
+        ownerPubkey: newOwner,
+        siteManifest: newManifest,
+        updateSiteManifestMetadata: async metadata => { newMeta = metadata },
+        _localStorage: localStorage,
+        _listSiteManifestsFromDb: async () => [
+          oldManifest,
+          { ...newManifest, meta: newMeta }
+        ],
+        _addressObjToAppId: ({ dTag }) => dTag,
+        _now: () => now,
+        maxRetained: 1,
+        _getNostrDb: owner => ({
+          async deleteEventsByApp (appId) {
+            deletedRows.push({ owner, appId })
+          }
+        }),
+        _removeVaultAcceptedMessage: () => true,
+        _clearCachedFilesById: async appId => { clearedFiles.push(appId) },
+        _setWebStorageItem: (storage, key, value) => {
+          clearedStorageKeys.push({ key, value })
+          if (value === undefined) storage.removeItem(key)
+          else storage.setItem(key, JSON.stringify(value))
+        }
+      })
+
+      assert.deepEqual(result.evicted, ['old-app'])
+      assert.deepEqual(deletedRows, [{ owner: oldOwner, appId: 'old-app' }])
+      assert.deepEqual(clearedFiles, ['old-app'])
+      assert.equal(localStorage.getItem('session_subdomainByUserAndApp_user_old-app'), null)
+      assert.equal(localStorage.getItem('session_subdomainToApp_12'), null)
+      assert.deepEqual(JSON.parse(localStorage.getItem('session_subdomainFreeIds')), ['12'])
+      assert(clearedStorageKeys.some(item => item.key === 'session_appById_old-app_icon'))
     })
   })
 
@@ -942,6 +1116,39 @@ describe('AppUpdater', () => {
         _sessionStorage: sessionStorage,
         _localStorage: null
       }), false)
+    })
+
+    it('should enforce the active embedded single-napp session cap', () => {
+      const sessionStorage = storageFromEntries()
+      const first = AppUpdater.tryMarkSingleNappOpen('app1', {
+        _sessionStorage: sessionStorage,
+        maxActive: 2
+      })
+      const second = AppUpdater.tryMarkSingleNappOpen('app2', {
+        _sessionStorage: sessionStorage,
+        maxActive: 2
+      })
+      const third = AppUpdater.tryMarkSingleNappOpen('app3', {
+        _sessionStorage: sessionStorage,
+        maxActive: 2
+      })
+
+      assert.equal(first.accepted, true)
+      assert.equal(second.accepted, true)
+      assert.equal(third.accepted, false)
+      assert.equal(third.reason, 'active-limit')
+      assert.equal(AppUpdater.singleNappOpenCount({ _sessionStorage: sessionStorage }), 2)
+
+      first.release()
+      const fourth = AppUpdater.tryMarkSingleNappOpen('app3', {
+        _sessionStorage: sessionStorage,
+        maxActive: 2
+      })
+      assert.equal(fourth.accepted, true)
+
+      second.release()
+      fourth.release()
+      assert.equal(AppUpdater.singleNappOpenCount({ _sessionStorage: sessionStorage }), 0)
     })
   })
 

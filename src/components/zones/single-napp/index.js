@@ -4,6 +4,7 @@ import { appDecode } from '#helpers/nip19.js'
 import { addressObjToAppId } from '#helpers/app.js'
 import { base62ToBase36 } from '#helpers/base36.js'
 import { initMessageListener } from '#helpers/window-message/browser/index.js'
+import { allocateAppSubdomain } from '#helpers/subdomain-mapping.js'
 import AppUpdater from '#services/app-updater/index.js'
 import { useVaultModalStore, useVaultActor } from '#zones/vault-modal/index.js'
 import '#shared/napp-assets-caching-progress-bar.js'
@@ -66,6 +67,7 @@ f('singleNappLauncher', function () {
   const trustedAppIframeSrc$ = useSignal('about:blank')
   const appIframeRef$ = useSignal()
   const appIframeSrc$ = useSignal('about:blank')
+  const launchError$ = useSignal(null)
   const { cachingProgress$ } = useClosestStore('<napp-assets-caching-progress-bar>', {
     cachingProgress$: {
       // [filename]: {
@@ -79,18 +81,21 @@ f('singleNappLauncher', function () {
 
   useTask(
     async ({ cleanup }) => {
+      launchError$(null)
+      const activeSession = AppUpdater.tryMarkSingleNappOpen(appId)
+      if (!activeSession.accepted) {
+        launchError$('Too many embedded apps are open. Close one and try again.')
+        return
+      }
+      cleanup(() => activeSession.release())
+
       // Allocate numeric subdomain if needed
       if (appSubdomain$() == null) {
-        const nextId = storage.session_subdomainNextId$() ?? 0
-        storage.session_subdomainNextId$(nextId + 1)
-        storage[`session_subdomainByUserAndApp_${userPk$()}_${appId}$`](String(nextId))
-        storage[`session_subdomainToApp_${nextId}$`]({ appId, userPk: userPk$() })
+        allocateAppSubdomain(storage, { userPk: userPk$(), appId })
       }
 
       const ac = new AbortController()
-      const releaseSingleNappOpen = AppUpdater.markSingleNappOpen(appId)
       cleanup(() => {
-        releaseSingleNappOpen()
         ac.abort()
       })
       await initMessageListener(
@@ -120,25 +125,41 @@ f('singleNappLauncher', function () {
             display: block; /* ensure it's not inline */
           }
         }
+
+        .embedded-load-error {
+          height: 100%;
+          display: grid;
+          place-items: center;
+          padding: 24px;
+          color: rgb(219, 226, 241);
+          background: rgb(18, 21, 30);
+          font-size: 14rem;
+          line-height: 1.45;
+          text-align: center;
+        }
       </style>
-      <napp-assets-caching-progress-bar />
-      <iframe
-      class='napp-page'
-      allow='fullscreen; screen-wake-lock; ambient-light-sensor;
-             autoplay; midi; encrypted-media;
-             accelerometer; gyroscope; magnetometer; xr-spatial-tracking;
-             clipboard-read; clipboard-write; web-share;
-             camera; microphone;
-             geolocation;
-             bluetooth;
-             payment'
-        ref=${appIframeRef$}
-        src=${appIframeSrc$()}
-      />
-      <iframe
-        class='tilde-tilde-napp-page'
-        ref=${trustedAppIframeRef$}
-        src=${trustedAppIframeSrc$()}
-      />
+      ${launchError$()
+        ? this.h`<div class='embedded-load-error'>${launchError$()}</div>`
+        : this.h`
+          <napp-assets-caching-progress-bar />
+          <iframe
+          class='napp-page'
+          allow='fullscreen; screen-wake-lock; ambient-light-sensor;
+                 autoplay; midi; encrypted-media;
+                 accelerometer; gyroscope; magnetometer; xr-spatial-tracking;
+                 clipboard-read; clipboard-write; web-share;
+                 camera; microphone;
+                 geolocation;
+                 bluetooth;
+                 payment'
+            ref=${appIframeRef$}
+            src=${appIframeSrc$()}
+          />
+          <iframe
+            class='tilde-tilde-napp-page'
+            ref=${trustedAppIframeRef$}
+            src=${trustedAppIframeSrc$()}
+          />
+        `}
   `
 })

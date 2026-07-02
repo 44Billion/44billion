@@ -4,11 +4,19 @@ import {
   normalizeSingleNappOpenedAtByOwner,
   saveSiteManifestToDb as defaultSaveSiteManifestToDb
 } from '#services/idb/browser/queries/site-manifest.js'
-import { getNostrDb as defaultGetNostrDb } from '#services/idb/nostrdb/index.js'
 
 export const NOSTRDB_APP_BACKFILL_CODE = 'NOSTRDB_APP_BACKFILL'
 
 const HEX32 = /^[0-9a-f]{64}$/i
+
+function defaultGetNostrDb (ownerPubkey) {
+  return {
+    async deleteEventsByApp (appId) {
+      const { getNostrDb } = await import('#services/idb/nostrdb/index.js')
+      return getNostrDb(ownerPubkey).deleteEventsByApp(appId)
+    }
+  }
+}
 
 export async function removeSingleNappOwnerFromManifest ({
   appId,

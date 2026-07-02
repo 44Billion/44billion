@@ -10,14 +10,29 @@ import { addressObjToAppId } from '#helpers/app.js'
 import { base62ToBase16 } from '#helpers/base62.js'
 import { getUserRelays } from '#helpers/nostr-queries.js'
 import { cleanupNostrDbAppForOwner as cleanupNostrDbAppForOwnerBase } from '#helpers/nostrdb-app-cleanup.js'
+import { addSubdomainFreeId } from '#helpers/subdomain-mapping.js'
 import { setWebStorageItem } from '#helpers/web-storage.js'
 import { removeVaultAcceptedMessage } from '#helpers/window-message/browser/vault-accepted-message-queue.js'
-import { getNostrDb } from '#services/idb/nostrdb/index.js'
 import { jsVars } from '#assets/styles/theme.js'
 
 const HEX_PUBKEY = /^[0-9a-f]{64}$/i
 const SINGLE_NAPP_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 const SINGLE_NAPP_OPEN_COUNTS_KEY = 'session_singleNappOpenAppCounts'
+const EMBEDDED_RETENTION_ADMISSIONS_KEY = 'local_embeddedOnlyRetentionAdmissions'
+const ONE_HOUR_MS = 60 * 60 * 1000
+
+export const MAX_RETAINED_EMBEDDED_APPS = 50
+export const MAX_NEW_RETAINED_EMBEDDED_APPS_PER_HOUR = 10
+export const MAX_ACTIVE_EMBEDDED_APPS = 50
+
+function defaultGetNostrDb (ownerPubkey) {
+  return {
+    async deleteEventsByApp (appId) {
+      const { getNostrDb } = await import('#services/idb/nostrdb/index.js')
+      return getNostrDb(ownerPubkey).deleteEventsByApp(appId)
+    }
+  }
+}
 
 export default class AppUpdater {
   static _pendingSearches = new Map()
@@ -178,7 +193,7 @@ export default class AppUpdater {
   }
 
   static async cleanupOwnerAppData (ownerPubkey, appId, {
-    _getNostrDb = getNostrDb,
+    _getNostrDb = defaultGetNostrDb,
     _getSiteManifestFromDb = getSiteManifestFromDb,
     _saveSiteManifestToDb = saveSiteManifestToDb,
     _removeVaultAcceptedMessage = removeVaultAcceptedMessage,
@@ -205,6 +220,238 @@ export default class AppUpdater {
     for (const key of ['icon', 'name', 'description', 'relayHints']) {
       _setWebStorageItem(storage, `session_appById_${appId}_${key}`, undefined)
     }
+  }
+
+  static _storageKeys (storage) {
+    if (!storage) return []
+    if (typeof storage.length === 'number' && typeof storage.key === 'function') {
+      const keys = []
+      for (let i = 0; i < storage.length; i++) {
+        const key = storage.key(i)
+        if (key != null) keys.push(key)
+      }
+      return keys
+    }
+    return []
+  }
+
+  static removeSubdomainMappingsForApp (appId, {
+    _localStorage,
+    _setWebStorageItem = setWebStorageItem
+  } = {}) {
+    const storage = _localStorage || (typeof localStorage !== 'undefined' ? localStorage : null)
+    if (!storage || !appId) return 0
+
+    let removed = 0
+    const prefix = 'session_subdomainByUserAndApp_'
+    const suffix = `_${appId}`
+    for (const key of this._storageKeys(storage)) {
+      if (!key.startsWith(prefix) || !key.endsWith(suffix)) continue
+      const subdomain = this._readJsonStorage(storage, key, null)
+      _setWebStorageItem(storage, key, undefined)
+      removed++
+      if (subdomain != null) {
+        _setWebStorageItem(storage, `session_subdomainToApp_${subdomain}`, undefined)
+        const freeIds = addSubdomainFreeId(
+          this._readJsonStorage(storage, 'session_subdomainFreeIds', []),
+          subdomain
+        )
+        _setWebStorageItem(storage, 'session_subdomainFreeIds', freeIds.length ? freeIds : undefined)
+      }
+    }
+    return removed
+  }
+
+  static _embeddedRetentionAdmissions ({
+    _localStorage,
+    _now = Date.now,
+    intervalMs = ONE_HOUR_MS
+  } = {}) {
+    const storage = _localStorage || (typeof localStorage !== 'undefined' ? localStorage : null)
+    const now = _now()
+    const cutoff = now - intervalMs
+    const raw = this._readJsonStorage(storage, EMBEDDED_RETENTION_ADMISSIONS_KEY, [])
+    const admissions = []
+
+    if (Array.isArray(raw)) {
+      for (const item of raw) {
+        const appId = typeof item?.appId === 'string' ? item.appId : ''
+        const at = Number(item?.at)
+        if (!appId || !Number.isFinite(at) || at < cutoff || at > now) continue
+        admissions.push({ appId, at })
+      }
+    }
+
+    return { storage, now, admissions }
+  }
+
+  static _writeEmbeddedRetentionAdmissions (storage, admissions) {
+    this._writeJsonStorage(
+      storage,
+      EMBEDDED_RETENTION_ADMISSIONS_KEY,
+      admissions.length ? admissions : undefined
+    )
+  }
+
+  static _latestSingleNappOpenedAt (singleNappOpenedAtByOwner) {
+    const owners = normalizeSingleNappOpenedAtByOwner(singleNappOpenedAtByOwner)
+    let latest = 0
+    for (const openedAt of Object.values(owners)) latest = Math.max(latest, openedAt)
+    return latest
+  }
+
+  static async _embeddedRetentionEntries ({
+    _localStorage,
+    _listSiteManifestsFromDb = listSiteManifestsFromDb,
+    _addressObjToAppId = addressObjToAppId,
+    _now = Date.now,
+    singleNappRetentionMs = SINGLE_NAPP_RETENTION_MS
+  } = {}) {
+    const installedAppIds = new Set(this.getInstalledAppIds({ _localStorage }))
+    const now = _now()
+    const entries = []
+
+    for (const manifest of await _listSiteManifestsFromDb()) {
+      const { recent } = this.partitionSingleNappOwners(
+        manifest.meta?.singleNappOpenedAtByOwner,
+        { now, retentionMs: singleNappRetentionMs }
+      )
+      if (Object.keys(recent).length === 0) continue
+
+      const dTag = manifest.tags.find(t => t[0] === 'd')?.[1] ?? ''
+      try {
+        const appId = _addressObjToAppId({
+          kind: manifest.kind,
+          pubkey: manifest.pubkey,
+          dTag
+        })
+        if (installedAppIds.has(appId)) continue
+        entries.push({
+          appId,
+          manifest,
+          openedAt: this._latestSingleNappOpenedAt(recent)
+        })
+      } catch (_err) {
+        continue
+      }
+    }
+
+    return entries
+  }
+
+  static async evictEmbeddedOnlyApp (appId, manifest, {
+    _localStorage,
+    _getNostrDb = defaultGetNostrDb,
+    _getSiteManifestFromDb = getSiteManifestFromDb,
+    _saveSiteManifestToDb = saveSiteManifestToDb,
+    _clearCachedFilesById = async appId => (await import('#services/app-file-manager/index.js')).default.clearCachedFilesById(appId),
+    _removeVaultAcceptedMessage = removeVaultAcceptedMessage,
+    _setWebStorageItem = setWebStorageItem
+  } = {}) {
+    const owners = normalizeSingleNappOpenedAtByOwner(manifest?.meta?.singleNappOpenedAtByOwner)
+    for (const ownerPubkey of Object.keys(owners)) {
+      await this.cleanupOwnerAppData(ownerPubkey, appId, {
+        _getNostrDb,
+        _getSiteManifestFromDb,
+        _saveSiteManifestToDb,
+        _removeVaultAcceptedMessage,
+        _updateSingleNappManifest: false
+      })
+    }
+
+    await _clearCachedFilesById(appId)
+    this.clearCachedAppMetadata(appId, { _localStorage, _setWebStorageItem })
+    this.removeSubdomainMappingsForApp(appId, { _localStorage, _setWebStorageItem })
+
+    const { storage, admissions } = this._embeddedRetentionAdmissions({ _localStorage })
+    const remaining = admissions.filter(item => item.appId !== appId)
+    if (remaining.length !== admissions.length) {
+      this._writeEmbeddedRetentionAdmissions(storage, remaining)
+    }
+  }
+
+  static async enforceEmbeddedOnlyRetentionLimit ({
+    maxRetained = MAX_RETAINED_EMBEDDED_APPS,
+    ...deps
+  } = {}) {
+    if (!Number.isFinite(maxRetained) || maxRetained < 0) return []
+
+    const entries = await this._embeddedRetentionEntries(deps)
+    if (entries.length <= maxRetained) return []
+
+    entries.sort((a, b) => a.openedAt - b.openedAt || a.appId.localeCompare(b.appId))
+    const evicted = []
+    for (const entry of entries.slice(0, entries.length - maxRetained)) {
+      await this.evictEmbeddedOnlyApp(entry.appId, entry.manifest, deps)
+      evicted.push(entry.appId)
+    }
+    return evicted
+  }
+
+  static async recordEmbeddedOnlyRetention ({
+    appId,
+    ownerPubkey,
+    siteManifest,
+    updateSiteManifestMetadata,
+    _localStorage,
+    _listSiteManifestsFromDb = listSiteManifestsFromDb,
+    _addressObjToAppId = addressObjToAppId,
+    _now = Date.now,
+    singleNappRetentionMs = SINGLE_NAPP_RETENTION_MS,
+    maxRetained = MAX_RETAINED_EMBEDDED_APPS,
+    maxNewPerHour = MAX_NEW_RETAINED_EMBEDDED_APPS_PER_HOUR,
+    ...cleanupDeps
+  } = {}) {
+    const owner = typeof ownerPubkey === 'string' ? ownerPubkey.toLowerCase() : ''
+    if (!appId || !HEX_PUBKEY.test(owner) || !siteManifest) {
+      return { retained: false, reason: 'invalid' }
+    }
+
+    const installedAppIds = new Set(this.getInstalledAppIds({ _localStorage }))
+    const now = _now()
+    const { recent } = this.partitionSingleNappOwners(
+      siteManifest.meta?.singleNappOpenedAtByOwner,
+      { now, retentionMs: singleNappRetentionMs }
+    )
+    const isInstalled = installedAppIds.has(appId)
+    const isAlreadyRetained = Object.keys(recent).length > 0
+
+    let admissionsState = null
+    if (!isInstalled && !isAlreadyRetained) {
+      admissionsState = this._embeddedRetentionAdmissions({ _localStorage, _now })
+      if (admissionsState.admissions.length >= maxNewPerHour) {
+        this._writeEmbeddedRetentionAdmissions(admissionsState.storage, admissionsState.admissions)
+        return { retained: false, reason: 'throttled' }
+      }
+    }
+
+    const singleNappOpenedAtByOwner = {
+      ...normalizeSingleNappOpenedAtByOwner(siteManifest.meta?.singleNappOpenedAtByOwner),
+      [owner]: now
+    }
+    const metadata = {
+      ...(siteManifest.meta || {}),
+      singleNappOpenedAtByOwner
+    }
+    await updateSiteManifestMetadata?.(metadata)
+
+    if (admissionsState) {
+      this._writeEmbeddedRetentionAdmissions(admissionsState.storage, [
+        ...admissionsState.admissions,
+        { appId, at: now }
+      ])
+    }
+
+    const evicted = await this.enforceEmbeddedOnlyRetentionLimit({
+      _localStorage,
+      _listSiteManifestsFromDb,
+      _addressObjToAppId,
+      _now,
+      singleNappRetentionMs,
+      maxRetained,
+      ...cleanupDeps
+    })
+    return { retained: true, evicted }
   }
 
   // Mobile devices are more likely on metered/cellular data, so we default to
@@ -256,6 +503,40 @@ export default class AppUpdater {
         SINGLE_NAPP_OPEN_COUNTS_KEY,
         Object.keys(nextCounts).length ? nextCounts : undefined
       )
+    }
+  }
+
+  static singleNappOpenCount ({ _sessionStorage } = {}) {
+    return Object.values(this._singleNappOpenCounts({ _sessionStorage }))
+      .reduce((total, count) => total + count, 0)
+  }
+
+  static tryMarkSingleNappOpen (appId, {
+    _sessionStorage,
+    maxActive = MAX_ACTIVE_EMBEDDED_APPS
+  } = {}) {
+    if (!appId) {
+      return {
+        accepted: false,
+        reason: 'invalid',
+        release: () => {}
+      }
+    }
+
+    const activeCount = this.singleNappOpenCount({ _sessionStorage })
+    if (Number.isFinite(maxActive) && activeCount >= maxActive) {
+      return {
+        accepted: false,
+        reason: 'active-limit',
+        activeCount,
+        release: () => {}
+      }
+    }
+
+    return {
+      accepted: true,
+      activeCount: activeCount + 1,
+      release: this.markSingleNappOpen(appId, { _sessionStorage })
     }
   }
 
@@ -408,7 +689,7 @@ export default class AppUpdater {
     _saveSiteManifestToDb = saveSiteManifestToDb,
     _deleteStaleFileChunksFromDb = deleteStaleFileChunksFromDb,
     _clearCachedFilesById = async appId => (await import('#services/app-file-manager/index.js')).default.clearCachedFilesById(appId),
-    _getNostrDb = getNostrDb,
+    _getNostrDb = defaultGetNostrDb,
     _removeVaultAcceptedMessage = removeVaultAcceptedMessage,
     _setWebStorageItem = setWebStorageItem,
     _addressObjToAppId = addressObjToAppId,
@@ -460,6 +741,10 @@ export default class AppUpdater {
             if (!hasInstalledOwner && !hasRecentSingleNappOwner) {
               await _clearCachedFilesById(appId)
               this.clearCachedAppMetadata(appId, {
+                _localStorage,
+                _setWebStorageItem
+              })
+              this.removeSubdomainMappingsForApp(appId, {
                 _localStorage,
                 _setWebStorageItem
               })

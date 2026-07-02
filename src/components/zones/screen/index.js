@@ -25,6 +25,7 @@ import '#shared/route.js'
 import { initMessageListener } from '#helpers/window-message/browser/index.js'
 import { isOnline } from '#helpers/network.js'
 import { base62ToBase36 } from '#helpers/base36.js'
+import { allocateAppSubdomain, releaseAppSubdomain } from '#helpers/subdomain-mapping.js'
 import { useVaultModalStore, useVaultActor } from '#zones/vault-modal/index.js'
 import { base62ToBase16 } from '#helpers/base62.js'
 import '#shared/napp-assets-caching-progress-bar.js'
@@ -317,10 +318,7 @@ f('appWindow', function () {
 
       // Allocate numeric subdomain if needed
       if (appSubdomain$() == null) {
-        const nextId = storage.session_subdomainNextId$() ?? 0
-        storage.session_subdomainNextId$(nextId + 1)
-        storage[`session_subdomainByUserAndApp_${userPk$()}_${appId$()}$`](String(nextId))
-        storage[`session_subdomainToApp_${nextId}$`]({ appId: appId$(), userPk: userPk$() })
+        allocateAppSubdomain(storage, { userPk: userPk$(), appId: appId$() })
       }
 
       const initialRoute = initialRoute$() || ''
@@ -430,8 +428,7 @@ f('appWindow', function () {
 
           if (!hasOtherInstances && !recentForOwner) {
             if (appSubdomain != null) {
-              storage[`session_subdomainByUserAndApp_${userPk}_${appId}$`](undefined)
-              storage[`session_subdomainToApp_${appSubdomain}$`](undefined)
+              releaseAppSubdomain(storage, { userPk, appId, subdomain: appSubdomain })
             }
           }
         } else {
@@ -1269,8 +1266,7 @@ f('appLaunchersMenu', function () {
         const appSubdomain = storage[`session_subdomainByUserAndApp_${userPk}_${appId}$`]()
         if (appSubdomain != null) {
           await askAppToClearData(appSubdomain)
-          storage[`session_subdomainByUserAndApp_${userPk}_${appId}$`](undefined)
-          storage[`session_subdomainToApp_${appSubdomain}$`](undefined)
+          releaseAppSubdomain(storage, { userPk, appId, subdomain: appSubdomain })
         }
       }
       if (shouldClearAppFiles) {

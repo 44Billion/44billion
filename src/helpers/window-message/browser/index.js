@@ -14,9 +14,9 @@ import { base36ToBase16 } from '#helpers/base36.js'
 import { base16ToBase62 } from '#helpers/base62.js'
 import { appEncode, appDecode } from '#helpers/nip19.js'
 import { streamFileChunksFromDb, getFileChunksFromDb, deleteFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
-import { withSingleNappOpenedAtByOwner } from '#services/idb/browser/queries/site-manifest.js'
 import { getNostrDb } from '#services/idb/nostrdb/index.js'
 import AppFileManager from '#services/app-file-manager/index.js'
+import AppUpdater from '#services/app-updater/index.js'
 import { setWebStorageItem } from '#hooks/use-web-storage.js'
 import { decode } from '#services/base93-decoder.js'
 import Base93Encoder from '#services/base93-encoder.js'
@@ -85,7 +85,24 @@ export async function initMessageListener (
     return
   }
   if (isSingleNapp) {
-    appFiles.updateSiteManifestMetadata(withSingleNappOpenedAtByOwner(appFiles.siteManifest.meta, userPkB16))
+    try {
+      const retention = await AppUpdater.recordEmbeddedOnlyRetention({
+        appId,
+        ownerPubkey: userPkB16,
+        siteManifest: appFiles.siteManifest,
+        updateSiteManifestMetadata: metadata => appFiles.updateSiteManifestMetadata(metadata)
+      })
+      if (!retention.retained) {
+        componentSignal?.addEventListener('abort', () => {
+          AppUpdater.scheduleCleanup([appId], { ifAvailable: true })
+        }, { once: true })
+      }
+    } catch (err) {
+      console.warn('Failed to record embedded app retention', err)
+      componentSignal?.addEventListener('abort', () => {
+        AppUpdater.scheduleCleanup([appId], { ifAvailable: true })
+      }, { once: true })
+    }
   }
 
   let currentTrustedAppPagePort = null
