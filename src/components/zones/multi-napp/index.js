@@ -17,7 +17,7 @@ f('multi-napp', function () {
     AppUpdater.initUpdateCheckJob({
       requestAssetBudgetConfirmation: ({ nextApprovedBytes, filename }) => requestConfirmation({
         title: 'More app storage?',
-        message: `${filename ? `${filename} needs` : 'An app update needs'} more cached storage. Allow app assets up to ${formatAssetBudgetBytes(nextApprovedBytes)}?`,
+        message: `${filename ? `${filename} needs` : 'An app update needs'} more cached storage. Allow this app's assets up to ${formatAssetBudgetBytes(nextApprovedBytes)}?`,
         confirmText: `Allow ${formatAssetBudgetBytes(nextApprovedBytes)}`
       })
     })

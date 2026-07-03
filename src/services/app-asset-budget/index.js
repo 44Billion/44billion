@@ -24,6 +24,11 @@ function normalizePositiveInteger (value, fallback = 0) {
   return Number.isSafeInteger(value) && value >= 0 ? value : fallback
 }
 
+function normalizeAppId (appId) {
+  if (typeof appId !== 'string' || appId.length === 0) throw new Error('Missing app id')
+  return appId
+}
+
 function roundUpToStep (bytes, stepBytes = ASSET_BUDGET_STEP_BYTES) {
   if (bytes <= stepBytes) return stepBytes
   return Math.ceil(bytes / stepBytes) * stepBytes
@@ -50,17 +55,38 @@ export function normalizeAssetBudgetState (state) {
   }
 }
 
-export function readAssetBudgetState ({ _localStorage } = {}) {
-  return normalizeAssetBudgetState(
+function normalizeAssetBudgetStore (state) {
+  const appById = {}
+  for (const [appId, appState] of Object.entries(state?.appById ?? {})) {
+    if (typeof appId !== 'string' || appId.length === 0) continue
+    appById[appId] = normalizeAssetBudgetState(appState)
+  }
+  return { appById }
+}
+
+function readAssetBudgetStore ({ _localStorage } = {}) {
+  return normalizeAssetBudgetStore(
     safeJsonParse(getLocalStorage(_localStorage)?.getItem(STORAGE_KEY), null)
   )
 }
 
-export function writeAssetBudgetState (state, { _localStorage } = {}) {
+function writeAssetBudgetStore (store, { _localStorage } = {}) {
   const storage = getLocalStorage(_localStorage)
-  const next = normalizeAssetBudgetState(state)
+  const next = normalizeAssetBudgetStore(store)
   storage?.setItem(STORAGE_KEY, JSON.stringify(next))
   return next
+}
+
+export function readAssetBudgetState ({ appId, _localStorage } = {}) {
+  appId = normalizeAppId(appId)
+  return readAssetBudgetStore({ _localStorage }).appById[appId] ?? normalizeAssetBudgetState(null)
+}
+
+export function writeAssetBudgetState (state, { appId, _localStorage } = {}) {
+  appId = normalizeAppId(appId)
+  const store = readAssetBudgetStore({ _localStorage })
+  store.appById[appId] = normalizeAssetBudgetState(state)
+  return writeAssetBudgetStore(store, { _localStorage }).appById[appId]
 }
 
 export function applyAssetBudgetDelta (deltaBytes, deps = {}) {
@@ -73,36 +99,40 @@ export function applyAssetBudgetDelta (deltaBytes, deps = {}) {
 }
 
 export async function rebuildAssetBudgetFromChunks ({
-  _countAllFileChunks,
-  _streamAllFileChunks,
+  appId,
+  _countFileChunksForApp,
+  _streamFileChunksForApp,
   _now = Date.now,
   ...deps
 } = {}) {
+  appId = normalizeAppId(appId)
   let chunkCount
-  if (typeof _countAllFileChunks === 'function') {
-    chunkCount = await _countAllFileChunks()
+  if (typeof _countFileChunksForApp === 'function') {
+    chunkCount = await _countFileChunksForApp(appId)
   } else {
-    if (typeof _streamAllFileChunks !== 'function') throw new Error('Missing file chunk counter')
+    if (typeof _streamFileChunksForApp !== 'function') throw new Error('Missing app file chunk counter')
     chunkCount = 0
-    for await (const _ of _streamAllFileChunks()) chunkCount++
+    for await (const _ of _streamFileChunksForApp(appId)) chunkCount++
   }
   const cachedBytes = normalizePositiveInteger(chunkCount) * APP_FILE_CHUNK_BYTES
   return writeAssetBudgetState({
     cachedBytes,
     approvedBytes: roundUpToStep(cachedBytes),
     rebuiltAt: _now()
-  }, deps)
+  }, { appId, ...deps })
 }
 
 export async function ensureAssetBudgetInitialized ({
-  _countAllFileChunks,
-  _streamAllFileChunks,
+  appId,
+  _countFileChunksForApp,
+  _streamFileChunksForApp,
   ...deps
 } = {}) {
-  const current = readAssetBudgetState(deps)
+  appId = normalizeAppId(appId)
+  const current = readAssetBudgetState({ appId, ...deps })
   if (!getLocalStorage(deps._localStorage)) return current
   if (current.rebuiltAt > 0) return current
-  return rebuildAssetBudgetFromChunks({ _countAllFileChunks, _streamAllFileChunks, ...deps })
+  return rebuildAssetBudgetFromChunks({ appId, _countFileChunksForApp, _streamFileChunksForApp, ...deps })
 }
 
 function replacementProjectedBytes ({ cachedBytes, deltaBytes, replacement }) {
@@ -124,9 +154,10 @@ export async function ensureCanStoreAppAssetBytes (deltaBytes, {
   ...deps
 } = {}) {
   deltaBytes = Math.trunc(deltaBytes)
-  if (!Number.isFinite(deltaBytes) || deltaBytes <= 0) return readAssetBudgetState(deps)
+  appId = normalizeAppId(appId)
+  if (!Number.isFinite(deltaBytes) || deltaBytes <= 0) return readAssetBudgetState({ appId, ...deps })
 
-  const current = readAssetBudgetState(deps)
+  const current = readAssetBudgetState({ appId, ...deps })
   const projectedBytes = replacementProjectedBytes({
     cachedBytes: current.cachedBytes,
     deltaBytes,
@@ -159,5 +190,5 @@ export async function ensureCanStoreAppAssetBytes (deltaBytes, {
   return writeAssetBudgetState({
     ...current,
     approvedBytes: nextApprovedBytes
-  }, deps)
+  }, { appId, ...deps })
 }

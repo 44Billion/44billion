@@ -22,6 +22,9 @@ function storageFromEntries (entries = {}) {
 }
 
 describe('app asset budget', () => {
+  const appA = 'app-a'
+  const appB = 'app-b'
+
   it('keeps normal reads from auto-approving bytes over the current step', () => {
     const state = normalizeAssetBudgetState({
       cachedBytes: ASSET_BUDGET_STEP_BYTES + 1,
@@ -35,8 +38,12 @@ describe('app asset budget', () => {
     const storage = storageFromEntries()
 
     const state = await rebuildAssetBudgetFromChunks({
+      appId: appA,
       _localStorage: storage,
-      _countAllFileChunks: async () => Math.ceil((ASSET_BUDGET_STEP_BYTES + 1) / APP_FILE_CHUNK_BYTES),
+      _countFileChunksForApp: async appId => {
+        assert.equal(appId, appA)
+        return Math.ceil((ASSET_BUDGET_STEP_BYTES + 1) / APP_FILE_CHUNK_BYTES)
+      },
       _now: () => 123
     })
 
@@ -53,11 +60,38 @@ describe('app asset budget', () => {
     }
 
     const state = await rebuildAssetBudgetFromChunks({
+      appId: appA,
       _localStorage: storage,
-      _streamAllFileChunks: streamChunks
+      _streamFileChunksForApp: async function * (appId) {
+        assert.equal(appId, appA)
+        yield * streamChunks()
+      }
     })
 
     assert.equal(state.cachedBytes, APP_FILE_CHUNK_BYTES * 2)
+  })
+
+  it('keeps the 3GB step isolated per app', async () => {
+    const storage = storageFromEntries()
+    writeAssetBudgetState({
+      cachedBytes: ASSET_BUDGET_STEP_BYTES - APP_FILE_CHUNK_BYTES,
+      approvedBytes: ASSET_BUDGET_STEP_BYTES
+    }, { appId: appA, _localStorage: storage })
+    writeAssetBudgetState({
+      cachedBytes: ASSET_BUDGET_STEP_BYTES - APP_FILE_CHUNK_BYTES,
+      approvedBytes: ASSET_BUDGET_STEP_BYTES
+    }, { appId: appB, _localStorage: storage })
+
+    let didPrompt = false
+    await ensureCanStoreAppAssetBytes(APP_FILE_CHUNK_BYTES, {
+      appId: appB,
+      _localStorage: storage,
+      requestConfirmation: async () => { didPrompt = true }
+    })
+
+    assert.equal(didPrompt, false)
+    assert.equal(readAssetBudgetState({ appId: appA, _localStorage: storage }).approvedBytes, ASSET_BUDGET_STEP_BYTES)
+    assert.equal(readAssetBudgetState({ appId: appB, _localStorage: storage }).approvedBytes, ASSET_BUDGET_STEP_BYTES)
   })
 
   it('prompts and raises the approved step for foreground writes', async () => {
@@ -65,16 +99,38 @@ describe('app asset budget', () => {
     writeAssetBudgetState({
       cachedBytes: ASSET_BUDGET_STEP_BYTES,
       approvedBytes: ASSET_BUDGET_STEP_BYTES
-    }, { _localStorage: storage })
+    }, { appId: appA, _localStorage: storage })
 
     let prompt
     await ensureCanStoreAppAssetBytes(1, {
+      appId: appA,
       _localStorage: storage,
       requestConfirmation: async details => { prompt = details }
     })
 
     assert.equal(prompt.nextApprovedBytes, ASSET_BUDGET_STEP_BYTES * 2)
-    assert.equal(readAssetBudgetState({ _localStorage: storage }).approvedBytes, ASSET_BUDGET_STEP_BYTES * 2)
+    assert.equal(readAssetBudgetState({ appId: appA, _localStorage: storage }).approvedBytes, ASSET_BUDGET_STEP_BYTES * 2)
+  })
+
+  it('does not let one app approval approve another app', async () => {
+    const storage = storageFromEntries()
+    writeAssetBudgetState({
+      cachedBytes: ASSET_BUDGET_STEP_BYTES,
+      approvedBytes: ASSET_BUDGET_STEP_BYTES * 2
+    }, { appId: appA, _localStorage: storage })
+    writeAssetBudgetState({
+      cachedBytes: ASSET_BUDGET_STEP_BYTES,
+      approvedBytes: ASSET_BUDGET_STEP_BYTES
+    }, { appId: appB, _localStorage: storage })
+
+    let prompt
+    await ensureCanStoreAppAssetBytes(1, {
+      appId: appB,
+      _localStorage: storage,
+      requestConfirmation: async details => { prompt = details }
+    })
+
+    assert.equal(prompt.nextApprovedBytes, ASSET_BUDGET_STEP_BYTES * 2)
   })
 
   it('rejects background writes instead of prompting', async () => {
@@ -82,10 +138,10 @@ describe('app asset budget', () => {
     writeAssetBudgetState({
       cachedBytes: ASSET_BUDGET_STEP_BYTES,
       approvedBytes: ASSET_BUDGET_STEP_BYTES
-    }, { _localStorage: storage })
+    }, { appId: appA, _localStorage: storage })
 
     await assert.rejects(
-      ensureCanStoreAppAssetBytes(1, { _localStorage: storage, mode: 'background' }),
+      ensureCanStoreAppAssetBytes(1, { appId: appA, _localStorage: storage, mode: 'background' }),
       err => err.code === ASSET_BUDGET_BACKGROUND_DENIED
     )
   })
@@ -95,10 +151,11 @@ describe('app asset budget', () => {
     writeAssetBudgetState({
       cachedBytes: ASSET_BUDGET_STEP_BYTES + 100,
       approvedBytes: ASSET_BUDGET_STEP_BYTES * 2
-    }, { _localStorage: storage })
+    }, { appId: appA, _localStorage: storage })
 
     let didPrompt = false
     await ensureCanStoreAppAssetBytes(ASSET_BUDGET_STEP_BYTES - 200, {
+      appId: appA,
       _localStorage: storage,
       mode: 'autoUpdate',
       replacement: {
@@ -116,10 +173,11 @@ describe('app asset budget', () => {
     writeAssetBudgetState({
       cachedBytes: (ASSET_BUDGET_STEP_BYTES * 3),
       approvedBytes: ASSET_BUDGET_STEP_BYTES * 2
-    }, { _localStorage: storage })
+    }, { appId: appA, _localStorage: storage })
 
     let prompt
     await ensureCanStoreAppAssetBytes(200, {
+      appId: appA,
       _localStorage: storage,
       mode: 'autoUpdate',
       replacement: {

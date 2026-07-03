@@ -22,7 +22,7 @@ f('napp-updates', function () {
   const { requestConfirmation } = useGlobalStore('<confirmation-dialog>')
   const requestAssetBudgetConfirmation = ({ nextApprovedBytes, filename }) => requestConfirmation({
     title: 'More app storage?',
-    message: `${filename ? `${filename} needs` : 'This update needs'} more cached storage. Allow app assets up to ${formatAssetBudgetBytes(nextApprovedBytes)}?`,
+    message: `${filename ? `${filename} needs` : 'This update needs'} more cached storage. Allow this app's assets up to ${formatAssetBudgetBytes(nextApprovedBytes)}?`,
     confirmText: `Allow ${formatAssetBudgetBytes(nextApprovedBytes)}`
   })
 

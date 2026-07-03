@@ -23,7 +23,7 @@ export async function countFileChunksFromDb (appId, rootHash) {
 }
 
 export async function deleteStaleFileChunksFromDb (appId, allowedRootHashes, { signal } = {}) {
-  await ensureAssetBudgetInitialized({ _countAllFileChunks: countAllFileChunksFromDb })
+  await ensureAssetBudgetInitialized({ appId, _countFileChunksForApp: countFileChunkRowsFromDb })
   const allowed = new Set(allowedRootHashes)
   const p = Promise.withResolvers()
   const range = IDBKeyRange.bound([appId, '\u0000', -Infinity], [appId, '\uffff', Infinity])
@@ -50,13 +50,13 @@ export async function deleteStaleFileChunksFromDb (appId, allowedRootHashes, { s
     cursor.continue(continueKey)
     if (continueKey) continueKey = undefined
   }
-  if (deletedCount > 0 && !signal?.aborted) applyAssetBudgetDelta(-(deletedCount * APP_FILE_CHUNK_BYTES))
+  if (deletedCount > 0 && !signal?.aborted) applyAssetBudgetDelta(-(deletedCount * APP_FILE_CHUNK_BYTES), { appId })
 }
 
 // Caution: when there's no rootHash arg, use this only when no user has the app installed anymore
 export async function deleteFileChunksFromDb (appId, rootHash) {
   if (!appId) throw new Error('Missing app id')
-  await ensureAssetBudgetInitialized({ _countAllFileChunks: countAllFileChunksFromDb })
+  await ensureAssetBudgetInitialized({ appId, _countFileChunksForApp: countFileChunkRowsFromDb })
 
   const range = IDBKeyRange.bound([appId, rootHash ?? '\u0000', -Infinity], [appId, rootHash ?? '\uffff', Infinity])
   const p = Promise.withResolvers()
@@ -70,7 +70,7 @@ export async function deleteFileChunksFromDb (appId, rootHash) {
     Object.assign(p, Promise.withResolvers())
     cursor.continue()
   }
-  if (deletedCount > 0) applyAssetBudgetDelta(-(deletedCount * APP_FILE_CHUNK_BYTES))
+  if (deletedCount > 0) applyAssetBudgetDelta(-(deletedCount * APP_FILE_CHUNK_BYTES), { appId })
 }
 
 export async function getFileChunksFromDb (appId, rootHash, { fromPos, toPos, justKeys = false } = {}) {
@@ -98,29 +98,13 @@ export async function * streamFileChunksFromDb (appId, rootHash, { fromPos, toPo
   }
 }
 
-export async function * streamAllFileChunksFromDb () {
-  const p = Promise.withResolvers()
-  await run('openCursor', [], 'fileChunks', null, { p })
-
-  let cursor
-  while ((cursor = (await p.promise).result)) {
-    yield cursor.value
-    Object.assign(p, Promise.withResolvers())
-    cursor.continue()
-  }
-}
-
-export async function countAllFileChunksFromDb () {
-  return run('count', [], 'fileChunks').then(v => v.result)
-}
-
 async function countFileChunkRowsFromDb (appId, rootHash) {
   const range = IDBKeyRange.bound([appId, rootHash ?? '\u0000', -Infinity], [appId, rootHash ?? '\uffff', Infinity])
   return run('count', [range], 'fileChunks').then(v => v.result)
 }
 
 export async function sumFileChunkBytesFromDb (appId, rootHashes = null) {
-  await ensureAssetBudgetInitialized({ _countAllFileChunks: countAllFileChunksFromDb })
+  await ensureAssetBudgetInitialized({ appId, _countFileChunksForApp: countFileChunkRowsFromDb })
   if (!rootHashes) return (await countFileChunkRowsFromDb(appId)) * APP_FILE_CHUNK_BYTES
 
   let count = 0
@@ -135,7 +119,12 @@ export async function saveFileChunksToDB (siteManifest, fileChunks, appId, {
   _applyAssetBudgetDelta = applyAssetBudgetDelta,
   _ensureCanStoreAppAssetBytes = ensureCanStoreAppAssetBytes
 } = {}) {
-  await ensureAssetBudgetInitialized({ _countAllFileChunks: countAllFileChunksFromDb })
+  appId ??= addressObjToAppId({
+    kind: siteManifest.kind,
+    pubkey: siteManifest.pubkey,
+    dTag: siteManifest.tags.find(t => t[0] === 'd')?.[1] ?? ''
+  })
+  await ensureAssetBudgetInitialized({ appId, _countFileChunksForApp: countFileChunkRowsFromDb })
   const manifestRootHashesObj = siteManifest.tags
     .filter(t => t[0] === 'path' && !!t[2])
     .map(t => t[2])
@@ -158,13 +147,6 @@ export async function saveFileChunksToDB (siteManifest, fileChunks, appId, {
         }
       }
     }
-
-    appId ??= addressObjToAppId({
-      kind: siteManifest.kind,
-      pubkey: siteManifest.pubkey,
-      dTag: siteManifest.tags.find(t => t[0] === 'd')?.[1] ?? ''
-    })
-
     for (const [fileRootHash, chunkPosition] of formatedCTags) {
       const chunk = {
         appId,
@@ -189,7 +171,7 @@ export async function saveFileChunksToDB (siteManifest, fileChunks, appId, {
       }
 
       await run('put', [chunk], 'fileChunks')
-      if (deltaBytes !== 0) _applyAssetBudgetDelta(deltaBytes)
+      if (deltaBytes !== 0) _applyAssetBudgetDelta(deltaBytes, { appId })
     }
   }
 }

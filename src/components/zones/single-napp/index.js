@@ -114,7 +114,7 @@ f('singleNappLauncher', function () {
           isSingleNapp: true,
           requestAssetBudgetConfirmation: ({ nextApprovedBytes, filename }) => requestConfirmation({
             title: 'More app storage?',
-            message: `${filename ? `${filename} needs` : 'This app needs'} more cached storage. Allow app assets up to ${formatAssetBudgetBytes(nextApprovedBytes)}?`,
+            message: `${filename ? `${filename} needs` : 'This app needs'} more cached storage. Allow this app's assets up to ${formatAssetBudgetBytes(nextApprovedBytes)}?`,
             confirmText: `Allow ${formatAssetBudgetBytes(nextApprovedBytes)}`
           })
         }
