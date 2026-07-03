@@ -8,6 +8,7 @@ import { saveSiteManifestToDb, deleteSiteManifestFromDb } from '#services/idb/br
 import mime from 'mime'
 import { setWebStorageItem } from '#hooks/use-web-storage.js'
 import { getIcon, getName, getDescription } from './get-metadata.js'
+import { ASSET_BUDGET_BACKGROUND_DENIED } from '#services/app-asset-budget/index.js'
 
 export function cacheAppMetadata (appId, metadata) {
   if (!appId || !metadata) { throw new Error('Missing args') }
@@ -205,7 +206,10 @@ export default class AppFileManager {
   }
   // runs caching process and calls progressCallback with { progress: 0-100 } or { error }
   // !navigator.connection?.metered is true if user is on cheap internet
-  async cacheFile (pathname, pathTag, progressCallback, { shouldCacheMissingFiles = !navigator.connection?.metered } = {}) {
+  async cacheFile (pathname, pathTag, progressCallback, {
+    shouldCacheMissingFiles = !navigator.connection?.metered,
+    assetBudget = {}
+  } = {}) {
     pathTag ??= findRouteFileTag(pathname, this.siteManifest.tags)
     if (!pathTag) throw new Error(`No matching path tag found for path: ${pathname}`)
     const filename = pathTag[1]
@@ -225,7 +229,7 @@ export default class AppFileManager {
         this.cacheMissingAppFiles(filename) // does nothing if already running
       } else if (error) p.reject(error)
     })
-    this.#cacheFileInBackground(filename, pathTag)
+    this.#cacheFileInBackground(filename, pathTag, assetBudget)
     return p.promise
   }
 
@@ -244,7 +248,15 @@ export default class AppFileManager {
 
       for (const pathTag of pathTags) {
         if (!this.#isCacheMissingAppFilesRunning) break // poor man's abort controller
-        await this.cacheFile(pathTag[1], pathTag, null, { shouldCacheMissingFiles: false })
+        try {
+          await this.cacheFile(pathTag[1], pathTag, null, {
+            shouldCacheMissingFiles: false,
+            assetBudget: { mode: 'background' }
+          })
+        } catch (err) {
+          if (err.code !== ASSET_BUDGET_BACKGROUND_DENIED) console.log('Background app asset caching stopped:', err)
+          break
+        }
       }
     } finally {
       this.#isCacheMissingAppFilesRunning = false
@@ -252,7 +264,7 @@ export default class AppFileManager {
   }
 
   #isCacheFileInBackgroundRunning = {} // { [filename]: true }
-  async #cacheFileInBackground (filename, pathTag) {
+  async #cacheFileInBackground (filename, pathTag, assetBudget = {}) {
     if (this.#isCacheFileInBackgroundRunning[filename]) return
 
     this.#isCacheFileInBackgroundRunning[filename] = true
@@ -267,7 +279,7 @@ export default class AppFileManager {
       const mimeType = mime.getType(pathTag[1])
       const downloader = new AppFileDownloader(this.appId, pathTag[2], writeRelays, { service, mimeType })
 
-      for await (const report of downloader.run()) {
+      for await (const report of downloader.run({ assetBudget: { ...assetBudget, filename } })) {
         if (!this.#isCacheFileInBackgroundRunning[filename]) break // poor man's abort controller
 
         if (report.error) throw report.error

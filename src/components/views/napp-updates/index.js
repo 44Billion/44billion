@@ -1,4 +1,4 @@
-import { f, useComputed, useSignal, useTask } from '#f'
+import { f, useComputed, useGlobalStore, useSignal, useTask } from '#f'
 import '#f/components/f-to-signals.js'
 import { cssVars, jsVars } from '#assets/styles/theme.js'
 import '#shared/back-btn.js'
@@ -12,12 +12,19 @@ import '#shared/icons/icon-hourglass-high.js'
 import useWebStorage from '#hooks/use-web-storage.js'
 import AppFileManager from '#services/app-file-manager/index.js'
 import AppUpdater from '#services/app-updater/index.js'
+import { formatAssetBudgetBytes } from '#services/app-asset-budget/index.js'
 import { getEventsByStrategy } from '#helpers/nostr-queries.js'
 import { base16ToBase62 } from '#helpers/base62.js'
 
 f('napp-updates', function () {
   const storage = useWebStorage(localStorage)
   const { session_unread_appUpdateCount$: appUpdateCount$ } = storage
+  const { requestConfirmation } = useGlobalStore('<confirmation-dialog>')
+  const requestAssetBudgetConfirmation = ({ nextApprovedBytes, filename }) => requestConfirmation({
+    title: 'More app storage?',
+    message: `${filename ? `${filename} needs` : 'This update needs'} more cached storage. Allow app assets up to ${formatAssetBudgetBytes(nextApprovedBytes)}?`,
+    confirmText: `Allow ${formatAssetBudgetBytes(nextApprovedBytes)}`
+  })
 
   useTask(({ cleanup }) => {
     AppUpdater.isUserViewingUpdates = true
@@ -162,7 +169,7 @@ f('napp-updates', function () {
     })
 
     try {
-      for await (const report of AppUpdater.updateApps(events)) {
+      for await (const report of AppUpdater.updateApps(events, { requestAssetBudgetConfirmation })) {
         const { appId, appProgress, error, overallProgress, queued } = report
         overallProgress$(overallProgress)
 
@@ -233,7 +240,7 @@ f('napp-updates', function () {
     updateStates$(prev => ({ ...prev, [appId]: { status: 'pending', progress: 0, error: null } }))
 
     try {
-      for await (const report of AppUpdater.updateApp(update.event)) {
+      for await (const report of AppUpdater.updateApp(update.event, { requestAssetBudgetConfirmation })) {
         const status = report.error
           ? 'error'
           : report.queued

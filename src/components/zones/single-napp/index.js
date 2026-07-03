@@ -1,4 +1,4 @@
-import { f, useClosestStore, useSignal, useTask, useComputed } from '#f'
+import { f, useClosestStore, useGlobalStore, useSignal, useTask, useComputed } from '#f'
 import useWebStorage from '#hooks/use-web-storage.js'
 import { appDecode } from '#helpers/nip19.js'
 import { addressObjToAppId } from '#helpers/app.js'
@@ -6,8 +6,10 @@ import { base62ToBase36 } from '#helpers/base36.js'
 import { initMessageListener } from '#helpers/window-message/browser/index.js'
 import { allocateAppSubdomain } from '#helpers/subdomain-mapping.js'
 import AppUpdater from '#services/app-updater/index.js'
+import { formatAssetBudgetBytes } from '#services/app-asset-budget/index.js'
 import { useVaultModalStore, useVaultActor } from '#zones/vault-modal/index.js'
 import '#shared/napp-assets-caching-progress-bar.js'
+import '#zones/confirmation-dialog/index.js'
 
 f('singleNapp', function () {
   const storage = useWebStorage(localStorage)
@@ -46,6 +48,7 @@ f('singleNapp', function () {
 
   return this.h`
     <vault-modal />
+    <confirmation-dialog />
     <single-napp-launcher />
   `
 })
@@ -78,6 +81,7 @@ f('singleNappLauncher', function () {
     }
   })
   const { askVault } = useVaultActor()
+  const { requestConfirmation } = useGlobalStore('<confirmation-dialog>')
 
   useTask(
     async ({ cleanup }) => {
@@ -106,7 +110,15 @@ f('singleNappLauncher', function () {
         }, function openApp () {
           throw new Error('Open app not available in single napp mode yet')
         },
-        { signal: ac.signal, isSingleNapp: true }
+        {
+          signal: ac.signal,
+          isSingleNapp: true,
+          requestAssetBudgetConfirmation: ({ nextApprovedBytes, filename }) => requestConfirmation({
+            title: 'More app storage?',
+            message: `${filename ? `${filename} needs` : 'This app needs'} more cached storage. Allow app assets up to ${formatAssetBudgetBytes(nextApprovedBytes)}?`,
+            confirmText: `Allow ${formatAssetBudgetBytes(nextApprovedBytes)}`
+          })
+        }
       )
       trustedAppIframeSrc$(`//${appSubdomain$()}.${window.location.host}/~~napp`)
     },
@@ -115,6 +127,14 @@ f('singleNappLauncher', function () {
 
   return this.h`
       <style>
+        single-napp-launcher {
+          position: relative;
+          display: block;
+          width: 100%;
+          height: 100%;
+          overflow: hidden;
+        }
+
         iframe {
           &.tilde-tilde-napp-page { display: none; }
 

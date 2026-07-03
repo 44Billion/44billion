@@ -1,5 +1,17 @@
 import { run } from '#services/idb/browser/index.js'
 import { addressObjToAppId } from '#helpers/app.js'
+import {
+  applyAssetBudgetDelta,
+  ensureAssetBudgetInitialized,
+  ensureCanStoreAppAssetBytes,
+  estimateFileChunkStoredBytes
+} from '#services/app-asset-budget/index.js'
+
+function storedChunkBytes (chunk) {
+  return Number.isSafeInteger(chunk?.b) && chunk.b >= 0
+    ? chunk.b
+    : estimateFileChunkStoredBytes(chunk)
+}
 
 export async function countFileChunksFromDb (appId, rootHash) {
   let total = null
@@ -17,6 +29,7 @@ export async function countFileChunksFromDb (appId, rootHash) {
 }
 
 export async function deleteStaleFileChunksFromDb (appId, allowedRootHashes, { signal } = {}) {
+  await ensureAssetBudgetInitialized({ _streamAllFileChunks: streamAllFileChunksFromDb })
   const allowed = new Set(allowedRootHashes)
   const p = Promise.withResolvers()
   const range = IDBKeyRange.bound([appId, '\u0000', -Infinity], [appId, '\uffff', Infinity])
@@ -29,10 +42,12 @@ export async function deleteStaleFileChunksFromDb (appId, allowedRootHashes, { s
   let cursor
   let continueKey
   let res
+  let deletedBytes = 0
   while ((res = await p.promise) && (cursor = res.result)) {
     if (signal?.aborted) { res.tx.abort(); break }
 
     if (!allowed.has(cursor.value.fx)) {
+      deletedBytes += storedChunkBytes(cursor.value)
       cursor.delete()
     } else {
       continueKey = getContinueKey(cursor)
@@ -41,14 +56,27 @@ export async function deleteStaleFileChunksFromDb (appId, allowedRootHashes, { s
     cursor.continue(continueKey)
     if (continueKey) continueKey = undefined
   }
+  if (deletedBytes > 0 && !signal?.aborted) applyAssetBudgetDelta(-deletedBytes)
 }
 
 // Caution: when there's no rootHash arg, use this only when no user has the app installed anymore
 export async function deleteFileChunksFromDb (appId, rootHash) {
   if (!appId) throw new Error('Missing app id')
+  await ensureAssetBudgetInitialized({ _streamAllFileChunks: streamAllFileChunksFromDb })
 
   const range = IDBKeyRange.bound([appId, rootHash ?? '\u0000', -Infinity], [appId, rootHash ?? '\uffff', Infinity])
-  return run('delete', [range], 'fileChunks').then(v => v.result)
+  const p = Promise.withResolvers()
+  await run('openCursor', [range], 'fileChunks', null, { p })
+
+  let cursor
+  let deletedBytes = 0
+  while ((cursor = (await p.promise).result)) {
+    deletedBytes += storedChunkBytes(cursor.value)
+    cursor.delete()
+    Object.assign(p, Promise.withResolvers())
+    cursor.continue()
+  }
+  if (deletedBytes > 0) applyAssetBudgetDelta(-deletedBytes)
 }
 
 export async function getFileChunksFromDb (appId, rootHash, { fromPos, toPos, justKeys = false } = {}) {
@@ -76,13 +104,47 @@ export async function * streamFileChunksFromDb (appId, rootHash, { fromPos, toPo
   }
 }
 
-export async function saveFileChunksToDB (siteManifest, fileChunks, appId) {
+export async function * streamAllFileChunksFromDb () {
+  const p = Promise.withResolvers()
+  await run('openCursor', [], 'fileChunks', null, { p })
+
+  let cursor
+  while ((cursor = (await p.promise).result)) {
+    yield cursor.value
+    Object.assign(p, Promise.withResolvers())
+    cursor.continue()
+  }
+}
+
+export async function sumFileChunkBytesFromDb (appId, rootHashes = null) {
+  await ensureAssetBudgetInitialized({ _streamAllFileChunks: streamAllFileChunksFromDb })
+  const allowed = rootHashes && new Set(rootHashes)
+  const range = IDBKeyRange.bound([appId, '\u0000', -Infinity], [appId, '\uffff', Infinity])
+  const p = Promise.withResolvers()
+  await run('openCursor', [range], 'fileChunks', null, { p })
+
+  let bytes = 0
+  let cursor
+  while ((cursor = (await p.promise).result)) {
+    const chunk = cursor.value
+    if (!allowed || allowed.has(chunk.fx)) bytes += storedChunkBytes(chunk)
+    Object.assign(p, Promise.withResolvers())
+    cursor.continue()
+  }
+  return bytes
+}
+
+export async function saveFileChunksToDB (siteManifest, fileChunks, appId, {
+  assetBudget = {},
+  _applyAssetBudgetDelta = applyAssetBudgetDelta,
+  _ensureCanStoreAppAssetBytes = ensureCanStoreAppAssetBytes
+} = {}) {
+  await ensureAssetBudgetInitialized({ _streamAllFileChunks: streamAllFileChunksFromDb })
   const manifestRootHashesObj = siteManifest.tags
     .filter(t => t[0] === 'path' && !!t[2])
     .map(t => t[2])
     .reduce((r, v) => ({ ...r, [v]: true }), {})
 
-  let ret
   for (const chunkEvent of fileChunks) {
     if (chunkEvent.kind !== 34600) throw new Error('Wrong chunk kind')
     let dTag
@@ -119,7 +181,21 @@ export async function saveFileChunksToDB (siteManifest, fileChunks, appId) {
         // but it is rare to share file chunks across different files or apps
         evt: chunkEvent
       }
-      ret = await run('put', [chunk], 'fileChunks', null, ret)
+      chunk.b = estimateFileChunkStoredBytes(chunk)
+
+      const key = [appId, fileRootHash, chunkPosition]
+      const old = (await run('get', [key], 'fileChunks')).result
+      const deltaBytes = chunk.b - (old ? storedChunkBytes(old) : 0)
+      if (deltaBytes > 0) {
+        await _ensureCanStoreAppAssetBytes(deltaBytes, {
+          ...assetBudget,
+          appId
+        })
+        if (assetBudget.replacement) assetBudget.replacement.newBytes += deltaBytes
+      }
+
+      await run('put', [chunk], 'fileChunks')
+      if (deltaBytes !== 0) _applyAssetBudgetDelta(deltaBytes)
     }
   }
 }

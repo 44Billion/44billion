@@ -28,6 +28,7 @@ import { base62ToBase36 } from '#helpers/base36.js'
 import { allocateAppSubdomain, releaseAppSubdomain } from '#helpers/subdomain-mapping.js'
 import { useVaultModalStore, useVaultActor } from '#zones/vault-modal/index.js'
 import { base62ToBase16 } from '#helpers/base62.js'
+import { formatAssetBudgetBytes } from '#services/app-asset-budget/index.js'
 import '#shared/napp-assets-caching-progress-bar.js'
 import '#shared/app-icon.js'
 import '#shared/svg.js'
@@ -292,6 +293,7 @@ f('appWindow', function () {
   const { requestPermission } = pdStore
   const { openApp } = useGlobalStore('useAppRouter')
   const { requestAction: requestFileNotCachedAction } = useGlobalStore('<file-not-cached-dialog>')
+  const { requestConfirmation } = useGlobalStore('<confirmation-dialog>')
   const appKey = this.props.appKey
   const wsKey = this.props.wsKey
 
@@ -448,7 +450,16 @@ f('appWindow', function () {
         userPkB36$(), appId$(), appSubdomain$(), initialRoute,
         trustedAppIframeRef$(), appIframeRef$(), appIframeSrc$,
         cachingProgress$, askVault, requestPermission, openApp,
-        { signal: ac.signal, isSingleNapp: false, onFileNotCached }
+        {
+          signal: ac.signal,
+          isSingleNapp: false,
+          onFileNotCached,
+          requestAssetBudgetConfirmation: ({ nextApprovedBytes, filename }) => requestConfirmation({
+            title: 'More app storage?',
+            message: `${filename ? `${filename} needs` : 'This app needs'} more cached storage. Allow app assets up to ${formatAssetBudgetBytes(nextApprovedBytes)}?`,
+            confirmText: `Allow ${formatAssetBudgetBytes(nextApprovedBytes)}`
+          })
+        }
       )
       trustedAppIframeSrc$(`//${appSubdomain$()}.${window.location.host}/~~napp`)
     },
@@ -474,6 +485,8 @@ f('appWindow', function () {
           display: none; /* minimized or closed */
           z-index: 1;
           flex: 0 1 100%;
+          position: relative;
+          overflow: hidden;
 
           @media (orientation: portrait) {
             width: 100%;

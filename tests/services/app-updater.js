@@ -820,8 +820,10 @@ describe('AppUpdater', () => {
     const writeRelays = ['wss://relay1.com']
 
     it('should download files sequentially and update db on success', async () => {
+      const runOptions = []
       const mockDownloaderInstance = {
-        run: async function * () {
+        run: async function * (options) {
+          runOptions.push(options)
           yield { progress: 50, error: null }
           yield { progress: 100, error: null }
         }
@@ -859,6 +861,9 @@ describe('AppUpdater', () => {
       assert.equal(reports[0].queued, true)
       assert.equal(reports[4].appProgress, 100)
       assert.equal(reports[4].error, null)
+      assert.equal(runOptions.length, 2)
+      assert.equal(runOptions[0].assetBudget.mode, 'foreground')
+      assert.equal(runOptions[0].assetBudget.replacement, runOptions[1].assetBudget.replacement)
 
       // Check DB calls
       assert.equal(mockDeleteStale.mock.callCount(), 1)
@@ -889,6 +894,7 @@ describe('AppUpdater', () => {
         _AppFileDownloader: MockAppFileDownloader,
         _deleteStaleFileChunksFromDb: mockDeleteStale,
         _saveSiteManifestToDb: mockSaveManifest,
+        _getSiteManifestFromDb: async () => ({}),
         _addressObjToAppId: mockAddressToId,
         writeRelays
       })

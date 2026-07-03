@@ -1,5 +1,6 @@
-import { f, useTask } from '#f'
+import { f, useGlobalStore, useTask } from '#f'
 import AppUpdater from '#services/app-updater/index.js'
+import { formatAssetBudgetBytes } from '#services/app-asset-budget/index.js'
 import useLocation from '#hooks/use-location.js'
 import router from './router.js'
 import '#zones/screen/index.js'
@@ -9,9 +10,17 @@ import '#zones/confirmation-dialog/index.js'
 import '#zones/file-not-cached-dialog/index.js'
 
 f('multi-napp', function () {
+  const { requestConfirmation } = useGlobalStore('<confirmation-dialog>')
+
   useTask(() => {
     AppUpdater.initCleanupJob()
-    AppUpdater.initUpdateCheckJob()
+    AppUpdater.initUpdateCheckJob({
+      requestAssetBudgetConfirmation: ({ nextApprovedBytes, filename }) => requestConfirmation({
+        title: 'More app storage?',
+        message: `${filename ? `${filename} needs` : 'An app update needs'} more cached storage. Allow app assets up to ${formatAssetBudgetBytes(nextApprovedBytes)}?`,
+        confirmText: `Allow ${formatAssetBudgetBytes(nextApprovedBytes)}`
+      })
+    })
   })
 
   useLocation(router)

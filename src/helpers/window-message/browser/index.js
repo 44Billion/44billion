@@ -22,6 +22,14 @@ import { decode } from '#services/base93-decoder.js'
 import Base93Encoder from '#services/base93-encoder.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToBase16 } from '#helpers/base16.js'
+import {
+  ASSET_BUDGET_BACKGROUND_DENIED,
+  ASSET_BUDGET_DENIED_BY_USER
+} from '#services/app-asset-budget/index.js'
+
+function isAssetBudgetError (error) {
+  return [ASSET_BUDGET_BACKGROUND_DENIED, ASSET_BUDGET_DENIED_BY_USER].includes(error?.code)
+}
 
 // Update icon storage with data URL from streamed chunks
 async function updateIconStorage (appId, favicon, chunks) {
@@ -56,7 +64,7 @@ export async function initMessageListener (
   userPkB36, appId, appSubdomain, initialRoute,
   trustedAppPageIframe, appPageIframe, appPageIframeSrc$,
   cachingProgress$, askVault, requestPermission, openApp,
-  { signal: componentSignal, isSingleNapp = false, onFileNotCached = null } = {}
+  { signal: componentSignal, isSingleNapp = false, onFileNotCached = null, requestAssetBudgetConfirmation = null } = {}
 ) {
   const userPkB16 = base36ToBase16(userPkB36)
   const isDefaultUser = base16ToBase62(userPkB16) === JSON.parse(localStorage.getItem('session_defaultUserPk'))
@@ -182,7 +190,7 @@ export async function initMessageListener (
         case 'STREAM_APP_FILE': {
           const handleStreamError = (originalError, errorToSend = new Error('FILE_NOT_CACHED')) => {
             if (originalError) console.log(originalError)
-            if (onFileNotCached && errorToSend.message !== 'HTML_FILE_NOT_CACHED') {
+            if (onFileNotCached && errorToSend.message !== 'HTML_FILE_NOT_CACHED' && !isAssetBudgetError(originalError) && !isAssetBudgetError(errorToSend)) {
               onFileNotCached(e.data.payload.pathname)
             }
             return reply(e, { error: errorToSend, isLast: true }, { to: trustedAppPagePort })
@@ -295,7 +303,12 @@ export async function initMessageListener (
                 try {
                   await tryStream()
                   if (!hasSentLast && !hasErrored) {
-                    return appFiles.cacheFile(e.data.payload.pathname, cacheStatus.pathTag, progressCallback)
+                    return appFiles.cacheFile(e.data.payload.pathname, cacheStatus.pathTag, progressCallback, {
+                      assetBudget: {
+                        mode: 'foreground',
+                        requestConfirmation: requestAssetBudgetConfirmation
+                      }
+                    })
                   }
                 } catch (err) {
                   return handleStreamError(err)
@@ -558,7 +571,12 @@ export async function initMessageListener (
 
             let cacheStatus = (await appFiles.getFileCacheStatus(null, favicon.tag, { withMeta: true }))
             if (!cacheStatus.isCached) {
-              await appFiles.cacheFile(null, favicon.tag)
+              await appFiles.cacheFile(null, favicon.tag, null, {
+                assetBudget: {
+                  mode: 'foreground',
+                  requestConfirmation: requestAssetBudgetConfirmation
+                }
+              })
               cacheStatus = (await appFiles.getFileCacheStatus(null, favicon.tag, { withMeta: true }))
             }
 
@@ -612,17 +630,22 @@ export async function initMessageListener (
           try {
             const progressCallback = ({ progress, error }) => {
               if (error) {
-                if (onFileNotCached) onFileNotCached(e.data.payload.pathname)
+                if (onFileNotCached && !isAssetBudgetError(error)) onFileNotCached(e.data.payload.pathname)
                 reply(e, { error, isLast: true }, { to: appPagePort })
               } else {
                 const isLast = progress >= 100
                 reply(e, { payload: progress, isLast }, { to: appPagePort })
               }
             }
-            appFiles.cacheFile(e.data.payload.pathname, null, progressCallback)
+            appFiles.cacheFile(e.data.payload.pathname, null, progressCallback, {
+              assetBudget: {
+                mode: 'foreground',
+                requestConfirmation: requestAssetBudgetConfirmation
+              }
+            })
           } catch (error) {
             console.log(e.data.payload.pathname, 'error:', error.stack)
-            if (onFileNotCached) onFileNotCached(e.data.payload.pathname)
+            if (onFileNotCached && !isAssetBudgetError(error)) onFileNotCached(e.data.payload.pathname)
             reply(e, { error, isLast: true }, { to: appPagePort })
           }
           break

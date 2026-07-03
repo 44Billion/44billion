@@ -5,7 +5,7 @@ import {
   normalizeSingleNappOpenedAtByOwner,
   saveSiteManifestToDb
 } from '#services/idb/browser/queries/site-manifest.js'
-import { deleteStaleFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
+import { deleteStaleFileChunksFromDb, sumFileChunkBytesFromDb } from '#services/idb/browser/queries/file-chunk.js'
 import { addressObjToAppId } from '#helpers/app.js'
 import { base62ToBase16 } from '#helpers/base62.js'
 import { getUserRelays } from '#helpers/nostr-queries.js'
@@ -815,7 +815,10 @@ export default class AppUpdater {
         if (shouldAutoApply) {
           const events = Object.values(updates).map(u => u.event)
           if (events.length > 0) {
-            for await (const report of this.updateApps(events, deps)) {
+            for await (const report of this.updateApps(events, {
+              ...deps,
+              assetBudgetMode: 'autoUpdate'
+            })) {
               if (report.error) console.error(`Auto update of ${report.appId} failed`, report.error)
             }
           }
@@ -830,7 +833,10 @@ export default class AppUpdater {
             const embeddedUpdates = await this.searchForUpdates(embeddedAppIds, deps)
             const embeddedEvents = Object.values(embeddedUpdates).map(u => u.event)
             if (embeddedEvents.length > 0) {
-              for await (const report of this.updateApps(embeddedEvents, deps)) {
+              for await (const report of this.updateApps(embeddedEvents, {
+                ...deps,
+                assetBudgetMode: 'autoUpdate'
+              })) {
                 if (report.error) console.error(`Auto update of embedded app ${report.appId} failed`, report.error)
               }
             }
@@ -865,9 +871,12 @@ export default class AppUpdater {
     _getSiteManifestFromDb = getSiteManifestFromDb,
     _addressObjToAppId = addressObjToAppId,
     _getUserRelays = getUserRelays,
+    _sumFileChunkBytesFromDb = sumFileChunkBytesFromDb,
     _localStorage,
     _sessionStorage,
-    writeRelays
+    writeRelays,
+    assetBudgetMode = 'foreground',
+    requestAssetBudgetConfirmation
   } = {}) {
     // Yield a queued report so consumers can render a pending state while we
     // wait for a free concurrency slot. Auto and manual paths funnel through
@@ -890,6 +899,17 @@ export default class AppUpdater {
       const files = nextSiteManifestEvent.tags
         .filter(t => t[0] === 'path')
         .map(t => ({ rootHash: t[2], filename: t[1] }))
+      const fileRootHashes = files.map(f => f.rootHash)
+      const localManifestBeforeUpdate = await _getSiteManifestFromDb(appId)
+      const oldRootHashes = localManifestBeforeUpdate?.tags
+        ?.filter(t => t[0] === 'path' && t[2])
+        .map(t => t[2]) ?? []
+      const replacement = {
+        oldBytes: oldRootHashes.length > 0
+          ? await _sumFileChunkBytesFromDb(appId, oldRootHashes)
+          : 0,
+        newBytes: 0
+      }
 
       const totalFiles = files.length
 
@@ -898,7 +918,14 @@ export default class AppUpdater {
         const downloader = new _AppFileDownloader(appId, file.rootHash, writeRelays)
 
         try {
-          for await (const report of downloader.run()) {
+          for await (const report of downloader.run({
+            assetBudget: {
+              mode: assetBudgetMode,
+              filename: file.filename,
+              requestConfirmation: requestAssetBudgetConfirmation,
+              replacement
+            }
+          })) {
             if (report.error) {
               yield { appProgress: 0, fileProgress: 0, error: report.error }
               return
@@ -917,8 +944,6 @@ export default class AppUpdater {
           return
         }
       }
-
-      const fileRootHashes = files.map(f => f.rootHash)
 
       if (this.isAppOpen(appId, { _sessionStorage, _localStorage })) {
         await this.scheduleCleanup([appId], {

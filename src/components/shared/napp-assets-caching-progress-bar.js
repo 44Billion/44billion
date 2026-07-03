@@ -36,12 +36,7 @@ f('nappAssetsCachingProgressBar', function () {
     return { overallProgress, fileList, fileCount: entries.length }
   })
 
-  const style$ = useComputed(() => `
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    z-index: 1000;
+  const barStyle$ = useComputed(() => `
     background: linear-gradient(90deg,
       oklch(0.62 0.22 297.62 / 0.9) 0%,
       oklch(0.62 0.22 297.1 / 0.9) ${progressSummary$().overallProgress}%,
@@ -49,6 +44,7 @@ f('nappAssetsCachingProgressBar', function () {
       rgba(0, 0, 0, 0.7) 100%
     );
     height: 4px;
+    width: 100%;
     transition: all 0.3s ease;
     opacity: ${hasAnyProgress$() ? 1 : 0};
     transform: translateY(${hasAnyProgress$() ? '0' : '-100%'});
@@ -59,9 +55,11 @@ f('nappAssetsCachingProgressBar', function () {
     top: 6px;
     left: 8px;
     right: 8px;
+    box-sizing: border-box;
+    max-width: calc(100% - 16px);
     background: rgba(0, 0, 0, 0.8);
     color: white;
-    font-size: 12px;
+    font-size: 12rem;
     padding: 4px 8px;
     border-radius: 4px;
     backdrop-filter: blur(4px);
@@ -74,7 +72,23 @@ f('nappAssetsCachingProgressBar', function () {
   `)
 
   return this.h`
-    <div style=${style$()} />
+    <style>
+      napp-assets-caching-progress-bar {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        z-index: 1000;
+        display: block;
+        width: 100%;
+        max-width: 100%;
+        height: 34px;
+        overflow: hidden;
+        pointer-events: none;
+        contain: paint;
+      }
+    </style>
+    <div style=${barStyle$()} />
     <div style=${textStyle$()}>
       Caching ${progressSummary$().fileCount} asset${progressSummary$().fileCount !== 1 ? 's' : ''}
       (${progressSummary$().overallProgress}%): ${progressSummary$().fileList}
