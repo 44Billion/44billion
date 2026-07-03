@@ -26,6 +26,7 @@ import {
   ASSET_BUDGET_BACKGROUND_DENIED,
   ASSET_BUDGET_DENIED_BY_USER
 } from '#services/app-asset-budget/index.js'
+import { APP_FILE_CHUNK_BYTES } from '#constants/app-file.js'
 
 function isAssetBudgetError (error) {
   return [ASSET_BUDGET_BACKGROUND_DENIED, ASSET_BUDGET_DENIED_BY_USER].includes(error?.code)
@@ -279,7 +280,7 @@ export async function initMessageListener (
                     ...currentProgress,
                     [filename]: {
                       progress: cachingProgress,
-                      totalByteSizeEstimate: totalChunks ? (totalChunks - 1) * 51000 : 0
+                      totalByteSizeEstimate: totalChunks ? totalChunks * APP_FILE_CHUNK_BYTES : 0
                     }
                   })
 
@@ -557,10 +558,9 @@ export async function initMessageListener (
               const mimeType = icon.url.slice(5, commaIdx).split(';')[0] || null
               const contentType = mimeType || 'application/octet-stream'
               const bytes = Uint8Array.from(atob(icon.url.slice(commaIdx + 1)), c => c.charCodeAt(0))
-              const CHUNK_SIZE = 51000
-              const numChunks = Math.max(1, Math.ceil(bytes.length / CHUNK_SIZE))
+              const numChunks = Math.max(1, Math.ceil(bytes.length / APP_FILE_CHUNK_BYTES))
               for (let i = 0; i < numChunks; i++) {
-                const content = new Base93Encoder().update(bytes.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE)).getEncoded()
+                const content = new Base93Encoder().update(bytes.slice(i * APP_FILE_CHUNK_BYTES, (i + 1) * APP_FILE_CHUNK_BYTES)).getEncoded()
                 reply(e, {
                   payload: { content, ...(i === 0 && { mimeType, contentType }) },
                   isLast: i === numChunks - 1

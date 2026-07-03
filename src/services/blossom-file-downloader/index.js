@@ -3,8 +3,8 @@ import mime from 'mime'
 import Base93Encoder from '#services/base93-encoder.js'
 import { bytesToBase16 } from '#helpers/base16.js'
 import nostrRelays from '#services/nostr-relays.js'
+import { APP_FILE_CHUNK_BYTES } from '#constants/app-file.js'
 
-const CHUNK_SIZE = 51000
 const HEAD_TIMEOUT_AFTER_FIRST_MS = 500
 
 export function isMimeTypeAccepted (expectedMimeType, contentTypeHeader) {
@@ -180,7 +180,7 @@ export default class BlossomFileDownloader {
       }
     }
 
-    const totalChunks = Math.max(1, Math.ceil(bestByteLength / CHUNK_SIZE))
+    const totalChunks = Math.max(1, Math.ceil(bestByteLength / APP_FILE_CHUNK_BYTES))
     // Prefer a server that reported the winning Content-Length
     const chosenServer = results.find(r => r.byteLength === bestByteLength)?.serverUrl ?? results[0].serverUrl
 
@@ -206,9 +206,9 @@ export default class BlossomFileDownloader {
         newBuffer.set(value, buffer.length)
         buffer = newBuffer
 
-        while (buffer.length >= CHUNK_SIZE) {
-          const chunk = buffer.slice(0, CHUNK_SIZE)
-          buffer = buffer.slice(CHUNK_SIZE)
+        while (buffer.length >= APP_FILE_CHUNK_BYTES) {
+          const chunk = buffer.slice(0, APP_FILE_CHUNK_BYTES)
+          buffer = buffer.slice(APP_FILE_CHUNK_BYTES)
 
           const event = this.#createChunkEvent(chunk, chunkIndex, totalChunks)
           processedCount++

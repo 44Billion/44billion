@@ -10,6 +10,7 @@ import {
   rebuildAssetBudgetFromChunks,
   writeAssetBudgetState
 } from '../../src/services/app-asset-budget/index.js'
+import { APP_FILE_CHUNK_BYTES } from '../../src/constants/app-file.js'
 
 function storageFromEntries (entries = {}) {
   const data = new Map(Object.entries(entries).map(([key, value]) => [key, JSON.stringify(value)]))
@@ -30,21 +31,33 @@ describe('app asset budget', () => {
     assert.equal(state.approvedBytes, ASSET_BUDGET_STEP_BYTES)
   })
 
-  it('approves existing cached bytes when rebuilding the ledger', async () => {
+  it('approves existing cached chunks when rebuilding the ledger', async () => {
+    const storage = storageFromEntries()
+
+    const state = await rebuildAssetBudgetFromChunks({
+      _localStorage: storage,
+      _countAllFileChunks: async () => Math.ceil((ASSET_BUDGET_STEP_BYTES + 1) / APP_FILE_CHUNK_BYTES),
+      _now: () => 123
+    })
+
+    assert.equal(state.cachedBytes, Math.ceil((ASSET_BUDGET_STEP_BYTES + 1) / APP_FILE_CHUNK_BYTES) * APP_FILE_CHUNK_BYTES)
+    assert.equal(state.approvedBytes, ASSET_BUDGET_STEP_BYTES * 2)
+    assert.equal(state.rebuiltAt, 123)
+  })
+
+  it('can rebuild by counting streamed chunks when no counter is provided', async () => {
     const storage = storageFromEntries()
     async function * streamChunks () {
-      yield { b: ASSET_BUDGET_STEP_BYTES + 1 }
+      yield { evt: { content: 'tiny-tail' } }
+      yield { evt: { content: 'full-ish' } }
     }
 
     const state = await rebuildAssetBudgetFromChunks({
       _localStorage: storage,
-      _streamAllFileChunks: streamChunks,
-      _now: () => 123
+      _streamAllFileChunks: streamChunks
     })
 
-    assert.equal(state.cachedBytes, ASSET_BUDGET_STEP_BYTES + 1)
-    assert.equal(state.approvedBytes, ASSET_BUDGET_STEP_BYTES * 2)
-    assert.equal(state.rebuiltAt, 123)
+    assert.equal(state.cachedBytes, APP_FILE_CHUNK_BYTES * 2)
   })
 
   it('prompts and raises the approved step for foreground writes', async () => {

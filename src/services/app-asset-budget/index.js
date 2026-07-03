@@ -1,7 +1,7 @@
+import { APP_FILE_CHUNK_BYTES } from '#constants/app-file.js'
+
 const STORAGE_KEY = '44billion:app-asset-budget:v1'
 const THREE_GB = 3 * 1024 * 1024 * 1024
-
-const textEncoder = new TextEncoder()
 
 export const ASSET_BUDGET_STEP_BYTES = THREE_GB
 export const ASSET_BUDGET_BACKGROUND_DENIED = 'ASSET_BUDGET_BACKGROUND_DENIED'
@@ -41,10 +41,6 @@ export function formatAssetBudgetBytes (bytes) {
   return `${Number.isInteger(gb) ? gb : gb.toFixed(1)} GB`
 }
 
-export function estimateFileChunkStoredBytes (chunk) {
-  return textEncoder.encode(JSON.stringify(chunk?.evt ?? chunk ?? null)).byteLength
-}
-
 export function normalizeAssetBudgetState (state) {
   const cachedBytes = normalizePositiveInteger(state?.cachedBytes)
   return {
@@ -77,15 +73,20 @@ export function applyAssetBudgetDelta (deltaBytes, deps = {}) {
 }
 
 export async function rebuildAssetBudgetFromChunks ({
+  _countAllFileChunks,
   _streamAllFileChunks,
   _now = Date.now,
   ...deps
 } = {}) {
-  if (typeof _streamAllFileChunks !== 'function') throw new Error('Missing file chunk stream')
-  let cachedBytes = 0
-  for await (const chunk of _streamAllFileChunks()) {
-    cachedBytes += normalizePositiveInteger(chunk?.b, estimateFileChunkStoredBytes(chunk))
+  let chunkCount
+  if (typeof _countAllFileChunks === 'function') {
+    chunkCount = await _countAllFileChunks()
+  } else {
+    if (typeof _streamAllFileChunks !== 'function') throw new Error('Missing file chunk counter')
+    chunkCount = 0
+    for await (const _ of _streamAllFileChunks()) chunkCount++
   }
+  const cachedBytes = normalizePositiveInteger(chunkCount) * APP_FILE_CHUNK_BYTES
   return writeAssetBudgetState({
     cachedBytes,
     approvedBytes: roundUpToStep(cachedBytes),
@@ -94,13 +95,14 @@ export async function rebuildAssetBudgetFromChunks ({
 }
 
 export async function ensureAssetBudgetInitialized ({
+  _countAllFileChunks,
   _streamAllFileChunks,
   ...deps
 } = {}) {
   const current = readAssetBudgetState(deps)
   if (!getLocalStorage(deps._localStorage)) return current
   if (current.rebuiltAt > 0) return current
-  return rebuildAssetBudgetFromChunks({ _streamAllFileChunks, ...deps })
+  return rebuildAssetBudgetFromChunks({ _countAllFileChunks, _streamAllFileChunks, ...deps })
 }
 
 function replacementProjectedBytes ({ cachedBytes, deltaBytes, replacement }) {

@@ -75,8 +75,7 @@ f('singleNappLauncher', function () {
     cachingProgress$: {
       // [filename]: {
       //   progress: 0, // 0-100
-      //   // Note: don't use it when it's 0
-      //   totalByteSizeEstimate: 0 // 51000 * (total number of chunks - 1); don't count last chunk as it may be smaller)
+      //   totalByteSizeEstimate: 0 // APP_FILE_CHUNK_BYTES * total chunks; tail chunks count as full chunks
       // }
     }
   })
