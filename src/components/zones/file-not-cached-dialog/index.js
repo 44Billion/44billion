@@ -9,15 +9,8 @@ const cancelError = err => (err = new Error('File not cached action canceled')) 
 const closedError = err => (err = new Error('File not cached dialog closed')) && (err.code = 'CANCELED') && err
 const supersededError = () => new Error('File not cached request superseded')
 
-// const { requestAction } = useGlobalStore('<file-not-cached-dialog>')
-// try {
-//   await requestAction({ appName: 'My App' })
-//   // user clicked Retry — re-open the app
-// } catch {
-//   // user clicked Cancel — delete the app
-// }
-f('fileNotCachedDialog', function () {
-  const store = useGlobalStore('<file-not-cached-dialog>', () => ({
+function createFileNotCachedDialogStore () {
+  return {
     currentRequest$: null,
     lastRequest$: null,
     isOpen$ () { return Boolean(this.currentRequest$()) },
@@ -46,7 +39,22 @@ f('fileNotCachedDialog', function () {
       this.currentRequest$({ appName, message, resolve, reject })
       return promise
     }
-  }))
+  }
+}
+
+export function useFileNotCachedDialogStore () {
+  return useGlobalStore('<file-not-cached-dialog>', createFileNotCachedDialogStore)
+}
+
+// const { requestAction } = useFileNotCachedDialogStore()
+// try {
+//   await requestAction({ appName: 'My App' })
+//   // user clicked Retry — re-open the app
+// } catch {
+//   // user clicked Cancel — delete the app
+// }
+f('fileNotCachedDialog', function () {
+  const store = useFileNotCachedDialogStore()
   const modalProps = useStore(() => ({
     isOpen$: store.isOpen$,
     close: store.close.bind(store),
@@ -59,7 +67,7 @@ f('fileNotCachedDialog', function () {
 })
 
 f('fileNotCachedDialogCard', function () {
-  const store = useGlobalStore('<file-not-cached-dialog>')
+  const store = useFileNotCachedDialogStore()
   const local = useStore(() => ({
     isButtonsDisabled$: false,
     appName$: store.appName$,

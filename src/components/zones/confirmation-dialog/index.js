@@ -13,19 +13,8 @@ const supersededError = () => new Error('Confirmation superseded')
 const rejectedError = err => (err = new Error('Confirmation denied')) && (err.code = 'DENIED_BY_USER') && err
 const closedError = err => (err = new Error('Confirmation dialog closed')) && (err.code = 'DENIED_BY_USER') && err
 
-// const { requestConfirmation } = useGlobalStore('<confirmation-dialog>')
-// try {
-//   await requestConfirmation({
-//     title: 'Delete Note',
-//     message: 'Delete this note?',
-//     confirmText: 'Delete'
-//   })
-//   // proceed with destructive action
-// } catch {
-//   // user denied or another request superseded it
-// }
-f('confirmation-dialog', function () {
-  const cdStore = useGlobalStore('<confirmation-dialog>', () => ({
+function createConfirmationDialogStore () {
+  return {
     currentRequest$: null,
     lastRequest$: null,
     isOpen$ () {
@@ -67,7 +56,26 @@ f('confirmation-dialog', function () {
       this.currentRequest$({ title, message, confirmText, resolve, reject })
       return promise
     }
-  }))
+  }
+}
+
+export function useConfirmationDialogStore () {
+  return useGlobalStore('<confirmation-dialog>', createConfirmationDialogStore)
+}
+
+// const { requestConfirmation } = useConfirmationDialogStore()
+// try {
+//   await requestConfirmation({
+//     title: 'Delete Note',
+//     message: 'Delete this note?',
+//     confirmText: 'Delete'
+//   })
+//   // proceed with destructive action
+// } catch {
+//   // user denied or another request superseded it
+// }
+f('confirmation-dialog', function () {
+  const cdStore = useConfirmationDialogStore()
   const modalProps = useStore(() => ({
     isOpen$: cdStore.isOpen$,
     close: cdStore.close.bind(cdStore),
@@ -82,7 +90,7 @@ f('confirmation-dialog', function () {
 })
 
 f('confirmation-dialog-card', function () {
-  const cdStore = useGlobalStore('<confirmation-dialog>')
+  const cdStore = useConfirmationDialogStore()
   const localStore = useStore(() => ({
     isButtonsDisabled$: false,
     title$: cdStore.title$,

@@ -1,4 +1,4 @@
-import { f, useGlobalStore, useTask } from '#f'
+import { f, useTask } from '#f'
 import AppUpdater from '#services/app-updater/index.js'
 import { formatAssetBudgetBytes } from '#services/app-asset-budget/index.js'
 import useLocation from '#hooks/use-location.js'
@@ -6,11 +6,11 @@ import router from './router.js'
 import '#zones/screen/index.js'
 import { useVaultModalStore } from '#zones/vault-modal/index.js'
 import '#zones/permission-dialog/index.js'
-import '#zones/confirmation-dialog/index.js'
+import { useConfirmationDialogStore } from '#zones/confirmation-dialog/index.js'
 import '#zones/file-not-cached-dialog/index.js'
 
 f('multi-napp', function () {
-  const { requestConfirmation } = useGlobalStore('<confirmation-dialog>')
+  const { requestConfirmation } = useConfirmationDialogStore()
 
   useTask(({ cleanup }) => {
     const requestAssetBudgetConfirmation = ({ nextApprovedBytes, filename }) => requestConfirmation({

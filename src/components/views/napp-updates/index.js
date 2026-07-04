@@ -1,4 +1,4 @@
-import { f, useComputed, useGlobalStore, useSignal, useTask } from '#f'
+import { f, useComputed, useSignal, useTask } from '#f'
 import '#f/components/f-to-signals.js'
 import { cssVars, jsVars } from '#assets/styles/theme.js'
 import '#shared/back-btn.js'
@@ -15,11 +15,12 @@ import AppUpdater from '#services/app-updater/index.js'
 import { formatAssetBudgetBytes } from '#services/app-asset-budget/index.js'
 import { getEventsByStrategy } from '#helpers/nostr-queries.js'
 import { base16ToBase62 } from '#helpers/base62.js'
+import { useConfirmationDialogStore } from '#zones/confirmation-dialog/index.js'
 
 f('napp-updates', function () {
   const storage = useWebStorage(localStorage)
   const { session_unread_appUpdateCount$: appUpdateCount$ } = storage
-  const { requestConfirmation } = useGlobalStore('<confirmation-dialog>')
+  const { requestConfirmation } = useConfirmationDialogStore()
   const requestAssetBudgetConfirmation = ({ nextApprovedBytes, filename }) => requestConfirmation({
     title: 'More app storage?',
     message: `${filename ? `${filename} needs` : 'This update needs'} more cached storage. Allow this app's assets up to ${formatAssetBudgetBytes(nextApprovedBytes)}?`,

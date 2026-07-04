@@ -23,6 +23,8 @@ import {
   hasRecentSingleNappOpenForOwner
 } from './helpers/nostrdb-app-lifecycle.js'
 import { askAppToClearData, resetDraftAppRuntimeData } from './helpers/draft-app-runtime-reset.js'
+import { usePermissionDialogStore } from '#zones/permission-dialog/index.js'
+import { useFileNotCachedDialogStore } from '#zones/file-not-cached-dialog/index.js'
 import '#shared/route.js'
 import { initMessageListener } from '#helpers/window-message/browser/index.js'
 import { isOnline } from '#helpers/network.js'
@@ -31,6 +33,7 @@ import { allocateAppSubdomain, releaseAppSubdomain } from '#helpers/subdomain-ma
 import { useVaultModalStore, useVaultActor } from '#zones/vault-modal/index.js'
 import { base62ToBase16 } from '#helpers/base62.js'
 import { formatAssetBudgetBytes } from '#services/app-asset-budget/index.js'
+import { useConfirmationDialogStore } from '#zones/confirmation-dialog/index.js'
 import '#shared/napp-assets-caching-progress-bar.js'
 import '#shared/app-icon.js'
 import '#shared/svg.js'
@@ -290,11 +293,11 @@ f('appWindow', function () {
     }
   })
   const { askVault } = useVaultActor()
-  const pdStore = useGlobalStore('<permission-dialog>')
+  const pdStore = usePermissionDialogStore()
   const { requestPermission } = pdStore
   const { openApp } = useGlobalStore('useAppRouter')
-  const { requestAction: requestFileNotCachedAction } = useGlobalStore('<file-not-cached-dialog>')
-  const { requestConfirmation } = useGlobalStore('<confirmation-dialog>')
+  const { requestAction: requestFileNotCachedAction } = useFileNotCachedDialogStore()
+  const { requestConfirmation } = useConfirmationDialogStore()
   const appKey = this.props.appKey
   const wsKey = this.props.wsKey
 
@@ -1177,7 +1180,7 @@ f('appLaunchersMenu', function () {
   const store = useClosestStore('<a-menu>')
   const storage = useWebStorage(localStorage)
   const tabStorage = useWebStorage(sessionStorage)
-  const { requestConfirmation } = useGlobalStore('<confirmation-dialog>')
+  const { requestConfirmation } = useConfirmationDialogStore()
   const menuProps = useStore(() => ({
     ...store,
     openApp () {

@@ -8,9 +8,8 @@ import '#shared/app-icon.js'
 import '#shared/icons/icon-x.js'
 import useWebStorage from '#hooks/use-web-storage.js'
 
-// On the nip07 handler, call await pdStore.requestPermission(req)
-f('permissionDialog', function () {
-  const pdStore = useGlobalStore('<permission-dialog>', () => ({
+function createPermissionDialogStore () {
+  return {
     isOpen$ () { return this.queue$().length > 0 },
     close () {
       let lengthSnapshot = this.queue$().length
@@ -109,7 +108,16 @@ f('permissionDialog', function () {
       })
       return p.promise
     }
-  }))
+  }
+}
+
+export function usePermissionDialogStore () {
+  return useGlobalStore('<permission-dialog>', createPermissionDialogStore)
+}
+
+// On the nip07 handler, call await pdStore.requestPermission(req)
+f('permissionDialog', function () {
+  const pdStore = usePermissionDialogStore()
   const modalProps = useStore(() => ({
     isOpen$: pdStore.isOpen$,
     close: pdStore.close.bind(pdStore),
@@ -124,7 +132,7 @@ f('permissionDialog', function () {
 
 f('permissionDialogStack', function () {
   const storage = useWebStorage(localStorage)
-  const pdStore = useGlobalStore('<permission-dialog>')
+  const pdStore = usePermissionDialogStore()
   const store = useClosestStore('<permission-dialog-stack>', () => ({
     resolveCurrent: pdStore.resolveCurrent.bind(pdStore),
     eKindToText: {

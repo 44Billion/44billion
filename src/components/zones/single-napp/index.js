@@ -1,4 +1,4 @@
-import { f, useClosestStore, useGlobalStore, useSignal, useTask, useComputed } from '#f'
+import { f, useClosestStore, useSignal, useTask, useComputed } from '#f'
 import useWebStorage from '#hooks/use-web-storage.js'
 import { appDecode } from '#helpers/nip19.js'
 import { addressObjToAppId } from '#helpers/app.js'
@@ -9,8 +9,8 @@ import { resetDraftAppRuntimeData } from '#zones/screen/helpers/draft-app-runtim
 import AppUpdater from '#services/app-updater/index.js'
 import { formatAssetBudgetBytes } from '#services/app-asset-budget/index.js'
 import { useVaultModalStore, useVaultActor } from '#zones/vault-modal/index.js'
+import { useConfirmationDialogStore } from '#zones/confirmation-dialog/index.js'
 import '#shared/napp-assets-caching-progress-bar.js'
-import '#zones/confirmation-dialog/index.js'
 
 f('singleNapp', function () {
   const storage = useWebStorage(localStorage)
@@ -81,7 +81,7 @@ f('singleNappLauncher', function () {
     }
   })
   const { askVault } = useVaultActor()
-  const { requestConfirmation } = useGlobalStore('<confirmation-dialog>')
+  const { requestConfirmation } = useConfirmationDialogStore()
 
   useTask(
     async ({ cleanup }) => {
