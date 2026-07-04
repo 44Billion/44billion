@@ -5,7 +5,20 @@ import AppUpdater, {
   MAX_NEW_RETAINED_EMBEDDED_APPS_PER_HOUR,
   MAX_RETAINED_EMBEDDED_APPS
 } from '../../src/services/app-updater/index.js'
+import { addressObjToAppId } from '../../src/helpers/app.js'
 import { base16ToBase62 } from '../../src/helpers/base62.js'
+
+const MAIN_PUBKEY = '1'.repeat(64)
+const DRAFT_PUBKEY = '2'.repeat(64)
+const MAIN_APP_ID = addressObjToAppId({ kind: 35128, pubkey: MAIN_PUBKEY, dTag: 'main-app' })
+const DRAFT_APP_ID = addressObjToAppId({ kind: 35130, pubkey: DRAFT_PUBKEY, dTag: 'draft-app' })
+
+function resetDraftUpdateState () {
+  AppUpdater._draftPendingEvents.clear()
+  AppUpdater._draftApplyingAppIds.clear()
+  AppUpdater._draftUpdateListeners.clear()
+  AppUpdater._draftWatchStop?.()
+}
 
 function storageFromEntries (entries = {}) {
   const data = new Map(Object.entries(entries).map(([key, value]) => [key, JSON.stringify(value)]))
@@ -166,6 +179,22 @@ describe('AppUpdater', () => {
       assert.deepEqual(mockAppFileDownloader.getSiteManifestEvents.mock.calls[0].arguments[0], [appId])
     })
 
+    it('excludes draft apps from regular update searches', async () => {
+      const mockAppFileDownloader = {
+        getSiteManifestEvents: mock.fn(async ids => Object.fromEntries(ids.map(id => [id, {
+          event: { ...siteManifest(id), id: `remote-${id}`, created_at: 200 }
+        }])))
+      }
+
+      await AppUpdater.searchForUpdates([MAIN_APP_ID, DRAFT_APP_ID], {
+        _AppFileDownloader: mockAppFileDownloader,
+        _getSiteManifestFromDb: async () => ({ created_at: 100, meta: {} }),
+        _saveSiteManifestToDb: async () => {}
+      })
+
+      assert.deepEqual(mockAppFileDownloader.getSiteManifestEvents.mock.calls[0].arguments[0], [MAIN_APP_ID])
+    })
+
     it('should clear latestUpdateEventId when local manifest exists but no remote manifest found', async () => {
       const localManifest = {
         id: 'local',
@@ -321,6 +350,28 @@ describe('AppUpdater', () => {
       assert.equal(mockGet.mock.callCount(), 0)
       assert.equal(mockSet.mock.calls[0].arguments[2], undefined)
     })
+
+    it('does not count draft app updates in the regular unread badge', async () => {
+      const mockGet = mock.fn(async id => {
+        assert.equal(id, MAIN_APP_ID)
+        return { meta: { latestUpdateEventId: null } }
+      })
+      const mockSet = mock.fn()
+
+      AppUpdater.isUserViewingUpdates = false
+      await AppUpdater.refreshUnreadCount({
+        _getSiteManifestFromDb: mockGet,
+        _setWebStorageItem: mockSet,
+        _localStorage: storageFromEntries({
+          session_workspaceKeys: ['ws1'],
+          session_workspaceByKey_ws1_pinnedAppIds: [MAIN_APP_ID, DRAFT_APP_ID],
+          session_workspaceByKey_ws1_unpinnedAppIds: []
+        })
+      })
+
+      assert.equal(mockGet.mock.callCount(), 1)
+      assert.equal(mockSet.mock.calls[0].arguments[2], undefined)
+    })
   })
 
   describe('markUpdateAsSeen', () => {
@@ -429,13 +480,153 @@ describe('AppUpdater', () => {
           }),
           siteManifest('installed-app', {
             singleNappOpenedAtByOwner: { [recentOwner]: now - 1 }
-          })
+          }),
+          {
+            ...siteManifest('draft-app', {
+              singleNappOpenedAtByOwner: { [recentOwner]: now - 1 }
+            }),
+            kind: 35130
+          }
         ],
         _addressObjToAppId: ({ dTag }) => dTag,
         _now: () => now
       })
 
       assert.deepEqual(ids, ['embedded-app'])
+    })
+  })
+
+  describe('draft live updates', () => {
+    it('filters installed draft app ids', () => {
+      assert.deepEqual(AppUpdater.filterDraftAppIds([MAIN_APP_ID, DRAFT_APP_ID]), [DRAFT_APP_ID])
+      assert.deepEqual(AppUpdater.filterRegularAppIds([MAIN_APP_ID, DRAFT_APP_ID]), [MAIN_APP_ID])
+    })
+
+    it('applies exact newer draft events and emits an update notification', async () => {
+      resetDraftUpdateState()
+      const originalUpdateApp = AppUpdater.updateApp
+      const event = {
+        id: 'draft-new',
+        kind: 35130,
+        pubkey: DRAFT_PUBKEY,
+        created_at: 200,
+        tags: [['d', 'draft-app'], ['path', 'index.html', 'hash']]
+      }
+      const applied = []
+      const emitted = []
+      AppUpdater.updateApp = mock.fn(async function * (nextEvent) {
+        applied.push(nextEvent.id)
+        yield { appProgress: 100, error: null }
+      })
+      const off = AppUpdater.onDraftAppUpdated(payload => emitted.push(payload))
+
+      try {
+        const targets = AppUpdater._draftWatchTargets([DRAFT_APP_ID])
+        await AppUpdater._handleDraftUpdateEvent(event, targets, {
+          _getSiteManifestFromDb: async () => ({ created_at: 100, meta: {} }),
+          _localStorage: storageFromEntries({ config_appUpdateMode: 'always' })
+        })
+
+        assert.deepEqual(applied, ['draft-new'])
+        assert.deepEqual(emitted.map(v => v.appId), [DRAFT_APP_ID])
+      } finally {
+        off()
+        AppUpdater.updateApp = originalUpdateApp
+        resetDraftUpdateState()
+      }
+    })
+
+    it('defers draft updates on mobile metered default-wifi policy and applies them later', async () => {
+      resetDraftUpdateState()
+      const originalUpdateApp = AppUpdater.updateApp
+      const event = {
+        id: 'draft-metered',
+        kind: 35130,
+        pubkey: DRAFT_PUBKEY,
+        created_at: 200,
+        tags: [['d', 'draft-app'], ['path', 'index.html', 'hash']]
+      }
+      const applied = []
+      AppUpdater.updateApp = mock.fn(async function * (nextEvent) {
+        applied.push(nextEvent.id)
+        yield { appProgress: 100, error: null }
+      })
+
+      try {
+        const targets = AppUpdater._draftWatchTargets([DRAFT_APP_ID])
+        await AppUpdater._handleDraftUpdateEvent(event, targets, {
+          _getSiteManifestFromDb: async () => ({ created_at: 100, meta: {} }),
+          _localStorage: storageFromEntries({ config_appUpdateMode: 'manual' }),
+          _navigator: { userAgentData: { mobile: true }, connection: { metered: true } },
+          _window: null
+        })
+        assert.deepEqual(applied, [])
+        assert.equal(AppUpdater._draftPendingEvents.get(DRAFT_APP_ID).id, 'draft-metered')
+
+        await AppUpdater.applyPendingDraftUpdates({
+          _localStorage: storageFromEntries({ config_appUpdateMode: 'manual' }),
+          _navigator: { userAgentData: { mobile: true }, connection: { metered: false } },
+          _window: null
+        })
+
+        assert.deepEqual(applied, ['draft-metered'])
+      } finally {
+        AppUpdater.updateApp = originalUpdateApp
+        resetDraftUpdateState()
+      }
+    })
+
+    it('runs a live draft feed with startup fetch and exact-match filtering', async () => {
+      resetDraftUpdateState()
+      const originalUpdateApp = AppUpdater.updateApp
+      const wrongEvent = {
+        id: 'wrong-dtag',
+        kind: 35130,
+        pubkey: DRAFT_PUBKEY,
+        created_at: 300,
+        tags: [['d', 'other-draft'], ['path', 'index.html', 'hash']]
+      }
+      const rightEvent = {
+        id: 'right-dtag',
+        kind: 35130,
+        pubkey: DRAFT_PUBKEY,
+        created_at: 301,
+        tags: [['d', 'draft-app'], ['path', 'index.html', 'hash']]
+      }
+      const applied = []
+      AppUpdater.updateApp = mock.fn(async function * (nextEvent) {
+        applied.push(nextEvent.id)
+        yield { appProgress: 100, error: null }
+      })
+      const fakeNostrRelays = {
+        getEventsFeedGenerator: mock.fn(async function * () {
+          yield wrongEvent
+          yield rightEvent
+        })
+      }
+
+      try {
+        const targets = AppUpdater._draftWatchTargets([DRAFT_APP_ID])
+        await AppUpdater._runDraftUpdateFeed(targets, {
+          _nostrRelays: fakeNostrRelays,
+          _getSiteManifestFromDb: async () => ({ created_at: 100, meta: {} }),
+          _getUserRelays: async () => ({ [DRAFT_PUBKEY]: { write: ['wss://author.example'] } }),
+          _localStorage: storageFromEntries({ config_appUpdateMode: 'always' })
+        })
+
+        const [filter, relays, options] = fakeNostrRelays.getEventsFeedGenerator.mock.calls[0].arguments
+        assert.deepEqual(filter.kinds, [35130])
+        assert.deepEqual(filter.authors, [DRAFT_PUBKEY])
+        assert.deepEqual(filter['#d'], ['draft-app'])
+        assert.equal(filter.limit, 3)
+        assert.equal(options.signal, undefined)
+        assert(relays.includes('wss://author.example'))
+        assert(relays.includes('wss://relay.44billion.net'))
+        assert.deepEqual(applied, ['right-dtag'])
+      } finally {
+        AppUpdater.updateApp = originalUpdateApp
+        resetDraftUpdateState()
+      }
     })
   })
 

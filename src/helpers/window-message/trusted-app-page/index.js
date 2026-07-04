@@ -8,31 +8,103 @@
 // that's why we can't do  <loggedinuserpubkey>.<appid>.44billion.net
 import { tell } from '../index.js'
 
-export async function clearAppData () {
-  try {
-    // clear idb
-    const databases = await window.indexedDB.databases()
-    await Promise.all(databases.map(db =>
+function normalizeError (error) {
+  if (error instanceof Error) return error
+  return new Error(String(error ?? 'Unknown error'))
+}
+
+async function clearIndexedDb (indexedDB) {
+  if (typeof indexedDB?.databases !== 'function' || typeof indexedDB?.deleteDatabase !== 'function') return
+  const databases = await indexedDB.databases()
+  await Promise.all((databases || [])
+    .filter(db => typeof db?.name === 'string' && db.name)
+    .map(db =>
       new Promise((resolve, reject) => {
-        const request = window.indexedDB.deleteDatabase(db.name)
+        const request = indexedDB.deleteDatabase(db.name)
         request.onsuccess = () => resolve()
         request.onerror = () => reject(request.error)
       })
     ))
+}
 
-    // clear localStorage
-    window.localStorage.clear()
+async function clearCacheStorage (caches) {
+  if (typeof caches?.keys !== 'function' || typeof caches?.delete !== 'function') return
+  const cacheNames = await caches.keys()
+  await Promise.all((cacheNames || []).map(name => caches.delete(name)))
+}
 
-    // unregister service worker
-    const registration = await navigator.serviceWorker.getRegistration()
-    if (registration) await registration.unregister()
+function clearCookies (document) {
+  if (!document || typeof document.cookie !== 'string') return
+  for (const cookie of document.cookie.split(';')) {
+    const name = cookie.split('=')[0]?.trim()
+    if (!name) continue
+    document.cookie = `${encodeURIComponent(decodeURIComponent(name))}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; max-age=0; path=/`
+  }
+}
 
-    // notify parent
-    tell(window.parent, { code: 'DATA_CLEARED', payload: null }, { targetOrigin: '*' })
+async function clearOpfsDirectory (directory) {
+  if (typeof directory?.entries !== 'function' || typeof directory?.removeEntry !== 'function') return
+  for await (const [name] of directory.entries()) {
+    await directory.removeEntry(name, { recursive: true })
+  }
+}
+
+async function clearOpfs (storage) {
+  if (typeof storage?.getDirectory !== 'function') return
+  await clearOpfsDirectory(await storage.getDirectory())
+}
+
+async function unregisterServiceWorker (serviceWorker) {
+  if (typeof serviceWorker?.getRegistration !== 'function') return
+  const registration = await serviceWorker.getRegistration()
+  if (registration) await registration.unregister()
+}
+
+async function runClearStep (failures, step, fn) {
+  try {
+    await fn()
   } catch (error) {
-    // notify parent about the error
-    tell(window.parent, {
+    failures.push({ step, error: normalizeError(error) })
+  }
+}
+
+function clearErrorFromFailures (failures) {
+  const error = new AggregateError(
+    failures.map(failure => failure.error),
+    'Failed to clear all app data'
+  )
+  error.failures = failures.map(({ step, error }) => ({
+    step,
+    name: error.name,
+    message: error.message
+  }))
+  return error
+}
+
+export async function clearAppData ({
+  _window = window,
+  _navigator = navigator,
+  _document = document,
+  _caches = globalThis.caches,
+  _tell = tell
+} = {}) {
+  const failures = []
+
+  await runClearStep(failures, 'indexedDB', () => clearIndexedDb(_window.indexedDB))
+  await runClearStep(failures, 'localStorage', () => _window.localStorage?.clear?.())
+  await runClearStep(failures, 'sessionStorage', () => _window.sessionStorage?.clear?.())
+  await runClearStep(failures, 'caches', () => clearCacheStorage(_caches))
+  await runClearStep(failures, 'cookies', () => clearCookies(_document))
+  await runClearStep(failures, 'opfs', () => clearOpfs(_navigator.storage))
+  await runClearStep(failures, 'serviceWorker', () => unregisterServiceWorker(_navigator.serviceWorker))
+
+  if (failures.length === 0) {
+    _tell(_window.parent, { code: 'DATA_CLEARED', payload: null }, { targetOrigin: '*' })
+  } else {
+    const error = clearErrorFromFailures(failures)
+    _tell(_window.parent, {
       code: 'DATA_CLEAR_ERROR',
+      payload: { failures: error.failures },
       error
     }, { targetOrigin: '*' })
   }

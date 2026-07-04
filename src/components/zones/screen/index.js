@@ -1,5 +1,6 @@
 import { f, useCallback, useComputed, useStore, useGlobalStore, useGlobalSignal, useStateSignal, useSignal, useClosestSignal, useClosestStore, useTask } from '#f'
 import AppFileManager from '#services/app-file-manager/index.js'
+import AppUpdater from '#services/app-updater/index.js'
 import useInitOrResetScreen from './use-init-or-reset-screen.js'
 import useTrackAccountEvents from './use-track-account-events.js'
 import useWebStorage from '#hooks/use-web-storage.js'
@@ -21,6 +22,7 @@ import {
   hasAnyRecentSingleNappOpen,
   hasRecentSingleNappOpenForOwner
 } from './helpers/nostrdb-app-lifecycle.js'
+import { askAppToClearData, resetDraftAppRuntimeData } from './helpers/draft-app-runtime-reset.js'
 import '#shared/route.js'
 import { initMessageListener } from '#helpers/window-message/browser/index.js'
 import { isOnline } from '#helpers/network.js'
@@ -326,6 +328,34 @@ f('appWindow', function () {
       if (initialRoute) initialRoute$('') // reset
       const ac = new AbortController()
       cleanup(() => ac.abort())
+
+      let isDraftReloading = false
+      const offDraftUpdate = AppUpdater.onDraftAppUpdated(async ({ appId: updatedAppId }) => {
+        if (ac.signal.aborted || updatedAppId !== appId$() || isClosed$() || isDraftReloading) return
+        const appSubdomain = appSubdomain$()
+        if (appSubdomain == null) return
+
+        isDraftReloading = true
+        try {
+          await resetDraftAppRuntimeData({
+            appId: updatedAppId,
+            userPk: userPk$(),
+            appSubdomain
+          })
+          if (ac.signal.aborted) return
+
+          try {
+            appIframeRef$()?.contentWindow?.location?.reload()
+          } catch (_err) {
+            appIframeSrc$('about:blank')
+            await new Promise(resolve => setTimeout(resolve, 0))
+            if (!ac.signal.aborted) appIframeSrc$(`//${appSubdomain}.${window.location.host}/`)
+          }
+        } finally {
+          isDraftReloading = false
+        }
+      })
+      cleanup(offDraftUpdate)
 
       let hasShownFileNotCachedError = false
       const onFileNotCached = async (pathname) => {
@@ -1284,42 +1314,6 @@ f('appLaunchersMenu', function () {
       if (shouldClearAppFiles) {
         const appFiles = await AppFileManager.create(appId)
         await appFiles.clearAppFiles()
-      }
-
-      function askAppToClearData (appSubdomain) {
-        const p = Promise.withResolvers()
-        const iframe = document.createElement('iframe')
-        iframe.style.display = 'none'
-
-        // eslint-disable-next-line prefer-const
-        let timeout
-        const cleanup = () => {
-          if (timeout) clearTimeout(timeout)
-          window.removeEventListener('message', onMessage)
-          document.body.removeChild(iframe)
-        }
-
-        const appOrigin = `${window.location.protocol}//${appSubdomain}.${window.location.host}`
-        const onMessage = e => {
-          if (e.origin !== appOrigin) return
-          if (e.data.code === 'DATA_CLEARED') {
-            cleanup()
-            p.resolve()
-          }
-          if (e.data.code === 'DATA_CLEAR_ERROR') {
-            cleanup()
-            p.reject(e.data.error)
-          }
-        }
-        window.addEventListener('message', onMessage)
-        iframe.src = `${appOrigin}/~~napp#clear`
-        document.body.appendChild(iframe)
-
-        timeout = setTimeout(() => {
-          cleanup()
-          p.reject(new Error('Data clear timeout'))
-        }, 5000)
-        return p.promise
       }
     },
     async deleteApp () {

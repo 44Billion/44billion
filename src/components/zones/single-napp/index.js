@@ -5,6 +5,7 @@ import { addressObjToAppId } from '#helpers/app.js'
 import { base62ToBase36 } from '#helpers/base36.js'
 import { initMessageListener } from '#helpers/window-message/browser/index.js'
 import { allocateAppSubdomain } from '#helpers/subdomain-mapping.js'
+import { resetDraftAppRuntimeData } from '#zones/screen/helpers/draft-app-runtime-reset.js'
 import AppUpdater from '#services/app-updater/index.js'
 import { formatAssetBudgetBytes } from '#services/app-asset-budget/index.js'
 import { useVaultModalStore, useVaultActor } from '#zones/vault-modal/index.js'
@@ -101,6 +102,35 @@ f('singleNappLauncher', function () {
       cleanup(() => {
         ac.abort()
       })
+
+      let isDraftReloading = false
+      const offDraftUpdate = AppUpdater.onDraftAppUpdated(async ({ appId: updatedAppId }) => {
+        if (ac.signal.aborted || updatedAppId !== appId || isDraftReloading) return
+        const appSubdomain = appSubdomain$()
+        if (appSubdomain == null) return
+
+        isDraftReloading = true
+        try {
+          await resetDraftAppRuntimeData({
+            appId: updatedAppId,
+            userPk: userPk$(),
+            appSubdomain
+          })
+          if (ac.signal.aborted) return
+
+          try {
+            appIframeRef$()?.contentWindow?.location?.reload()
+          } catch (_err) {
+            appIframeSrc$('about:blank')
+            await new Promise(resolve => setTimeout(resolve, 0))
+            if (!ac.signal.aborted) appIframeSrc$(`//${appSubdomain}.${window.location.host}/`)
+          }
+        } finally {
+          isDraftReloading = false
+        }
+      })
+      cleanup(offDraftUpdate)
+
       await initMessageListener(
         userPkB36$(), appId, appSubdomain$(), initialRoute,
         trustedAppIframeRef$(), appIframeRef$(), appIframeSrc$,

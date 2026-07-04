@@ -12,15 +12,18 @@ import '#zones/file-not-cached-dialog/index.js'
 f('multi-napp', function () {
   const { requestConfirmation } = useGlobalStore('<confirmation-dialog>')
 
-  useTask(() => {
+  useTask(({ cleanup }) => {
+    const requestAssetBudgetConfirmation = ({ nextApprovedBytes, filename }) => requestConfirmation({
+      title: 'More app storage?',
+      message: `${filename ? `${filename} needs` : 'An app update needs'} more cached storage. Allow this app's assets up to ${formatAssetBudgetBytes(nextApprovedBytes)}?`,
+      confirmText: `Allow ${formatAssetBudgetBytes(nextApprovedBytes)}`
+    })
+
     AppUpdater.initCleanupJob()
     AppUpdater.initUpdateCheckJob({
-      requestAssetBudgetConfirmation: ({ nextApprovedBytes, filename }) => requestConfirmation({
-        title: 'More app storage?',
-        message: `${filename ? `${filename} needs` : 'An app update needs'} more cached storage. Allow this app's assets up to ${formatAssetBudgetBytes(nextApprovedBytes)}?`,
-        confirmText: `Allow ${formatAssetBudgetBytes(nextApprovedBytes)}`
-      })
+      requestAssetBudgetConfirmation
     })
+    cleanup(AppUpdater.initDraftUpdateWatchJob({ requestAssetBudgetConfirmation }))
   })
 
   useLocation(router)

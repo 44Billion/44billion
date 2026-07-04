@@ -1,4 +1,5 @@
 import AppFileDownloader from '#services/app-file-downloader/index.js'
+import nostrRelays, { nappRelays } from '#services/nostr-relays.js'
 import {
   getSiteManifestFromDb,
   listSiteManifestsFromDb,
@@ -6,7 +7,7 @@ import {
   saveSiteManifestToDb
 } from '#services/idb/browser/queries/site-manifest.js'
 import { deleteStaleFileChunksFromDb, sumFileChunkBytesFromDb } from '#services/idb/browser/queries/file-chunk.js'
-import { addressObjToAppId } from '#helpers/app.js'
+import { addressObjToAppId, appIdToAddressObj } from '#helpers/app.js'
 import { base62ToBase16 } from '#helpers/base62.js'
 import { getUserRelays } from '#helpers/nostr-queries.js'
 import { cleanupNostrDbAppForOwner as cleanupNostrDbAppForOwnerBase } from '#helpers/nostrdb-app-cleanup.js'
@@ -20,6 +21,9 @@ const SINGLE_NAPP_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 const SINGLE_NAPP_OPEN_COUNTS_KEY = 'session_singleNappOpenAppCounts'
 const EMBEDDED_RETENTION_ADMISSIONS_KEY = 'local_embeddedOnlyRetentionAdmissions'
 const ONE_HOUR_MS = 60 * 60 * 1000
+const DRAFT_SITE_MANIFEST_KIND = 35130
+const DRAFT_UPDATE_WATCH_INTERVAL_MS = 5000
+const DRAFT_UPDATE_PENDING_RETRY_MS = 30000
 
 export const MAX_RETAINED_EMBEDDED_APPS = 50
 export const MAX_NEW_RETAINED_EMBEDDED_APPS_PER_HOUR = 10
@@ -36,6 +40,10 @@ function defaultGetNostrDb (ownerPubkey) {
 
 export default class AppUpdater {
   static _pendingSearches = new Map()
+  static _draftUpdateListeners = new Set()
+  static _draftPendingEvents = new Map()
+  static _draftApplyingAppIds = new Set()
+  static _draftWatchStop = null
   // Set to true while the user is on the app updates page so the unread
   // indicator stays hidden even if a background check finds new updates.
   static isUserViewingUpdates = false
@@ -72,6 +80,26 @@ export default class AppUpdater {
     })
 
     return Array.from(appIds)
+  }
+
+  static isDraftAppId (appId, { _appIdToAddressObj = appIdToAddressObj } = {}) {
+    try {
+      return _appIdToAddressObj(appId).kind === DRAFT_SITE_MANIFEST_KIND
+    } catch (_err) {
+      return false
+    }
+  }
+
+  static filterRegularAppIds (appIds, deps = {}) {
+    return (appIds || []).filter(appId => !this.isDraftAppId(appId, deps))
+  }
+
+  static filterDraftAppIds (appIds, deps = {}) {
+    return (appIds || []).filter(appId => this.isDraftAppId(appId, deps))
+  }
+
+  static getInstalledDraftAppIds (deps = {}) {
+    return this.filterDraftAppIds(this.getInstalledAppIds(deps), deps)
   }
 
   static _readJsonStorage (storage, key, fallback) {
@@ -162,6 +190,7 @@ export default class AppUpdater {
           pubkey: manifest.pubkey,
           dTag
         })
+        if (manifest.kind === DRAFT_SITE_MANIFEST_KIND) continue
         if (!installedAppIds.has(appId)) embeddedAppIds.add(appId)
       } catch (_err) {
         continue
@@ -544,6 +573,247 @@ export default class AppUpdater {
     return (this._singleNappOpenCounts({ _sessionStorage })[appId] || 0) > 0
   }
 
+  static onDraftAppUpdated (listener) {
+    if (typeof listener !== 'function') return () => {}
+    this._draftUpdateListeners.add(listener)
+    return () => this._draftUpdateListeners.delete(listener)
+  }
+
+  static _emitDraftAppUpdated (payload) {
+    for (const listener of this._draftUpdateListeners) {
+      try {
+        listener(payload)
+      } catch (err) {
+        console.error('Draft app update listener failed', err)
+      }
+    }
+  }
+
+  static _draftUpdateMode (deps = {}) {
+    return this._appUpdateMode(deps) === 'always'
+      ? 'always'
+      : this.getDefaultUpdateMode(deps)
+  }
+
+  static _canAutoApplyDraftUpdate ({ _navigator, ...deps } = {}) {
+    const mode = this._draftUpdateMode({ _navigator, ...deps })
+    return mode === 'always' || (mode === 'wifi' && !this._isMetered({ _navigator }))
+  }
+
+  static _draftWatchTargets (appIds, { _appIdToAddressObj = appIdToAddressObj } = {}) {
+    const targets = new Map()
+    for (const appId of appIds || []) {
+      try {
+        const address = _appIdToAddressObj(appId)
+        if (address.kind !== DRAFT_SITE_MANIFEST_KIND) continue
+        targets.set(appId, address)
+      } catch (_err) {
+        continue
+      }
+    }
+    return targets
+  }
+
+  static _draftWatchKey (targets) {
+    return Array.from(targets.keys()).sort().join('\n')
+  }
+
+  static async _draftWatchRelays (targets, {
+    _getUserRelays = getUserRelays
+  } = {}) {
+    const pubkeys = Array.from(new Set(Array.from(targets.values()).map(v => v.pubkey)))
+    const picked = new Set(nappRelays)
+    if (pubkeys.length > 0) {
+      try {
+        const userRelays = await _getUserRelays(pubkeys)
+        for (const pubkey of pubkeys) {
+          for (const relay of userRelays?.[pubkey]?.write || []) picked.add(relay)
+        }
+      } catch (err) {
+        console.warn('Failed to discover draft app relays; using Napp relays only', err)
+      }
+    }
+    return Array.from(picked)
+  }
+
+  static _draftEventAppId (event, targets, {
+    _addressObjToAppId = addressObjToAppId
+  } = {}) {
+    if (event?.kind !== DRAFT_SITE_MANIFEST_KIND || !event.pubkey) return null
+    const dTag = event.tags?.find(t => t[0] === 'd')?.[1] ?? ''
+    let appId
+    try {
+      appId = _addressObjToAppId({ kind: event.kind, pubkey: event.pubkey, dTag })
+    } catch (_err) {
+      return null
+    }
+    return targets.has(appId) ? appId : null
+  }
+
+  static _newerDraftEvent (a, b) {
+    if (!a) return b || null
+    if (!b) return a
+    if ((b.created_at || 0) > (a.created_at || 0)) return b
+    return a
+  }
+
+  static async _handleDraftUpdateEvent (event, targets, {
+    _getSiteManifestFromDb = getSiteManifestFromDb,
+    ...deps
+  } = {}) {
+    const appId = this._draftEventAppId(event, targets, deps)
+    if (!appId) return { accepted: false, reason: 'not-watched' }
+
+    const localManifest = await _getSiteManifestFromDb(appId)
+    if (localManifest && (event.created_at || 0) <= (localManifest.created_at || 0)) {
+      return { accepted: false, reason: 'not-newer' }
+    }
+
+    return this._queueDraftUpdateEvent(appId, event, { _getSiteManifestFromDb, ...deps })
+  }
+
+  static async _queueDraftUpdateEvent (appId, event, deps = {}) {
+    const pending = this._draftPendingEvents.get(appId)
+    this._draftPendingEvents.set(appId, this._newerDraftEvent(pending, event))
+    if (this._draftApplyingAppIds.has(appId)) return { accepted: true, queued: true }
+    return this._drainDraftUpdateQueue(appId, deps)
+  }
+
+  static async _drainDraftUpdateQueue (appId, deps = {}) {
+    if (this._draftApplyingAppIds.has(appId)) return { accepted: true, queued: true }
+    this._draftApplyingAppIds.add(appId)
+    try {
+      while (this._draftPendingEvents.has(appId)) {
+        if (!this._canAutoApplyDraftUpdate(deps)) return { accepted: true, deferred: true }
+
+        const event = this._draftPendingEvents.get(appId)
+        this._draftPendingEvents.delete(appId)
+
+        let updateError = null
+        for await (const report of this.updateApp(event, {
+          ...deps,
+          assetBudgetMode: 'autoUpdate'
+        })) {
+          if (report.error) {
+            updateError = report.error
+            break
+          }
+        }
+
+        if (updateError) {
+          console.error(`Draft update of ${appId} failed`, updateError)
+          return { accepted: true, error: updateError }
+        }
+
+        this._emitDraftAppUpdated({ appId, event })
+      }
+      return { accepted: true, applied: true }
+    } finally {
+      this._draftApplyingAppIds.delete(appId)
+    }
+  }
+
+  static async applyPendingDraftUpdates (deps = {}) {
+    if (!this._canAutoApplyDraftUpdate(deps)) return false
+    const appIds = Array.from(this._draftPendingEvents.keys())
+    for (const appId of appIds) {
+      await this._drainDraftUpdateQueue(appId, deps)
+    }
+    return appIds.length > 0
+  }
+
+  static async _runDraftUpdateFeed (targets, {
+    _nostrRelays = nostrRelays,
+    _getSiteManifestFromDb = getSiteManifestFromDb,
+    _addressObjToAppId = addressObjToAppId,
+    signal,
+    ...deps
+  } = {}) {
+    const targetValues = Array.from(targets.values())
+    const localManifests = await Promise.all(
+      Array.from(targets.keys()).map(appId => _getSiteManifestFromDb(appId).catch(() => null))
+    )
+    const localCreatedAts = localManifests
+      .map(manifest => Number(manifest?.created_at))
+      .filter(Number.isFinite)
+    const minLocalCreatedAt = localCreatedAts.length > 0 ? Math.min(...localCreatedAts) : 0
+    const filter = {
+      kinds: [DRAFT_SITE_MANIFEST_KIND],
+      authors: Array.from(new Set(targetValues.map(v => v.pubkey))),
+      '#d': Array.from(new Set(targetValues.map(v => v.dTag))),
+      since: Math.max(0, minLocalCreatedAt),
+      limit: Math.max(1, targets.size * 3)
+    }
+    const relays = await this._draftWatchRelays(targets, deps)
+
+    for await (const event of _nostrRelays.getEventsFeedGenerator(filter, relays, { signal })) {
+      await this._handleDraftUpdateEvent(event, targets, {
+        _getSiteManifestFromDb,
+        _addressObjToAppId,
+        signal,
+        ...deps
+      })
+    }
+  }
+
+  static async _syncDraftUpdateWatcher (job, deps = {}) {
+    if (!job || job.stopped) return
+    await this.applyPendingDraftUpdates(deps)
+
+    const targets = this._draftWatchTargets(this.getInstalledDraftAppIds(deps), deps)
+    const key = this._draftWatchKey(targets)
+    if (key === job.key) return
+
+    job.abort?.abort()
+    job.abort = null
+    job.key = key
+    if (targets.size === 0) return
+
+    const abort = new AbortController()
+    job.abort = abort
+    this._runDraftUpdateFeed(targets, { ...deps, signal: abort.signal })
+      .catch(err => {
+        if (!abort.signal.aborted) console.error('Draft app live update feed failed', err)
+      })
+      .finally(() => {
+        if (job.abort === abort && !abort.signal.aborted) {
+          job.abort = null
+          job.key = ''
+        }
+      })
+  }
+
+  static initDraftUpdateWatchJob ({
+    _window = (typeof window !== 'undefined' ? window : null),
+    _setInterval = setInterval,
+    _clearInterval = clearInterval,
+    ...deps
+  } = {}) {
+    this._draftWatchStop?.()
+
+    const job = { stopped: false, key: '', abort: null }
+    const sync = () => this._syncDraftUpdateWatcher(job, deps)
+    const watchTimer = _setInterval(sync, DRAFT_UPDATE_WATCH_INTERVAL_MS)
+    const pendingTimer = _setInterval(
+      () => this.applyPendingDraftUpdates(deps),
+      DRAFT_UPDATE_PENDING_RETRY_MS
+    )
+    const onStorage = () => sync()
+    _window?.addEventListener?.('storage', onStorage)
+    sync()
+
+    this._draftWatchStop = () => {
+      if (job.stopped) return
+      job.stopped = true
+      job.abort?.abort()
+      _clearInterval(watchTimer)
+      _clearInterval(pendingTimer)
+      _window?.removeEventListener?.('storage', onStorage)
+      if (this._draftWatchStop) this._draftWatchStop = null
+    }
+    return this._draftWatchStop
+  }
+
   // If appIds is empty, search for all apps
   static searchForUpdates (appIds, {
     _AppFileDownloader = AppFileDownloader,
@@ -555,6 +825,7 @@ export default class AppUpdater {
     if (!ids || ids.length === 0) {
       ids = this.getInstalledAppIds({ _localStorage })
     }
+    ids = this.filterRegularAppIds(ids)
 
     const key = JSON.stringify(ids.slice().sort())
 
@@ -621,7 +892,7 @@ export default class AppUpdater {
       return
     }
 
-    const allAppIds = this.getInstalledAppIds({ _localStorage: local })
+    const allAppIds = this.filterRegularAppIds(this.getInstalledAppIds({ _localStorage: local }))
     let updateCount = 0
     for (const id of allAppIds) {
       const manifest = await _getSiteManifestFromDb(id)

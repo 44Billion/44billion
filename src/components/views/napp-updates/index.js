@@ -46,7 +46,7 @@ f('napp-updates', function () {
       unpinned.forEach(id => appIds.add(id))
     })
 
-    return Array.from(appIds)
+    return AppUpdater.filterRegularAppIds(Array.from(appIds))
   })
 
   const publisherProfiles$ = useSignal({})
