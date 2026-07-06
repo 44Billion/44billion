@@ -13,12 +13,12 @@ const PUBKEY = 'a'.repeat(64)
 describe('NIP-07 permission context', () => {
   it('extracts NIP-44 v3 regular method kind and scope', () => {
     assert.deepEqual(
-      nip07PermissionContext({ method: 'nip44v3_encrypt', params: ['peer', '263', 'channel-pubkey', 'plain-b64'] }),
+      nip07PermissionContext({ method: 'nip44v3_encrypt', params: ['peer', '26300', 'channel-pubkey', 'plain-b64'] }),
       {
         method: 'nip44v3Encrypt',
-        eKind: 263,
+        eKind: 26300,
         scope: 'channel-pubkey',
-        permissions: [{ name: EVENT_WRITE_PERMISSION, eKind: 263 }]
+        permissions: [{ name: EVENT_WRITE_PERMISSION, eKind: 26300 }]
       }
     )
     assert.deepEqual(
@@ -34,12 +34,12 @@ describe('NIP-07 permission context', () => {
 
   it('extracts NIP-44 v3 Double-DH wire method kind and scope', () => {
     assert.deepEqual(
-      nip07PermissionContext({ method: 'nip44v3_encrypt_double_dh', params: ['peer', '263', 'channel-pubkey', 'plain-b64', 'peer-content'] }),
+      nip07PermissionContext({ method: 'nip44v3_encrypt_double_dh', params: ['peer', '26300', 'channel-pubkey', 'plain-b64', 'peer-content'] }),
       {
         method: 'nip44v3EncryptDoubleDH',
-        eKind: 263,
+        eKind: 26300,
         scope: 'channel-pubkey',
-        permissions: [{ name: EVENT_WRITE_PERMISSION, eKind: 263 }]
+        permissions: [{ name: EVENT_WRITE_PERMISSION, eKind: 26300 }]
       }
     )
     assert.deepEqual(

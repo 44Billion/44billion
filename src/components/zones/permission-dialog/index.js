@@ -151,7 +151,6 @@ f('permissionDialogStack', function () {
       21: 'videos',
       22: 'short vertical videos',
       62: 'delete-all requests',
-      263: 'private-channel router rows',
       1018: 'poll responses',
       1059: 'recipient directions',
       1068: 'polls',
@@ -166,6 +165,7 @@ f('permissionDialogStack', function () {
       9735: 'bitcoin receipts',
       10002: 'home server configurations',
       10019: 'nutzap receiving addresses',
+      26300: 'private-channel router rows',
       27235: 'API authentication requests',
       30008: 'profile badges',
       30009: 'profile badge definitions',
@@ -213,7 +213,7 @@ f('permissionDialogStack', function () {
       const clipped = normalized.length > 48
         ? `${normalized.slice(0, 32)}...${normalized.slice(-12)}`
         : normalized
-      if (eKind === 263 && /^[0-9a-f]{64}$/i.test(normalized)) {
+      if (eKind === 26300 && /^[0-9a-f]{64}$/i.test(normalized)) {
         return `Channel: ${normalized.slice(0, 8)}...${normalized.slice(-8)}`
       }
       return `Scope: ${clipped}`
