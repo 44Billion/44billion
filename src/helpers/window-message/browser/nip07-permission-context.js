@@ -1,10 +1,9 @@
 import {
   BROAD_EVENT_KIND,
-  EVENT_READ_PERMISSION,
-  EVENT_WRITE_PERMISSION,
-  eventReadPermission,
-  eventWritePermission,
-  eventWritePermissionRequestsForEvent,
+  EVENT_ACCESS_PERMISSION,
+  eventAccessPermission,
+  eventAccessPermissionRequestsForEvent,
+  eventAccessPermissionRequestsForKind,
   normalizeEventKind
 } from './event-permissions.js'
 
@@ -61,41 +60,33 @@ export function nip07PermissionContext ({ method, params = [] } = {}) {
     const event = params?.[0]
     const eKind = normalizeEventKind(event?.kind)
     const permissions = eKind === null
-      ? [oneTimeEventPermission(EVENT_WRITE_PERMISSION)]
-      : eventWritePermissionRequestsForEvent(event)
+      ? [oneTimeEventPermission(EVENT_ACCESS_PERMISSION)]
+      : eventAccessPermissionRequestsForEvent(event)
 
     return { method: normalizedMethod, eKind, permissions }
   }
 
   if (nip44v3EncryptMethods.has(normalizedMethod) || nip44v3DecryptMethods.has(normalizedMethod)) {
     const eKind = normalizeEventKind(params?.[1])
-    const name = nip44v3DecryptMethods.has(normalizedMethod)
-      ? EVENT_READ_PERMISSION
-      : EVENT_WRITE_PERMISSION
-    const permission = eKind === null
-      ? oneTimeEventPermission(name)
-      : (name === EVENT_READ_PERMISSION ? eventReadPermission(eKind) : eventWritePermission(eKind))
+    const permissions = eKind === null
+      ? [oneTimeEventPermission(EVENT_ACCESS_PERMISSION)]
+      : eventAccessPermissionRequestsForKind(eKind)
 
     return {
       method: normalizedMethod,
       eKind,
       scope: String(params?.[2] ?? ''),
-      permissions: [permission]
+      permissions
     }
   }
 
   if (legacyEncryptMethods.has(normalizedMethod) || legacyDecryptMethods.has(normalizedMethod)) {
-    const name = legacyDecryptMethods.has(normalizedMethod)
-      ? EVENT_READ_PERMISSION
-      : EVENT_WRITE_PERMISSION
     return {
       method: normalizedMethod,
       eKind: BROAD_EVENT_KIND,
-      permissions: [name === EVENT_READ_PERMISSION
-        ? eventReadPermission(BROAD_EVENT_KIND)
-        : eventWritePermission(BROAD_EVENT_KIND)]
+      permissions: [eventAccessPermission(BROAD_EVENT_KIND)]
     }
   }
 
-  return { method: normalizedMethod, eKind: null, permissions: [] }
+  return { method: normalizedMethod, eKind: null, permissions: [], unknown: true }
 }

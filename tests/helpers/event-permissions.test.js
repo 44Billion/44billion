@@ -2,10 +2,9 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
-  EVENT_READ_PERMISSION,
-  EVENT_WRITE_PERMISSION,
+  EVENT_ACCESS_PERMISSION,
   ONE_TIME_DELETE_PERMISSION,
-  eventWritePermissionRequestsForEvent,
+  eventAccessPermissionRequestsForEvent,
   deletionTargetKinds,
   permissionNamesForLookup
 } from '#helpers/window-message/browser/event-permissions.js'
@@ -13,12 +12,11 @@ import {
 const PUBKEY = 'a'.repeat(64)
 
 describe('event permissions', () => {
-  it('makes write grants satisfy read lookups without honoring old grant names', () => {
-    assert.deepEqual(permissionNamesForLookup(EVENT_READ_PERMISSION), [EVENT_READ_PERMISSION, EVENT_WRITE_PERMISSION])
-    assert.deepEqual(permissionNamesForLookup(EVENT_WRITE_PERMISSION), [EVENT_WRITE_PERMISSION])
+  it('uses exact unified access permission lookups', () => {
+    assert.deepEqual(permissionNamesForLookup(EVENT_ACCESS_PERMISSION), [EVENT_ACCESS_PERMISSION])
     assert.deepEqual(permissionNamesForLookup('encrypt'), ['encrypt'])
-    assert.equal(permissionNamesForLookup(EVENT_READ_PERMISSION).includes('decrypt'), false)
-    assert.equal(permissionNamesForLookup(EVENT_WRITE_PERMISSION).includes('signEvent'), false)
+    assert.equal(permissionNamesForLookup(EVENT_ACCESS_PERMISSION).includes('eventRead'), false)
+    assert.equal(permissionNamesForLookup(EVENT_ACCESS_PERMISSION).includes('eventWrite'), false)
   })
 
   it('extracts deletion target kinds only when every deletion target is a valid address tag', () => {
@@ -34,15 +32,20 @@ describe('event permissions', () => {
     assert.equal(deletionTargetKinds({ tags: [['a', 'not-an-address']] }), null)
   })
 
-  it('maps deletions with address targets to target writes and otherwise to one-time delete', () => {
-    assert.deepEqual(eventWritePermissionRequestsForEvent({
+  it('maps deletions with address targets to target access and otherwise to one-time delete', () => {
+    assert.deepEqual(eventAccessPermissionRequestsForEvent({
       kind: 5,
       tags: [['a', `1:${PUBKEY}:note`]]
-    }), [{ name: EVENT_WRITE_PERMISSION, eKind: 1 }])
+    }), [{ name: EVENT_ACCESS_PERMISSION, eKind: 1 }])
 
-    assert.deepEqual(eventWritePermissionRequestsForEvent({
+    assert.deepEqual(eventAccessPermissionRequestsForEvent({
       kind: 5,
       tags: [['e', 'b'.repeat(64)]]
     }), [{ name: ONE_TIME_DELETE_PERMISSION, eKind: 5, remember: false }])
+  })
+
+  it('does not prompt for private-channel transport helper kinds', () => {
+    assert.deepEqual(eventAccessPermissionRequestsForEvent({ kind: 26300, tags: [] }), [])
+    assert.deepEqual(eventAccessPermissionRequestsForEvent({ kind: 26400, tags: [] }), [])
   })
 })

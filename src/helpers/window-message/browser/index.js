@@ -1,6 +1,7 @@
 import { /* handleMessageReply, */ tell, reply } from '../index.js'
 import { nostrDbStreamDonePayload } from '../nostrdb-protocol.js'
 import {
+  createNostrDbLocalCopyDecrypt,
   createNostrDbMaintenanceSignEvent,
   createNostrDbSignEvent,
   createNostrDbSubscriptionAuthorizer,
@@ -486,7 +487,13 @@ export async function initMessageListener (
           const maintenanceSignEvent = isDefaultUser
             ? null
             : createNostrDbMaintenanceSignEvent({ askVault, pubkey: userPkB16 })
-          const db = getNostrDb(userPkB16, nostrDbMaintenanceOptions(maintenanceSignEvent))
+          const localCopyDecrypt = isDefaultUser
+            ? null
+            : createNostrDbLocalCopyDecrypt({ askVault, pubkey: userPkB16 })
+          const db = getNostrDb(userPkB16, {
+            ...nostrDbMaintenanceOptions(maintenanceSignEvent),
+            ...(localCopyDecrypt ? { localCopyDecrypt } : {})
+          })
           const appMetadata = await getAppMetadata(appId, appAddress, { timeoutMs: 0 })
           if (method === 'subscribe') {
             const authorizer = createNostrDbSubscriptionAuthorizer({
@@ -711,8 +718,8 @@ export async function askNip07 (
 ) {
   if (isDefaultUser) throw new Error('Please login')
   if (requestPermission && needsNip07Permission(method)) {
-    const { permissions, scope } = nip07PermissionContext({ method, params })
-    if (!permissions.length) throw new Error(`Unknown method ${method}`)
+    const { permissions, scope, unknown } = nip07PermissionContext({ method, params })
+    if (unknown) throw new Error(`Unknown method ${method}`)
 
     for (const permission of permissions) {
       await requestPermission({

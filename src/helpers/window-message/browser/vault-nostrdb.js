@@ -1,4 +1,6 @@
 import { ask as defaultAsk, reply as defaultReply } from '../index.js'
+import { eventKinds } from '#constants/event.js'
+import { base64ToBytes } from '#helpers/base64.js'
 import { nostrDbStreamDonePayload } from '../nostrdb-protocol.js'
 import {
   deleteNostrDb as defaultDeleteNostrDb,
@@ -18,6 +20,8 @@ const VAULT_APP = { id: 'ez-vault', name: 'Vault' }
 const HEX64 = /^[0-9a-f]{64}$/i
 const APP_EXPORT_PAGE_LIMIT = 200
 const APP_EXPORT_PAGE_MAX = 999
+const LOCAL_COPY_KIND = eventKinds.LOCAL_COPY ?? 1006
+const textDecoder = new TextDecoder()
 
 function isPlainObject (value) {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -101,6 +105,30 @@ export function createTrustedVaultNostrDbSignEvent ({
   }
 }
 
+export function createTrustedVaultNostrDbLocalCopyDecrypt ({
+  vaultPort,
+  ownerPubkey,
+  getVaultPort = () => vaultPort,
+  ask = defaultAsk
+}) {
+  return async event => {
+    const port = getVaultPort()
+    if (!port) throw new Error('Vault not connected')
+    const { payload, error } = await ask(port, {
+      code: 'NIP07',
+      payload: {
+        pubkey: ownerPubkey,
+        ns: [''],
+        method: 'nip44v3_decrypt',
+        params: [ownerPubkey, String(LOCAL_COPY_KIND), '', event?.content],
+        context: 'nostrdb_local_copy'
+      }
+    }, { timeout: 120000 })
+    if (error) throw error
+    return textDecoder.decode(base64ToBytes(String(payload ?? '')))
+  }
+}
+
 export async function runTrustedVaultNostrDbMethod ({
   vaultPort,
   ownerPubkey,
@@ -119,7 +147,16 @@ export async function runTrustedVaultNostrDbMethod ({
     ...(getVaultPort ? { getVaultPort } : {}),
     ask
   })
-  const db = getNostrDb(pubkey, nostrDbMaintenanceOptions(maintenanceSignEvent))
+  const localCopyDecrypt = createTrustedVaultNostrDbLocalCopyDecrypt({
+    vaultPort,
+    ownerPubkey: pubkey,
+    ...(getVaultPort ? { getVaultPort } : {}),
+    ask
+  })
+  const db = getNostrDb(pubkey, {
+    ...nostrDbMaintenanceOptions(maintenanceSignEvent),
+    localCopyDecrypt
+  })
   const signEvent = createTrustedVaultNostrDbSignEvent({
     vaultPort,
     ownerPubkey: pubkey,
@@ -222,7 +259,16 @@ export async function streamTrustedVaultNostrDbSubscription (e, {
       ...(getVaultPort ? { getVaultPort } : {}),
       ask
     })
-    const db = getNostrDb(pubkey, nostrDbMaintenanceOptions(maintenanceSignEvent))
+    const localCopyDecrypt = createTrustedVaultNostrDbLocalCopyDecrypt({
+      vaultPort,
+      ownerPubkey: pubkey,
+      ...(getVaultPort ? { getVaultPort } : {}),
+      ask
+    })
+    const db = getNostrDb(pubkey, {
+      ...nostrDbMaintenanceOptions(maintenanceSignEvent),
+      localCopyDecrypt
+    })
     subscription = { iterator: null, cancelled: false }
     subscriptions.set(subscriptionId, subscription)
 

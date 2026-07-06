@@ -3,24 +3,26 @@ import assert from 'node:assert/strict'
 
 import {
   BROAD_EVENT_KIND,
-  EVENT_READ_PERMISSION,
-  EVENT_WRITE_PERMISSION,
+  EVENT_ACCESS_PERMISSION,
+  EVENT_ACCESS_PERSONAL_PERMISSION,
   ONE_TIME_DELETE_PERMISSION
 } from '../../src/helpers/window-message/browser/event-permissions.js'
 import {
   buildNostrDbAddOptions,
   buildNostrDbReadOptions,
+  createNostrDbLocalCopyDecrypt,
   createNostrDbMaintenanceSignEvent,
   createNostrDbSignEvent,
   createNostrDbSubscriptionAuthorizer,
   explicitFilterKinds,
+  NOSTRDB_LOCAL_COPY_CONTEXT,
   NOSTRDB_MAINTENANCE_CONTEXT,
   nostrDbSignMethodForTemplate,
   runNostrDbMethod
 } from '../../src/helpers/window-message/browser/nostrdb.js'
 
 describe('nostrdb browser bridge helpers', () => {
-  it('forces add appId, mergeSource, and signEvent after write permission', async () => {
+  it('forces add appId, mergeSource, and signEvent after access permission', async () => {
     const event = { id: 'event', kind: 1, tags: [] }
     const forcedSignEvent = async () => ({ id: 'signed' })
     const calls = []
@@ -51,7 +53,7 @@ describe('nostrdb browser bridge helpers', () => {
       app: { id: 'app' }
     }), { ok: true })
 
-    assert.deepEqual(calls, [['permission', EVENT_WRITE_PERMISSION, 1], 'add'])
+    assert.deepEqual(calls, [['permission', EVENT_ACCESS_PERMISSION, 1], 'add'])
     assert.equal(seen.addedEvent, event)
     assert.equal(seen.options.appId, 'real-app')
     assert.equal(seen.options.mergeSource, 'local')
@@ -80,12 +82,12 @@ describe('nostrdb browser bridge helpers', () => {
     })
 
     assert.deepEqual(seen, [
-      [EVENT_WRITE_PERMISSION, 30023, undefined],
+      [EVENT_ACCESS_PERMISSION, 30023, undefined],
       [ONE_TIME_DELETE_PERMISSION, 5, false]
     ])
   })
 
-  it('delegates query, count, and supports with read permissions', async () => {
+  it('delegates query, count, and supports with access permissions', async () => {
     const calls = []
     const requestPermission = async req => { calls.push(['permission', req.name, req.eKind]) }
     const db = {
@@ -120,9 +122,10 @@ describe('nostrdb browser bridge helpers', () => {
     }), 7)
     assert.deepEqual(await runNostrDbMethod({ db, method: 'supports', params: [] }), ['search'])
     assert.deepEqual(calls, [
-      ['permission', EVENT_READ_PERMISSION, 1],
+      ['permission', EVENT_ACCESS_PERMISSION, 1],
       ['query', [{ kinds: [1] }, { appId: 'real-app' }]],
-      ['permission', EVENT_READ_PERMISSION, BROAD_EVENT_KIND],
+      ['permission', EVENT_ACCESS_PERMISSION, BROAD_EVENT_KIND],
+      ['permission', EVENT_ACCESS_PERSONAL_PERMISSION, BROAD_EVENT_KIND],
       ['count', [{ authors: ['a'.repeat(64)] }]],
       ['supports', []]
     ])
@@ -148,9 +151,83 @@ describe('nostrdb browser bridge helpers', () => {
 
     assert.deepEqual(seen, [
       'query',
-      [EVENT_READ_PERMISSION, 1],
-      [EVENT_READ_PERMISSION, 30023],
-      [EVENT_READ_PERMISSION, BROAD_EVENT_KIND]
+      [EVENT_ACCESS_PERMISSION, 1],
+      [EVENT_ACCESS_PERMISSION, 30023],
+      [EVENT_ACCESS_PERMISSION, BROAD_EVENT_KIND],
+      [EVENT_ACCESS_PERSONAL_PERMISSION, BROAD_EVENT_KIND]
+    ])
+  })
+
+  it('gates local-copy queries by explicit or inferred personal inner kinds', async () => {
+    const explicitCalls = []
+    const explicitDb = {
+      async query (...args) {
+        explicitCalls.push(['query', args])
+        return { results: [{ kind: 1006, tags: [['k', '1']] }] }
+      }
+    }
+
+    await runNostrDbMethod({
+      db: explicitDb,
+      method: 'query',
+      params: [{ kinds: [1006], '#k': ['1'] }],
+      requestPermission: async req => { explicitCalls.push([req.name, req.eKind]) },
+      app: { id: 'app' }
+    })
+
+    assert.deepEqual(explicitCalls, [
+      [EVENT_ACCESS_PERSONAL_PERMISSION, 1],
+      ['query', [{ kinds: [1006], '#k': ['1'] }]]
+    ])
+
+    const inferredCalls = []
+    const inferredDb = {
+      async query () {
+        inferredCalls.push('query')
+        return {
+          results: [
+            { kind: 1006, tags: [['k', '1']] },
+            { kind: 1006, tags: [['k', '30023']] }
+          ]
+        }
+      }
+    }
+
+    await runNostrDbMethod({
+      db: inferredDb,
+      method: 'query',
+      params: [{ kinds: [1006] }],
+      requestPermission: async req => { inferredCalls.push([req.name, req.eKind]) },
+      app: { id: 'app' }
+    })
+
+    assert.deepEqual(inferredCalls, [
+      'query',
+      [EVENT_ACCESS_PERSONAL_PERMISSION, 1],
+      [EVENT_ACCESS_PERSONAL_PERMISSION, 30023]
+    ])
+  })
+
+  it('uses personal broad access for local-copy counts without explicit #k', async () => {
+    const seen = []
+    const db = {
+      async count (...args) {
+        seen.push(['count', args])
+        return 3
+      }
+    }
+
+    assert.equal(await runNostrDbMethod({
+      db,
+      method: 'count',
+      params: [{ kinds: [1006] }],
+      requestPermission: async req => { seen.push([req.name, req.eKind]) },
+      app: { id: 'app' }
+    }), 3)
+
+    assert.deepEqual(seen, [
+      [EVENT_ACCESS_PERSONAL_PERMISSION, BROAD_EVENT_KIND],
+      ['count', [{ kinds: [1006] }]]
     ])
   })
 
@@ -178,8 +255,8 @@ describe('nostrdb browser bridge helpers', () => {
     await explicit.authorizeBeforeStart()
     await explicit.authorizeItem({ result: { kind: 1 } })
     assert.deepEqual(explicitCalls, [
-      [EVENT_READ_PERMISSION, 1],
-      [EVENT_READ_PERMISSION, 30023]
+      [EVENT_ACCESS_PERMISSION, 1],
+      [EVENT_ACCESS_PERMISSION, 30023]
     ])
 
     const dynamicCalls = []
@@ -193,8 +270,36 @@ describe('nostrdb browser bridge helpers', () => {
     await dynamic.authorizeItem({ result: { kind: 1 } })
     await dynamic.authorizeItem({ result: 'id-only' })
     assert.deepEqual(dynamicCalls, [
-      [EVENT_READ_PERMISSION, 1],
-      [EVENT_READ_PERMISSION, BROAD_EVENT_KIND]
+      [EVENT_ACCESS_PERMISSION, 1],
+      [EVENT_ACCESS_PERMISSION, BROAD_EVENT_KIND],
+      [EVENT_ACCESS_PERSONAL_PERMISSION, BROAD_EVENT_KIND]
+    ])
+  })
+
+  it('authorizes local-copy subscriptions by explicit or streamed personal inner kind', async () => {
+    const explicitCalls = []
+    const explicit = createNostrDbSubscriptionAuthorizer({
+      app: { id: 'app' },
+      requestPermission: async req => { explicitCalls.push([req.name, req.eKind]) },
+      params: [{ kinds: [1006], '#k': ['1'] }]
+    })
+    await explicit.authorizeBeforeStart()
+    await explicit.authorizeItem({ result: { kind: 1006, tags: [['k', '1']] } })
+    assert.deepEqual(explicitCalls, [
+      [EVENT_ACCESS_PERSONAL_PERMISSION, 1]
+    ])
+
+    const dynamicCalls = []
+    const dynamic = createNostrDbSubscriptionAuthorizer({
+      app: { id: 'app' },
+      requestPermission: async req => { dynamicCalls.push([req.name, req.eKind]) },
+      params: [{ kinds: [1006] }]
+    })
+    await dynamic.authorizeBeforeStart()
+    await dynamic.authorizeItem({ result: { kind: 1006, tags: [['k', '30023']] } })
+    await dynamic.authorizeItem({ result: { kind: 1006, tags: [['k', '30023']] } })
+    assert.deepEqual(dynamicCalls, [
+      [EVENT_ACCESS_PERSONAL_PERMISSION, 30023]
     ])
   })
 
@@ -240,6 +345,24 @@ describe('nostrdb browser bridge helpers', () => {
     assert.deepEqual(calls.map(call => call.request.context), ['nostrdb_merge', 'nostrdb_merge'])
     assert.equal(calls.every(call => !('requestPermission' in call.options)), true)
     assert.deepEqual(calls.map(call => call.options.app.napp), ['+app', '+app'])
+  })
+
+  it('creates a permissionless vault local-copy decrypt wrapper', async () => {
+    const calls = []
+    const decrypt = createNostrDbLocalCopyDecrypt({
+      askVault: async (message, options) => {
+        calls.push({ message, options })
+        return { payload: 'eyJraW5kIjoxLCJjb250ZW50Ijoic2VjcmV0In0' }
+      },
+      pubkey: 'f'.repeat(64)
+    })
+
+    assert.equal(await decrypt({ content: 'ciphertext' }), '{"kind":1,"content":"secret"}')
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].message.code, 'NIP07')
+    assert.deepEqual(calls[0].message.payload.params, ['f'.repeat(64), '1006', '', 'ciphertext'])
+    assert.equal(calls[0].message.payload.context, NOSTRDB_LOCAL_COPY_CONTEXT)
+    assert.deepEqual(calls[0].options, { timeout: 120000 })
   })
 
   it('creates a permissionless vault maintenance signer wrapper', async () => {

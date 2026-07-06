@@ -1535,6 +1535,42 @@ describe('nostrdb', () => {
     assert.deepEqual((await queryResults(db, { kinds: [30023], search: 'body' })).map(e => e.id), [content.id])
   })
 
+  it('searches local copy wrappers through decrypted inner event JSON', async () => {
+    const owner = `${OWNER}97`
+    const plaintextByCiphertext = new Map()
+    const decrypted = []
+    const db = getNostrDb(owner, {
+      localCopyDecrypt: async wrapper => {
+        decrypted.push(wrapper.id)
+        return plaintextByCiphertext.get(wrapper.content) ?? '{}'
+      }
+    })
+    const matchInner = event({ id: hexId(9701), kind: 1, content: 'secret whisper' })
+    const missInner = event({ id: hexId(9702), kind: 1, content: 'public chatter' })
+    const match = event({
+      id: hexId(9703),
+      kind: eventKinds.LOCAL_COPY,
+      tags: [['k', '1']],
+      content: 'cipher-match'
+    })
+    const miss = event({
+      id: hexId(9704),
+      kind: eventKinds.LOCAL_COPY,
+      tags: [['k', '1']],
+      content: 'cipher-miss'
+    })
+
+    plaintextByCiphertext.set('cipher-match', JSON.stringify(matchInner))
+    plaintextByCiphertext.set('cipher-miss', JSON.stringify(missInner))
+
+    assertAddOk(await db.add(miss))
+    assertAddOk(await db.add(match))
+
+    assert.deepEqual((await queryResults(db, { kinds: [eventKinds.LOCAL_COPY], '#k': ['1'], search: 'whisper' })).map(e => e.id), [match.id])
+    assert.equal(await db.count({ kinds: [eventKinds.LOCAL_COPY], '#k': ['1'], search: 'whisper' }), 1)
+    assert.equal(decrypted.includes(match.id), true)
+  })
+
   it('supports uFuzzy negative search terms', async () => {
     const db = getNostrDb(`${OWNER}40`)
     const match = event({ id: '1'.repeat(64), content: 'nostr protocol notes' })

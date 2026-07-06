@@ -1,9 +1,15 @@
-export const EVENT_READ_PERMISSION = 'eventRead'
-export const EVENT_WRITE_PERMISSION = 'eventWrite'
+export const EVENT_ACCESS_PERMISSION = 'eventAccess'
+export const EVENT_ACCESS_PERSONAL_PERMISSION = 'eventAccessPersonal'
 export const ONE_TIME_DELETE_PERMISSION = 'delete'
 export const BROAD_EVENT_KIND = -1
+export const PRIVATE_CHANNEL_ROUTER_KIND = 26300
+export const PRIVATE_CHANNEL_NYM_CARRIER_KIND = 26400
 
 const HEX64_RE = /^[0-9a-f]{64}$/i
+const PRIVATE_CHANNEL_TRANSPORT_KINDS = new Set([
+  PRIVATE_CHANNEL_ROUTER_KIND,
+  PRIVATE_CHANNEL_NYM_CARRIER_KIND
+])
 
 export function normalizeEventKind (kind, { allowBroad = false } = {}) {
   if (allowBroad && kind === BROAD_EVENT_KIND) return BROAD_EVENT_KIND
@@ -12,9 +18,12 @@ export function normalizeEventKind (kind, { allowBroad = false } = {}) {
 }
 
 export function permissionNamesForLookup (name) {
-  return name === EVENT_READ_PERMISSION
-    ? [EVENT_READ_PERMISSION, EVENT_WRITE_PERMISSION]
-    : [name]
+  return [name]
+}
+
+export function isPrivateChannelTransportKind (kind) {
+  const normalized = normalizeEventKind(kind)
+  return normalized !== null && PRIVATE_CHANNEL_TRANSPORT_KINDS.has(normalized)
 }
 
 function parseAddressKind (address) {
@@ -48,25 +57,32 @@ export function eventPermission (name, eKind, options = {}) {
   }
 }
 
-export function eventReadPermission (eKind, options = {}) {
-  return eventPermission(EVENT_READ_PERMISSION, eKind, options)
+export function eventAccessPermission (eKind, options = {}) {
+  return eventPermission(EVENT_ACCESS_PERMISSION, eKind, options)
 }
 
-export function eventWritePermission (eKind, options = {}) {
-  return eventPermission(EVENT_WRITE_PERMISSION, eKind, options)
+export function eventAccessPersonalPermission (eKind, options = {}) {
+  return eventPermission(EVENT_ACCESS_PERSONAL_PERMISSION, eKind, options)
 }
 
-export function eventWritePermissionRequestsForEvent (event) {
+export function eventAccessPermissionRequestsForKind (kind, options = {}) {
+  const normalized = normalizeEventKind(kind, { allowBroad: true })
+  if (normalized === null) return []
+  if (normalized !== BROAD_EVENT_KIND && isPrivateChannelTransportKind(normalized)) return []
+  return [eventAccessPermission(normalized, options)]
+}
+
+export function eventAccessPermissionRequestsForEvent (event) {
   const kind = normalizeEventKind(event?.kind)
   if (kind === null) return []
 
   if (kind === 5) {
     const targetKinds = deletionTargetKinds(event)
-    if (targetKinds) return targetKinds.map(targetKind => eventWritePermission(targetKind))
+    if (targetKinds) return targetKinds.flatMap(targetKind => eventAccessPermissionRequestsForKind(targetKind))
     return [eventPermission(ONE_TIME_DELETE_PERMISSION, kind, { remember: false })]
   }
 
   if (kind === 62) return [eventPermission(ONE_TIME_DELETE_PERMISSION, kind, { remember: false })]
 
-  return [eventWritePermission(kind)]
+  return eventAccessPermissionRequestsForKind(kind)
 }

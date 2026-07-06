@@ -1,5 +1,7 @@
 import uFuzzy from '@leeoniya/ufuzzy'
 
+import { eventKinds } from '#constants/event.js'
+
 /*
 Search is a bounded local fuzzy pass over IndexedDB-filtered events, not a full
 text index. Query-time early stop is match-count based: once enough uFuzzy
@@ -23,6 +25,8 @@ const searchCollator = typeof Intl === 'undefined'
 // Search field config example:
 // 0: { contentJson: ['name'] }
 // 30023: { content: true, tags: ['title', 'summary'] }
+const LOCAL_COPY_KIND = eventKinds.LOCAL_COPY ?? 1006
+
 const SEARCH_FIELD_CONFIG = {
   0: { contentJson: ['name'], tags: ['name'] },
   30023: { content: true, tags: ['title', 'summary'] }
@@ -101,26 +105,42 @@ export function eventMatchesSearch (event, filter, compareTime) {
   return !!text && rankSearchCandidates([{ event, text }], filter, compareTime).length > 0
 }
 
+export async function getSearchableTextForEvent (event, { decryptLocalCopyContent } = {}) {
+  if (event?.kind !== LOCAL_COPY_KIND || typeof decryptLocalCopyContent !== 'function') {
+    return getSearchableText(event)
+  }
+
+  try {
+    const plaintext = await decryptLocalCopyContent(event)
+    const innerEvent = normalizeSearchEvent(parseJsonObject(plaintext))
+    return innerEvent ? getSearchableText(innerEvent) : ''
+  } catch {
+    return ''
+  }
+}
+
 // Extract the text fields that should participate in fuzzy search for each kind.
 export function getSearchableText (event) {
-  const config = SEARCH_FIELD_CONFIG[event.kind]
+  const config = SEARCH_FIELD_CONFIG[event?.kind]
   const values = []
+  const tags = Array.isArray(event?.tags) ? event.tags : []
+  const content = typeof event?.content === 'string' ? event.content : ''
 
   if (!config) {
-    values.push(event.content)
+    values.push(content)
   } else {
     if (Array.isArray(config.tags)) {
       for (const name of config.tags) {
-        for (const tag of event.tags) {
+        for (const tag of tags) {
           if (tag[0] === name && tag[1]) values.push(tag[1])
         }
       }
     }
 
-    if (config.content) values.push(event.content)
+    if (config.content) values.push(content)
 
     if (Array.isArray(config.contentJson)) {
-      const json = parseJsonObject(event.content)
+      const json = parseJsonObject(content)
       for (const key of config.contentJson) {
         const value = json?.[key]
         if (typeof value === 'string') values.push(value)
@@ -189,6 +209,15 @@ function typeaheadSearchSort (candidates, filter, compareTime) {
       compareTime(candidates[idx[ia]], candidates[idx[ib]], filter) ||
       compare(haystack[idx[ia]], haystack[idx[ib]])
     ))
+  }
+}
+
+function normalizeSearchEvent (event) {
+  if (!event || typeof event !== 'object' || Array.isArray(event)) return null
+  return {
+    ...event,
+    tags: Array.isArray(event.tags) ? event.tags : [],
+    content: typeof event.content === 'string' ? event.content : ''
   }
 }
 

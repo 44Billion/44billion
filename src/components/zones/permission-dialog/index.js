@@ -2,7 +2,7 @@ import { f, useGlobalStore, useClosestStore, useStore, useCallback } from '#f'
 import '#f/components/f-to-signals.js'
 import '#shared/modal.js'
 import { hasPermission, createOrUpdatePermission } from '#services/idb/browser/queries/permission.js'
-import { BROAD_EVENT_KIND, EVENT_READ_PERMISSION, EVENT_WRITE_PERMISSION, ONE_TIME_DELETE_PERMISSION } from '#helpers/window-message/browser/event-permissions.js'
+import { BROAD_EVENT_KIND, EVENT_ACCESS_PERMISSION, EVENT_ACCESS_PERSONAL_PERMISSION, ONE_TIME_DELETE_PERMISSION } from '#helpers/window-message/browser/event-permissions.js'
 import { cssStrings, cssClasses, cssVars, jsVars } from '#assets/styles/theme.js'
 import '#shared/app-icon.js'
 import '#shared/icons/icon-x.js'
@@ -197,8 +197,8 @@ f('permissionDialogStack', function () {
     },
     nameToText: {
       readProfile: 'read',
-      [EVENT_READ_PERMISSION]: 'read',
-      [EVENT_WRITE_PERMISSION]: 'read and write',
+      [EVENT_ACCESS_PERMISSION]: 'access',
+      [EVENT_ACCESS_PERSONAL_PERMISSION]: 'access personal',
       [ONE_TIME_DELETE_PERMISSION]: 'delete',
       openApp: 'open'
     },
@@ -232,7 +232,7 @@ f('permissionDialogStack', function () {
         const event = meta?.params?.[0]
         if (!event) throw new Error('Missing event parameter for eKind 62 permission')
         const relayTags = event.tags.filter(t => t[0] === 'relay')
-        const relayCount = relayTags.some(v => v === 'ALL_RELAYS')
+        const relayCount = relayTags.some(tag => tag[1] === 'ALL_RELAYS')
           ? Infinity
           : relayTags.length || 1
         dynText = `delete ALL your items from ${relayCount === Infinity

@@ -2,8 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   BROAD_EVENT_KIND,
-  EVENT_READ_PERMISSION,
-  EVENT_WRITE_PERMISSION,
+  EVENT_ACCESS_PERMISSION,
   ONE_TIME_DELETE_PERMISSION
 } from '#helpers/window-message/browser/event-permissions.js'
 import { needsNip07Permission, nip07PermissionContext } from '#helpers/window-message/browser/nip07-permission-context.js'
@@ -18,7 +17,7 @@ describe('NIP-07 permission context', () => {
         method: 'nip44v3Encrypt',
         eKind: 26300,
         scope: 'channel-pubkey',
-        permissions: [{ name: EVENT_WRITE_PERMISSION, eKind: 26300 }]
+        permissions: []
       }
     )
     assert.deepEqual(
@@ -27,7 +26,7 @@ describe('NIP-07 permission context', () => {
         method: 'nip44v3Decrypt',
         eKind: 3560,
         scope: '',
-        permissions: [{ name: EVENT_READ_PERMISSION, eKind: 3560 }]
+        permissions: [{ name: EVENT_ACCESS_PERMISSION, eKind: 3560 }]
       }
     )
   })
@@ -39,7 +38,7 @@ describe('NIP-07 permission context', () => {
         method: 'nip44v3EncryptDoubleDH',
         eKind: 26300,
         scope: 'channel-pubkey',
-        permissions: [{ name: EVENT_WRITE_PERMISSION, eKind: 26300 }]
+        permissions: []
       }
     )
     assert.deepEqual(
@@ -48,7 +47,7 @@ describe('NIP-07 permission context', () => {
         method: 'nip44v3DecryptDoubleDH',
         eKind: 3560,
         scope: '',
-        permissions: [{ name: EVENT_READ_PERMISSION, eKind: 3560 }]
+        permissions: [{ name: EVENT_ACCESS_PERMISSION, eKind: 3560 }]
       }
     )
   })
@@ -60,7 +59,7 @@ describe('NIP-07 permission context', () => {
         method: 'nip44v3Encrypt',
         eKind: null,
         scope: 'scope',
-        permissions: [{ name: EVENT_WRITE_PERMISSION, eKind: null, remember: false }]
+        permissions: [{ name: EVENT_ACCESS_PERMISSION, eKind: null, remember: false }]
       }
     )
   })
@@ -71,7 +70,7 @@ describe('NIP-07 permission context', () => {
       {
         method: 'nip04Encrypt',
         eKind: BROAD_EVENT_KIND,
-        permissions: [{ name: EVENT_WRITE_PERMISSION, eKind: BROAD_EVENT_KIND }]
+        permissions: [{ name: EVENT_ACCESS_PERMISSION, eKind: BROAD_EVENT_KIND }]
       }
     )
     assert.deepEqual(
@@ -79,7 +78,7 @@ describe('NIP-07 permission context', () => {
       {
         method: 'nip44Decrypt',
         eKind: BROAD_EVENT_KIND,
-        permissions: [{ name: EVENT_READ_PERMISSION, eKind: BROAD_EVENT_KIND }]
+        permissions: [{ name: EVENT_ACCESS_PERMISSION, eKind: BROAD_EVENT_KIND }]
       }
     )
   })
@@ -95,19 +94,23 @@ describe('NIP-07 permission context', () => {
   it('maps sign, double-sign, and delete target permissions', () => {
     assert.deepEqual(
       nip07PermissionContext({ method: 'sign_event', params: [{ kind: 1 }] }),
-      { method: 'signEvent', eKind: 1, permissions: [{ name: EVENT_WRITE_PERMISSION, eKind: 1 }] }
+      { method: 'signEvent', eKind: 1, permissions: [{ name: EVENT_ACCESS_PERMISSION, eKind: 1 }] }
     )
     assert.deepEqual(
       nip07PermissionContext({ method: 'double_sign_event', params: [{ kind: 30023 }] }),
-      { method: 'doubleSignEvent', eKind: 30023, permissions: [{ name: EVENT_WRITE_PERMISSION, eKind: 30023 }] }
+      { method: 'doubleSignEvent', eKind: 30023, permissions: [{ name: EVENT_ACCESS_PERMISSION, eKind: 30023 }] }
     )
     assert.deepEqual(
       nip07PermissionContext({ method: 'sign_event', params: [{ kind: 5, tags: [['a', `1:${PUBKEY}:note`]] }] }),
-      { method: 'signEvent', eKind: 5, permissions: [{ name: EVENT_WRITE_PERMISSION, eKind: 1 }] }
+      { method: 'signEvent', eKind: 5, permissions: [{ name: EVENT_ACCESS_PERMISSION, eKind: 1 }] }
     )
     assert.deepEqual(
       nip07PermissionContext({ method: 'sign_event', params: [{ kind: 5, tags: [['e', 'b'.repeat(64)]] }] }),
       { method: 'signEvent', eKind: 5, permissions: [{ name: ONE_TIME_DELETE_PERMISSION, eKind: 5, remember: false }] }
+    )
+    assert.deepEqual(
+      nip07PermissionContext({ method: 'sign_event', params: [{ kind: 26300, tags: [] }] }),
+      { method: 'signEvent', eKind: 26300, permissions: [] }
     )
   })
 })
