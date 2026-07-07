@@ -4,6 +4,7 @@ export const ONE_TIME_DELETE_PERMISSION = 'delete'
 export const BROAD_EVENT_KIND = -1
 export const PRIVATE_CHANNEL_ROUTER_KIND = 26300
 export const PRIVATE_CHANNEL_NYM_CARRIER_KIND = 26400
+export const PRIVATE_CHANNEL_KIND = 3560
 
 const HEX64_RE = /^[0-9a-f]{64}$/i
 const PRIVATE_CHANNEL_TRANSPORT_KINDS = new Set([
@@ -70,6 +71,13 @@ export function eventAccessPermissionRequestsForKind (kind, options = {}) {
   if (normalized === null) return []
   if (normalized !== BROAD_EVENT_KIND && isPrivateChannelTransportKind(normalized)) return []
   return [eventAccessPermission(normalized, options)]
+}
+
+export function eventAccessPersonalPermissionRequestsForKind (kind, options = {}) {
+  const normalized = normalizeEventKind(kind, { allowBroad: true })
+  if (normalized === null) return []
+  if (normalized !== BROAD_EVENT_KIND && isPrivateChannelTransportKind(normalized)) return []
+  return [eventAccessPersonalPermission(normalized, options)]
 }
 
 export function eventAccessPermissionRequestsForEvent (event) {

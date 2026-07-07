@@ -3,6 +3,10 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { eventKinds } from '#constants/event.js'
 import { appIdToDbAppRef } from '#helpers/app.js'
 import { base16ToBase64, base64ToBase16, bytesToBase64 } from '#helpers/base64.js'
+import {
+  PERSONAL_COPY_KIND,
+  isPersonalCopyEvent
+} from '#helpers/personal-copy.js'
 import { run } from '#services/idb/browser/index.js'
 import {
   SEARCH_BATCH_SIZE,
@@ -23,6 +27,10 @@ import {
   createScheduledDelivery
 } from './scheduled.js'
 import { buildCrdtMergeTemplate } from './crdt.js'
+import {
+  buildPersonalCopyMergeTemplate,
+  normalizePersonalCopyForAdd
+} from './personal-copy.js'
 
 export const NOSTRDB_VERSION = 1
 export const NOSTRDB_PREFIX = '44billion_nostrdb:'
@@ -94,7 +102,7 @@ const HONORARY_EXPIRATION_SKEW = 60
 const SYNC_ANCHOR_FUTURE_SKEW_MS = 5000
 const REGULAR_CUSTOM_APP_DATA_KIND = eventKinds.REGULAR_CUSTOM_APP_DATA ?? 78
 const CUSTOM_APP_DATA_KIND = eventKinds.CUSTOM_APP_DATA ?? 30078
-const LOCAL_COPY_KIND = eventKinds.LOCAL_COPY ?? 1006
+const LEGACY_LOCAL_COPY_KIND = eventKinds.LOCAL_COPY ?? PERSONAL_COPY_KIND
 const APP_NEUTRAL_KINDS_KEY = 'appNeutralKinds'
 const APP_CLAIM_DEBOUNCE_MS = 250
 const APP_CLAIM_BATCH_SIZE = 100
@@ -175,12 +183,22 @@ function eventLogSummary (event) {
   return Object.keys(summary).length > 0 ? summary : null
 }
 
-export function getNostrDb (ownerPubkey, { maintenance = true, maintenanceOptions = {}, localCopyDecrypt } = {}) {
+export function getNostrDb (ownerPubkey, {
+  maintenance = true,
+  maintenanceOptions = {},
+  personalCopyDecrypt,
+  personalCopyEncrypt,
+  personalCopyObfuscate,
+  localCopyDecrypt
+} = {}) {
   if (!storeCache.has(ownerPubkey)) {
     storeCache.set(ownerPubkey, new NostrDb(ownerPubkey))
   }
   const db = storeCache.get(ownerPubkey)
-  if (typeof localCopyDecrypt === 'function') db.localCopyDecrypt = localCopyDecrypt
+  const decrypt = personalCopyDecrypt || localCopyDecrypt
+  if (typeof decrypt === 'function') db.personalCopyDecrypt = decrypt
+  if (typeof personalCopyEncrypt === 'function') db.personalCopyEncrypt = personalCopyEncrypt
+  if (typeof personalCopyObfuscate === 'function') db.personalCopyObfuscate = personalCopyObfuscate
   if (maintenance) startNostrDbMaintenance(db, maintenanceOptions)
   return db
 }
@@ -214,7 +232,9 @@ export class NostrDb {
     this.appClaimFlushAgain = false
     this.maintenanceStops = new Map()
     this.deletionRequestMaintenanceSignEvent = null
-    this.localCopyDecrypt = null
+    this.personalCopyDecrypt = null
+    this.personalCopyEncrypt = null
+    this.personalCopyObfuscate = null
     this.bc = null
 
     if (typeof BroadcastChannel === 'function') {
@@ -246,6 +266,15 @@ export class NostrDb {
     maxTombstoneTags,
     tombstoneTagName
   } = {}) {
+    event = await normalizePersonalCopyForAdd(event, {
+      decrypt: this.personalCopyDecrypt,
+      obfuscate: this.personalCopyObfuscate,
+      signEvent
+    })
+    if (event === null) {
+      return this.reportAddResult('add', event, addResult('invalid'))
+    }
+
     if (!isValidEventShape(event)) {
       return this.reportAddResult('add', event, addResult('invalid'))
     }
@@ -321,14 +350,22 @@ export class NostrDb {
     let base = await getStoredRecordByAddress(db, expectedAddress)
 
     for (let attempt = 0; attempt < 2; attempt++) {
-      const template = buildCrdtMergeTemplate(event, base?.event, {
+      const mergeOptions = {
         tagIdentity,
         tombstoneGraceSeconds,
         maxTombstoneTags,
         tombstoneTagName,
         mergeSource,
         now
-      })
+      }
+      const template = isPersonalCopyEvent(event)
+        ? await buildPersonalCopyMergeTemplate(event, base?.event, {
+            decrypt: this.personalCopyDecrypt,
+            encrypt: this.personalCopyEncrypt,
+            obfuscate: this.personalCopyObfuscate,
+            crdtOptions: mergeOptions
+          })
+        : buildCrdtMergeTemplate(event, base?.event, mergeOptions)
       if (!template) return null
 
       const signed = await signCrdtTemplate(signEvent, template)
@@ -868,7 +905,7 @@ export class NostrDb {
       const results = await queryParsedFilters(db, filters, {
         countOnly: false,
         ignoreLimit: false,
-        decryptLocalCopyContent: this.localCopyDecrypt
+        decryptPersonalCopyContent: this.personalCopyDecrypt
       })
       this.queueAppClaimsFromResults(results, appRef)
       return queryResult(results, filters[0])
@@ -887,7 +924,7 @@ export class NostrDb {
       return await queryParsedFilters(db, filters, {
         countOnly: true,
         ignoreLimit: false,
-        decryptLocalCopyContent: this.localCopyDecrypt
+        decryptPersonalCopyContent: this.personalCopyDecrypt
       })
     } catch (error) {
       logNostrDbIssue('count', { ownerPubkey: this.ownerPubkey }, error)
@@ -1486,17 +1523,17 @@ async function queryRecords (db, rawFilter, { countOnly, ignoreLimit }) {
   return queryParsedFilters(db, parseFilterInput(rawFilter), { countOnly, ignoreLimit })
 }
 
-async function queryParsedFilters (db, filters, { countOnly, ignoreLimit, decryptLocalCopyContent } = {}) {
+async function queryParsedFilters (db, filters, { countOnly, ignoreLimit, decryptPersonalCopyContent } = {}) {
   const liveFilters = filters.filter(filter => !filter.neverMatch)
   if (liveFilters.length === 0) return countOnly ? 0 : []
   if (liveFilters.length === 1) {
-    return queryParsedFilterRecords(db, liveFilters[0], { countOnly, ignoreLimit, decryptLocalCopyContent })
+    return queryParsedFilterRecords(db, liveFilters[0], { countOnly, ignoreLimit, decryptPersonalCopyContent })
   }
 
-  return queryMultipleParsedFilters(db, liveFilters, { countOnly, ignoreLimit, decryptLocalCopyContent })
+  return queryMultipleParsedFilters(db, liveFilters, { countOnly, ignoreLimit, decryptPersonalCopyContent })
 }
 
-async function queryParsedFilterRecords (db, filter, { countOnly, ignoreLimit, decryptLocalCopyContent }) {
+async function queryParsedFilterRecords (db, filter, { countOnly, ignoreLimit, decryptPersonalCopyContent }) {
   if (filter.neverMatch) return countOnly ? 0 : []
 
   const limit = ignoreLimit ? Infinity : Math.min(countOnly ? Infinity : MAX_LIMIT, filter.limit)
@@ -1511,7 +1548,7 @@ async function queryParsedFilterRecords (db, filter, { countOnly, ignoreLimit, d
       countOnly,
       limit,
       now,
-      decryptLocalCopyContent
+      decryptPersonalCopyContent
     })
 
     if (countOnly) return Number.isFinite(limit) ? Math.min(candidates.length, limit) : candidates.length
@@ -1582,12 +1619,12 @@ async function queryParsedFilterRecords (db, filter, { countOnly, ignoreLimit, d
   return projectQueryResults(Number.isFinite(limit) ? results.slice(0, limit) : results, filter, scoreById)
 }
 
-async function queryMultipleParsedFilters (db, filters, { countOnly, ignoreLimit, decryptLocalCopyContent }) {
+async function queryMultipleParsedFilters (db, filters, { countOnly, ignoreLimit, decryptPersonalCopyContent }) {
   const limit = ignoreLimit ? Infinity : Math.min(countOnly ? Infinity : MAX_LIMIT, filters[0].limit)
   if (limit <= 0) return countOnly ? 0 : []
 
   if (filters[0].searchText) {
-    return queryMultipleSearchFilters(db, filters, { countOnly, limit, decryptLocalCopyContent })
+    return queryMultipleSearchFilters(db, filters, { countOnly, limit, decryptPersonalCopyContent })
   }
 
   if (!countOnly && filters[0].idsOnly && filters.every(filter => canUseKeyOnlyCursor(planQuery(filter), filter))) {
@@ -1616,7 +1653,7 @@ async function queryMultipleParsedFilters (db, filters, { countOnly, ignoreLimit
   }
 
   for (const filter of filters) {
-    const keepGoing = await scanParsedFilterEvents(db, filter, { now, limit, countOnly, onEvent: emit, decryptLocalCopyContent })
+    const keepGoing = await scanParsedFilterEvents(db, filter, { now, limit, countOnly, onEvent: emit, decryptPersonalCopyContent })
     if (!keepGoing || (countOnly && seen.size >= limit)) break
   }
 
@@ -1654,7 +1691,7 @@ async function queryMultipleIdsWithKeyCursor (db, filters, { limit }) {
   return withQueryScores(selected.map(result => result.id), selected.map(result => result.score))
 }
 
-async function queryMultipleSearchFilters (db, filters, { countOnly, limit, decryptLocalCopyContent }) {
+async function queryMultipleSearchFilters (db, filters, { countOnly, limit, decryptPersonalCopyContent }) {
   const now = currentUnixTime()
   const candidatesById = new Map()
 
@@ -1665,7 +1702,7 @@ async function queryMultipleSearchFilters (db, filters, { countOnly, limit, decr
       countOnly,
       limit,
       now,
-      decryptLocalCopyContent
+      decryptPersonalCopyContent
     })
 
     for (const candidate of candidates) {
@@ -1685,7 +1722,7 @@ async function queryMultipleSearchFilters (db, filters, { countOnly, limit, decr
   return projectQueryResults(events, filters[0], scoreByCandidateId(ranked))
 }
 
-async function scanParsedFilterEvents (db, filter, { now, limit, countOnly, onEvent, decryptLocalCopyContent }) {
+async function scanParsedFilterEvents (db, filter, { now, limit, countOnly, onEvent, decryptPersonalCopyContent }) {
   const plan = planQuery(filter)
   const direction = queryDirection(filter)
   const seen = new Set()
@@ -1703,7 +1740,7 @@ async function scanParsedFilterEvents (db, filter, { now, limit, countOnly, onEv
       countOnly,
       limit,
       now,
-      decryptLocalCopyContent
+      decryptPersonalCopyContent
     })
     const events = countOnly
       ? candidates.map(candidate => candidate.event)
@@ -2059,11 +2096,12 @@ function scoreFromIndexKey (key, indexName) {
   return 0
 }
 
-function canUseAsyncSearchText (filter, decryptLocalCopyContent) {
-  return typeof decryptLocalCopyContent === 'function' && (!filter.kinds || filter.kinds.includes(LOCAL_COPY_KIND))
+function canUseAsyncSearchText (filter, decryptPersonalCopyContent) {
+  return typeof decryptPersonalCopyContent === 'function' &&
+    (!filter.kinds || filter.kinds.includes(PERSONAL_COPY_KIND) || filter.kinds.includes(LEGACY_LOCAL_COPY_KIND))
 }
 
-async function collectAsyncSearchCandidates (db, plan, filter, direction, { countOnly, limit, now, decryptLocalCopyContent }) {
+async function collectAsyncSearchCandidates (db, plan, filter, direction, { countOnly, limit, now, decryptPersonalCopyContent }) {
   const rawCandidates = []
   const seen = new Set()
   const matchTarget = searchMatchTarget(countOnly, limit)
@@ -2105,7 +2143,7 @@ async function collectAsyncSearchCandidates (db, plan, filter, direction, { coun
   for (let i = 0; i < rawCandidates.length && batchCount < SEARCH_MAX_BATCHES; i += SEARCH_BATCH_SIZE) {
     const batchCandidates = []
     for (const candidate of rawCandidates.slice(i, i + SEARCH_BATCH_SIZE)) {
-      const text = await getSearchableTextForEvent(candidate.event, { decryptLocalCopyContent })
+      const text = await getSearchableTextForEvent(candidate.event, { decryptPersonalCopyContent })
       if (text) batchCandidates.push({ ...candidate, text })
     }
 
@@ -2118,13 +2156,13 @@ async function collectAsyncSearchCandidates (db, plan, filter, direction, { coun
 }
 
 // IDB scanning stays here because it knows about plans, stores, cursors, and caps.
-async function collectSearchCandidates (db, plan, filter, direction, { countOnly, limit, now, decryptLocalCopyContent }) {
-  if (canUseAsyncSearchText(filter, decryptLocalCopyContent)) {
+async function collectSearchCandidates (db, plan, filter, direction, { countOnly, limit, now, decryptPersonalCopyContent }) {
+  if (canUseAsyncSearchText(filter, decryptPersonalCopyContent)) {
     return collectAsyncSearchCandidates(db, plan, filter, direction, {
       countOnly,
       limit,
       now,
-      decryptLocalCopyContent
+      decryptPersonalCopyContent
     })
   }
 

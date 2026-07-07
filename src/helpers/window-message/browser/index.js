@@ -1,8 +1,10 @@
 import { /* handleMessageReply, */ tell, reply } from '../index.js'
 import { nostrDbStreamDonePayload } from '../nostrdb-protocol.js'
 import {
-  createNostrDbLocalCopyDecrypt,
   createNostrDbMaintenanceSignEvent,
+  createNostrDbPersonalCopyDecrypt,
+  createNostrDbPersonalCopyEncrypt,
+  createNostrDbPersonalCopyObfuscate,
   createNostrDbSignEvent,
   createNostrDbSubscriptionAuthorizer,
   nostrDbMaintenanceOptions,
@@ -487,12 +489,20 @@ export async function initMessageListener (
           const maintenanceSignEvent = isDefaultUser
             ? null
             : createNostrDbMaintenanceSignEvent({ askVault, pubkey: userPkB16 })
-          const localCopyDecrypt = isDefaultUser
+          const personalCopyDecrypt = isDefaultUser
             ? null
-            : createNostrDbLocalCopyDecrypt({ askVault, pubkey: userPkB16 })
+            : createNostrDbPersonalCopyDecrypt({ askVault, pubkey: userPkB16 })
+          const personalCopyEncrypt = isDefaultUser
+            ? null
+            : createNostrDbPersonalCopyEncrypt({ askVault, pubkey: userPkB16 })
+          const personalCopyObfuscate = isDefaultUser
+            ? null
+            : createNostrDbPersonalCopyObfuscate({ askVault, pubkey: userPkB16 })
           const db = getNostrDb(userPkB16, {
             ...nostrDbMaintenanceOptions(maintenanceSignEvent),
-            ...(localCopyDecrypt ? { localCopyDecrypt } : {})
+            ...(personalCopyDecrypt ? { personalCopyDecrypt } : {}),
+            ...(personalCopyEncrypt ? { personalCopyEncrypt } : {}),
+            ...(personalCopyObfuscate ? { personalCopyObfuscate } : {})
           })
           const appMetadata = await getAppMetadata(appId, appAddress, { timeoutMs: 0 })
           if (method === 'subscribe') {
@@ -528,7 +538,9 @@ export async function initMessageListener (
                 appId,
                 signEvent,
                 requestPermission,
-                app: appMetadata
+                app: appMetadata,
+                personalCopyEncrypt,
+                personalCopyObfuscate
               })
             }, { to: appPagePort })
           } catch (error) {

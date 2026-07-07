@@ -5,7 +5,7 @@ globalThis.IS_DEVELOPMENT = true
 
 const {
   cancelTrustedVaultNostrDbSubscription,
-  createTrustedVaultNostrDbLocalCopyDecrypt,
+  createTrustedVaultNostrDbPersonalCopyDecrypt,
   createTrustedVaultNostrDbSignEvent,
   pruneNostrDbsForVaultAccounts,
   runTrustedVaultNostrDbMethod,
@@ -106,9 +106,9 @@ describe('trusted vault nostrdb bridge helpers', () => {
     assert.deepEqual(calls.map(call => call.options), [{ timeout: 120000 }, { timeout: 120000 }])
   })
 
-  it('uses permissionless trusted-vault local-copy decryption', async () => {
+  it('uses permissionless trusted-vault personal-copy decryption from k tag', async () => {
     const calls = []
-    const decrypt = createTrustedVaultNostrDbLocalCopyDecrypt({
+    const decrypt = createTrustedVaultNostrDbPersonalCopyDecrypt({
       vaultPort: 'vault-port',
       ownerPubkey: 'a'.repeat(64),
       ask: async (port, message, options) => {
@@ -117,11 +117,11 @@ describe('trusted vault nostrdb bridge helpers', () => {
       }
     })
 
-    assert.equal(await decrypt({ content: 'ciphertext' }), '{"kind":1,"content":"secret"}')
+    assert.equal(await decrypt({ tags: [['k', '1']], content: 'ciphertext' }), '{"kind":1,"content":"secret"}')
     assert.equal(calls.length, 1)
     assert.equal(calls[0].port, 'vault-port')
-    assert.deepEqual(calls[0].message.payload.params, ['a'.repeat(64), '1006', '', 'ciphertext'])
-    assert.equal(calls[0].message.payload.context, 'nostrdb_local_copy')
+    assert.deepEqual(calls[0].message.payload.params, ['a'.repeat(64), '1', '', 'ciphertext'])
+    assert.equal(calls[0].message.payload.context, 'nostrdb_personal_copy')
     assert.deepEqual(calls[0].options, { timeout: 120000 })
   })
 

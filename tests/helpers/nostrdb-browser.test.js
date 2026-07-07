@@ -10,12 +10,14 @@ import {
 import {
   buildNostrDbAddOptions,
   buildNostrDbReadOptions,
-  createNostrDbLocalCopyDecrypt,
   createNostrDbMaintenanceSignEvent,
+  createNostrDbPersonalCopyDecrypt,
+  createNostrDbPersonalCopyEncrypt,
+  createNostrDbPersonalCopyObfuscate,
   createNostrDbSignEvent,
   createNostrDbSubscriptionAuthorizer,
   explicitFilterKinds,
-  NOSTRDB_LOCAL_COPY_CONTEXT,
+  NOSTRDB_PERSONAL_COPY_CONTEXT,
   NOSTRDB_MAINTENANCE_CONTEXT,
   nostrDbSignMethodForTemplate,
   runNostrDbMethod
@@ -85,6 +87,71 @@ describe('nostrdb browser bridge helpers', () => {
       [EVENT_ACCESS_PERMISSION, 30023, undefined],
       [ONE_TIME_DELETE_PERMISSION, 5, false]
     ])
+  })
+
+  it('builds, double-signs, and stores personal copies', async () => {
+    const owner = 'f'.repeat(64)
+    const original = {
+      id: 'a'.repeat(64),
+      pubkey: 'b'.repeat(64),
+      kind: 1,
+      created_at: 123,
+      tags: [['t', 'topicexample'], ['p', 'c'.repeat(64)]],
+      content: 'secret post',
+      sig: 'd'.repeat(128)
+    }
+    const calls = []
+    let added
+    const db = {
+      ownerPubkey: owner,
+      async add (event, options) {
+        calls.push('add')
+        added = { event, options }
+        return { ok: true, code: 'stored' }
+      }
+    }
+    const signed = {
+      id: 'e'.repeat(64),
+      pubkey: owner,
+      sig: '1'.repeat(128)
+    }
+
+    const result = await runNostrDbMethod({
+      db,
+      method: 'addPersonalCopy',
+      params: [original, { context: 'dm:alice', appId: 'evil' }],
+      appId: 'real-app',
+      signEvent: async template => {
+        calls.push(['sign', template.kind, template.tags.at(-1)])
+        return { ...template, ...signed }
+      },
+      personalCopyEncrypt: async (kind, plaintext) => {
+        calls.push(['encrypt', kind, JSON.parse(plaintext).content])
+        return `cipher-${kind}`
+      },
+      personalCopyObfuscate: async (value, kind, scope) => `obf:${kind}:${scope}:${value}`,
+      requestPermission: async req => { calls.push(['permission', req.name, req.eKind]) },
+      app: { id: 'app' }
+    })
+
+    assert.deepEqual(calls, [
+      ['permission', EVENT_ACCESS_PERSONAL_PERMISSION, 1],
+      ['encrypt', 1, 'secret post'],
+      ['sign', 1006, ['imkc']],
+      'add'
+    ])
+    assert.equal(result.event.id, signed.id)
+    assert.deepEqual(result.result, { ok: true, code: 'stored' })
+    assert.equal(added.event.content, 'cipher-1')
+    assert.equal(added.event.created_at, 123)
+    assert.deepEqual(added.event.tags.slice(0, 4), [
+      ['k', '1'],
+      ['c', 'obf:1006::dm:alice'],
+      ['o', 'obf:1006:#t:topicexample'],
+      ['o', `obf:1006:#p:${'c'.repeat(64)}`]
+    ])
+    assert.equal(added.options.appId, 'real-app')
+    assert.equal(added.options.mergeSource, 'local')
   })
 
   it('delegates query, count, and supports with access permissions', async () => {
@@ -158,7 +225,7 @@ describe('nostrdb browser bridge helpers', () => {
     ])
   })
 
-  it('gates local-copy queries by explicit or inferred personal inner kinds', async () => {
+  it('gates personal-copy queries by explicit or inferred personal inner kinds', async () => {
     const explicitCalls = []
     const explicitDb = {
       async query (...args) {
@@ -208,7 +275,7 @@ describe('nostrdb browser bridge helpers', () => {
     ])
   })
 
-  it('uses personal broad access for local-copy counts without explicit #k', async () => {
+  it('uses personal broad access for personal-copy counts without explicit #k', async () => {
     const seen = []
     const db = {
       async count (...args) {
@@ -276,7 +343,7 @@ describe('nostrdb browser bridge helpers', () => {
     ])
   })
 
-  it('authorizes local-copy subscriptions by explicit or streamed personal inner kind', async () => {
+  it('authorizes personal-copy subscriptions by explicit or streamed personal inner kind', async () => {
     const explicitCalls = []
     const explicit = createNostrDbSubscriptionAuthorizer({
       app: { id: 'app' },
@@ -347,9 +414,9 @@ describe('nostrdb browser bridge helpers', () => {
     assert.deepEqual(calls.map(call => call.options.app.napp), ['+app', '+app'])
   })
 
-  it('creates a permissionless vault local-copy decrypt wrapper', async () => {
+  it('creates a permissionless vault personal-copy decrypt wrapper from k tag', async () => {
     const calls = []
-    const decrypt = createNostrDbLocalCopyDecrypt({
+    const decrypt = createNostrDbPersonalCopyDecrypt({
       askVault: async (message, options) => {
         calls.push({ message, options })
         return { payload: 'eyJraW5kIjoxLCJjb250ZW50Ijoic2VjcmV0In0' }
@@ -357,12 +424,31 @@ describe('nostrdb browser bridge helpers', () => {
       pubkey: 'f'.repeat(64)
     })
 
-    assert.equal(await decrypt({ content: 'ciphertext' }), '{"kind":1,"content":"secret"}')
+    assert.equal(await decrypt({ tags: [['k', '1']], content: 'ciphertext' }), '{"kind":1,"content":"secret"}')
     assert.equal(calls.length, 1)
     assert.equal(calls[0].message.code, 'NIP07')
-    assert.deepEqual(calls[0].message.payload.params, ['f'.repeat(64), '1006', '', 'ciphertext'])
-    assert.equal(calls[0].message.payload.context, NOSTRDB_LOCAL_COPY_CONTEXT)
+    assert.deepEqual(calls[0].message.payload.params, ['f'.repeat(64), '1', '', 'ciphertext'])
+    assert.equal(calls[0].message.payload.context, NOSTRDB_PERSONAL_COPY_CONTEXT)
     assert.deepEqual(calls[0].options, { timeout: 120000 })
+  })
+
+  it('creates permissionless vault personal-copy encrypt and obfuscate wrappers', async () => {
+    const calls = []
+    const askVault = async (message, options) => {
+      calls.push({ message, options })
+      return { payload: message.payload.method === 'obfuscate' ? 'obf' : 'cipher' }
+    }
+    const pubkey = 'f'.repeat(64)
+
+    const encrypt = createNostrDbPersonalCopyEncrypt({ askVault, pubkey })
+    const obfuscate = createNostrDbPersonalCopyObfuscate({ askVault, pubkey })
+
+    assert.equal(await encrypt(1, '{"kind":1}'), 'cipher')
+    assert.equal(await obfuscate('topicexample', 1006, '#t'), 'obf')
+    assert.deepEqual(calls.map(call => call.message.payload.method), ['nip44v3_encrypt', 'obfuscate'])
+    assert.deepEqual(calls[0].message.payload.params, [pubkey, '1', '', 'eyJraW5kIjoxfQ'])
+    assert.deepEqual(calls[1].message.payload.params, ['topicexample', '1006', '#t'])
+    assert.equal(calls.every(call => call.message.payload.context === NOSTRDB_PERSONAL_COPY_CONTEXT), true)
   })
 
   it('creates a permissionless vault maintenance signer wrapper', async () => {

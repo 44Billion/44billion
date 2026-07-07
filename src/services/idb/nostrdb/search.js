@@ -1,6 +1,7 @@
 import uFuzzy from '@leeoniya/ufuzzy'
 
 import { eventKinds } from '#constants/event.js'
+import { PERSONAL_COPY_KIND, parsePersonalCopyPlaintext } from '#helpers/personal-copy.js'
 
 /*
 Search is a bounded local fuzzy pass over IndexedDB-filtered events, not a full
@@ -25,7 +26,7 @@ const searchCollator = typeof Intl === 'undefined'
 // Search field config example:
 // 0: { contentJson: ['name'] }
 // 30023: { content: true, tags: ['title', 'summary'] }
-const LOCAL_COPY_KIND = eventKinds.LOCAL_COPY ?? 1006
+const LEGACY_LOCAL_COPY_KIND = eventKinds.LOCAL_COPY ?? PERSONAL_COPY_KIND
 
 const SEARCH_FIELD_CONFIG = {
   0: { contentJson: ['name'], tags: ['name'] },
@@ -105,14 +106,15 @@ export function eventMatchesSearch (event, filter, compareTime) {
   return !!text && rankSearchCandidates([{ event, text }], filter, compareTime).length > 0
 }
 
-export async function getSearchableTextForEvent (event, { decryptLocalCopyContent } = {}) {
-  if (event?.kind !== LOCAL_COPY_KIND || typeof decryptLocalCopyContent !== 'function') {
+export async function getSearchableTextForEvent (event, { decryptPersonalCopyContent, decryptLocalCopyContent } = {}) {
+  const decrypt = decryptPersonalCopyContent || decryptLocalCopyContent
+  if ((event?.kind !== PERSONAL_COPY_KIND && event?.kind !== LEGACY_LOCAL_COPY_KIND) || typeof decrypt !== 'function') {
     return getSearchableText(event)
   }
 
   try {
-    const plaintext = await decryptLocalCopyContent(event)
-    const innerEvent = normalizeSearchEvent(parseJsonObject(plaintext))
+    const plaintext = await decrypt(event)
+    const innerEvent = normalizeSearchEvent(parsePersonalCopyPlaintext(event, plaintext))
     return innerEvent ? getSearchableText(innerEvent) : ''
   } catch {
     return ''

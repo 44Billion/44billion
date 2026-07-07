@@ -461,6 +461,43 @@ describe('nostrdb', () => {
     assert.deepEqual(stored.tags.find(tag => tag[0] === 'imkc'), ['imkc', C, '1'.repeat(128)])
   })
 
+  it('treats imkc as unique by tag name during CRDT merges', () => {
+    const owner = hexId(30024)
+    const existing = event({
+      id: hexId(1),
+      pubkey: owner,
+      kind: 30023,
+      created_at: 10,
+      tags: [['d', 'post'], ['imkc', B, 'old-proof']],
+      content: 'existing'
+    })
+    const replacement = event({
+      id: hexId(2),
+      pubkey: owner,
+      kind: 30023,
+      created_at: 20,
+      tags: [['d', 'post'], ['imkc', C, 'new-proof']],
+      content: 'replacement'
+    })
+    const withoutImkc = event({
+      id: hexId(3),
+      pubkey: owner,
+      kind: 30023,
+      created_at: 30,
+      tags: [['d', 'post']],
+      content: 'without'
+    })
+
+    assert.deepEqual(
+      plainTags(buildCrdtMergeTemplate(replacement, existing).tags).filter(tag => tag[0] === 'imkc'),
+      [['imkc', C, 'new-proof']]
+    )
+    assert.deepEqual(
+      plainTags(buildCrdtMergeTemplate(withoutImkc, replacement).tags).filter(tag => tag[0] === 'imkc'),
+      []
+    )
+  })
+
   it('rejects CRDT merge signatures with unexpected non-imkc tag rewrites', async () => {
     const owner = hexId(30022)
     const db = getNostrDb(owner)
@@ -1452,6 +1489,8 @@ describe('nostrdb', () => {
     store.openKeyCursorCount = 0
 
     assert.deepEqual((await queryResults(db, { '&t': ['meme', 'cat'], '&p': [B] })).map(e => e.id), [newer.id, match.id])
+    store.openKeyCursorCount = 0
+    store.openCursorCount = 0
     assert.deepEqual(await queryResults(db, { '&t': ['meme', 'cat'], '&p': [B], ids_only: true }), [newer.id, match.id])
     assert.equal(store.openKeyCursorCount, 0)
     assert.equal(store.openCursorCount > 0, true)
@@ -1535,13 +1574,13 @@ describe('nostrdb', () => {
     assert.deepEqual((await queryResults(db, { kinds: [30023], search: 'body' })).map(e => e.id), [content.id])
   })
 
-  it('searches local copy wrappers through decrypted inner event JSON', async () => {
+  it('searches personal copy wrappers through decrypted inner event JSON', async () => {
     const owner = `${OWNER}97`
     const plaintextByCiphertext = new Map()
     const decrypted = []
     const db = getNostrDb(owner, {
-      localCopyDecrypt: async wrapper => {
-        decrypted.push(wrapper.id)
+      personalCopyDecrypt: async wrapper => {
+        decrypted.push([wrapper.id, wrapper.tags.find(tag => tag[0] === 'k')?.[1]])
         return plaintextByCiphertext.get(wrapper.content) ?? '{}'
       }
     })
@@ -1549,26 +1588,266 @@ describe('nostrdb', () => {
     const missInner = event({ id: hexId(9702), kind: 1, content: 'public chatter' })
     const match = event({
       id: hexId(9703),
-      kind: eventKinds.LOCAL_COPY,
+      kind: eventKinds.PERSONAL_COPY,
       tags: [['k', '1']],
       content: 'cipher-match'
     })
     const miss = event({
       id: hexId(9704),
-      kind: eventKinds.LOCAL_COPY,
+      kind: eventKinds.PERSONAL_COPY,
       tags: [['k', '1']],
       content: 'cipher-miss'
+    })
+    const malformed = event({
+      id: hexId(9705),
+      kind: eventKinds.PERSONAL_COPY,
+      tags: [['k', '1']],
+      content: 'cipher-mismatch'
     })
 
     plaintextByCiphertext.set('cipher-match', JSON.stringify(matchInner))
     plaintextByCiphertext.set('cipher-miss', JSON.stringify(missInner))
+    plaintextByCiphertext.set('cipher-mismatch', JSON.stringify(event({ id: hexId(9706), kind: 30023, content: 'secret whisper' })))
 
     assertAddOk(await db.add(miss))
     assertAddOk(await db.add(match))
+    assertAddNotOk(await db.add(malformed), { code: 'invalid' })
 
-    assert.deepEqual((await queryResults(db, { kinds: [eventKinds.LOCAL_COPY], '#k': ['1'], search: 'whisper' })).map(e => e.id), [match.id])
-    assert.equal(await db.count({ kinds: [eventKinds.LOCAL_COPY], '#k': ['1'], search: 'whisper' }), 1)
-    assert.equal(decrypted.includes(match.id), true)
+    assert.deepEqual((await queryResults(db, { kinds: [eventKinds.PERSONAL_COPY], '#k': ['1'], search: 'whisper' })).map(e => e.id), [match.id])
+    assert.equal(await db.count({ kinds: [eventKinds.PERSONAL_COPY], '#k': ['1'], search: 'whisper' }), 1)
+    assert.equal(decrypted.some(([id, kind]) => id === match.id && kind === '1'), true)
+  })
+
+  it('regenerates personal copy mirror tags after decrypting manual adds', async () => {
+    const owner = hexId(30980)
+    const inner = event({
+      id: hexId(9801),
+      pubkey: A,
+      kind: 1,
+      tags: [['t', 'topicexample']],
+      content: 'secret whisper'
+    })
+    const db = getNostrDb(owner, {
+      personalCopyDecrypt: async () => JSON.stringify(inner),
+      personalCopyObfuscate: async (value, kind, scope) => `obf:${kind}:${scope}:${value}`
+    })
+    const wrapper = event({
+      id: hexId(9802),
+      pubkey: owner,
+      kind: eventKinds.PERSONAL_COPY,
+      tags: [['k', '1'], ['o', 'stale'], ['imkc', B, '1'.repeat(128)]],
+      content: 'cipher'
+    })
+    let seenTemplate
+
+    const result = await db.add(wrapper, {
+      signEvent: template => {
+        seenTemplate = cloneJson(template)
+        return signedFromTemplate(template, { id: hexId(9803), pubkey: owner })
+      }
+    })
+
+    assertAddOk(result, { code: 'stored', stored: true, published: true })
+    assert.deepEqual(seenTemplate.tags, [
+      ['k', '1'],
+      ['o', 'obf:1006:#t:topicexample'],
+      ['o', `obf:1006:.id:${inner.id}`],
+      ['o', `obf:1006:.pubkey:${inner.pubkey}`],
+      ['imkc', B, '1'.repeat(128)]
+    ])
+    assert.deepEqual((await queryResults(db, { ids: [hexId(9803)] })).map(event => event.tags), [seenTemplate.tags])
+  })
+
+  it('merges editable personal copy inner events before re-encrypting the wrapper content', async () => {
+    const owner = hexId(30990)
+    const plaintextByCiphertext = new Map()
+    const encryptedPlaintexts = new Map()
+    const db = getNostrDb(owner, {
+      personalCopyDecrypt: async wrapper => plaintextByCiphertext.get(wrapper.content) ?? '{}',
+      personalCopyEncrypt: async (kind, plaintext) => {
+        const ciphertext = `cipher-merged-${kind}`
+        encryptedPlaintexts.set(ciphertext, plaintext)
+        return ciphertext
+      },
+      personalCopyObfuscate: async (value, kind, scope) => `obf:${kind}:${scope}:${value}`
+    })
+    const oldInner = event({
+      id: hexId(9901),
+      pubkey: A,
+      kind: 30023,
+      created_at: 10,
+      tags: [['d', 'post'], ['title', 'Old title']],
+      content: 'old body'
+    })
+    const newInner = event({
+      id: hexId(9902),
+      pubkey: A,
+      kind: 30023,
+      created_at: 20,
+      tags: [['d', 'post'], ['title', 'New title']],
+      content: 'new body'
+    })
+    const oldWrapper = event({
+      id: hexId(9903),
+      pubkey: owner,
+      kind: eventKinds.PERSONAL_COPY,
+      created_at: 10,
+      tags: [['k', '30023'], ['d', 'context-address'], ['imkc', B, '1'.repeat(128)]],
+      content: 'cipher-old'
+    })
+    const newWrapper = event({
+      id: hexId(9904),
+      pubkey: owner,
+      kind: eventKinds.PERSONAL_COPY,
+      created_at: 20,
+      tags: [['k', '30023'], ['d', 'context-address'], ['imkc', B, '1'.repeat(128)]],
+      content: 'cipher-new'
+    })
+    let nextId = 9905
+    const signEvent = template => signedFromTemplate(template, { id: hexId(nextId++), pubkey: owner })
+
+    plaintextByCiphertext.set('cipher-old', JSON.stringify(oldInner))
+    plaintextByCiphertext.set('cipher-new', JSON.stringify(newInner))
+
+    assertAddOk(await db.add(oldWrapper, { signEvent }))
+    assertAddOk(await db.add(newWrapper, { signEvent }), { code: 'replaced', stored: true, published: true })
+
+    const [stored] = await queryResults(db, { kinds: [eventKinds.PERSONAL_COPY] })
+    assert.equal(stored.content, 'cipher-merged-30023')
+    const mergedInner = JSON.parse(encryptedPlaintexts.get(stored.content))
+    assert.equal(mergedInner.kind, 30023)
+    assert.equal(mergedInner.pubkey, A)
+    assert.equal(mergedInner.content, 'new body')
+    assert.equal('id' in mergedInner, false)
+    assert.equal('sig' in mergedInner, false)
+    assert.deepEqual(plainTags(mergedInner.tags).filter(tag => tag[0] === 'title'), [['title', 'New title']])
+    assert.equal(stored.tags.some(tag => tag[0] === 'o' && tag[1] === 'obf:1006:#d:post'), true)
+  })
+
+  it('keeps newer identical personal copy wrappers without re-encrypting or merge signing', async () => {
+    const owner = hexId(30991)
+    const plaintextByCiphertext = new Map()
+    let encryptCalls = 0
+    let signCalls = 0
+    const db = getNostrDb(owner, {
+      personalCopyDecrypt: async wrapper => plaintextByCiphertext.get(wrapper.content) ?? '{}',
+      personalCopyEncrypt: async () => {
+        encryptCalls++
+        return 'unexpected-cipher'
+      },
+      personalCopyObfuscate: async (value, kind, scope) => `obf:${kind}:${scope}:${value}`
+    })
+    const inner = event({
+      id: hexId(9911),
+      pubkey: A,
+      kind: 30023,
+      created_at: 20,
+      tags: [['d', 'post'], ['title', 'Same title']],
+      content: 'same body'
+    })
+    const mirrorTags = [
+      ['k', '30023'],
+      ['o', 'obf:1006:#d:post'],
+      ['o', `obf:1006:.id:${inner.id}`],
+      ['o', `obf:1006:.pubkey:${inner.pubkey}`],
+      ['c', 'ctx'],
+      ['d', 'context-address']
+    ]
+    const olderHighCiphertext = event({
+      id: hexId(9912),
+      pubkey: owner,
+      kind: eventKinds.PERSONAL_COPY,
+      created_at: 10,
+      tags: [...mirrorTags, ['imkc', B, '1'.repeat(128)]],
+      content: 'cipher-z'
+    })
+    const newerLowCiphertext = event({
+      id: hexId(9913),
+      pubkey: owner,
+      kind: eventKinds.PERSONAL_COPY,
+      created_at: 20,
+      tags: [...mirrorTags, ['imkc', C, '2'.repeat(128)]],
+      content: 'cipher-a'
+    })
+    const signEvent = template => {
+      signCalls++
+      return signedFromTemplate(template, { id: hexId(9914), pubkey: owner })
+    }
+
+    plaintextByCiphertext.set('cipher-z', JSON.stringify(inner))
+    plaintextByCiphertext.set('cipher-a', JSON.stringify(inner))
+
+    assertAddOk(await db.add(olderHighCiphertext))
+    assertAddOk(await db.add(newerLowCiphertext, { mergeSource: 'sync', signEvent }), { code: 'replaced', stored: true, published: true })
+
+    const [stored] = await queryResults(db, { kinds: [eventKinds.PERSONAL_COPY] })
+    assert.equal(stored.id, newerLowCiphertext.id)
+    assert.equal(stored.content, 'cipher-a')
+    assert.equal(encryptCalls, 0)
+    assert.equal(signCalls, 0)
+  })
+
+  it('keeps the lower id for equal-timestamp identical personal copy wrappers', async () => {
+    const owner = hexId(30992)
+    const plaintextByCiphertext = new Map()
+    let encryptCalls = 0
+    let signCalls = 0
+    const db = getNostrDb(owner, {
+      personalCopyDecrypt: async wrapper => plaintextByCiphertext.get(wrapper.content) ?? '{}',
+      personalCopyEncrypt: async () => {
+        encryptCalls++
+        return 'unexpected-cipher'
+      },
+      personalCopyObfuscate: async (value, kind, scope) => `obf:${kind}:${scope}:${value}`
+    })
+    const inner = event({
+      id: hexId(9921),
+      pubkey: A,
+      kind: 30023,
+      created_at: 20,
+      tags: [['d', 'post'], ['title', 'Same title']],
+      content: 'same body'
+    })
+    const mirrorTags = [
+      ['k', '30023'],
+      ['o', 'obf:1006:#d:post'],
+      ['o', `obf:1006:.id:${inner.id}`],
+      ['o', `obf:1006:.pubkey:${inner.pubkey}`],
+      ['c', 'ctx'],
+      ['d', 'context-address']
+    ]
+    const higherId = event({
+      id: hexId(9923),
+      pubkey: owner,
+      kind: eventKinds.PERSONAL_COPY,
+      created_at: 20,
+      tags: [...mirrorTags, ['imkc', B, '1'.repeat(128)]],
+      content: 'cipher-higher-id'
+    })
+    const lowerId = event({
+      id: hexId(9922),
+      pubkey: owner,
+      kind: eventKinds.PERSONAL_COPY,
+      created_at: 20,
+      tags: [...mirrorTags, ['imkc', C, '2'.repeat(128)]],
+      content: 'cipher-lower-id'
+    })
+    const signEvent = template => {
+      signCalls++
+      return signedFromTemplate(template, { id: hexId(9924), pubkey: owner })
+    }
+
+    plaintextByCiphertext.set('cipher-higher-id', JSON.stringify(inner))
+    plaintextByCiphertext.set('cipher-lower-id', JSON.stringify(inner))
+
+    assertAddOk(await db.add(higherId))
+    assertAddOk(await db.add(lowerId, { mergeSource: 'sync', signEvent }), { code: 'replaced', stored: true, published: true })
+
+    const [stored] = await queryResults(db, { kinds: [eventKinds.PERSONAL_COPY] })
+    assert.equal(stored.id, lowerId.id)
+    assert.equal(stored.content, 'cipher-lower-id')
+    assert.equal(encryptCalls, 0)
+    assert.equal(signCalls, 0)
   })
 
   it('supports uFuzzy negative search terms', async () => {

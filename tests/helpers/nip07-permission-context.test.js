@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   BROAD_EVENT_KIND,
   EVENT_ACCESS_PERMISSION,
+  EVENT_ACCESS_PERSONAL_PERMISSION,
   ONE_TIME_DELETE_PERMISSION
 } from '#helpers/window-message/browser/event-permissions.js'
 import { needsNip07Permission, nip07PermissionContext } from '#helpers/window-message/browser/nip07-permission-context.js'
@@ -59,7 +60,28 @@ describe('NIP-07 permission context', () => {
         method: 'nip44v3Encrypt',
         eKind: null,
         scope: 'scope',
-        permissions: [{ name: EVENT_ACCESS_PERMISSION, eKind: null, remember: false }]
+        permissions: [{ name: EVENT_ACCESS_PERSONAL_PERMISSION, eKind: null, remember: false }]
+      }
+    )
+  })
+
+  it('uses personal permissions for raw NIP-44 v3 non-transport kinds', () => {
+    assert.deepEqual(
+      nip07PermissionContext({ method: 'nip44v3_decrypt', params: ['peer', 2567, '', 'ciphertext'] }),
+      {
+        method: 'nip44v3Decrypt',
+        eKind: 2567,
+        scope: '',
+        permissions: [{ name: EVENT_ACCESS_PERSONAL_PERMISSION, eKind: 2567 }]
+      }
+    )
+    assert.deepEqual(
+      nip07PermissionContext({ method: 'nip44v3_decrypt', params: ['peer', 1006, '', 'ciphertext'] }),
+      {
+        method: 'nip44v3Decrypt',
+        eKind: 1006,
+        scope: '',
+        permissions: [{ name: EVENT_ACCESS_PERSONAL_PERMISSION, eKind: BROAD_EVENT_KIND }]
       }
     )
   })
@@ -88,6 +110,7 @@ describe('NIP-07 permission context', () => {
     assert.equal(needsNip07Permission('peekPublicKey'), false)
     assert.equal(needsNip07Permission('get_public_key'), false)
     assert.equal(needsNip07Permission('getPublicKey'), false)
+    assert.equal(needsNip07Permission('obfuscate'), false)
     assert.equal(needsNip07Permission('sign_event'), true)
   })
 

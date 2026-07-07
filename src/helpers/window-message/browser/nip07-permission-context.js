@@ -1,11 +1,16 @@
 import {
   BROAD_EVENT_KIND,
   EVENT_ACCESS_PERMISSION,
+  EVENT_ACCESS_PERSONAL_PERMISSION,
+  PRIVATE_CHANNEL_KIND,
   eventAccessPermission,
   eventAccessPermissionRequestsForEvent,
   eventAccessPermissionRequestsForKind,
+  eventAccessPersonalPermission,
+  eventAccessPersonalPermissionRequestsForKind,
   normalizeEventKind
 } from './event-permissions.js'
+import { PERSONAL_COPY_KIND } from '#helpers/personal-copy.js'
 
 const methodNameAliases = {
   nip44v3_encrypt_double_dh: 'nip44v3EncryptDoubleDH',
@@ -34,7 +39,8 @@ const legacyDecryptMethods = new Set([
 
 const permissionlessMethods = new Set([
   'peekPublicKey',
-  'getPublicKey'
+  'getPublicKey',
+  'obfuscate'
 ])
 
 export function normalizeMethodName (method) {
@@ -69,8 +75,12 @@ export function nip07PermissionContext ({ method, params = [] } = {}) {
   if (nip44v3EncryptMethods.has(normalizedMethod) || nip44v3DecryptMethods.has(normalizedMethod)) {
     const eKind = normalizeEventKind(params?.[1])
     const permissions = eKind === null
-      ? [oneTimeEventPermission(EVENT_ACCESS_PERMISSION)]
-      : eventAccessPermissionRequestsForKind(eKind)
+      ? [oneTimeEventPermission(EVENT_ACCESS_PERSONAL_PERMISSION)]
+      : eKind === PRIVATE_CHANNEL_KIND
+        ? eventAccessPermissionRequestsForKind(eKind)
+        : eKind === PERSONAL_COPY_KIND
+          ? [eventAccessPersonalPermission(BROAD_EVENT_KIND)]
+          : eventAccessPersonalPermissionRequestsForKind(eKind)
 
     return {
       method: normalizedMethod,

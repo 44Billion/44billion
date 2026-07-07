@@ -6,14 +6,20 @@ import {
   normalizeEventKind
 } from './event-permissions.js'
 import { NOSTRDB_ONE_SHOT_METHODS } from '../nostrdb-protocol.js'
-import { eventKinds } from '#constants/event.js'
 import { base64ToBytes } from '#helpers/base64.js'
+import {
+  PERSONAL_COPY_KIND,
+  buildPersonalCopyUnsignedEvent,
+  isPersonalCopyEvent,
+  personalCopyEncryptionKind,
+  personalCopyHintKinds,
+  plaintextBase64
+} from '#helpers/personal-copy.js'
 
 export const NOSTRDB_MERGE_CONTEXT = 'nostrdb_merge'
 export const NOSTRDB_MAINTENANCE_CONTEXT = 'nostrdb_maintenance'
-export const NOSTRDB_LOCAL_COPY_CONTEXT = 'nostrdb_local_copy'
+export const NOSTRDB_PERSONAL_COPY_CONTEXT = 'nostrdb_personal_copy'
 
-const LOCAL_COPY_KIND = eventKinds.LOCAL_COPY ?? 1006
 const textDecoder = new TextDecoder()
 
 export function nostrDbSignMethodForTemplate (event) {
@@ -29,6 +35,10 @@ export function buildNostrDbAddOptions (options, { appId, signEvent }) {
     mergeSource: 'local',
     signEvent
   }
+}
+
+function plainOptions (options) {
+  return options && typeof options === 'object' && !Array.isArray(options) ? options : {}
 }
 
 export function buildNostrDbReadOptions (options, { appId }) {
@@ -82,20 +92,56 @@ export function createNostrDbMaintenanceSignEvent ({ askVault, pubkey }) {
   }
 }
 
-export function createNostrDbLocalCopyDecrypt ({ askVault, pubkey }) {
+export function createNostrDbPersonalCopyDecrypt ({ askVault, pubkey }) {
   return async event => {
+    const kind = personalCopyEncryptionKind(event)
+    if (kind === null) throw new Error('PERSONAL_COPY_KIND_REQUIRED')
     const { payload, error } = await askVault({
       code: 'NIP07',
       payload: {
         pubkey,
         ns: [''],
         method: 'nip44v3_decrypt',
-        params: [pubkey, String(LOCAL_COPY_KIND), '', event?.content],
-        context: NOSTRDB_LOCAL_COPY_CONTEXT
+        params: [pubkey, String(kind), '', event?.content],
+        context: NOSTRDB_PERSONAL_COPY_CONTEXT
       }
     }, { timeout: 120000 })
     if (error) throw error
     return textDecoder.decode(base64ToBytes(String(payload ?? '')))
+  }
+}
+
+export function createNostrDbPersonalCopyEncrypt ({ askVault, pubkey }) {
+  return async (kind, plaintext) => {
+    const { payload, error } = await askVault({
+      code: 'NIP07',
+      payload: {
+        pubkey,
+        ns: [''],
+        method: 'nip44v3_encrypt',
+        params: [pubkey, String(kind), '', plaintextBase64(plaintext)],
+        context: NOSTRDB_PERSONAL_COPY_CONTEXT
+      }
+    }, { timeout: 120000 })
+    if (error) throw error
+    return payload
+  }
+}
+
+export function createNostrDbPersonalCopyObfuscate ({ askVault, pubkey }) {
+  return async (value, kind, scope) => {
+    const { payload, error } = await askVault({
+      code: 'NIP07',
+      payload: {
+        pubkey,
+        ns: [''],
+        method: 'obfuscate',
+        params: [value, String(kind), scope],
+        context: NOSTRDB_PERSONAL_COPY_CONTEXT
+      }
+    }, { timeout: 120000 })
+    if (error) throw error
+    return payload
   }
 }
 
@@ -140,7 +186,7 @@ export function explicitFilterKinds (filterOrFilters) {
 
 function explicitLocalCopyKinds (filterOrFilters, explicitKinds) {
   if (explicitKinds === null) return null
-  if (!explicitKinds.includes(LOCAL_COPY_KIND)) return []
+  if (!explicitKinds.includes(PERSONAL_COPY_KIND)) return []
 
   const filters = Array.isArray(filterOrFilters) ? filterOrFilters : [filterOrFilters]
   const kinds = new Set()
@@ -148,7 +194,7 @@ function explicitLocalCopyKinds (filterOrFilters, explicitKinds) {
   for (const filter of filters) {
     if (!filter || typeof filter !== 'object' || Array.isArray(filter)) return null
     const filterKinds = normalizeFilterKinds(filter.kinds)
-    if (filterKinds === null || !filterKinds.includes(LOCAL_COPY_KIND)) continue
+    if (filterKinds === null || !filterKinds.includes(PERSONAL_COPY_KIND)) continue
     if (!Object.prototype.hasOwnProperty.call(filter, '#k')) return null
 
     const filterKTags = normalizeFilterEventKinds(filter['#k'])
@@ -169,15 +215,15 @@ function explicitPermissionInfoFromParams (params = []) {
 }
 
 function normalExplicitKinds (explicitKinds) {
-  return (explicitKinds ?? []).filter(kind => kind !== LOCAL_COPY_KIND)
+  return (explicitKinds ?? []).filter(kind => kind !== PERSONAL_COPY_KIND)
 }
 
 function mayIncludeNormalEvents (explicitKinds) {
-  return explicitKinds === null || explicitKinds.some(kind => kind !== LOCAL_COPY_KIND)
+  return explicitKinds === null || explicitKinds.some(kind => kind !== PERSONAL_COPY_KIND)
 }
 
 function mayIncludeLocalCopies (explicitKinds) {
-  return explicitKinds === null || explicitKinds.includes(LOCAL_COPY_KIND)
+  return explicitKinds === null || explicitKinds.includes(PERSONAL_COPY_KIND)
 }
 
 function resultKind (result) {
@@ -186,20 +232,14 @@ function resultKind (result) {
     : null
 }
 
-function localCopyInnerKinds (result) {
-  if (!Array.isArray(result?.tags)) return []
-
-  return [...new Set(result.tags
-    .filter(tag => Array.isArray(tag) && tag[0] === 'k')
-    .map(tag => normalizeEventKind(tag[1]))
-    .filter(kind => kind !== null))]
-    .sort((a, b) => a - b)
+function personalCopyInnerKinds (result) {
+  return personalCopyHintKinds(result)
 }
 
 function resultPermissionRequests (result, { mayIncludeNormal, mayIncludePersonal }) {
   const kind = resultKind(result)
-  if (kind === LOCAL_COPY_KIND) {
-    const innerKinds = localCopyInnerKinds(result)
+  if (kind === PERSONAL_COPY_KIND) {
+    const innerKinds = personalCopyInnerKinds(result)
     return innerKinds.length > 0
       ? innerKinds.map(kind => eventAccessPersonalPermission(kind))
       : [eventAccessPersonalPermission(BROAD_EVENT_KIND)]
@@ -291,15 +331,50 @@ export function createNostrDbSubscriptionAuthorizer ({ app, requestPermission, p
   }
 }
 
-export async function runNostrDbMethod ({ db, method, params = [], appId, signEvent, requestPermission, app }) {
+export async function runNostrDbMethod ({
+  db,
+  method,
+  params = [],
+  appId,
+  signEvent,
+  requestPermission,
+  app,
+  personalCopyEncrypt,
+  personalCopyObfuscate
+}) {
   if (!NOSTRDB_ONE_SHOT_METHODS.includes(method)) throw new Error(`Unknown nostrdb method ${method}`)
   const args = Array.isArray(params) ? params : []
   const permissionContext = { app, requestPermission, params: args }
 
   if (method === 'add') {
     const [event, options] = args
-    await requestPermissions(eventAccessPermissionRequestsForEvent(event), permissionContext)
+    if (isPersonalCopyEvent(event)) {
+      const kinds = personalCopyHintKinds(event)
+      await requestPersonalKinds(kinds.length ? kinds : [BROAD_EVENT_KIND], permissionContext)
+    } else {
+      await requestPermissions(eventAccessPermissionRequestsForEvent(event), permissionContext)
+    }
     return db.add(event, buildNostrDbAddOptions(options, { appId, signEvent }))
+  }
+
+  if (method === 'addPersonalCopy') {
+    const [originalEvent, options] = args
+    const innerKind = normalizeEventKind(originalEvent?.kind)
+    if (innerKind === null) throw new Error('INVALID_PERSONAL_COPY_INNER_EVENT')
+    await requestPersonalKinds([innerKind], permissionContext)
+
+    const normalizedOptions = plainOptions(options)
+    const { context = '', ...addOptions } = normalizedOptions
+    const unsigned = await buildPersonalCopyUnsignedEvent({
+      originalEvent,
+      ownerPubkey: db.ownerPubkey,
+      context,
+      encrypt: personalCopyEncrypt,
+      obfuscate: personalCopyObfuscate
+    })
+    const event = await signEvent(unsigned)
+    const result = await db.add(event, buildNostrDbAddOptions(addOptions, { appId, signEvent }))
+    return { event, result }
   }
 
   if (method === 'query') {

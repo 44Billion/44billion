@@ -75,7 +75,8 @@ function injectNip07 (promise) {
     'nip44v3.decrypt',
     'nip44v3.encryptDoubleDH',
     'nip44v3.decryptDoubleDH',
-    'doubleSignEvent'
+    'doubleSignEvent',
+    'obfuscate'
   ]
   const nip46MethodAliases = {
     'nip44v3.encryptDoubleDH': 'nip44v3_encrypt_double_dh',

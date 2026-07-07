@@ -13,7 +13,7 @@ describe('nostrdb app-page client bridge', () => {
       tell: () => {}
     })
 
-    assert.deepEqual(Object.keys(nostrdb).sort(), ['add', 'count', 'query', 'subscribe', 'supports'])
+    assert.deepEqual(Object.keys(nostrdb).sort(), ['add', 'addPersonalCopy', 'count', 'query', 'subscribe', 'supports'])
   })
 
   it('sends one-shot methods over NOSTRDB', async () => {
@@ -29,6 +29,7 @@ describe('nostrdb app-page client bridge', () => {
     })
 
     assert.equal(await nostrdb.add({ id: 'event' }, { appId: 'ignored' }), 'ok')
+    assert.equal(await nostrdb.addPersonalCopy({ kind: 1 }, { context: 'dm:alice' }), 'ok')
     assert.deepEqual(calls, [{
       port: 'port',
       message: {
@@ -36,6 +37,16 @@ describe('nostrdb app-page client bridge', () => {
         payload: {
           method: 'add',
           params: [{ id: 'event' }, { appId: 'ignored' }]
+        }
+      },
+      options: { timeout: 123 }
+    }, {
+      port: 'port',
+      message: {
+        code: 'NOSTRDB',
+        payload: {
+          method: 'addPersonalCopy',
+          params: [{ kind: 1 }, { context: 'dm:alice' }]
         }
       },
       options: { timeout: 123 }

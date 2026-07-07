@@ -1,6 +1,9 @@
 import { ask as defaultAsk, reply as defaultReply } from '../index.js'
-import { eventKinds } from '#constants/event.js'
 import { base64ToBytes } from '#helpers/base64.js'
+import {
+  personalCopyEncryptionKind,
+  plaintextBase64
+} from '#helpers/personal-copy.js'
 import { nostrDbStreamDonePayload } from '../nostrdb-protocol.js'
 import {
   deleteNostrDb as defaultDeleteNostrDb,
@@ -20,7 +23,6 @@ const VAULT_APP = { id: 'ez-vault', name: 'Vault' }
 const HEX64 = /^[0-9a-f]{64}$/i
 const APP_EXPORT_PAGE_LIMIT = 200
 const APP_EXPORT_PAGE_MAX = 999
-const LOCAL_COPY_KIND = eventKinds.LOCAL_COPY ?? 1006
 const textDecoder = new TextDecoder()
 
 function isPlainObject (value) {
@@ -105,13 +107,15 @@ export function createTrustedVaultNostrDbSignEvent ({
   }
 }
 
-export function createTrustedVaultNostrDbLocalCopyDecrypt ({
+export function createTrustedVaultNostrDbPersonalCopyDecrypt ({
   vaultPort,
   ownerPubkey,
   getVaultPort = () => vaultPort,
   ask = defaultAsk
 }) {
   return async event => {
+    const kind = personalCopyEncryptionKind(event)
+    if (kind === null) throw new Error('PERSONAL_COPY_KIND_REQUIRED')
     const port = getVaultPort()
     if (!port) throw new Error('Vault not connected')
     const { payload, error } = await ask(port, {
@@ -120,12 +124,60 @@ export function createTrustedVaultNostrDbLocalCopyDecrypt ({
         pubkey: ownerPubkey,
         ns: [''],
         method: 'nip44v3_decrypt',
-        params: [ownerPubkey, String(LOCAL_COPY_KIND), '', event?.content],
-        context: 'nostrdb_local_copy'
+        params: [ownerPubkey, String(kind), '', event?.content],
+        context: 'nostrdb_personal_copy'
       }
     }, { timeout: 120000 })
     if (error) throw error
     return textDecoder.decode(base64ToBytes(String(payload ?? '')))
+  }
+}
+
+export function createTrustedVaultNostrDbPersonalCopyEncrypt ({
+  vaultPort,
+  ownerPubkey,
+  getVaultPort = () => vaultPort,
+  ask = defaultAsk
+}) {
+  return async (kind, plaintext) => {
+    const port = getVaultPort()
+    if (!port) throw new Error('Vault not connected')
+    const { payload, error } = await ask(port, {
+      code: 'NIP07',
+      payload: {
+        pubkey: ownerPubkey,
+        ns: [''],
+        method: 'nip44v3_encrypt',
+        params: [ownerPubkey, String(kind), '', plaintextBase64(plaintext)],
+        context: 'nostrdb_personal_copy'
+      }
+    }, { timeout: 120000 })
+    if (error) throw error
+    return payload
+  }
+}
+
+export function createTrustedVaultNostrDbPersonalCopyObfuscate ({
+  vaultPort,
+  ownerPubkey,
+  getVaultPort = () => vaultPort,
+  ask = defaultAsk
+}) {
+  return async (value, kind, scope) => {
+    const port = getVaultPort()
+    if (!port) throw new Error('Vault not connected')
+    const { payload, error } = await ask(port, {
+      code: 'NIP07',
+      payload: {
+        pubkey: ownerPubkey,
+        ns: [''],
+        method: 'obfuscate',
+        params: [value, String(kind), scope],
+        context: 'nostrdb_personal_copy'
+      }
+    }, { timeout: 120000 })
+    if (error) throw error
+    return payload
   }
 }
 
@@ -147,7 +199,19 @@ export async function runTrustedVaultNostrDbMethod ({
     ...(getVaultPort ? { getVaultPort } : {}),
     ask
   })
-  const localCopyDecrypt = createTrustedVaultNostrDbLocalCopyDecrypt({
+  const personalCopyDecrypt = createTrustedVaultNostrDbPersonalCopyDecrypt({
+    vaultPort,
+    ownerPubkey: pubkey,
+    ...(getVaultPort ? { getVaultPort } : {}),
+    ask
+  })
+  const personalCopyEncrypt = createTrustedVaultNostrDbPersonalCopyEncrypt({
+    vaultPort,
+    ownerPubkey: pubkey,
+    ...(getVaultPort ? { getVaultPort } : {}),
+    ask
+  })
+  const personalCopyObfuscate = createTrustedVaultNostrDbPersonalCopyObfuscate({
     vaultPort,
     ownerPubkey: pubkey,
     ...(getVaultPort ? { getVaultPort } : {}),
@@ -155,7 +219,9 @@ export async function runTrustedVaultNostrDbMethod ({
   })
   const db = getNostrDb(pubkey, {
     ...nostrDbMaintenanceOptions(maintenanceSignEvent),
-    localCopyDecrypt
+    personalCopyDecrypt,
+    personalCopyEncrypt,
+    personalCopyObfuscate
   })
   const signEvent = createTrustedVaultNostrDbSignEvent({
     vaultPort,
@@ -218,7 +284,9 @@ export async function runTrustedVaultNostrDbMethod ({
     db,
     method,
     params,
-    signEvent
+    signEvent,
+    personalCopyEncrypt,
+    personalCopyObfuscate
   })
 }
 
@@ -259,7 +327,7 @@ export async function streamTrustedVaultNostrDbSubscription (e, {
       ...(getVaultPort ? { getVaultPort } : {}),
       ask
     })
-    const localCopyDecrypt = createTrustedVaultNostrDbLocalCopyDecrypt({
+    const personalCopyDecrypt = createTrustedVaultNostrDbPersonalCopyDecrypt({
       vaultPort,
       ownerPubkey: pubkey,
       ...(getVaultPort ? { getVaultPort } : {}),
@@ -267,7 +335,7 @@ export async function streamTrustedVaultNostrDbSubscription (e, {
     })
     const db = getNostrDb(pubkey, {
       ...nostrDbMaintenanceOptions(maintenanceSignEvent),
-      localCopyDecrypt
+      personalCopyDecrypt
     })
     subscription = { iterator: null, cancelled: false }
     subscriptions.set(subscriptionId, subscription)

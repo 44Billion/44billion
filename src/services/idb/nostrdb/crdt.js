@@ -96,10 +96,10 @@ function normalizeCrdtOptions ({
 }
 
 function normalizeTagIdentity (tagIdentity) {
-  const fallback = { default: [0, 1], byName: new Map() }
+  const fallback = { default: [0, 1], byName: new Map([['imkc', [0]]]) }
   if (!tagIdentity || typeof tagIdentity !== 'object' || Array.isArray(tagIdentity)) return fallback
 
-  const byName = new Map()
+  const byName = new Map(fallback.byName)
   if (tagIdentity.byName && typeof tagIdentity.byName === 'object' && !Array.isArray(tagIdentity.byName)) {
     for (const [name, indexes] of Object.entries(tagIdentity.byName)) {
       const normalized = normalizeIndexList(indexes)
