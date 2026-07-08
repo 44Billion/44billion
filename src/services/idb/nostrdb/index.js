@@ -269,7 +269,8 @@ export class NostrDb {
     event = await normalizePersonalCopyForAdd(event, {
       decrypt: this.personalCopyDecrypt,
       obfuscate: this.personalCopyObfuscate,
-      signEvent
+      signEvent,
+      ownerPubkey: this.ownerPubkey
     })
     if (event === null) {
       return this.reportAddResult('add', event, addResult('invalid'))
@@ -363,7 +364,8 @@ export class NostrDb {
             decrypt: this.personalCopyDecrypt,
             encrypt: this.personalCopyEncrypt,
             obfuscate: this.personalCopyObfuscate,
-            crdtOptions: mergeOptions
+            crdtOptions: mergeOptions,
+            ownerPubkey: this.ownerPubkey
           })
         : buildCrdtMergeTemplate(event, base?.event, mergeOptions)
       if (!template) return null

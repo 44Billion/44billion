@@ -1663,7 +1663,7 @@ describe('nostrdb', () => {
     const plaintextByCiphertext = new Map()
     const encryptedPlaintexts = new Map()
     const db = getNostrDb(owner, {
-      personalCopyDecrypt: async wrapper => plaintextByCiphertext.get(wrapper.content) ?? '{}',
+      personalCopyDecrypt: async wrapper => plaintextByCiphertext.get(wrapper.content) ?? encryptedPlaintexts.get(wrapper.content) ?? '{}',
       personalCopyEncrypt: async (kind, plaintext) => {
         const ciphertext = `cipher-merged-${kind}`
         encryptedPlaintexts.set(ciphertext, plaintext)
@@ -1673,7 +1673,7 @@ describe('nostrdb', () => {
     })
     const oldInner = event({
       id: hexId(9901),
-      pubkey: A,
+      pubkey: owner,
       kind: 30023,
       created_at: 10,
       tags: [['d', 'post'], ['title', 'Old title']],
@@ -1681,7 +1681,7 @@ describe('nostrdb', () => {
     })
     const newInner = event({
       id: hexId(9902),
-      pubkey: A,
+      pubkey: owner,
       kind: 30023,
       created_at: 20,
       tags: [['d', 'post'], ['title', 'New title']],
@@ -1716,10 +1716,156 @@ describe('nostrdb', () => {
     assert.equal(stored.content, 'cipher-merged-30023')
     const mergedInner = JSON.parse(encryptedPlaintexts.get(stored.content))
     assert.equal(mergedInner.kind, 30023)
-    assert.equal(mergedInner.pubkey, A)
-    assert.equal(mergedInner.content, 'new body')
     assert.equal('id' in mergedInner, false)
+    assert.equal('pubkey' in mergedInner, false)
     assert.equal('sig' in mergedInner, false)
+    assert.equal(mergedInner.content, 'new body')
+    assert.deepEqual(plainTags(mergedInner.tags).filter(tag => tag[0] === 'title'), [['title', 'New title']])
+    assert.equal(stored.tags.some(tag => tag[0] === 'o' && tag[1] === 'obf:1006:#d:post'), true)
+    assert.equal(stored.tags.some(tag => tag[0] === 'o' && tag[1].startsWith('obf:1006:.id:')), false)
+    assert.equal(stored.tags.some(tag => tag[0] === 'o' && tag[1].startsWith('obf:1006:.pubkey:')), false)
+  })
+
+  it('does not CRDT-merge third-party personal copy inner events', async () => {
+    const owner = hexId(30993)
+    const plaintextByCiphertext = new Map()
+    let encryptCalls = 0
+    let signCalls = 0
+    const db = getNostrDb(owner, {
+      personalCopyDecrypt: async wrapper => plaintextByCiphertext.get(wrapper.content) ?? '{}',
+      personalCopyEncrypt: async () => {
+        encryptCalls++
+        return 'unexpected-cipher'
+      },
+      personalCopyObfuscate: async (value, kind, scope) => `obf:${kind}:${scope}:${value}`
+    })
+    const oldInner = event({
+      id: hexId(9931),
+      pubkey: A,
+      kind: 30023,
+      created_at: 10,
+      tags: [['d', 'post'], ['title', 'Old title']],
+      content: 'old body'
+    })
+    const newInner = event({
+      id: hexId(9932),
+      pubkey: A,
+      kind: 30023,
+      created_at: 20,
+      tags: [['d', 'post'], ['title', 'New title']],
+      content: 'new body'
+    })
+    const oldWrapper = event({
+      id: hexId(9933),
+      pubkey: owner,
+      kind: eventKinds.PERSONAL_COPY,
+      created_at: 10,
+      tags: [
+        ['k', '30023'],
+        ['o', 'obf:1006:#d:post'],
+        ['o', `obf:1006:.id:${oldInner.id}`],
+        ['o', `obf:1006:.pubkey:${oldInner.pubkey}`],
+        ['d', 'context-address'],
+        ['imkc', B, '1'.repeat(128)]
+      ],
+      content: 'cipher-old'
+    })
+    const newWrapper = event({
+      id: hexId(9934),
+      pubkey: owner,
+      kind: eventKinds.PERSONAL_COPY,
+      created_at: 20,
+      tags: [
+        ['k', '30023'],
+        ['o', 'obf:1006:#d:post'],
+        ['o', `obf:1006:.id:${newInner.id}`],
+        ['o', `obf:1006:.pubkey:${newInner.pubkey}`],
+        ['d', 'context-address'],
+        ['imkc', C, '2'.repeat(128)]
+      ],
+      content: 'cipher-new'
+    })
+    const signEvent = template => {
+      signCalls++
+      return signedFromTemplate(template, { id: hexId(9935), pubkey: owner })
+    }
+
+    plaintextByCiphertext.set('cipher-old', JSON.stringify(oldInner))
+    plaintextByCiphertext.set('cipher-new', JSON.stringify(newInner))
+
+    assertAddOk(await db.add(oldWrapper, { signEvent }))
+    assertAddOk(await db.add(newWrapper, { signEvent }), { code: 'replaced', stored: true, published: true })
+
+    const [stored] = await queryResults(db, { kinds: [eventKinds.PERSONAL_COPY] })
+    assert.equal(stored.id, newWrapper.id)
+    assert.equal(stored.content, 'cipher-new')
+    assert.equal(encryptCalls, 0)
+    assert.equal(signCalls, 0)
+  })
+
+  it('treats missing personal copy inner pubkey as the wrapper pubkey for self-owned merges', async () => {
+    const owner = hexId(30994)
+    const plaintextByCiphertext = new Map()
+    const encryptedPlaintexts = new Map()
+    const db = getNostrDb(owner, {
+      personalCopyDecrypt: async wrapper => plaintextByCiphertext.get(wrapper.content) ?? encryptedPlaintexts.get(wrapper.content) ?? '{}',
+      personalCopyEncrypt: async (kind, plaintext) => {
+        const ciphertext = `cipher-missing-pubkey-${kind}`
+        encryptedPlaintexts.set(ciphertext, plaintext)
+        return ciphertext
+      },
+      personalCopyObfuscate: async (value, kind, scope) => `obf:${kind}:${scope}:${value}`
+    })
+    const oldInner = event({
+      id: hexId(9941),
+      pubkey: owner,
+      kind: 30023,
+      created_at: 10,
+      tags: [['d', 'post'], ['title', 'Old title']],
+      content: 'old body'
+    })
+    const newInner = event({
+      id: hexId(9942),
+      pubkey: owner,
+      kind: 30023,
+      created_at: 20,
+      tags: [['d', 'post'], ['title', 'New title']],
+      content: 'new body'
+    })
+    delete oldInner.pubkey
+    delete newInner.pubkey
+    const oldWrapper = event({
+      id: hexId(9943),
+      pubkey: owner,
+      kind: eventKinds.PERSONAL_COPY,
+      created_at: 10,
+      tags: [['k', '30023'], ['d', 'context-address'], ['imkc', B, '1'.repeat(128)]],
+      content: 'cipher-old'
+    })
+    const newWrapper = event({
+      id: hexId(9944),
+      pubkey: owner,
+      kind: eventKinds.PERSONAL_COPY,
+      created_at: 20,
+      tags: [['k', '30023'], ['d', 'context-address'], ['imkc', B, '1'.repeat(128)]],
+      content: 'cipher-new'
+    })
+    let nextId = 9945
+    const signEvent = template => signedFromTemplate(template, { id: hexId(nextId++), pubkey: owner })
+
+    plaintextByCiphertext.set('cipher-old', JSON.stringify(oldInner))
+    plaintextByCiphertext.set('cipher-new', JSON.stringify(newInner))
+
+    assertAddOk(await db.add(oldWrapper, { signEvent }))
+    assertAddOk(await db.add(newWrapper, { signEvent }), { code: 'replaced', stored: true, published: true })
+
+    const [stored] = await queryResults(db, { kinds: [eventKinds.PERSONAL_COPY] })
+    const mergedInner = JSON.parse(encryptedPlaintexts.get(stored.content))
+    assert.equal(mergedInner.kind, 30023)
+    assert.equal('id' in mergedInner, false)
+    assert.equal('pubkey' in mergedInner, false)
+    assert.equal('sig' in mergedInner, false)
+    assert.equal(mergedInner.content, 'new body')
     assert.deepEqual(plainTags(mergedInner.tags).filter(tag => tag[0] === 'title'), [['title', 'New title']])
     assert.equal(stored.tags.some(tag => tag[0] === 'o' && tag[1] === 'obf:1006:#d:post'), true)
   })

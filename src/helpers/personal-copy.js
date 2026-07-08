@@ -38,6 +38,31 @@ export function parsePersonalCopyPlaintext (event, plaintext) {
   return normalizeInnerEvent(inner)
 }
 
+export function effectivePersonalCopyInnerPubkey (innerEvent, wrapperPubkey) {
+  const pubkey = innerEvent?.pubkey
+  if (pubkey === undefined || pubkey === null || pubkey === '') {
+    return HEX64_RE.test(wrapperPubkey || '') ? wrapperPubkey : null
+  }
+  return typeof pubkey === 'string' && HEX64_RE.test(pubkey) ? pubkey : null
+}
+
+export function isSelfOwnedPersonalCopyInner ({ innerEvent, wrapperPubkey, ownerPubkey } = {}) {
+  if (!HEX64_RE.test(ownerPubkey || '') || wrapperPubkey !== ownerPubkey) return false
+  return effectivePersonalCopyInnerPubkey(innerEvent, wrapperPubkey) === ownerPubkey
+}
+
+export function canonicalPersonalCopyInner (innerEvent, { wrapperPubkey, ownerPubkey } = {}) {
+  const inner = normalizeInnerEvent(innerEvent)
+  if (!inner) return null
+  if (!isSelfOwnedPersonalCopyInner({ innerEvent: inner, wrapperPubkey, ownerPubkey })) return inner
+
+  const canonical = { ...inner }
+  delete canonical.id
+  delete canonical.pubkey
+  delete canonical.sig
+  return canonical
+}
+
 export async function buildPersonalCopyUnsignedEvent ({
   originalEvent,
   ownerPubkey,
@@ -46,7 +71,10 @@ export async function buildPersonalCopyUnsignedEvent ({
   obfuscate,
   now = () => Math.floor(Date.now() / 1000)
 }) {
-  const inner = normalizeInnerEvent(originalEvent)
+  const inner = canonicalPersonalCopyInner(originalEvent, {
+    wrapperPubkey: ownerPubkey,
+    ownerPubkey
+  })
   if (!inner) throw new Error('INVALID_PERSONAL_COPY_INNER_EVENT')
   if (!HEX64_RE.test(ownerPubkey || '')) throw new Error('PERSONAL_COPY_OWNER_REQUIRED')
   if (typeof encrypt !== 'function') throw new Error('PERSONAL_COPY_ENCRYPT_REQUIRED')
@@ -57,10 +85,14 @@ export async function buildPersonalCopyUnsignedEvent ({
   const content = await encrypt(inner.kind, plaintext)
   const tags = await buildPersonalCopyTags({
     innerEvent: inner,
+    wrapperPubkey: ownerPubkey,
     context: normalizedContext,
     obfuscate
   })
 
+  // This placeholder declares that addPersonalCopy() wants a content-key proof.
+  // The injected NostrDB signer uses it to choose double_sign_event, and the
+  // vault replaces/fills the tag while signing the outer wrapper.
   tags.push(['imkc'])
 
   return {
@@ -71,7 +103,7 @@ export async function buildPersonalCopyUnsignedEvent ({
   }
 }
 
-export async function buildPersonalCopyTags ({ innerEvent, context = '', obfuscate }) {
+export async function buildPersonalCopyTags ({ innerEvent, wrapperPubkey, context = '', obfuscate }) {
   const inner = normalizeInnerEvent(innerEvent)
   if (!inner) throw new Error('INVALID_PERSONAL_COPY_INNER_EVENT')
   if (typeof obfuscate !== 'function') throw new Error('PERSONAL_COPY_OBFUSCATE_REQUIRED')
@@ -80,7 +112,7 @@ export async function buildPersonalCopyTags ({ innerEvent, context = '', obfusca
     ['k', String(inner.kind)],
     ['c', await obfuscate(String(context ?? ''), PERSONAL_COPY_KIND, '')]
   ]
-  const address = personalCopyInnerAddress(inner)
+  const address = personalCopyInnerAddress(inner, { wrapperPubkey })
   if (address !== null) {
     tags.push(['d', await obfuscate(personalCopyDValue(context, address), PERSONAL_COPY_KIND, '#d')])
   }
@@ -115,9 +147,9 @@ export function personalCopyDValue (context, address) {
   return JSON.stringify(['personal-copy-d-v1', String(context ?? ''), String(address ?? '')])
 }
 
-export function personalCopyInnerAddress (event) {
+export function personalCopyInnerAddress (event, { wrapperPubkey } = {}) {
   const kind = normalizeEventKind(event?.kind)
-  const pubkey = typeof event?.pubkey === 'string' && HEX64_RE.test(event.pubkey) ? event.pubkey : null
+  const pubkey = effectivePersonalCopyInnerPubkey(event, wrapperPubkey)
   if (kind === null || !pubkey || !isEditableKind(kind)) return null
   const d = getDTag(event) ?? ''
   return `${kind}:${pubkey}:${d}`

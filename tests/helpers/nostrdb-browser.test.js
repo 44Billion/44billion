@@ -102,6 +102,7 @@ describe('nostrdb browser bridge helpers', () => {
     }
     const calls = []
     let added
+    let encryptedInner
     const db = {
       ownerPubkey: owner,
       async add (event, options) {
@@ -126,7 +127,8 @@ describe('nostrdb browser bridge helpers', () => {
         return { ...template, ...signed }
       },
       personalCopyEncrypt: async (kind, plaintext) => {
-        calls.push(['encrypt', kind, JSON.parse(plaintext).content])
+        encryptedInner = JSON.parse(plaintext)
+        calls.push(['encrypt', kind, encryptedInner.content])
         return `cipher-${kind}`
       },
       personalCopyObfuscate: async (value, kind, scope) => `obf:${kind}:${scope}:${value}`,
@@ -142,6 +144,9 @@ describe('nostrdb browser bridge helpers', () => {
     ])
     assert.equal(result.event.id, signed.id)
     assert.deepEqual(result.result, { ok: true, code: 'stored' })
+    assert.equal(encryptedInner.id, original.id)
+    assert.equal(encryptedInner.pubkey, original.pubkey)
+    assert.equal(encryptedInner.sig, original.sig)
     assert.equal(added.event.content, 'cipher-1')
     assert.equal(added.event.created_at, 123)
     assert.deepEqual(added.event.tags.slice(0, 4), [
@@ -152,6 +157,52 @@ describe('nostrdb browser bridge helpers', () => {
     ])
     assert.equal(added.options.appId, 'real-app')
     assert.equal(added.options.mergeSource, 'local')
+  })
+
+  it('strips redundant self-owned inner fields when building personal copies', async () => {
+    const owner = 'f'.repeat(64)
+    const original = {
+      id: 'a'.repeat(64),
+      pubkey: owner,
+      kind: 30023,
+      created_at: 123,
+      tags: [['d', 'post'], ['title', 'Secret post']],
+      content: 'secret post',
+      sig: 'd'.repeat(128)
+    }
+    let encryptedInner
+    let added
+    const db = {
+      ownerPubkey: owner,
+      async add (event) {
+        added = event
+        return { ok: true, code: 'stored' }
+      }
+    }
+
+    await runNostrDbMethod({
+      db,
+      method: 'addPersonalCopy',
+      params: [original, { context: 'dm:alice' }],
+      appId: 'real-app',
+      signEvent: async template => ({ ...template, id: 'e'.repeat(64), pubkey: owner, sig: '1'.repeat(128) }),
+      personalCopyEncrypt: async (kind, plaintext) => {
+        encryptedInner = JSON.parse(plaintext)
+        return `cipher-${kind}`
+      },
+      personalCopyObfuscate: async (value, kind, scope) => `obf:${kind}:${scope}:${value}`,
+      requestPermission: async () => {},
+      app: { id: 'app' }
+    })
+
+    assert.equal('id' in encryptedInner, false)
+    assert.equal('pubkey' in encryptedInner, false)
+    assert.equal('sig' in encryptedInner, false)
+    assert.equal(encryptedInner.kind, 30023)
+    assert.equal(encryptedInner.content, 'secret post')
+    assert.equal(added.tags.some(tag => tag[0] === 'o' && tag[1] === 'obf:1006:#d:post'), true)
+    assert.equal(added.tags.some(tag => tag[0] === 'o' && tag[1].startsWith('obf:1006:.id:')), false)
+    assert.equal(added.tags.some(tag => tag[0] === 'o' && tag[1].startsWith('obf:1006:.pubkey:')), false)
   })
 
   it('delegates query, count, and supports with access permissions', async () => {
@@ -385,9 +436,11 @@ describe('nostrdb browser bridge helpers', () => {
     assert.equal(added, false)
   })
 
-  it('selects regular or double signing from the template imkc tag', async () => {
+  it('selects regular or double signing from the template shape', async () => {
     assert.equal(nostrDbSignMethodForTemplate({ tags: [] }), 'sign_event')
     assert.equal(nostrDbSignMethodForTemplate({ kind: 5, tags: [['e', 'target']] }), 'sign_event')
+    assert.equal(nostrDbSignMethodForTemplate({ kind: 1006, tags: [['k', '1']] }), 'sign_event')
+    assert.equal(nostrDbSignMethodForTemplate({ kind: 1006, tags: [['k', '1'], ['imkc']] }), 'double_sign_event')
     assert.equal(nostrDbSignMethodForTemplate({ tags: [['imkc', 'pubkey', 'proof']] }), 'double_sign_event')
   })
 
@@ -407,11 +460,13 @@ describe('nostrdb browser bridge helpers', () => {
 
     assert.deepEqual(await signEvent({ kind: 1, tags: [] }), { id: 'sign_event:signed' })
     assert.deepEqual(await signEvent({ kind: 1, tags: [['imkc', 'old']] }), { id: 'double_sign_event:signed' })
-    assert.equal(calls.length, 2)
-    assert.deepEqual(calls.map(call => call.request.method), ['sign_event', 'double_sign_event'])
-    assert.deepEqual(calls.map(call => call.request.context), ['nostrdb_merge', 'nostrdb_merge'])
+    assert.deepEqual(await signEvent({ kind: 1006, tags: [['k', '1']] }), { id: 'sign_event:signed' })
+    assert.deepEqual(await signEvent({ kind: 1006, tags: [['k', '1'], ['imkc']] }), { id: 'double_sign_event:signed' })
+    assert.equal(calls.length, 4)
+    assert.deepEqual(calls.map(call => call.request.method), ['sign_event', 'double_sign_event', 'sign_event', 'double_sign_event'])
+    assert.deepEqual(calls.map(call => call.request.context), ['nostrdb_merge', 'nostrdb_merge', 'nostrdb_merge', 'nostrdb_merge'])
     assert.equal(calls.every(call => !('requestPermission' in call.options)), true)
-    assert.deepEqual(calls.map(call => call.options.app.napp), ['+app', '+app'])
+    assert.deepEqual(calls.map(call => call.options.app.napp), ['+app', '+app', '+app', '+app'])
   })
 
   it('creates a permissionless vault personal-copy decrypt wrapper from k tag', async () => {

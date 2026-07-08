@@ -1,6 +1,8 @@
 import {
   buildPersonalCopyMirrorTags,
+  canonicalPersonalCopyInner,
   isPersonalCopyEvent,
+  isSelfOwnedPersonalCopyInner,
   parsePersonalCopyPlaintext,
   personalCopyInnerAddress,
   stripPersonalCopyDerivedTags
@@ -11,13 +13,18 @@ import { buildCrdtMergeTemplate } from './crdt.js'
 export async function normalizePersonalCopyForAdd (event, {
   decrypt,
   obfuscate,
-  signEvent
+  signEvent,
+  ownerPubkey
 } = {}) {
   if (!isPersonalCopyEvent(event)) return event
   if (typeof decrypt !== 'function') return event
 
-  const inner = await decryptPersonalCopyInner(event, decrypt)
-  if (!inner) return null
+  const record = await decryptPersonalCopyRecord(event, decrypt)
+  if (!record) return null
+  const inner = canonicalPersonalCopyInner(record.inner, {
+    wrapperPubkey: event.pubkey,
+    ownerPubkey
+  }) ?? record.inner
 
   if (typeof obfuscate !== 'function' || typeof signEvent !== 'function') return event
 
@@ -38,45 +45,76 @@ export async function buildPersonalCopyMergeTemplate (incoming, existing, {
   decrypt,
   encrypt,
   obfuscate,
-  crdtOptions
+  crdtOptions,
+  ownerPubkey
 } = {}) {
   if (typeof obfuscate !== 'function') return null
+  if (!hasTag(incoming, 'd')) return null
 
-  const incomingInner = await decryptPersonalCopyInner(incoming, decrypt)
-  if (!incomingInner) return null
+  const incomingRecord = await decryptPersonalCopyRecord(incoming, decrypt)
+  if (!incomingRecord) return null
+  if (!isSelfOwnedPersonalCopyInner({
+    innerEvent: incomingRecord.inner,
+    wrapperPubkey: incoming.pubkey,
+    ownerPubkey
+  })) return null
 
-  const existingInner = existing ? await decryptPersonalCopyInner(existing, decrypt) : null
-  if (existing && !existingInner) return null
+  const incomingInner = canonicalPersonalCopyInner(incomingRecord.inner, {
+    wrapperPubkey: incoming.pubkey,
+    ownerPubkey
+  })
+  const incomingAddress = personalCopyInnerAddress(incomingInner, { wrapperPubkey: incoming.pubkey })
+  if (incomingAddress === null) return null
+
+  const existingRecord = existing ? await decryptPersonalCopyRecord(existing, decrypt) : null
+  if (existing && !existingRecord) return null
 
   let mergedInner = incomingInner
-  let content = incoming.content
-  if (existingInner) {
-    const incomingAddress = personalCopyInnerAddress(incomingInner)
-    const existingAddress = personalCopyInnerAddress(existingInner)
-    if (incomingAddress === null || incomingAddress !== existingAddress) return null
+  let content = await contentForPlaintext({
+    plaintext: JSON.stringify(incomingInner),
+    incomingRecord,
+    existingRecord,
+    encrypt,
+    kind: incomingInner.kind
+  })
+  if (content === null) return null
 
-    const incomingPlaintext = JSON.stringify(stripEventSignature(incomingInner))
-    const existingPlaintext = JSON.stringify(stripEventSignature(existingInner))
+  if (existingRecord) {
+    if (!hasTag(existing, 'd')) return null
+    if (!isSelfOwnedPersonalCopyInner({
+      innerEvent: existingRecord.inner,
+      wrapperPubkey: existing.pubkey,
+      ownerPubkey
+    })) return null
+
+    const existingInner = canonicalPersonalCopyInner(existingRecord.inner, {
+      wrapperPubkey: existing.pubkey,
+      ownerPubkey
+    })
+    const existingAddress = personalCopyInnerAddress(existingInner, { wrapperPubkey: existing.pubkey })
+    if (incomingAddress !== existingAddress) return null
+
+    const incomingPlaintext = JSON.stringify(incomingInner)
+    const existingPlaintext = JSON.stringify(existingInner)
     if (incomingPlaintext === existingPlaintext && samePersonalCopyOuterMetadata(incoming, existing)) {
       return null
     } else {
       mergedInner = buildCrdtMergeTemplate(
-        stripEventSignature(incomingInner),
-        stripEventSignature(existingInner),
+        incomingInner,
+        existingInner,
         crdtOptions
       )
       if (!mergedInner) return null
 
       const mergedPlaintext = JSON.stringify(mergedInner)
-      if (mergedPlaintext === incomingPlaintext) {
-        content = incoming.content
-      } else if (mergedPlaintext === existingPlaintext) {
-        content = existing.content
-      } else if (typeof encrypt === 'function') {
-        content = await encrypt(mergedInner.kind, mergedPlaintext)
-      } else {
-        return null
-      }
+      content = await contentForPlaintext({
+        plaintext: mergedPlaintext,
+        incomingRecord,
+        existingRecord,
+        encrypt,
+        kind: mergedInner.kind
+      })
+      if (content === null) return null
     }
   }
 
@@ -104,19 +142,32 @@ export async function buildPersonalCopyMergeTemplate (incoming, existing, {
   }
 }
 
-async function decryptPersonalCopyInner (event, decrypt) {
+async function decryptPersonalCopyRecord (event, decrypt) {
   if (typeof decrypt !== 'function') return null
   try {
-    return parsePersonalCopyPlaintext(event, await decrypt(event))
+    const plaintext = await decrypt(event)
+    const inner = parsePersonalCopyPlaintext(event, plaintext)
+    return inner ? { event, plaintext, inner } : null
   } catch {
     return null
   }
 }
 
-function stripEventSignature (event) {
-  if (!event || typeof event !== 'object') return event
-  const { id, sig, ...rest } = event
-  return rest
+async function contentForPlaintext ({
+  plaintext,
+  incomingRecord,
+  existingRecord,
+  encrypt,
+  kind
+}) {
+  if (incomingRecord?.plaintext === plaintext) return incomingRecord.event.content
+  if (existingRecord?.plaintext === plaintext) return existingRecord.event.content
+  if (typeof encrypt !== 'function') return null
+  return encrypt(kind, plaintext)
+}
+
+function hasTag (event, name) {
+  return Array.isArray(event?.tags) && event.tags.some(tag => Array.isArray(tag) && tag[0] === name)
 }
 
 function samePersonalCopyOuterMetadata (a, b) {
