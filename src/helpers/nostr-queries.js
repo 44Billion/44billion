@@ -1,4 +1,5 @@
-import nostrRelays, { seedRelays, nappRelays } from '#services/nostr-relays.js'
+import { relayPool as nostrRelays, seedRelays } from 'libp2r2p/relay'
+import { nappRelays } from '#config/relays.js'
 import { shouldIncludeNappRelays } from '#helpers/app.js'
 import { isValidRelayUrl } from '#helpers/relay.js'
 
@@ -11,7 +12,8 @@ export async function getSiteManifest (appIdObj, userRelays) {
 
   const response = await nostrRelays.getEvents(
     { authors: [appIdObj.pubkey], kinds: [appIdObj.kind], '#d': [appIdObj.dTag], limit: 1 },
-    relays
+    relays,
+    { timeoutAfterFirstEose: null }
   )
   if (!response.success) {
     throw response.errors?.[0]?.reason ||
@@ -65,7 +67,7 @@ export async function getEventsByStrategy (filter, st /*, timeoutMs = 3000 */) {
         }
 
         const promises = Object.entries(usersByRelay).map(([pickedRelay, authors]) =>
-          nostrRelays.getEventsAsap({ ...filter, authors }, [pickedRelay])
+          nostrRelays.getEvents({ ...filter, authors }, [pickedRelay])
             .then(response => response.result ?? [])
         )
 
@@ -126,7 +128,7 @@ export async function getEventsByStrategy (filter, st /*, timeoutMs = 3000 */) {
             pickedRelays.add(r)
           }
         })
-        const { result } = await nostrRelays.getEventsAsap(filter, [...pickedRelays])
+        const { result } = await nostrRelays.getEvents(filter, [...pickedRelays])
         return result
       }
     }
@@ -136,7 +138,7 @@ export async function getEventsByStrategy (filter, st /*, timeoutMs = 3000 */) {
 
 export async function getUserRelays (authors) {
   if (!Array.isArray(authors)) authors = [authors]
-  const relayListsResponse = await nostrRelays.getEventsAsap({ authors, kinds: [10002], limit: authors.length }, seedRelays)
+  const relayListsResponse = await nostrRelays.getEvents({ authors, kinds: [10002], limit: authors.length }, seedRelays)
 
   if (!relayListsResponse.success) {
     throw relayListsResponse.errors?.[0]?.reason ||

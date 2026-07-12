@@ -1,7 +1,7 @@
 import { test, describe, beforeEach, afterEach, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import FileDownloader, { getBatchIndexes } from '#services/file-downloader/index.js'
-import nostrRelays from '#services/nostr-relays.js'
+import { relayPool as nostrRelays } from 'libp2r2p/relay'
 
 describe('getBatchIndexes', () => {
   test('should pick untried indexes using round-robin step/offset', () => {

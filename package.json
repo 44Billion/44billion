@@ -44,6 +44,7 @@
     "@leeoniya/ufuzzy": "^1.0.19",
     "@noble/hashes": "^2.0.1",
     "@scure/base": "^2.0.0",
+    "libp2r2p": "file:../libp2r2p",
     "meilisearch": "^0.54.0",
     "mime": "^4.0.7",
     "nostr-tools": "^2.23.3",

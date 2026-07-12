@@ -1,4 +1,4 @@
-import nostrRelays from '#services/nostr-relays.js'
+import { relayPool as nostrRelays } from 'libp2r2p/relay'
 
 // Untried indexes are those that have not yet been added to a batch by anyone else.
 // In-flight indexes are still being downloaded by someone else; they are not in the untried indexes;

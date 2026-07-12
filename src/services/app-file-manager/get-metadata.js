@@ -3,7 +3,7 @@ import { decode } from '#services/base93-decoder.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToBase16 } from '#helpers/base16.js'
 import { getEventByAddress, getUserRelays } from '#helpers/nostr-queries.js'
-import { nappRelays } from '#services/nostr-relays.js'
+import { nappRelays } from '#config/relays.js'
 import AppFileDownloader from '#services/app-file-downloader/index.js'
 
 export async function getIcon (appFileManager, staleWhileRevalidate = false) {

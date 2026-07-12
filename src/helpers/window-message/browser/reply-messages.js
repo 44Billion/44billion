@@ -1,7 +1,7 @@
 import { getEventsByStrategy } from '#helpers/nostr-queries.js'
 import getSiteManifestEvent from '#services/app-file-manager/get-site-manifest-event.js'
 import { appIdToAddressObj } from '#helpers/app.js'
-import nostrRelays from '#services/nostr-relays.js'
+import { relayPool as nostrRelays } from 'libp2r2p/relay'
 
 export async function getSiteManifestResponse (appId) {
   try {
@@ -16,7 +16,7 @@ export async function getSiteManifestResponse (appId) {
 export async function getEventsMessage (filter, relays) {
   try {
     // this means that the one requesting the events already picked the relays
-    if (relays.length > 0) return nostrRelays.getEventsAsap(filter, relays)
+    if (relays.length > 0) return nostrRelays.getEvents(filter, relays)
 
     // TODO: infer the strategy by looking at the filter
     const strategy = { code: 'WRITE_RELAYS' }

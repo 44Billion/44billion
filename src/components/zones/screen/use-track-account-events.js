@@ -1,6 +1,6 @@
 import { useTask } from '#f'
 import useWebStorage from '#hooks/use-web-storage.js'
-import nostrRelays, { seedRelays } from '#services/nostr-relays.js'
+import { relayPool as nostrRelays, seedRelays } from 'libp2r2p/relay'
 import { tellVault } from '#zones/vault-modal/index.js'
 import { base62ToBase16 } from '#helpers/base62.js'
 import { isValidRelayUrl } from '#helpers/relay.js'

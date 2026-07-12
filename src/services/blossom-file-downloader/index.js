@@ -2,7 +2,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import mime from 'mime'
 import Base93Encoder from '#services/base93-encoder.js'
 import { bytesToBase16 } from '#helpers/base16.js'
-import nostrRelays from '#services/nostr-relays.js'
+import { relayPool as nostrRelays } from 'libp2r2p/relay'
 import { APP_FILE_CHUNK_BYTES } from '#constants/app-file.js'
 
 const HEAD_TIMEOUT_AFTER_FIRST_MS = 500
@@ -301,7 +301,7 @@ export default class BlossomFileDownloader {
    */
   async #getBlossomServers () {
     const relays = [...new Set(this.writeRelays)]
-    const { result: events } = await nostrRelays.getEventsAsap(
+    const { result: events } = await nostrRelays.getEvents(
       { kinds: [10063], authors: [this.pubkey], limit: 1 },
       relays,
       { signal: this.signal }

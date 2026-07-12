@@ -1,5 +1,6 @@
 import AppFileDownloader from '#services/app-file-downloader/index.js'
-import nostrRelays, { nappRelays } from '#services/nostr-relays.js'
+import { relayPool as nostrRelays } from 'libp2r2p/relay'
+import { nappRelays } from '#config/relays.js'
 import {
   getSiteManifestFromDb,
   listSiteManifestsFromDb,
