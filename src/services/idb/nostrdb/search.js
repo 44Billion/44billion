@@ -1,6 +1,5 @@
 import uFuzzy from '@leeoniya/ufuzzy'
 
-import { eventKinds } from '#constants/event.js'
 import { PERSONAL_COPY_KIND, parsePersonalCopyPlaintext } from '#helpers/personal-copy.js'
 
 /*
@@ -26,8 +25,6 @@ const searchCollator = typeof Intl === 'undefined'
 // Search field config example:
 // 0: { contentJson: ['name'] }
 // 30023: { content: true, tags: ['title', 'summary'] }
-const LEGACY_LOCAL_COPY_KIND = eventKinds.LOCAL_COPY ?? PERSONAL_COPY_KIND
-
 const SEARCH_FIELD_CONFIG = {
   0: { contentJson: ['name'], tags: ['name'] },
   30023: { content: true, tags: ['title', 'summary'] }
@@ -106,14 +103,13 @@ export function eventMatchesSearch (event, filter, compareTime) {
   return !!text && rankSearchCandidates([{ event, text }], filter, compareTime).length > 0
 }
 
-export async function getSearchableTextForEvent (event, { decryptPersonalCopyContent, decryptLocalCopyContent } = {}) {
-  const decrypt = decryptPersonalCopyContent || decryptLocalCopyContent
-  if ((event?.kind !== PERSONAL_COPY_KIND && event?.kind !== LEGACY_LOCAL_COPY_KIND) || typeof decrypt !== 'function') {
+export async function getSearchableTextForEvent (event, { decryptPersonalCopyContent } = {}) {
+  if (event?.kind !== PERSONAL_COPY_KIND || typeof decryptPersonalCopyContent !== 'function') {
     return getSearchableText(event)
   }
 
   try {
-    const plaintext = await decrypt(event)
+    const plaintext = await decryptPersonalCopyContent(event)
     const innerEvent = normalizeSearchEvent(parsePersonalCopyPlaintext(event, plaintext))
     return innerEvent ? getSearchableText(innerEvent) : ''
   } catch {

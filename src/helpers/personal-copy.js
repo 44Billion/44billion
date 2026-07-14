@@ -4,7 +4,7 @@ import { bytesToBase64 } from '#helpers/base64.js'
 const textEncoder = new TextEncoder()
 const HEX64_RE = /^[0-9a-f]{64}$/i
 
-export const PERSONAL_COPY_KIND = eventKinds.PERSONAL_COPY ?? eventKinds.LOCAL_COPY ?? 1006
+export const PERSONAL_COPY_KIND = eventKinds.PERSONAL_COPY
 
 export function normalizeEventKind (kind, { allowBroad = false } = {}) {
   if (allowBroad && kind === -1) return -1

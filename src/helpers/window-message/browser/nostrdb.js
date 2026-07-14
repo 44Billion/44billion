@@ -184,7 +184,7 @@ export function explicitFilterKinds (filterOrFilters) {
   return [...kinds].sort((a, b) => a - b)
 }
 
-function explicitLocalCopyKinds (filterOrFilters, explicitKinds) {
+function explicitPersonalCopyKinds (filterOrFilters, explicitKinds) {
   if (explicitKinds === null) return null
   if (!explicitKinds.includes(PERSONAL_COPY_KIND)) return []
 
@@ -210,7 +210,7 @@ function explicitPermissionInfoFromParams (params = []) {
   const explicitKinds = explicitFilterKinds(filterOrFilters)
   return {
     explicitKinds,
-    explicitPersonalKinds: explicitLocalCopyKinds(filterOrFilters, explicitKinds)
+    explicitPersonalKinds: explicitPersonalCopyKinds(filterOrFilters, explicitKinds)
   }
 }
 
@@ -222,7 +222,7 @@ function mayIncludeNormalEvents (explicitKinds) {
   return explicitKinds === null || explicitKinds.some(kind => kind !== PERSONAL_COPY_KIND)
 }
 
-function mayIncludeLocalCopies (explicitKinds) {
+function mayIncludePersonalCopies (explicitKinds) {
   return explicitKinds === null || explicitKinds.includes(PERSONAL_COPY_KIND)
 }
 
@@ -259,7 +259,7 @@ function queryResultPermissionRequests (payload, { explicitKinds }) {
   const results = Array.isArray(payload?.results) ? payload.results : []
   return results.flatMap(result => resultPermissionRequests(result, {
     mayIncludeNormal: mayIncludeNormalEvents(explicitKinds),
-    mayIncludePersonal: mayIncludeLocalCopies(explicitKinds)
+    mayIncludePersonal: mayIncludePersonalCopies(explicitKinds)
   }))
 }
 
@@ -325,7 +325,7 @@ export function createNostrDbSubscriptionAuthorizer ({ app, requestPermission, p
       if (explicitKinds !== null && explicitPersonalKinds !== null) return
       await requestOnce(resultPermissionRequests(item?.result, {
         mayIncludeNormal: mayIncludeNormalEvents(explicitKinds),
-        mayIncludePersonal: mayIncludeLocalCopies(explicitKinds)
+        mayIncludePersonal: mayIncludePersonalCopies(explicitKinds)
       }))
     }
   }
@@ -395,7 +395,7 @@ export async function runNostrDbMethod ({
     else await requestAccessKinds([BROAD_EVENT_KIND], permissionContext)
 
     if (explicitPersonalKinds !== null) await requestPersonalKinds(explicitPersonalKinds, permissionContext)
-    else if (mayIncludeLocalCopies(explicitKinds)) await requestPersonalKinds([BROAD_EVENT_KIND], permissionContext)
+    else if (mayIncludePersonalCopies(explicitKinds)) await requestPersonalKinds([BROAD_EVENT_KIND], permissionContext)
     return db.count(...args)
   }
 

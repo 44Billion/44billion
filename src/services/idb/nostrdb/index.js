@@ -102,7 +102,6 @@ const HONORARY_EXPIRATION_SKEW = 60
 const SYNC_ANCHOR_FUTURE_SKEW_MS = 5000
 const REGULAR_CUSTOM_APP_DATA_KIND = eventKinds.REGULAR_CUSTOM_APP_DATA ?? 78
 const CUSTOM_APP_DATA_KIND = eventKinds.CUSTOM_APP_DATA ?? 30078
-const LEGACY_LOCAL_COPY_KIND = eventKinds.LOCAL_COPY ?? PERSONAL_COPY_KIND
 const APP_NEUTRAL_KINDS_KEY = 'appNeutralKinds'
 const APP_CLAIM_DEBOUNCE_MS = 250
 const APP_CLAIM_BATCH_SIZE = 100
@@ -188,15 +187,13 @@ export function getNostrDb (ownerPubkey, {
   maintenanceOptions = {},
   personalCopyDecrypt,
   personalCopyEncrypt,
-  personalCopyObfuscate,
-  localCopyDecrypt
+  personalCopyObfuscate
 } = {}) {
   if (!storeCache.has(ownerPubkey)) {
     storeCache.set(ownerPubkey, new NostrDb(ownerPubkey))
   }
   const db = storeCache.get(ownerPubkey)
-  const decrypt = personalCopyDecrypt || localCopyDecrypt
-  if (typeof decrypt === 'function') db.personalCopyDecrypt = decrypt
+  if (typeof personalCopyDecrypt === 'function') db.personalCopyDecrypt = personalCopyDecrypt
   if (typeof personalCopyEncrypt === 'function') db.personalCopyEncrypt = personalCopyEncrypt
   if (typeof personalCopyObfuscate === 'function') db.personalCopyObfuscate = personalCopyObfuscate
   if (maintenance) startNostrDbMaintenance(db, maintenanceOptions)
@@ -361,12 +358,12 @@ export class NostrDb {
       }
       const template = isPersonalCopyEvent(event)
         ? await buildPersonalCopyMergeTemplate(event, base?.event, {
-            decrypt: this.personalCopyDecrypt,
-            encrypt: this.personalCopyEncrypt,
-            obfuscate: this.personalCopyObfuscate,
-            crdtOptions: mergeOptions,
-            ownerPubkey: this.ownerPubkey
-          })
+          decrypt: this.personalCopyDecrypt,
+          encrypt: this.personalCopyEncrypt,
+          obfuscate: this.personalCopyObfuscate,
+          crdtOptions: mergeOptions,
+          ownerPubkey: this.ownerPubkey
+        })
         : buildCrdtMergeTemplate(event, base?.event, mergeOptions)
       if (!template) return null
 
@@ -2100,7 +2097,7 @@ function scoreFromIndexKey (key, indexName) {
 
 function canUseAsyncSearchText (filter, decryptPersonalCopyContent) {
   return typeof decryptPersonalCopyContent === 'function' &&
-    (!filter.kinds || filter.kinds.includes(PERSONAL_COPY_KIND) || filter.kinds.includes(LEGACY_LOCAL_COPY_KIND))
+    (!filter.kinds || filter.kinds.includes(PERSONAL_COPY_KIND))
 }
 
 async function collectAsyncSearchCandidates (db, plan, filter, direction, { countOnly, limit, now, decryptPersonalCopyContent }) {
