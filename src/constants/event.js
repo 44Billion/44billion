@@ -25,6 +25,7 @@ const eventKinds = {
   VOICE_MESSAGE_REPLY: 1244,
   // https://airch.at - npub1ph0n0nlw37vwze32uwy68r9crhywmj89lnpljssyr6j6g2jv944svmcn4n
   // TRANSCRIBED_VOICE_MESSAGE: ?,
+  PRIVATE_CHANNEL_BROADCAST: 3560,
   MUTE_LIST: 10000,
   PINNED_NOTES: 10001,
   READ_WRITE_RELAYS: 10002,
