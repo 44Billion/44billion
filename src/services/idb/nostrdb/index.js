@@ -5,8 +5,9 @@ import { appIdToDbAppRef } from '#helpers/app.js'
 import { base16ToBase64, base64ToBase16, bytesToBase64 } from '#helpers/base64.js'
 import {
   PERSONAL_COPY_KIND,
-  hasPersonalCopyHearsay,
-  isPersonalCopyEvent
+  isPersonalCopyEvent,
+  personalCopyContextValue,
+  personalCopyProvenanceValue
 } from '#helpers/personal-copy.js'
 import { run } from '#services/idb/browser/index.js'
 import {
@@ -29,10 +30,8 @@ import {
 } from './scheduled.js'
 import { buildCrdtMergeTemplate } from './crdt.js'
 import {
-  buildCanonicalPersonalCopyTemplate,
-  buildPersonalCopyMergeTemplate,
-  getPersonalCopyProvenance,
-  normalizePersonalCopyForAdd
+  normalizePersonalCopyForAdd,
+  validatePersonalCopyForStorage
 } from './personal-copy.js'
 
 export const NOSTRDB_VERSION = 1
@@ -119,7 +118,6 @@ const storeCache = new Map()
 const ADD_FAILURE_CODES = new Set(['invalid', 'invalid_app', 'expired', 'blocked', 'unavailable', 'error'])
 const QUERY_SCORES = Symbol('nostrdb.queryScores')
 const STORED_RECORD = Symbol('nostrdb.storedRecord')
-const PERSONAL_COPY_PROVENANCE_REPLACEMENTS = Symbol('nostrdb.personalCopyProvenanceReplacements')
 const PERSONAL_COPY_PROVENANCE_STALE = Symbol('nostrdb.personalCopyProvenanceStale')
 const PERSONAL_COPY_PROVENANCE_ATTEMPTS = 2
 const ADD_MESSAGES = {
@@ -166,17 +164,6 @@ function publishResult (result) {
   return published
 }
 
-function addResultWithPersonalCopyProvenanceReplacements (code, {
-  replacements = [],
-  ...options
-} = {}) {
-  const result = addResult(code, options)
-  if (replacements.length > 0) {
-    Object.defineProperty(result, PERSONAL_COPY_PROVENANCE_REPLACEMENTS, { value: replacements })
-  }
-  return result
-}
-
 function logNostrDbIssue (method, details, error) {
   const level = details.code === 'unavailable' || details.code === 'error' || error
     ? 'error'
@@ -207,7 +194,6 @@ export function getNostrDb (ownerPubkey, {
   maintenance = true,
   maintenanceOptions = {},
   personalCopyDecrypt,
-  personalCopyEncrypt,
   personalCopyObfuscate
 } = {}) {
   if (!storeCache.has(ownerPubkey)) {
@@ -215,7 +201,6 @@ export function getNostrDb (ownerPubkey, {
   }
   const db = storeCache.get(ownerPubkey)
   if (typeof personalCopyDecrypt === 'function') db.personalCopyDecrypt = personalCopyDecrypt
-  if (typeof personalCopyEncrypt === 'function') db.personalCopyEncrypt = personalCopyEncrypt
   if (typeof personalCopyObfuscate === 'function') db.personalCopyObfuscate = personalCopyObfuscate
   if (maintenance) startNostrDbMaintenance(db, maintenanceOptions)
   return db
@@ -251,7 +236,6 @@ export class NostrDb {
     this.maintenanceStops = new Map()
     this.deletionRequestMaintenanceSignEvent = null
     this.personalCopyDecrypt = null
-    this.personalCopyEncrypt = null
     this.personalCopyObfuscate = null
     this.bc = null
 
@@ -285,15 +269,17 @@ export class NostrDb {
     tombstoneTagName
   } = {}) {
     const inputEvent = event
-    event = await normalizePersonalCopyForAdd(event, {
+    const normalized = await normalizePersonalCopyForAdd(event, {
       decrypt: this.personalCopyDecrypt,
       obfuscate: this.personalCopyObfuscate,
       signEvent,
       ownerPubkey: this.ownerPubkey
     })
-    if (event === null) {
+    if (normalized === null) {
       return this.reportAddResult('add', event, addResult('invalid'))
     }
+    event = normalized.event
+    const personalCopy = normalized.personalCopy
 
     if (!isValidEventShape(event)) {
       return this.reportAddResult('add', event, addResult('invalid'))
@@ -313,15 +299,15 @@ export class NostrDb {
       return addResult('published', { published: true })
     }
 
-    const normalizedEvent = event
     const crdtMergeSource = normalizeCrdtMergeSource(mergeSource)
 
     for (let attempt = 0; attempt < PERSONAL_COPY_PROVENANCE_ATTEMPTS; attempt++) {
-      const personalCopyProvenance = await this.preparePersonalCopyProvenance(normalizedEvent, { signEvent })
-      if (personalCopyProvenance === null) {
-        return this.reportAddResult('add', normalizedEvent, addResult('invalid'))
+      const resolution = personalCopy
+        ? await this.preparePersonalCopyProvenance(event, personalCopy)
+        : null
+      if (personalCopy && resolution === null) {
+        return this.reportAddResult('add', event, addResult('invalid'))
       }
-      event = personalCopyProvenance.event
 
       let eventToStore = event
       const shouldMergeReplaceable = mergeReplaceable ?? (typeof signEvent === 'function' && event.pubkey === this.ownerPubkey)
@@ -342,19 +328,13 @@ export class NostrDb {
       const result = await this.addEvent(eventToStore, {
         now,
         appRef,
-        forceCoordinateReplace: personalCopyProvenance.forceCoordinateReplace ||
-          (!!mergedEvent && crdtMergeSource === 'sync'),
-        personalCopyProvenanceProtectedId: personalCopyProvenance.protectedCoordinateEventId,
-        personalCopyProvenanceReplacements: personalCopyProvenance.replacements,
-        personalCopyProvenanceSnapshot: personalCopyProvenance.snapshot,
+        forceCoordinateReplace: !!mergedEvent && crdtMergeSource === 'sync',
+        personalCopy: mergedEvent ? null : personalCopy,
+        personalCopyResolution: resolution,
         log: false
       })
       if (result[PERSONAL_COPY_PROVENANCE_STALE] && attempt + 1 < PERSONAL_COPY_PROVENANCE_ATTEMPTS) continue
 
-      const provenanceReplacements = result[PERSONAL_COPY_PROVENANCE_REPLACEMENTS] ?? []
-      for (const replacement of provenanceReplacements) {
-        this.publish(replacement.event, true, replacement.record)
-      }
       if (mergedEvent && result.stored && (result.code === 'stored' || result.code === 'replaced')) {
         result.merged = true
         result.inputId = event.id
@@ -368,7 +348,7 @@ export class NostrDb {
       return this.reportAddResult('add', event, result)
     }
 
-    return this.reportAddResult('add', normalizedEvent, addResult('error'))
+    return this.reportAddResult('add', event, addResult('error'))
   }
 
   async signMergedReplaceableEvent (event, {
@@ -382,6 +362,7 @@ export class NostrDb {
   }) {
     if (typeof signEvent !== 'function') return null
     if (event.pubkey !== this.ownerPubkey) return null
+    if (isPersonalCopyEvent(event)) return null
 
     const coordinate = getCoordinate(event)
     if (coordinate === null) return null
@@ -401,15 +382,7 @@ export class NostrDb {
         mergeSource,
         now
       }
-      const template = isPersonalCopyEvent(event)
-        ? await buildPersonalCopyMergeTemplate(event, base?.event, {
-          decrypt: this.personalCopyDecrypt,
-          encrypt: this.personalCopyEncrypt,
-          obfuscate: this.personalCopyObfuscate,
-          crdtOptions: mergeOptions,
-          ownerPubkey: this.ownerPubkey
-        })
-        : buildCrdtMergeTemplate(event, base?.event, mergeOptions)
+      const template = buildCrdtMergeTemplate(event, base?.event, mergeOptions)
       if (!template) return null
 
       const signed = await signCrdtTemplate(signEvent, template)
@@ -424,30 +397,28 @@ export class NostrDb {
     return null
   }
 
-  async preparePersonalCopyProvenance (event, { signEvent } = {}) {
-    const unchanged = { event, replacements: [], snapshot: null, forceCoordinateReplace: false }
-    if (!isPersonalCopyEvent(event)) return unchanged
-    if (typeof this.personalCopyDecrypt !== 'function') return unchanged
+  async preparePersonalCopyProvenance (event, personalCopy) {
+    if (!personalCopy) return null
 
-    const provenance = await getPersonalCopyProvenance(event, {
-      decrypt: this.personalCopyDecrypt,
-      ownerPubkey: this.ownerPubkey
-    })
-    if (!provenance || provenance.hearsayState === 'invalid') return null
-    if (provenance.selfOwned || provenance.signed || provenance.sourceId === null) return unchanged
-    if (typeof this.personalCopyObfuscate !== 'function') return unchanged
-
+    const filter = {
+      authors: [this.ownerPubkey],
+      kinds: [PERSONAL_COPY_KIND],
+      '#c': [personalCopy.context],
+      '#o': [personalCopy.sourceMirror]
+    }
     const db = await openNostrDb(this.ownerPubkey)
-    if (!db) return unchanged
+    if (!db) {
+      return {
+        incomingWins: true,
+        loserIds: [],
+        snapshot: null,
+        winnerId: event.id
+      }
+    }
 
-    let lookup
     let storedEvents
     try {
-      lookup = await personalCopyProvenanceLookup(provenance, {
-        obfuscate: this.personalCopyObfuscate,
-        ownerPubkey: this.ownerPubkey
-      })
-      storedEvents = await queryRecords(db, lookup.filter, {
+      storedEvents = await queryRecords(db, filter, {
         countOnly: false,
         ignoreLimit: true
       })
@@ -455,42 +426,23 @@ export class NostrDb {
       return null
     }
 
-    const candidates = []
+    const candidates = storedEvents
+      .filter(candidate => candidate.pubkey === this.ownerPubkey)
+      .filter(candidate => personalCopyCandidateMatches(candidate, personalCopy))
+      .map(candidate => ({
+        event: candidate,
+        provenance: personalCopyProvenanceValue(candidate)
+      }))
+    const incoming = { event, provenance: personalCopy.provenance, incoming: true }
+    const winner = [incoming, ...candidates].reduce(preferredPersonalCopy)
 
-    for (const candidate of storedEvents) {
-      if (candidate.id === event.id || candidate.pubkey !== this.ownerPubkey) continue
-
-      const candidateProvenance = await getPersonalCopyProvenance(candidate, {
-        decrypt: this.personalCopyDecrypt,
-        ownerPubkey: this.ownerPubkey
-      })
-      if (!candidateProvenance || candidateProvenance.hearsayState === 'invalid') continue
-      if (!personalCopyProvenanceMatchesLookup(candidateProvenance, provenance, lookup.mode)) continue
-
-      candidates.push({ event: candidate, provenance: candidateProvenance })
-    }
-
-    const snapshot = personalCopyProvenanceSnapshot(lookup.filter, storedEvents)
-    const incoming = { event, provenance }
-
-    try {
-      return lookup.mode === 'coordinate'
-        ? await reconcileCoordinatePersonalCopies(incoming, candidates, {
-          encrypt: this.personalCopyEncrypt,
-          obfuscate: this.personalCopyObfuscate,
-          ownerPubkey: this.ownerPubkey,
-          signEvent,
-          snapshot
-        })
-        : await reconcileExactPersonalCopies(incoming, candidates, {
-          encrypt: this.personalCopyEncrypt,
-          obfuscate: this.personalCopyObfuscate,
-          ownerPubkey: this.ownerPubkey,
-          signEvent,
-          snapshot
-        })
-    } catch {
-      return null
+    return {
+      incomingWins: winner.incoming === true || winner.event.id === event.id,
+      loserIds: candidates
+        .filter(candidate => candidate.event.id !== winner.event.id)
+        .map(candidate => candidate.event.id),
+      snapshot: personalCopyProvenanceSnapshot(filter, storedEvents),
+      winnerId: winner.event.id
     }
   }
 
@@ -502,13 +454,39 @@ export class NostrDb {
     consumeDeletionRequestIds = [],
     now = currentUnixTime(),
     forceCoordinateReplace = false,
-    personalCopyProvenanceProtectedId = null,
-    personalCopyProvenanceReplacements = [],
-    personalCopyProvenanceSnapshot = null,
+    personalCopy,
+    personalCopyResolution,
     log = true
   } = {}) {
     if (!isValidEventShape(event)) {
       return this.reportAddResult('addEvent', event, addResult('invalid'), { log })
+    }
+
+    if (isPersonalCopyEvent(event)) {
+      if (
+        !personalCopy ||
+        personalCopy.eventId !== event.id ||
+        personalCopy.eventJson !== JSON.stringify(event)
+      ) {
+        personalCopy = await validatePersonalCopyForStorage(event, {
+          decrypt: this.personalCopyDecrypt,
+          obfuscate: this.personalCopyObfuscate,
+          ownerPubkey: this.ownerPubkey
+        })
+      }
+      if (!personalCopy) {
+        return this.reportAddResult('addEvent', event, addResult('invalid'), { log })
+      }
+      if (!personalCopyResolution) {
+        personalCopyResolution = await this.preparePersonalCopyProvenance(event, personalCopy)
+      }
+      if (!personalCopyResolution) {
+        return this.reportAddResult('addEvent', event, addResult('invalid'), { log })
+      }
+      forceCoordinateReplace = false
+    } else {
+      personalCopy = null
+      personalCopyResolution = null
     }
 
     if (appRef === false) {
@@ -529,7 +507,6 @@ export class NostrDb {
 
     const record = toStoredRecord(event, { now, appRef })
     let replaced = false
-    let provenanceReplacementRecords = []
     let tx
     let done
 
@@ -537,25 +514,36 @@ export class NostrDb {
       tx = db.transaction([EVENTS_STORE, DELETIONS_STORE], 'readwrite')
       done = txDone(tx)
 
-      await validatePersonalCopyProvenanceSnapshot(db, tx, personalCopyProvenanceSnapshot)
+      await validatePersonalCopyProvenanceSnapshot(db, tx, personalCopyResolution?.snapshot)
+
+      if (personalCopyResolution && !personalCopyResolution.incomingWins) {
+        const changed = await retainExistingPersonalCopyWinner(
+          db,
+          tx,
+          personalCopyResolution,
+          appRef
+        )
+        await done
+        return addResult(
+          personalCopyResolution.winnerId === event.id ? 'duplicate' : 'superseded',
+          { stored: changed }
+        )
+      }
 
       const existingById = await run('get', [record.i], EVENTS_STORE, null, { db, tx })
         .then(v => v.result)
 
       if (existingById) {
-        provenanceReplacementRecords = await applyPersonalCopyProvenanceReplacements(
+        let changed = mergeAppRef(existingById, appRef)
+        changed = await removePersonalCopyLosers(
           db,
           tx,
-          personalCopyProvenanceReplacements,
-          now
-        )
-        const changed = mergeAppRef(existingById, appRef)
+          personalCopyResolution?.loserIds,
+          existingById
+        ) || changed
         if (changed) await run('put', [existingById], EVENTS_STORE, null, { db, tx })
         await done
-        return addResultWithPersonalCopyProvenanceReplacements('duplicate', {
-          stored: changed || provenanceReplacementRecords.length > 0,
-          replacements: provenanceReplacementRecords
-        })
+        return addResult('duplicate', { stored: changed })
       }
 
       if (await isBlockedByDeletion(db, tx, event)) {
@@ -563,43 +551,39 @@ export class NostrDb {
         return this.reportAddResult('addEvent', event, addResult('blocked'), { log })
       }
 
-      provenanceReplacementRecords = await applyPersonalCopyProvenanceReplacements(
-        db,
-        tx,
-        personalCopyProvenanceReplacements,
-        now
-      )
-
       if (record.a) {
         const existingByAddress = await run('get', [record.a], EVENTS_STORE, INDEX.address, { db, tx })
           .then(v => v.result)
-
-        const provenancePriority = existingByAddress
-          ? personalCopyCoordinateProvenancePriority(event, existingByAddress.event)
-          : 0
-        const provenanceProtected = existingByAddress?.event.id === personalCopyProvenanceProtectedId
+        const existingIsPersonalCopyLoser = personalCopyResolution?.loserIds.includes(existingByAddress?.event.id)
 
         if (
           existingByAddress &&
-          (provenanceProtected || provenancePriority < 0 ||
-            (!forceCoordinateReplace && provenancePriority === 0 && !isNewer(event, existingByAddress.event)))
+          !existingIsPersonalCopyLoser &&
+          !forceCoordinateReplace &&
+          !isNewer(event, existingByAddress.event)
         ) {
           const changed = mergeAppRef(existingByAddress, appRef)
           if (changed) await run('put', [existingByAddress], EVENTS_STORE, null, { db, tx })
           await done
-          return addResultWithPersonalCopyProvenanceReplacements('superseded', {
-            stored: changed || provenanceReplacementRecords.length > 0,
-            replacements: provenanceReplacementRecords
-          })
+          return addResult('superseded', { stored: changed })
         }
 
         if (existingByAddress) {
           mergeAppRefs(record, existingByAddress.ap)
-          record.sa = await nextSyncAnchor(db, tx, event, now)
-          await deleteStoredEvent(db, tx, existingByAddress)
+          if (!existingIsPersonalCopyLoser) {
+            record.sa = await nextSyncAnchor(db, tx, event, now)
+            await deleteStoredEvent(db, tx, existingByAddress)
+          }
           replaced = true
         }
       }
+
+      await removePersonalCopyLosers(
+        db,
+        tx,
+        personalCopyResolution?.loserIds,
+        record
+      )
 
       if (record.sa === undefined) {
         record.sa = await nextSyncAnchor(db, tx, event, now)
@@ -629,10 +613,9 @@ export class NostrDb {
       return this.reportAddResult('addEvent', event, result, { log })
     }
 
-    return addResultWithPersonalCopyProvenanceReplacements(replaced ? 'replaced' : 'stored', {
+    return addResult(replaced ? 'replaced' : 'stored', {
       stored: true,
-      storedRecord: record,
-      replacements: provenanceReplacementRecords
+      storedRecord: record
     })
   }
 
@@ -2823,49 +2806,26 @@ async function getStoredRecordByAddress (db, address) {
 
 class StalePersonalCopyProvenanceError extends Error {}
 
-async function personalCopyProvenanceLookup (provenance, { obfuscate, ownerPubkey }) {
-  const baseFilter = {
-    authors: [ownerPubkey],
-    kinds: [PERSONAL_COPY_KIND]
-  }
+function personalCopyCandidateMatches (candidate, incoming) {
+  if (personalCopyContextValue(candidate) !== incoming.context) return false
+  if (personalCopyProvenanceValue(candidate) === null) return false
+  if (candidate.tags.some(tag => Array.isArray(tag) && tag[0] === 'hearsay')) return false
 
-  if (provenance.coordinate) {
-    // Existing k/o mirrors narrow the IDB scan; decrypted coordinates remain
-    // the authority because mirror tags are only lookup hints.
-    const mirrorValues = [
-      await obfuscate(provenance.coordinate.pubkey, PERSONAL_COPY_KIND, '.pubkey')
-    ]
-    if (provenance.coordinate.explicitD !== null) {
-      mirrorValues.push(await obfuscate(provenance.coordinate.explicitD, PERSONAL_COPY_KIND, '#d'))
-    }
-    return {
-      mode: 'coordinate',
-      filter: {
-        ...baseFilter,
-        '#k': [String(provenance.coordinate.kind)],
-        '&o': mirrorValues
-      }
-    }
-  }
-
-  const sourceMirror = await obfuscate(provenance.sourceId, PERSONAL_COPY_KIND, '.id')
-  return {
-    mode: 'source',
-    filter: { ...baseFilter, '#o': [sourceMirror] }
-  }
+  const sourceTags = candidate.tags.filter(tag =>
+    Array.isArray(tag) &&
+    tag.length === 2 &&
+    tag[0] === 'o' &&
+    tag[1] === incoming.sourceMirror
+  )
+  return sourceTags.length === 1
 }
 
-function personalCopyProvenanceMatchesLookup (candidate, incoming, mode) {
-  if (candidate.selfOwned || candidate.signed || candidate.sourceId === null) return false
-  if (mode === 'source') return candidate.sourceId === incoming.sourceId
-  return samePersonalCopyInnerCoordinate(candidate.coordinate, incoming.coordinate)
-}
-
-function samePersonalCopyInnerCoordinate (a, b) {
-  return a !== null && b !== null &&
-    a.kind === b.kind &&
-    a.pubkey === b.pubkey &&
-    a.d === b.d
+function preferredPersonalCopy (selected, candidate) {
+  const selectedPriority = Number(selected.provenance)
+  const candidatePriority = Number(candidate.provenance)
+  if (candidatePriority < selectedPriority) return candidate
+  if (candidatePriority > selectedPriority) return selected
+  return isNewer(candidate.event, selected.event) ? candidate : selected
 }
 
 function personalCopyProvenanceSnapshot (filter, events) {
@@ -2878,15 +2838,16 @@ function personalCopyProvenanceSnapshot (filter, events) {
 async function validatePersonalCopyProvenanceSnapshot (db, tx, snapshot) {
   if (!snapshot) return
 
-  // Encryption and signing happen before the write transaction. Rechecking
-  // its candidate IDs here prevents that prepared snapshot from going stale.
+  // The candidate read happens before the transaction; verify it again before
+  // deleting losers so concurrent adds cannot make the decision stale.
   const events = await queryRecords(db, snapshot.filter, {
     countOnly: false,
     ignoreLimit: true,
     tx
   })
-  const ids = sortedUniqueEventIds(events)
-  if (!sameStringArrays(ids, snapshot.ids)) throw new StalePersonalCopyProvenanceError()
+  if (!sameStringArrays(sortedUniqueEventIds(events), snapshot.ids)) {
+    throw new StalePersonalCopyProvenanceError()
+  }
 }
 
 function sortedUniqueEventIds (events) {
@@ -2897,211 +2858,48 @@ function sortedUniqueEventIds (events) {
 }
 
 function sameStringArrays (a, b) {
-  return Array.isArray(a) && Array.isArray(b) &&
+  return Array.isArray(a) &&
+    Array.isArray(b) &&
     a.length === b.length &&
     a.every((value, index) => value === b[index])
 }
 
-async function reconcileCoordinatePersonalCopies (incoming, candidates, options) {
-  if (candidates.length === 0) {
-    return {
-      event: incoming.event,
-      replacements: [],
-      snapshot: options.snapshot,
-      forceCoordinateReplace: false
-    }
+async function retainExistingPersonalCopyWinner (db, tx, resolution, appRef) {
+  const winner = await run(
+    'get',
+    [eventIdIndexKey(resolution.winnerId)],
+    EVENTS_STORE,
+    null,
+    { db, tx }
+  ).then(value => value.result)
+  if (!winner || !isPersonalCopyEvent(winner.event)) {
+    throw new StalePersonalCopyProvenanceError()
   }
 
-  const canonical = newestDirectPersonalCopy([incoming, ...candidates])
-  if (!canonical) {
-    return {
-      event: incoming.event,
-      replacements: [],
-      snapshot: options.snapshot,
-      forceCoordinateReplace: false
-    }
-  }
-
-  const existingCanonical = candidates.find(candidate =>
-    samePersonalCopyCoordinate(candidate.event, incoming.event) &&
-    isCanonicalDirectPersonalCopy(candidate, canonical) &&
-    shouldKeepExistingCanonicalPersonalCopy(candidate, incoming, canonical)
-  )
-  const resolvedEvent = existingCanonical
-    ? incoming.event
-    : await canonicalizePersonalCopy(incoming, canonical, options)
-  if (resolvedEvent === null) return null
-
-  // A verified version becomes the one local snapshot for this address, while
-  // each wrapper keeps its own context and independently encrypted content.
-  const replacements = []
-  let protectedCoordinateEventId = existingCanonical?.event.id
-  if (existingCanonical) {
-    const replacement = await canonicalizePersonalCopy(existingCanonical, canonical, options)
-    if (replacement === null) return null
-    if (replacement.id !== existingCanonical.event.id) {
-      replacements.push({ expectedId: existingCanonical.event.id, event: replacement })
-      protectedCoordinateEventId = replacement.id
-    }
-  }
-
-  for (const candidate of candidates) {
-    if (candidate === existingCanonical) continue
-    if (candidate.event.id === resolvedEvent.id) continue
-    if (samePersonalCopyCoordinate(candidate.event, resolvedEvent)) continue
-
-    const replacement = await canonicalizePersonalCopy(candidate, canonical, options)
-    if (replacement === null) return null
-    if (replacement.id === candidate.event.id) continue
-    replacements.push({ expectedId: candidate.event.id, event: replacement })
-  }
-
-  return {
-    event: resolvedEvent,
-    replacements,
-    snapshot: options.snapshot,
-    forceCoordinateReplace: existingCanonical === undefined,
-    protectedCoordinateEventId
-  }
+  let changed = mergeAppRef(winner, appRef)
+  changed = await removePersonalCopyLosers(db, tx, resolution.loserIds, winner) || changed
+  if (changed) await run('put', [winner], EVENTS_STORE, null, { db, tx })
+  return changed
 }
 
-async function reconcileExactPersonalCopies (incoming, candidates, options) {
-  const canonical = newestDirectPersonalCopy([incoming, ...candidates])
-  if (!canonical) {
-    return {
-      event: incoming.event,
-      replacements: [],
-      snapshot: options.snapshot,
-      forceCoordinateReplace: false
-    }
-  }
+async function removePersonalCopyLosers (db, tx, loserIds, winner) {
+  if (!Array.isArray(loserIds) || loserIds.length === 0) return false
 
-  const resolvedEvent = await canonicalizePersonalCopy(incoming, canonical, options)
-  if (resolvedEvent === null) return null
+  let changed = false
+  for (const id of new Set(loserIds)) {
+    if (id === winner.event.id) continue
 
-  const replacements = []
-  for (const candidate of candidates) {
-    if (candidate.provenance.hearsayState !== 'hearsay') continue
-
-    const replacement = await canonicalizePersonalCopy(candidate, canonical, options)
-    if (replacement === null) return null
-    if (replacement.id === candidate.event.id) continue
-    replacements.push({ expectedId: candidate.event.id, event: replacement })
-  }
-
-  return {
-    event: resolvedEvent,
-    replacements,
-    snapshot: options.snapshot,
-    forceCoordinateReplace: false
-  }
-}
-
-function newestDirectPersonalCopy (entries) {
-  let newest = null
-  for (const entry of entries) {
-    if (entry.provenance.hearsayState !== 'absent') continue
-    if (!newest || comparePersonalCopySources(entry.provenance, newest.provenance) < 0) newest = entry
-  }
-  return newest
-}
-
-function comparePersonalCopySources (a, b) {
-  if (a.inner.created_at !== b.inner.created_at) return b.inner.created_at - a.inner.created_at
-  if (a.sourceId === b.sourceId) return 0
-  return a.sourceId < b.sourceId ? -1 : 1
-}
-
-function isCanonicalDirectPersonalCopy (entry, canonical) {
-  return entry.provenance.hearsayState === 'absent' &&
-    entry.provenance.sourceId === canonical.provenance.sourceId
-}
-
-function shouldKeepExistingCanonicalPersonalCopy (existing, incoming, canonical) {
-  if (incoming.provenance.sourceId !== canonical.provenance.sourceId) return true
-  if (incoming.provenance.hearsayState === 'hearsay') return true
-  return !isNewer(incoming.event, existing.event)
-}
-
-async function canonicalizePersonalCopy (target, canonical, {
-  encrypt,
-  obfuscate,
-  ownerPubkey,
-  signEvent
-}) {
-  if (
-    isCanonicalDirectPersonalCopy(target, canonical) &&
-    target.event.created_at === canonical.provenance.inner.created_at
-  ) return target.event
-
-  const template = await buildCanonicalPersonalCopyTemplate(
-    target.event,
-    target.provenance,
-    canonical.provenance,
-    { encrypt, obfuscate }
-  )
-  if (template === null) return null
-  if (samePersonalCopyTemplate(target.event, template)) return target.event
-  return signPersonalCopyProvenanceTemplate(signEvent, template, target.event, ownerPubkey)
-}
-
-function samePersonalCopyTemplate (event, template) {
-  return event.pubkey === template.pubkey &&
-    event.kind === template.kind &&
-    event.created_at === template.created_at &&
-    event.content === template.content &&
-    sameTags(event.tags, template.tags)
-}
-
-async function signPersonalCopyProvenanceTemplate (signEvent, template, originalEvent, ownerPubkey) {
-  if (typeof signEvent !== 'function' || template?.pubkey !== ownerPubkey) return null
-
-  const signed = await signCrdtTemplate(signEvent, template)
-  if (!isValidEventShape(signed)) return null
-  if (signed.id === originalEvent.id || signed.pubkey !== ownerPubkey) return null
-  if (signed.kind !== template.kind || signed.created_at !== template.created_at || signed.content !== template.content) return null
-  if (!sameTags(signed.tags, template.tags) && !sameTagsAllowingImkcRewrite(signed.tags, template.tags)) return null
-  return signed
-}
-
-// Replacements are signed before entering IDB, then swapped in one transaction.
-async function applyPersonalCopyProvenanceReplacements (db, tx, replacements, now) {
-  if (!Array.isArray(replacements) || replacements.length === 0) return []
-
-  const saved = []
-  const expectedIds = new Set()
-  for (const replacement of replacements) {
-    if (!replacement?.event || typeof replacement.expectedId !== 'string') throw new Error('INVALID_PERSONAL_COPY_PROVENANCE_REPLACEMENT')
-    if (replacement.event.id === replacement.expectedId || expectedIds.has(replacement.expectedId)) {
-      throw new Error('INVALID_PERSONAL_COPY_PROVENANCE_REPLACEMENT')
-    }
-    expectedIds.add(replacement.expectedId)
-
-    const existing = await run('get', [eventIdIndexKey(replacement.expectedId)], EVENTS_STORE, null, { db, tx })
+    const loser = await run('get', [eventIdIndexKey(id)], EVENTS_STORE, null, { db, tx })
       .then(value => value.result)
-    if (!existing || !isPersonalCopyEvent(existing.event) || existing.event.pubkey !== replacement.event.pubkey) {
-      throw new Error('STALE_PERSONAL_COPY_PROVENANCE_REPLACEMENT')
+    if (!loser || !isPersonalCopyEvent(loser.event)) {
+      throw new StalePersonalCopyProvenanceError()
     }
 
-    const record = toStoredRecord(replacement.event, { now })
-    if (compareKeys(record.a ?? null, existing.a ?? null) !== 0) {
-      throw new Error('INVALID_PERSONAL_COPY_PROVENANCE_REPLACEMENT')
-    }
-
-    const duplicate = await run('get', [record.i], EVENTS_STORE, null, { db, tx })
-      .then(value => value.result)
-    if (duplicate) throw new Error('DUPLICATE_PERSONAL_COPY_PROVENANCE_REPLACEMENT')
-
-    if (Array.isArray(existing.ap)) record.ap = [...existing.ap]
-    if (Number.isFinite(existing.ra)) record.ra = existing.ra
-    record.sa = await nextSyncAnchor(db, tx, replacement.event, now)
-
-    await deleteStoredEvent(db, tx, existing)
-    await run('put', [record], EVENTS_STORE, null, { db, tx })
-    saved.push({ event: replacement.event, record })
+    mergeAppRefs(winner, loser.ap)
+    await deleteStoredEvent(db, tx, loser)
+    changed = true
   }
-
-  return saved
+  return changed
 }
 
 async function signCrdtTemplate (signEvent, template) {
@@ -3346,26 +3144,6 @@ export function isNewer (event, other) {
   if (event.created_at > other.created_at) return true
   if (event.created_at < other.created_at) return false
   return event.id < other.id
-}
-
-function samePersonalCopyCoordinate (a, b) {
-  if (!isPersonalCopyEvent(a) || !isPersonalCopyEvent(b)) return false
-  if (a.pubkey !== b.pubkey || a.kind !== b.kind) return false
-
-  const aCoordinate = getCoordinate(a)
-  const bCoordinate = getCoordinate(b)
-  return aCoordinate !== null && aCoordinate === bCoordinate
-}
-
-function personalCopyCoordinateProvenancePriority (incoming, existing) {
-  if (!isPersonalCopyEvent(incoming) || !isPersonalCopyEvent(existing)) return 0
-
-  const incomingIsHearsay = hasPersonalCopyHearsay(incoming)
-  const existingIsHearsay = hasPersonalCopyHearsay(existing)
-  if (incomingIsHearsay === existingIsHearsay) return 0
-
-  // A direct third-party receipt is stronger local evidence than a later forwarded copy.
-  return incomingIsHearsay ? -1 : 1
 }
 
 export function currentUnixTime () {

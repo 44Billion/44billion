@@ -6,9 +6,19 @@ import { bytesToBase64 } from '#helpers/base64.js'
 const textEncoder = new TextEncoder()
 const HEX64_RE = /^[0-9a-f]{64}$/i
 const SIG_RE = /^[0-9a-f]{128}$/i
+const TEMPLATE_FIELDS = ['content', 'created_at', 'kind', 'tags']
+const RUMOR_FIELDS = [...TEMPLATE_FIELDS, 'pubkey'].sort()
+const SIGNED_EVENT_FIELDS = [...RUMOR_FIELDS, 'id', 'sig'].sort()
 
 export const PERSONAL_COPY_KIND = eventKinds.PERSONAL_COPY
-export const PERSONAL_COPY_HEARSAY_TAG = 'hearsay'
+export const PERSONAL_COPY_PROVENANCE_TAG = 'v'
+export const PERSONAL_COPY_PROVENANCE = Object.freeze({
+  SIGNED_EVENT: '0',
+  DIRECT_RUMOR: '1',
+  HEARSAY_RUMOR: '2'
+})
+
+const PERSONAL_COPY_PROVENANCE_VALUES = new Set(Object.values(PERSONAL_COPY_PROVENANCE))
 
 export function normalizeEventKind (kind, { allowBroad = false } = {}) {
   if (allowBroad && kind === -1) return -1
@@ -18,26 +28,6 @@ export function normalizeEventKind (kind, { allowBroad = false } = {}) {
 
 export function isPersonalCopyEvent (event) {
   return normalizeEventKind(event?.kind) === PERSONAL_COPY_KIND
-}
-
-export function personalCopyHearsayState (event) {
-  const hearsayTags = Array.isArray(event?.tags)
-    ? event.tags.filter(tag => Array.isArray(tag) && tag[0] === PERSONAL_COPY_HEARSAY_TAG)
-    : []
-
-  if (hearsayTags.length === 0) return 'absent'
-  return hearsayTags.length === 1 && hearsayTags[0].length === 1
-    ? 'hearsay'
-    : 'invalid'
-}
-
-export function hasPersonalCopyHearsay (event) {
-  return personalCopyHearsayState(event) === 'hearsay'
-}
-
-export function stripPersonalCopyHearsayTag (tags) {
-  return (Array.isArray(tags) ? tags : [])
-    .filter(tag => !Array.isArray(tag) || tag[0] !== PERSONAL_COPY_HEARSAY_TAG)
 }
 
 export function personalCopyHintKinds (event) {
@@ -50,46 +40,86 @@ export function personalCopyHintKinds (event) {
 }
 
 export function personalCopyEncryptionKind (event) {
-  const kinds = personalCopyHintKinds(event)
-  return kinds.length === 1 ? kinds[0] : null
+  const tags = exactNamedTags(event, 'k')
+  if (tags.length !== 1 || tags[0].length !== 2) return null
+
+  const kind = normalizeEventKind(tags[0][1])
+  return kind !== null && tags[0][1] === String(kind) ? kind : null
+}
+
+export function personalCopyContextValue (event) {
+  const tags = exactNamedTags(event, 'c')
+  return tags.length === 1 && tags[0].length === 2 && typeof tags[0][1] === 'string'
+    ? tags[0][1]
+    : null
+}
+
+export function personalCopyProvenanceValue (event) {
+  const tags = exactNamedTags(event, PERSONAL_COPY_PROVENANCE_TAG)
+  if (tags.length !== 1 || tags[0].length !== 2) return null
+  return PERSONAL_COPY_PROVENANCE_VALUES.has(tags[0][1]) ? tags[0][1] : null
 }
 
 export function parsePersonalCopyPlaintext (event, plaintext) {
   const inner = parseJsonObject(plaintext)
-  const innerKind = normalizeEventKind(inner?.kind)
   const hintKind = personalCopyEncryptionKind(event)
-  if (!inner || innerKind === null || hintKind === null || innerKind !== hintKind) return null
-  return normalizeInnerEvent(inner)
+  if (!inner || hintKind === null || inner.kind !== hintKind) return null
+
+  return describePersonalCopyInner(inner, { wrapperPubkey: event?.pubkey })?.inner ?? null
 }
 
-export function effectivePersonalCopyInnerPubkey (innerEvent, wrapperPubkey) {
-  const pubkey = innerEvent?.pubkey
-  if (pubkey === undefined || pubkey === null || pubkey === '') {
-    return HEX64_RE.test(wrapperPubkey || '') ? wrapperPubkey : null
+export function describePersonalCopyInner (innerEvent, { wrapperPubkey } = {}) {
+  if (!isPlainObject(innerEvent)) return null
+
+  if (hasAnyOwn(innerEvent, ['id', 'sig'])) {
+    if (!hasExactFields(innerEvent, SIGNED_EVENT_FIELDS) || !isVerifiedSignedPersonalCopyInner(innerEvent)) return null
+    return {
+      inner: innerEvent,
+      signed: true,
+      selfOwned: innerEvent.pubkey === wrapperPubkey,
+      effectivePubkey: innerEvent.pubkey,
+      sourceId: innerEvent.id,
+      allowedProvenances: [PERSONAL_COPY_PROVENANCE.SIGNED_EVENT]
+    }
   }
-  return typeof pubkey === 'string' && HEX64_RE.test(pubkey) ? pubkey : null
+
+  if (hasExactFields(innerEvent, TEMPLATE_FIELDS)) {
+    if (!HEX64_RE.test(wrapperPubkey || '') || !hasValidInnerBase(innerEvent)) return null
+    const sourceId = hashPersonalCopyInner(innerEvent, wrapperPubkey)
+    if (!HEX64_RE.test(sourceId || '')) return null
+    return {
+      inner: innerEvent,
+      signed: false,
+      selfOwned: true,
+      effectivePubkey: wrapperPubkey,
+      sourceId,
+      allowedProvenances: [PERSONAL_COPY_PROVENANCE.DIRECT_RUMOR]
+    }
+  }
+
+  if (!hasExactFields(innerEvent, RUMOR_FIELDS) || !hasValidInnerBase(innerEvent)) return null
+  if (!HEX64_RE.test(innerEvent.pubkey || '')) return null
+  if (HEX64_RE.test(wrapperPubkey || '') && innerEvent.pubkey === wrapperPubkey) return null
+  const sourceId = hashPersonalCopyInner(innerEvent, innerEvent.pubkey)
+  if (!HEX64_RE.test(sourceId || '')) return null
+
+  return {
+    inner: innerEvent,
+    signed: false,
+    selfOwned: false,
+    effectivePubkey: innerEvent.pubkey,
+    sourceId,
+    allowedProvenances: [
+      PERSONAL_COPY_PROVENANCE.DIRECT_RUMOR,
+      PERSONAL_COPY_PROVENANCE.HEARSAY_RUMOR
+    ]
+  }
 }
 
-export function isSelfOwnedPersonalCopyInner ({ innerEvent, wrapperPubkey, ownerPubkey } = {}) {
-  if (!HEX64_RE.test(ownerPubkey || '') || wrapperPubkey !== ownerPubkey) return false
-  return effectivePersonalCopyInnerPubkey(innerEvent, wrapperPubkey) === ownerPubkey
-}
-
-export function canonicalPersonalCopyInner (innerEvent, { wrapperPubkey, ownerPubkey } = {}) {
-  const inner = normalizeInnerEvent(innerEvent)
-  if (!inner) return null
-  if (!isSelfOwnedPersonalCopyInner({ innerEvent: inner, wrapperPubkey, ownerPubkey })) return inner
-
-  const canonical = { ...inner }
-  delete canonical.id
-  delete canonical.pubkey
-  delete canonical.sig
-  return canonical
-}
-
-export function isVerifiedSignedPersonalCopyInner (event) {
-  if (!event || typeof event !== 'object') return false
+function isVerifiedSignedPersonalCopyInner (event) {
+  if (!isPlainObject(event) || !hasExactFields(event, SIGNED_EVENT_FIELDS)) return false
   if (!HEX64_RE.test(event.id || '') || !HEX64_RE.test(event.pubkey || '') || !SIG_RE.test(event.sig || '')) return false
+  if (!hasValidInnerBase(event)) return false
 
   try {
     return validateEvent(event) && event.id === getEventHash(event) && verifyEvent(event)
@@ -98,22 +128,9 @@ export function isVerifiedSignedPersonalCopyInner (event) {
   }
 }
 
-// Unsigned rumors use this stable identity without adding an id to their payload.
-export function personalCopySourceId (innerEvent) {
-  const inner = normalizeInnerEvent(innerEvent)
-  if (!inner || !HEX64_RE.test(inner.pubkey || '') || !Number.isInteger(inner.created_at) || inner.created_at < 0) return null
-
-  try {
-    return getEventHash({
-      pubkey: inner.pubkey,
-      created_at: inner.created_at,
-      kind: inner.kind,
-      tags: inner.tags,
-      content: inner.content
-    })
-  } catch {
-    return null
-  }
+// Rumors and self-owned templates use the ID their equivalent signed event has.
+export function personalCopySourceId (innerEvent, { wrapperPubkey } = {}) {
+  return describePersonalCopyInner(innerEvent, { wrapperPubkey })?.sourceId ?? null
 }
 
 export async function buildPersonalCopyUnsignedEvent ({
@@ -122,165 +139,180 @@ export async function buildPersonalCopyUnsignedEvent ({
   context = '',
   hearsay = false,
   encrypt,
-  obfuscate,
-  now = () => Math.floor(Date.now() / 1000)
+  obfuscate
 }) {
-  const original = normalizeInnerEvent(originalEvent)
-  if (!original) throw new Error('INVALID_PERSONAL_COPY_INNER_EVENT')
-  if (typeof hearsay !== 'boolean') throw new Error('INVALID_PERSONAL_COPY_HEARSAY')
-
-  const selfOwned = isSelfOwnedPersonalCopyInner({
-    innerEvent: original,
-    wrapperPubkey: ownerPubkey,
-    ownerPubkey
-  })
-  if (hearsay && selfOwned) throw new Error('HEARSAY_SELF_OWNED_EVENT')
-  if (hearsay && isVerifiedSignedPersonalCopyInner(originalEvent)) throw new Error('HEARSAY_SIGNED_EVENT')
-  if (hearsay && !personalCopySourceId(original)) throw new Error('HEARSAY_RUMOR_ID_REQUIRED')
-
-  const inner = canonicalPersonalCopyInner(originalEvent, {
-    wrapperPubkey: ownerPubkey,
-    ownerPubkey
-  })
-  if (!inner) throw new Error('INVALID_PERSONAL_COPY_INNER_EVENT')
   if (!HEX64_RE.test(ownerPubkey || '')) throw new Error('PERSONAL_COPY_OWNER_REQUIRED')
+  if (typeof hearsay !== 'boolean') throw new Error('INVALID_PERSONAL_COPY_HEARSAY')
   if (typeof encrypt !== 'function') throw new Error('PERSONAL_COPY_ENCRYPT_REQUIRED')
   if (typeof obfuscate !== 'function') throw new Error('PERSONAL_COPY_OBFUSCATE_REQUIRED')
 
-  const normalizedContext = String(context ?? '')
-  const plaintext = JSON.stringify(inner)
-  const content = await encrypt(inner.kind, plaintext)
+  const prepared = preparePersonalCopyInner(originalEvent, ownerPubkey)
+  if (!prepared) throw new Error('INVALID_PERSONAL_COPY_INNER_EVENT')
+  if (hearsay && prepared.signed) throw new Error('HEARSAY_SIGNED_EVENT')
+  if (hearsay && prepared.selfOwned) throw new Error('HEARSAY_SELF_OWNED_EVENT')
+
+  const provenance = hearsay
+    ? PERSONAL_COPY_PROVENANCE.HEARSAY_RUMOR
+    : prepared.signed
+      ? PERSONAL_COPY_PROVENANCE.SIGNED_EVENT
+      : PERSONAL_COPY_PROVENANCE.DIRECT_RUMOR
+  const plaintext = JSON.stringify(prepared.inner)
+  const content = await encrypt(prepared.inner.kind, plaintext)
   const tags = await buildPersonalCopyTags({
-    innerEvent: inner,
+    innerEvent: prepared.inner,
     wrapperPubkey: ownerPubkey,
-    context: normalizedContext,
+    context,
+    provenance,
     obfuscate
   })
 
-  if (hearsay) tags.push([PERSONAL_COPY_HEARSAY_TAG])
-
-  // This placeholder declares that addPersonalCopy() wants a content-key proof.
-  // The injected NostrDB signer uses it to choose double_sign_event, and the
-  // vault replaces/fills the tag while signing the outer wrapper.
+  // The vault fills this proof while signing the outer wrapper.
   tags.push(['imkc'])
 
   return {
     kind: PERSONAL_COPY_KIND,
-    created_at: Number.isInteger(inner.created_at) ? inner.created_at : now(),
+    created_at: prepared.inner.created_at,
     tags,
     content
   }
 }
 
-export async function buildPersonalCopyTags ({ innerEvent, wrapperPubkey, context = '', obfuscate }) {
-  const inner = normalizeInnerEvent(innerEvent)
-  if (!inner) throw new Error('INVALID_PERSONAL_COPY_INNER_EVENT')
+export async function buildPersonalCopyTags ({
+  innerEvent,
+  wrapperPubkey,
+  context = '',
+  provenance,
+  obfuscate
+}) {
+  const description = describePersonalCopyInner(innerEvent, { wrapperPubkey })
+  if (!description || !description.allowedProvenances.includes(provenance)) {
+    throw new Error('INVALID_PERSONAL_COPY_PROVENANCE')
+  }
   if (typeof obfuscate !== 'function') throw new Error('PERSONAL_COPY_OBFUSCATE_REQUIRED')
 
-  const tags = [
-    ['k', String(inner.kind)],
-    ['c', await obfuscate(String(context ?? ''), PERSONAL_COPY_KIND, '')]
+  const mirrors = await buildPersonalCopyMirrorData({
+    innerEvent,
+    wrapperPubkey,
+    obfuscate
+  })
+
+  return [
+    ['k', String(innerEvent.kind)],
+    ['c', await obfuscate(String(context ?? ''), PERSONAL_COPY_KIND, '')],
+    [PERSONAL_COPY_PROVENANCE_TAG, provenance],
+    ...mirrors.tags
   ]
-  const address = personalCopyInnerAddress(inner, { wrapperPubkey })
-  if (address !== null) {
-    tags.push(['d', await obfuscate(personalCopyDValue(context, address), PERSONAL_COPY_KIND, '#d')])
-  }
-
-  tags.push(...await buildPersonalCopyMirrorTags({ innerEvent: inner, obfuscate }).then(mirrorTags => mirrorTags.slice(1)))
-
-  return tags
 }
 
-export async function buildPersonalCopyMirrorTags ({ innerEvent, obfuscate }) {
-  const inner = normalizeInnerEvent(innerEvent)
-  if (!inner) throw new Error('INVALID_PERSONAL_COPY_INNER_EVENT')
+export async function buildPersonalCopyMirrorData ({ innerEvent, wrapperPubkey, obfuscate }) {
+  const description = describePersonalCopyInner(innerEvent, { wrapperPubkey })
+  if (!description) throw new Error('INVALID_PERSONAL_COPY_INNER_EVENT')
   if (typeof obfuscate !== 'function') throw new Error('PERSONAL_COPY_OBFUSCATE_REQUIRED')
 
-  const tags = [['k', String(inner.kind)]]
-  for (const tag of inner.tags) {
-    if (!Array.isArray(tag) || typeof tag[0] !== 'string' || tag[0].length !== 1) continue
-    if (typeof tag[1] !== 'string') continue
+  const tags = []
+  for (const tag of innerEvent.tags) {
+    if (tag[0].length !== 1 || typeof tag[1] !== 'string') continue
     tags.push(['o', await obfuscate(tag[1], PERSONAL_COPY_KIND, `#${tag[0]}`)])
   }
 
-  const sourceId = personalCopySourceId(inner)
-  if (sourceId !== null) {
-    tags.push(['o', await obfuscate(sourceId, PERSONAL_COPY_KIND, '.id')])
+  const sourceMirror = await obfuscate(description.sourceId, PERSONAL_COPY_KIND, '.id')
+  const authorMirror = await obfuscate(description.effectivePubkey, PERSONAL_COPY_KIND, '.pubkey')
+  tags.push(['o', sourceMirror], ['o', authorMirror])
+
+  return {
+    tags,
+    sourceId: description.sourceId,
+    sourceMirror,
+    authorMirror
   }
-  if (typeof inner.pubkey === 'string' && HEX64_RE.test(inner.pubkey)) {
-    tags.push(['o', await obfuscate(inner.pubkey, PERSONAL_COPY_KIND, '.pubkey')])
-  }
-  return tags
-}
-
-export function personalCopyDValue (context, address) {
-  return JSON.stringify(['personal-copy-d-v1', String(context ?? ''), String(address ?? '')])
-}
-
-export function personalCopyInnerAddress (event, { wrapperPubkey } = {}) {
-  const coordinate = personalCopyInnerCoordinate(event, { wrapperPubkey })
-  return coordinate === null
-    ? null
-    : `${coordinate.kind}:${coordinate.pubkey}:${coordinate.d}`
-}
-
-export function personalCopyInnerCoordinate (event, { wrapperPubkey } = {}) {
-  const kind = normalizeEventKind(event?.kind)
-  const pubkey = effectivePersonalCopyInnerPubkey(event, wrapperPubkey)
-  if (kind === null || !pubkey) return null
-
-  const explicitD = getDTag(event)
-  if (isRegularReplaceableKind(kind)) return { kind, pubkey, d: '', explicitD: null }
-  if (isAddressableKind(kind)) return { kind, pubkey, d: explicitD ?? '', explicitD }
-  return explicitD === null ? null : { kind, pubkey, d: explicitD, explicitD }
-}
-
-export function isEditableKind (kind) {
-  return isRegularReplaceableKind(kind) || isAddressableKind(kind)
-}
-
-export function stripPersonalCopyDerivedTags (tags) {
-  return (Array.isArray(tags) ? tags : []).filter(tag => !isPersonalCopyDerivedTag(tag))
 }
 
 export function isPersonalCopyDerivedTag (tag) {
-  return Array.isArray(tag) && (tag[0] === 'k' || tag[0] === 'o')
+  return Array.isArray(tag) &&
+    (tag[0] === 'k' || tag[0] === 'o' || tag[0] === PERSONAL_COPY_PROVENANCE_TAG)
 }
 
 export function plaintextBase64 (plaintext) {
   return bytesToBase64(textEncoder.encode(String(plaintext ?? '')))
 }
 
-export function normalizeInnerEvent (event) {
-  const kind = normalizeEventKind(event?.kind)
-  if (kind === null || !event || typeof event !== 'object' || Array.isArray(event)) return null
-  return {
-    ...event,
-    kind,
-    tags: Array.isArray(event.tags) ? event.tags.filter(Array.isArray).map(tag => tag.map(value => String(value))) : [],
-    content: typeof event.content === 'string' ? event.content : ''
+function preparePersonalCopyInner (innerEvent, ownerPubkey) {
+  if (!isPlainObject(innerEvent)) return null
+
+  if (hasExactFields(innerEvent, SIGNED_EVENT_FIELDS)) {
+    return describePersonalCopyInner(innerEvent, { wrapperPubkey: ownerPubkey })
+  }
+
+  if (hasExactFields(innerEvent, TEMPLATE_FIELDS)) {
+    return describePersonalCopyInner(innerEvent, { wrapperPubkey: ownerPubkey })
+  }
+
+  if (!hasExactFields(innerEvent, RUMOR_FIELDS) || !hasValidInnerBase(innerEvent)) return null
+  if (!HEX64_RE.test(innerEvent.pubkey || '')) return null
+
+  if (innerEvent.pubkey !== ownerPubkey) {
+    return describePersonalCopyInner(innerEvent, { wrapperPubkey: ownerPubkey })
+  }
+
+  const template = {
+    kind: innerEvent.kind,
+    created_at: innerEvent.created_at,
+    tags: innerEvent.tags,
+    content: innerEvent.content
+  }
+  return describePersonalCopyInner(template, { wrapperPubkey: ownerPubkey })
+}
+
+function hashPersonalCopyInner (innerEvent, pubkey) {
+  try {
+    return getEventHash({
+      pubkey,
+      created_at: innerEvent.created_at,
+      kind: innerEvent.kind,
+      tags: innerEvent.tags,
+      content: innerEvent.content
+    })
+  } catch {
+    return null
   }
 }
 
-function getDTag (event) {
+function hasValidInnerBase (event) {
+  return Number.isInteger(event.kind) &&
+    event.kind >= 0 &&
+    event.kind <= 0xffff &&
+    Number.isInteger(event.created_at) &&
+    event.created_at >= 0 &&
+    event.created_at <= 0xffffffff &&
+    Array.isArray(event.tags) &&
+    event.tags.every(tag => Array.isArray(tag) && tag.every(value => typeof value === 'string')) &&
+    typeof event.content === 'string'
+}
+
+function exactNamedTags (event, name) {
   return Array.isArray(event?.tags)
-    ? event.tags.find(tag => Array.isArray(tag) && tag[0] === 'd')?.[1] ?? null
-    : null
+    ? event.tags.filter(tag => Array.isArray(tag) && tag[0] === name)
+    : []
 }
 
-function isRegularReplaceableKind (kind) {
-  return kind === 0 || kind === 3 || (kind >= 10000 && kind < 20000)
+function isPlainObject (value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
 }
 
-function isAddressableKind (kind) {
-  return kind >= 30000 && kind < 40000
+function hasAnyOwn (value, names) {
+  return names.some(name => Object.hasOwn(value, name))
+}
+
+function hasExactFields (value, fields) {
+  const keys = Object.keys(value).sort()
+  return keys.length === fields.length && keys.every((key, index) => key === fields[index])
 }
 
 function parseJsonObject (value) {
   if (typeof value !== 'string') return null
   try {
     const parsed = JSON.parse(value)
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null
+    return isPlainObject(parsed) ? parsed : null
   } catch {
     return null
   }

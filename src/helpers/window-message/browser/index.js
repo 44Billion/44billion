@@ -501,7 +501,6 @@ export async function initMessageListener (
           const db = getNostrDb(userPkB16, {
             ...nostrDbMaintenanceOptions(maintenanceSignEvent),
             ...(personalCopyDecrypt ? { personalCopyDecrypt } : {}),
-            ...(personalCopyEncrypt ? { personalCopyEncrypt } : {}),
             ...(personalCopyObfuscate ? { personalCopyObfuscate } : {})
           })
           const appMetadata = await getAppMetadata(appId, appAddress, { timeoutMs: 0 })

@@ -220,7 +220,6 @@ export async function runTrustedVaultNostrDbMethod ({
   const db = getNostrDb(pubkey, {
     ...nostrDbMaintenanceOptions(maintenanceSignEvent),
     personalCopyDecrypt,
-    personalCopyEncrypt,
     personalCopyObfuscate
   })
   const signEvent = createTrustedVaultNostrDbSignEvent({

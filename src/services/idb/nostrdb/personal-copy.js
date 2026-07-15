@@ -1,19 +1,24 @@
 import {
-  buildPersonalCopyMirrorTags,
-  canonicalPersonalCopyInner,
+  PERSONAL_COPY_KIND,
+  buildPersonalCopyMirrorData,
+  describePersonalCopyInner,
+  isPersonalCopyDerivedTag,
   isPersonalCopyEvent,
-  isSelfOwnedPersonalCopyInner,
-  isVerifiedSignedPersonalCopyInner,
   parsePersonalCopyPlaintext,
-  personalCopyHearsayState,
-  personalCopyInnerAddress,
-  personalCopyInnerCoordinate,
-  personalCopySourceId,
-  stripPersonalCopyDerivedTags,
-  stripPersonalCopyHearsayTag
+  personalCopyContextValue,
+  personalCopyEncryptionKind,
+  personalCopyProvenanceValue
 } from '#helpers/personal-copy.js'
 
-import { buildCrdtMergeTemplate } from './crdt.js'
+const HEX64_RE = /^[0-9a-f]{64}$/i
+const SIG_RE = /^[0-9a-f]{128}$/i
+
+// A personal copy is a signed kind-1006 wrapper whose created_at matches its
+// encrypted inner event or rumor. Plaintext k identifies the inner kind, c is
+// the obfuscated context, v records provenance, and domain-separated o tags
+// mirror the source ID, effective author, and original one-letter tags. imkc
+// carries the content-key proof. Generated wrappers omit d; a manual outer d
+// receives ordinary NostrDB replacement behavior.
 
 export async function normalizePersonalCopyForAdd (event, {
   decrypt,
@@ -21,255 +26,147 @@ export async function normalizePersonalCopyForAdd (event, {
   signEvent,
   ownerPubkey
 } = {}) {
-  if (!isPersonalCopyEvent(event)) return event
-  if (personalCopyHearsayState(event) === 'invalid') return null
-  if (typeof decrypt !== 'function') return event
+  if (!isPersonalCopyEvent(event)) return { event, personalCopy: null }
 
-  const provenance = await getPersonalCopyProvenance(event, { decrypt, ownerPubkey })
-  if (!provenance || provenance.hearsayState === 'invalid') return null
-  if (
-    provenance.hearsayState === 'hearsay' &&
-    (provenance.selfOwned || provenance.signed || provenance.sourceId === null)
-  ) return null
-
-  const inner = canonicalPersonalCopyInner(provenance.inner, {
-    wrapperPubkey: event.pubkey,
-    ownerPubkey
-  }) ?? provenance.inner
-
-  if (typeof obfuscate !== 'function' || typeof signEvent !== 'function') return event
-
-  const mirrorTags = await buildPersonalCopyMirrorTags({
-    innerEvent: inner,
-    obfuscate
-  })
-  const tags = [...mirrorTags, ...stripPersonalCopyDerivedTags(event.tags)]
-  if (sameTags(tags, event.tags)) return event
-
-  return signEvent({
-    ...event,
-    tags
-  })
-}
-
-export async function getPersonalCopyProvenance (event, { decrypt, ownerPubkey } = {}) {
-  if (!isPersonalCopyEvent(event) || typeof decrypt !== 'function') return null
-
-  const record = await decryptPersonalCopyRecord(event, decrypt)
-  if (!record) return null
-
-  const selfOwned = isSelfOwnedPersonalCopyInner({
-    innerEvent: record.inner,
-    wrapperPubkey: event.pubkey,
+  const personalCopy = await inspectPersonalCopy(event, {
+    decrypt,
+    obfuscate,
     ownerPubkey
   })
-
-  return {
-    inner: record.inner,
-    selfOwned,
-    signed: isVerifiedSignedPersonalCopyInner(record.inner),
-    hearsayState: personalCopyHearsayState(event),
-    sourceId: selfOwned ? null : personalCopySourceId(record.inner),
-    coordinate: selfOwned
-      ? null
-      : personalCopyInnerCoordinate(record.inner, { wrapperPubkey: event.pubkey })
+  if (!personalCopy) return null
+  if (sameTags(event.tags, personalCopy.canonicalTags)) {
+    return { event, personalCopy: metadataForEvent(personalCopy, event) }
   }
-}
+  if (typeof signEvent !== 'function') return null
 
-// Rebuild one target context around the selected direct inner version.
-export async function buildCanonicalPersonalCopyTemplate (targetEvent, targetProvenance, canonicalProvenance, {
-  encrypt,
-  obfuscate
-} = {}) {
-  if (!targetEvent || !targetProvenance || !canonicalProvenance) return null
-  if (typeof obfuscate !== 'function') return null
+  const template = { ...event, tags: personalCopy.canonicalTags }
+  const signed = await signPersonalCopyTemplate(signEvent, template)
+  if (!signed) return null
 
-  const canonicalInner = canonicalProvenance.inner
-  if (!Number.isInteger(canonicalInner?.created_at) || canonicalInner.created_at < 0) return null
-
-  let content = targetEvent.content
-  if (targetProvenance.sourceId !== canonicalProvenance.sourceId) {
-    if (typeof encrypt !== 'function') return null
-    content = await encrypt(canonicalInner.kind, JSON.stringify(canonicalInner))
-  }
-
-  const mirrorTags = await buildPersonalCopyMirrorTags({
-    innerEvent: canonicalInner,
-    obfuscate
+  const signedPersonalCopy = await inspectPersonalCopyTags(signed, personalCopy.innerDescription, {
+    obfuscate,
+    ownerPubkey
   })
-  const contextTags = stripPersonalCopyHearsayTag(stripPersonalCopyDerivedTags(targetEvent.tags))
+  if (!signedPersonalCopy || !sameTags(signed.tags, signedPersonalCopy.canonicalTags)) return null
 
   return {
-    ...targetEvent,
-    created_at: canonicalInner.created_at,
-    tags: [...mirrorTags, ...contextTags],
-    content
+    event: signed,
+    personalCopy: metadataForEvent(signedPersonalCopy, signed)
   }
 }
 
-export async function buildPersonalCopyMergeTemplate (incoming, existing, {
+export async function validatePersonalCopyForStorage (event, {
   decrypt,
-  encrypt,
   obfuscate,
-  crdtOptions,
   ownerPubkey
 } = {}) {
-  if (typeof obfuscate !== 'function') return null
-  if (!hasTag(incoming, 'd')) return null
+  if (!isPersonalCopyEvent(event)) return null
 
-  const incomingRecord = await decryptPersonalCopyRecord(incoming, decrypt)
-  if (!incomingRecord) return null
-  if (!isSelfOwnedPersonalCopyInner({
-    innerEvent: incomingRecord.inner,
-    wrapperPubkey: incoming.pubkey,
-    ownerPubkey
-  })) return null
-
-  const incomingInner = canonicalPersonalCopyInner(incomingRecord.inner, {
-    wrapperPubkey: incoming.pubkey,
+  const personalCopy = await inspectPersonalCopy(event, {
+    decrypt,
+    obfuscate,
     ownerPubkey
   })
-  const incomingAddress = personalCopyInnerAddress(incomingInner, { wrapperPubkey: incoming.pubkey })
-  if (incomingAddress === null) return null
-
-  const existingRecord = existing ? await decryptPersonalCopyRecord(existing, decrypt) : null
-  if (existing && !existingRecord) return null
-
-  let mergedInner = incomingInner
-  let content = await contentForPlaintext({
-    plaintext: JSON.stringify(incomingInner),
-    incomingRecord,
-    existingRecord,
-    encrypt,
-    kind: incomingInner.kind
-  })
-  if (content === null) return null
-
-  if (existingRecord) {
-    if (!hasTag(existing, 'd')) return null
-    if (!isSelfOwnedPersonalCopyInner({
-      innerEvent: existingRecord.inner,
-      wrapperPubkey: existing.pubkey,
-      ownerPubkey
-    })) return null
-
-    const existingInner = canonicalPersonalCopyInner(existingRecord.inner, {
-      wrapperPubkey: existing.pubkey,
-      ownerPubkey
-    })
-    const existingAddress = personalCopyInnerAddress(existingInner, { wrapperPubkey: existing.pubkey })
-    if (incomingAddress !== existingAddress) return null
-
-    const incomingPlaintext = JSON.stringify(incomingInner)
-    const existingPlaintext = JSON.stringify(existingInner)
-    if (incomingPlaintext === existingPlaintext && samePersonalCopyOuterMetadata(incoming, existing)) {
-      return null
-    } else {
-      mergedInner = buildCrdtMergeTemplate(
-        incomingInner,
-        existingInner,
-        crdtOptions
-      )
-      if (!mergedInner) return null
-
-      const mergedPlaintext = JSON.stringify(mergedInner)
-      content = await contentForPlaintext({
-        plaintext: mergedPlaintext,
-        incomingRecord,
-        existingRecord,
-        encrypt,
-        kind: mergedInner.kind
-      })
-      if (content === null) return null
-    }
-  }
-
-  const incomingOuter = {
-    ...incoming,
-    content,
-    tags: stripPersonalCopyDerivedTags(incoming.tags)
-  }
-  const existingOuter = existing
-    ? {
-        ...existing,
-        tags: stripPersonalCopyDerivedTags(existing.tags)
-      }
-    : null
-  const template = buildCrdtMergeTemplate(incomingOuter, existingOuter, crdtOptions)
-  if (!template) return null
-
-  const mirrorTags = await buildPersonalCopyMirrorTags({
-    innerEvent: mergedInner,
-    obfuscate
-  })
-  return {
-    ...template,
-    tags: [...mirrorTags, ...stripPersonalCopyDerivedTags(template.tags)]
-  }
+  if (!personalCopy || !sameTags(event.tags, personalCopy.canonicalTags)) return null
+  return metadataForEvent(personalCopy, event)
 }
 
-async function decryptPersonalCopyRecord (event, decrypt) {
-  if (typeof decrypt !== 'function') return null
+async function inspectPersonalCopy (event, { decrypt, obfuscate, ownerPubkey }) {
+  if (typeof decrypt !== 'function' || typeof obfuscate !== 'function') return null
+
+  let plaintext
   try {
-    const plaintext = await decrypt(event)
-    const inner = parsePersonalCopyPlaintext(event, plaintext)
-    return inner ? { event, plaintext, inner } : null
+    plaintext = await decrypt(event)
   } catch {
     return null
   }
+
+  const inner = parsePersonalCopyPlaintext(event, plaintext)
+  if (!inner) return null
+  const innerDescription = describePersonalCopyInner(inner, { wrapperPubkey: event.pubkey })
+  if (!innerDescription) return null
+
+  return inspectPersonalCopyTags(event, innerDescription, { obfuscate, ownerPubkey })
 }
 
-async function contentForPlaintext ({
-  plaintext,
-  incomingRecord,
-  existingRecord,
-  encrypt,
-  kind
-}) {
-  if (incomingRecord?.plaintext === plaintext) return incomingRecord.event.content
-  if (existingRecord?.plaintext === plaintext) return existingRecord.event.content
-  if (typeof encrypt !== 'function') return null
-  return encrypt(kind, plaintext)
-}
+async function inspectPersonalCopyTags (event, innerDescription, { obfuscate, ownerPubkey }) {
+  if (event?.pubkey !== ownerPubkey) return null
+  if (event.created_at !== innerDescription.inner.created_at) return null
+  if (event.tags.some(tag => Array.isArray(tag) && tag[0] === 'hearsay')) return null
 
-function hasTag (event, name) {
-  return Array.isArray(event?.tags) && event.tags.some(tag => Array.isArray(tag) && tag[0] === name)
-}
+  const innerKind = personalCopyEncryptionKind(event)
+  const context = personalCopyContextValue(event)
+  const provenance = personalCopyProvenanceValue(event)
+  if (innerKind !== innerDescription.inner.kind || context === null || provenance === null) return null
+  if (!innerDescription.allowedProvenances.includes(provenance)) return null
 
-function samePersonalCopyOuterMetadata (a, b) {
-  return canonicalPersonalCopyOuterMetadata(a) === canonicalPersonalCopyOuterMetadata(b)
-}
+  let mirrors
+  try {
+    mirrors = await buildPersonalCopyMirrorData({
+      innerEvent: innerDescription.inner,
+      wrapperPubkey: event.pubkey,
+      obfuscate
+    })
+  } catch {
+    return null
+  }
 
-function canonicalPersonalCopyOuterMetadata (event) {
-  return JSON.stringify(
-    stripPersonalCopyDerivedTags(event?.tags)
-      .map(normalizePersonalCopyMetadataTag)
-      .filter(Boolean)
-      .sort(compareJson)
+  const contextTag = ['c', context]
+  const remainingTags = event.tags.filter(tag =>
+    !isPersonalCopyDerivedTag(tag) &&
+    !(Array.isArray(tag) && tag[0] === 'c')
   )
+  const canonicalTags = [
+    ['k', String(innerKind)],
+    contextTag,
+    ['v', provenance],
+    ...mirrors.tags,
+    ...remainingTags
+  ]
+
+  return {
+    canonicalTags,
+    context,
+    inner: innerDescription.inner,
+    innerDescription,
+    provenance,
+    sourceId: mirrors.sourceId,
+    sourceMirror: mirrors.sourceMirror
+  }
 }
 
-function normalizePersonalCopyMetadataTag (tag) {
-  if (!Array.isArray(tag) || typeof tag[0] !== 'string') return null
-  if (tag[0] === '~' || tag[0] === 'imkc') return null
-
-  const values = tag
-    .map(value => String(value))
-    .filter(value => !value.startsWith('~'))
-
-  return values.length > 0 ? values : null
+function metadataForEvent (personalCopy, event) {
+  return {
+    context: personalCopy.context,
+    eventId: event.id,
+    eventJson: JSON.stringify(event),
+    inner: personalCopy.inner,
+    provenance: personalCopy.provenance,
+    sourceId: personalCopy.sourceId,
+    sourceMirror: personalCopy.sourceMirror
+  }
 }
 
-function compareJson (a, b) {
-  const aa = JSON.stringify(a)
-  const bb = JSON.stringify(b)
-  if (aa === bb) return 0
-  return aa < bb ? -1 : 1
+async function signPersonalCopyTemplate (signEvent, template) {
+  const before = JSON.stringify(template)
+  let signed
+
+  try {
+    signed = await signEvent(template)
+  } catch {
+    return null
+  }
+
+  if (JSON.stringify(template) !== before) return null
+  if (!signed || signed.pubkey !== template.pubkey) return null
+  if (signed.kind !== PERSONAL_COPY_KIND || signed.created_at !== template.created_at) return null
+  if (signed.content !== template.content) return null
+  if (!sameTags(signed.tags, template.tags) && !sameTagsAllowingImkcRewrite(signed.tags, template.tags)) return null
+  return signed
 }
 
 function sameTags (a, b) {
   if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
-
   return a.every((tag, index) => sameTag(tag, b[index]))
 }
 
@@ -277,5 +174,24 @@ function sameTag (a, b) {
   return Array.isArray(a) &&
     Array.isArray(b) &&
     a.length === b.length &&
-    a.every((value, valueIndex) => value === b[valueIndex])
+    a.every((value, index) => value === b[index])
+}
+
+function sameTagsAllowingImkcRewrite (signedTags, templateTags) {
+  if (!Array.isArray(signedTags) || !Array.isArray(templateTags) || signedTags.length !== templateTags.length) return false
+
+  let rewritten = 0
+  for (let index = 0; index < signedTags.length; index++) {
+    if (sameTag(signedTags[index], templateTags[index])) continue
+    if (
+      templateTags[index]?.length !== 1 ||
+      templateTags[index][0] !== 'imkc' ||
+      signedTags[index]?.length !== 3 ||
+      signedTags[index][0] !== 'imkc' ||
+      !HEX64_RE.test(signedTags[index][1] || '') ||
+      !SIG_RE.test(signedTags[index][2] || '')
+    ) return false
+    rewritten++
+  }
+  return rewritten === 1
 }

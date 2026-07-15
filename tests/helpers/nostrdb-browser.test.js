@@ -23,7 +23,10 @@ import {
   nostrDbSignMethodForTemplate,
   runNostrDbMethod
 } from '../../src/helpers/window-message/browser/nostrdb.js'
-import { personalCopySourceId } from '../../src/helpers/personal-copy.js'
+import {
+  PERSONAL_COPY_PROVENANCE,
+  personalCopySourceId
+} from '../../src/helpers/personal-copy.js'
 
 describe('nostrdb browser bridge helpers', () => {
   it('forces add appId, mergeSource, and signEvent after access permission', async () => {
@@ -93,15 +96,12 @@ describe('nostrdb browser bridge helpers', () => {
 
   it('builds, double-signs, and stores personal copies', async () => {
     const owner = 'f'.repeat(64)
-    const original = {
-      id: 'a'.repeat(64),
-      pubkey: 'b'.repeat(64),
+    const original = finalizeEvent({
       kind: 1,
       created_at: 123,
       tags: [['t', 'topicexample'], ['p', 'c'.repeat(64)]],
-      content: 'secret post',
-      sig: 'd'.repeat(128)
-    }
+      content: 'secret post'
+    }, new Uint8Array(32).fill(3))
     const calls = []
     let added
     let encryptedInner
@@ -154,14 +154,15 @@ describe('nostrdb browser bridge helpers', () => {
     assert.deepEqual(added.event.tags.slice(0, 4), [
       ['k', '1'],
       ['c', 'obf:1006::dm:alice'],
-      ['o', 'obf:1006:#t:topicexample'],
-      ['o', `obf:1006:#p:${'c'.repeat(64)}`]
+      ['v', PERSONAL_COPY_PROVENANCE.SIGNED_EVENT],
+      ['o', 'obf:1006:#t:topicexample']
     ])
+    assert.equal(added.event.tags.some(tag => tag[1] === `obf:1006:.id:${original.id}`), true)
     assert.equal(added.options.appId, 'real-app')
     assert.equal(added.options.mergeSource, 'local')
   })
 
-  it('marks unsigned third-party personal copies as hearsay without changing their payload', async () => {
+  it('marks unsigned third-party personal copies with hearsay provenance', async () => {
     const owner = 'f'.repeat(64)
     const original = {
       pubkey: 'b'.repeat(64),
@@ -195,9 +196,12 @@ describe('nostrdb browser bridge helpers', () => {
       app: { id: 'app' }
     })
 
-    assert.deepEqual(encryptedInner, original)
+    assert.deepEqual(encryptedInner, JSON.parse(JSON.stringify(original)))
     assert.equal('id' in encryptedInner, false)
-    assert.deepEqual(added.event.tags.filter(tag => tag[0] === 'hearsay'), [['hearsay']])
+    assert.deepEqual(added.event.tags.filter(tag => tag[0] === 'v'), [
+      ['v', PERSONAL_COPY_PROVENANCE.HEARSAY_RUMOR]
+    ])
+    assert.equal(added.event.tags.some(tag => tag[0] === 'hearsay'), false)
     assert.equal(added.event.tags.some(tag => tag[1] === `obf:1006:.id:${personalCopySourceId(original)}`), true)
     assert.equal('hearsay' in added.options, false)
   })
@@ -234,7 +238,7 @@ describe('nostrdb browser bridge helpers', () => {
         ...options,
         params: [{ pubkey: 'not-a-pubkey', kind: 1, created_at: 1, tags: [], content: 'unknown' }, { hearsay: true }]
       }),
-      /HEARSAY_RUMOR_ID_REQUIRED/
+      /INVALID_PERSONAL_COPY_INNER_EVENT/
     )
   })
 
@@ -268,18 +272,20 @@ describe('nostrdb browser bridge helpers', () => {
 
     assert.deepEqual(encryptedInner.tags, [['hearsay']])
     assert.equal(added.tags.some(tag => tag[0] === 'hearsay'), false)
+    assert.deepEqual(added.tags.find(tag => tag[0] === 'v'), [
+      'v',
+      PERSONAL_COPY_PROVENANCE.SIGNED_EVENT
+    ])
   })
 
-  it('strips redundant self-owned inner fields when building personal copies', async () => {
+  it('canonicalizes unsigned self-owned rumors as templates', async () => {
     const owner = 'f'.repeat(64)
     const original = {
-      id: 'a'.repeat(64),
       pubkey: owner,
       kind: 30023,
       created_at: 123,
       tags: [['d', 'post'], ['title', 'Secret post']],
-      content: 'secret post',
-      sig: 'd'.repeat(128)
+      content: 'secret post'
     }
     let encryptedInner
     let added
@@ -312,8 +318,85 @@ describe('nostrdb browser bridge helpers', () => {
     assert.equal(encryptedInner.kind, 30023)
     assert.equal(encryptedInner.content, 'secret post')
     assert.equal(added.tags.some(tag => tag[0] === 'o' && tag[1] === 'obf:1006:#d:post'), true)
-    assert.equal(added.tags.some(tag => tag[0] === 'o' && tag[1].startsWith('obf:1006:.id:')), false)
-    assert.equal(added.tags.some(tag => tag[0] === 'o' && tag[1].startsWith('obf:1006:.pubkey:')), false)
+    assert.equal(added.tags.some(tag => tag[0] === 'o' && tag[1] === `obf:1006:.id:${personalCopySourceId(encryptedInner, { wrapperPubkey: owner })}`), true)
+    assert.equal(added.tags.some(tag => tag[0] === 'o' && tag[1] === `obf:1006:.pubkey:${owner}`), true)
+    assert.deepEqual(added.tags.find(tag => tag[0] === 'v'), [
+      'v',
+      PERSONAL_COPY_PROVENANCE.DIRECT_RUMOR
+    ])
+  })
+
+  it('preserves complete verified self-owned events', async () => {
+    const original = finalizeEvent({
+      kind: 1,
+      created_at: 123,
+      tags: [],
+      content: 'signed by me'
+    }, new Uint8Array(32).fill(4))
+    let encryptedInner
+    let added
+    const db = {
+      ownerPubkey: original.pubkey,
+      async add (event) {
+        added = event
+        return { ok: true, code: 'stored' }
+      }
+    }
+
+    await runNostrDbMethod({
+      db,
+      method: 'addPersonalCopy',
+      params: [original],
+      appId: 'real-app',
+      signEvent: async template => ({
+        ...template,
+        id: 'e'.repeat(64),
+        pubkey: original.pubkey,
+        sig: '1'.repeat(128)
+      }),
+      personalCopyEncrypt: async (kind, plaintext) => {
+        encryptedInner = JSON.parse(plaintext)
+        return `cipher-${kind}`
+      },
+      personalCopyObfuscate: async (value, kind, scope) => `obf:${kind}:${scope}:${value}`,
+      requestPermission: async () => {},
+      app: { id: 'app' }
+    })
+
+    assert.deepEqual(encryptedInner, JSON.parse(JSON.stringify(original)))
+    assert.deepEqual(added.tags.find(tag => tag[0] === 'v'), [
+      'v',
+      PERSONAL_COPY_PROVENANCE.SIGNED_EVENT
+    ])
+  })
+
+  it('rejects unexpected personal-copy inner fields', async () => {
+    const owner = 'f'.repeat(64)
+    const options = {
+      db: { ownerPubkey: owner },
+      method: 'addPersonalCopy',
+      appId: 'real-app',
+      signEvent: async () => { throw new Error('UNEXPECTED_SIGN') },
+      personalCopyEncrypt: async () => { throw new Error('UNEXPECTED_ENCRYPT') },
+      personalCopyObfuscate: async () => 'obfuscated',
+      requestPermission: async () => {},
+      app: { id: 'app' }
+    }
+
+    await assert.rejects(
+      runNostrDbMethod({
+        ...options,
+        params: [{
+          pubkey: 'b'.repeat(64),
+          kind: 1,
+          created_at: 1,
+          tags: [],
+          content: 'rumor',
+          unexpected: true
+        }]
+      }),
+      /INVALID_PERSONAL_COPY_INNER_EVENT/
+    )
   })
 
   it('delegates query, count, and supports with access permissions', async () => {
