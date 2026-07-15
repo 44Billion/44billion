@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { finalizeEvent } from 'nostr-tools'
 
 import {
   INDEX,
@@ -29,6 +30,7 @@ import { appIdToDbAppRef } from '../../src/helpers/app.js'
 import {
   buildPersonalCopyTags,
   hasPersonalCopyHearsay,
+  personalCopyInnerAddress,
   personalCopySourceId
 } from '../../src/helpers/personal-copy.js'
 
@@ -84,6 +86,14 @@ describe('nostrdb', () => {
     assert.equal(toStoredRecord(expiring, { now: 50 }).ex, 100)
     assert.equal(toStoredRecord(regular, { now: 50 }).ra, 50000)
     assert.equal('ex' in toStoredRecord(regular), false)
+  })
+
+  it('derives personal-copy inner coordinates with NostrDB replacement semantics', () => {
+    assert.equal(personalCopyInnerAddress(event({ pubkey: A, kind: 0, tags: [['d', 'ignored']] })), `0:${A}:`)
+    assert.equal(personalCopyInnerAddress(event({ pubkey: A, kind: 30023, tags: [] })), `30023:${A}:`)
+    assert.equal(personalCopyInnerAddress(event({ pubkey: A, kind: 30023, tags: [['d', 'post']] })), `30023:${A}:post`)
+    assert.equal(personalCopyInnerAddress(event({ pubkey: A, kind: 1, tags: [] })), null)
+    assert.equal(personalCopyInnerAddress(event({ pubkey: A, kind: 1, tags: [['d', 'post']] })), `1:${A}:post`)
   })
 
   it('derives deletion refs', () => {
@@ -1983,6 +1993,490 @@ describe('nostrdb', () => {
     assert.equal(stored.some(event => event.content === 'cipher-second' && event.tags.some(tag => tag[1] === 'obf:1006::second')), true)
     assert.equal(stored.some(event => event.content === 'cipher-third'), true)
     assert.deepEqual(await queryResults(db, { ids: [hearsayOne.id, hearsayTwo.id] }), [])
+  })
+
+  it('replaces newer hearsay versions in every context with an older direct version', async () => {
+    const owner = hexId(31010)
+    const plaintextByCiphertext = new Map()
+    const encrypted = []
+    const db = getNostrDb(owner, {
+      personalCopyDecrypt: async wrapper => plaintextByCiphertext.get(wrapper.content) ?? '{}',
+      personalCopyEncrypt: async (kind, plaintext) => {
+        const content = `fresh-${kind}-${encrypted.length}`
+        encrypted.push(content)
+        plaintextByCiphertext.set(content, plaintext)
+        return content
+      },
+      personalCopyObfuscate: async (value, kind, scope) => `obf:${kind}:${scope}:${value}`
+    })
+    const hearsayInner = event({
+      id: hexId(31011), pubkey: A, kind: 30023, created_at: 20, tags: [['d', 'post']], content: 'new hearsay'
+    })
+    const directInner = event({
+      id: hexId(31012), pubkey: A, kind: 30023, created_at: 10, tags: [['d', 'post']], content: 'old direct'
+    })
+    const hearsayOne = await personalCopyWrapper({
+      id: hexId(31013), owner, inner: hearsayInner, context: 'first', content: 'cipher-hearsay-one', hearsay: true
+    })
+    const hearsayTwo = await personalCopyWrapper({
+      id: hexId(31014), owner, inner: hearsayInner, context: 'second', content: 'cipher-hearsay-two', hearsay: true
+    })
+    hearsayOne.tags.push(['app', 'first-app'])
+    hearsayTwo.tags.push(['app', 'second-app'])
+    const direct = await personalCopyWrapper({
+      id: hexId(31015), owner, inner: directInner, context: 'third', content: 'cipher-direct'
+    })
+    plaintextByCiphertext.set(hearsayOne.content, JSON.stringify(hearsayInner))
+    plaintextByCiphertext.set(hearsayTwo.content, JSON.stringify(hearsayInner))
+    plaintextByCiphertext.set(direct.content, JSON.stringify(directInner))
+    let nextId = 31016
+    const signEvent = template => signedFromTemplate(template, { id: hexId(nextId++), pubkey: owner })
+
+    assertAddOk(await db.add(hearsayOne))
+    assertAddOk(await db.add(hearsayTwo))
+    assertAddOk(await db.add(direct, { signEvent }), { code: 'stored', stored: true, published: true })
+
+    const stored = await queryResults(db, { kinds: [eventKinds.PERSONAL_COPY] })
+    assert.equal(stored.length, 3)
+    assert.equal(stored.every(wrapper => !hasPersonalCopyHearsay(wrapper)), true)
+    assert.equal(stored.every(wrapper => wrapper.created_at === directInner.created_at), true)
+    assert.equal(stored.every(wrapper => plaintextByCiphertext.get(wrapper.content) === JSON.stringify(directInner)), true)
+    assert.deepEqual(new Set(stored.map(wrapper => wrapper.tags.find(tag => tag[0] === 'c')?.[1])), new Set([
+      'obf:1006::first',
+      'obf:1006::second',
+      'obf:1006::third'
+    ]))
+    assert.equal(new Set(encrypted).size, 2)
+    assert.equal(encrypted.every(content => stored.some(wrapper => wrapper.content === content)), true)
+
+    const records = [...fakeStore(owner, 'events').records.values()]
+    const first = records.find(record => record.event.tags.some(tag => tag[1] === 'obf:1006::first'))
+    const second = records.find(record => record.event.tags.some(tag => tag[1] === 'obf:1006::second'))
+    assert.equal(first.event.pubkey, owner)
+    assert.equal(second.event.pubkey, owner)
+    assert.equal(first.event.tags.some(tag => tag[0] === 'app' && tag[1] === 'first-app'), true)
+    assert.equal(second.event.tags.some(tag => tag[0] === 'app' && tag[1] === 'second-app'), true)
+  })
+
+  it('canonicalizes regular replaceable and explicit-d nonstandard rumors across contexts', async () => {
+    const cases = [
+      { owner: hexId(31090), kind: 0, tags: [['d', 'ignored']] },
+      { owner: hexId(31190), kind: 1, tags: [['d', 'post']] }
+    ]
+
+    for (const [caseIndex, testCase] of cases.entries()) {
+      const plaintextByCiphertext = new Map()
+      let encryptionIndex = 0
+      const db = getNostrDb(testCase.owner, {
+        personalCopyDecrypt: async wrapper => plaintextByCiphertext.get(wrapper.content) ?? '{}',
+        personalCopyEncrypt: async (kind, plaintext) => {
+          const content = `coordinate-${caseIndex}-${kind}-${++encryptionIndex}`
+          plaintextByCiphertext.set(content, plaintext)
+          return content
+        },
+        personalCopyObfuscate: async (value, kind, scope) => `obf:${kind}:${scope}:${value}`
+      })
+      const hearsayInner = event({
+        id: hexId(31200 + caseIndex * 10),
+        pubkey: A,
+        kind: testCase.kind,
+        created_at: 20,
+        tags: testCase.tags,
+        content: 'hearsay'
+      })
+      const directInner = event({
+        id: hexId(31201 + caseIndex * 10),
+        pubkey: A,
+        kind: testCase.kind,
+        created_at: 10,
+        tags: testCase.tags,
+        content: 'direct'
+      })
+      const hearsay = await personalCopyWrapper({
+        id: hexId(31202 + caseIndex * 10),
+        owner: testCase.owner,
+        inner: hearsayInner,
+        context: 'hearsay',
+        content: `cipher-hearsay-${caseIndex}`,
+        hearsay: true
+      })
+      const direct = await personalCopyWrapper({
+        id: hexId(31203 + caseIndex * 10),
+        owner: testCase.owner,
+        inner: directInner,
+        context: 'direct',
+        content: `cipher-direct-${caseIndex}`
+      })
+      plaintextByCiphertext.set(hearsay.content, JSON.stringify(hearsayInner))
+      plaintextByCiphertext.set(direct.content, JSON.stringify(directInner))
+      let nextId = 31204 + caseIndex * 10
+      const signEvent = template => signedFromTemplate(template, {
+        id: hexId(nextId++),
+        pubkey: testCase.owner
+      })
+
+      assertAddOk(await db.add(hearsay))
+      assertAddOk(await db.add(direct, { signEvent }))
+
+      const stored = await queryResults(db, { kinds: [eventKinds.PERSONAL_COPY] })
+      assert.equal(stored.length, 2)
+      assert.equal(stored.every(wrapper => !hasPersonalCopyHearsay(wrapper)), true)
+      assert.equal(stored.every(wrapper => plaintextByCiphertext.get(wrapper.content) === JSON.stringify(directInner)), true)
+    }
+  })
+
+  it('aligns manually submitted direct wrapper timestamps with their canonical rumor', async () => {
+    const owner = hexId(31300)
+    const plaintextByCiphertext = new Map()
+    let encryptionCalls = 0
+    const db = getNostrDb(owner, {
+      personalCopyDecrypt: async wrapper => plaintextByCiphertext.get(wrapper.content) ?? '{}',
+      personalCopyEncrypt: async () => {
+        encryptionCalls++
+        return 'unexpected-cipher'
+      },
+      personalCopyObfuscate: async (value, kind, scope) => `obf:${kind}:${scope}:${value}`
+    })
+    const inner = event({
+      id: hexId(31301), pubkey: A, kind: 30023, created_at: 10, tags: [['d', 'post']], content: 'direct'
+    })
+    const first = await personalCopyWrapper({
+      id: hexId(31302), owner, inner, context: 'first', content: 'cipher-first'
+    })
+    const second = await personalCopyWrapper({
+      id: hexId(31303), owner, inner, context: 'second', content: 'cipher-second'
+    })
+    first.created_at = 30
+    second.created_at = 20
+    plaintextByCiphertext.set(first.content, JSON.stringify(inner))
+    plaintextByCiphertext.set(second.content, JSON.stringify(inner))
+    let nextId = 31304
+    const signEvent = template => signedFromTemplate(template, { id: hexId(nextId++), pubkey: owner })
+
+    assertAddOk(await db.add(first))
+    assertAddOk(await db.add(second, { signEvent }))
+
+    const stored = await queryResults(db, { kinds: [eventKinds.PERSONAL_COPY] })
+    assert.equal(stored.length, 2)
+    assert.equal(stored.every(wrapper => wrapper.created_at === inner.created_at), true)
+    assert.equal(stored.every(wrapper => !hasPersonalCopyHearsay(wrapper)), true)
+    assert.equal(encryptionCalls, 0)
+  })
+
+  it('canonicalizes older direct contexts when a newer direct version arrives', async () => {
+    const owner = hexId(31020)
+    const plaintextByCiphertext = new Map()
+    let encryptionIndex = 0
+    const db = getNostrDb(owner, {
+      personalCopyDecrypt: async wrapper => plaintextByCiphertext.get(wrapper.content) ?? '{}',
+      personalCopyEncrypt: async (kind, plaintext) => {
+        const content = `canonical-${kind}-${++encryptionIndex}`
+        plaintextByCiphertext.set(content, plaintext)
+        return content
+      },
+      personalCopyObfuscate: async (value, kind, scope) => `obf:${kind}:${scope}:${value}`
+    })
+    const oldInner = event({ id: hexId(31021), pubkey: A, kind: 30023, created_at: 10, tags: [['d', 'post']], content: 'old' })
+    const newInner = event({ id: hexId(31022), pubkey: A, kind: 30023, created_at: 20, tags: [['d', 'post']], content: 'new' })
+    const oldOne = await personalCopyWrapper({ id: hexId(31023), owner, inner: oldInner, context: 'first', content: 'cipher-old-one' })
+    const oldTwo = await personalCopyWrapper({ id: hexId(31024), owner, inner: oldInner, context: 'second', content: 'cipher-old-two' })
+    const newer = await personalCopyWrapper({ id: hexId(31025), owner, inner: newInner, context: 'third', content: 'cipher-new' })
+    plaintextByCiphertext.set(oldOne.content, JSON.stringify(oldInner))
+    plaintextByCiphertext.set(oldTwo.content, JSON.stringify(oldInner))
+    plaintextByCiphertext.set(newer.content, JSON.stringify(newInner))
+    let nextId = 31026
+    const signEvent = template => signedFromTemplate(template, { id: hexId(nextId++), pubkey: owner })
+
+    assertAddOk(await db.add(oldOne))
+    assertAddOk(await db.add(oldTwo))
+    assertAddOk(await db.add(newer, { signEvent }))
+
+    const stored = await queryResults(db, { kinds: [eventKinds.PERSONAL_COPY] })
+    assert.equal(stored.length, 3)
+    assert.equal(stored.every(wrapper => wrapper.created_at === newInner.created_at), true)
+    assert.equal(stored.every(wrapper => plaintextByCiphertext.get(wrapper.content) === JSON.stringify(newInner)), true)
+  })
+
+  it('stores incoming hearsay in a new context as the newest known direct version', async () => {
+    const owner = hexId(31030)
+    const plaintextByCiphertext = new Map()
+    const db = getNostrDb(owner, {
+      personalCopyDecrypt: async wrapper => plaintextByCiphertext.get(wrapper.content) ?? '{}',
+      personalCopyEncrypt: async (kind, plaintext) => {
+        const content = `resolved-${kind}`
+        plaintextByCiphertext.set(content, plaintext)
+        return content
+      },
+      personalCopyObfuscate: async (value, kind, scope) => `obf:${kind}:${scope}:${value}`
+    })
+    const directInner = event({ id: hexId(31031), pubkey: A, kind: 30023, created_at: 10, tags: [['d', 'post']], content: 'direct' })
+    const hearsayInner = event({ id: hexId(31032), pubkey: A, kind: 30023, created_at: 30, tags: [['d', 'post']], content: 'hearsay' })
+    const direct = await personalCopyWrapper({ id: hexId(31033), owner, inner: directInner, context: 'direct', content: 'cipher-direct' })
+    const hearsay = await personalCopyWrapper({
+      id: hexId(31034), owner, inner: hearsayInner, context: 'forwarded', content: 'cipher-hearsay', hearsay: true
+    })
+    plaintextByCiphertext.set(direct.content, JSON.stringify(directInner))
+    plaintextByCiphertext.set(hearsay.content, JSON.stringify(hearsayInner))
+    let nextId = 31035
+    const signEvent = template => signedFromTemplate(template, { id: hexId(nextId++), pubkey: owner })
+
+    assertAddOk(await db.add(direct))
+    const result = assertAddOk(await db.add(hearsay, { signEvent }), { code: 'stored', stored: true, published: true })
+
+    assert.equal(hasPersonalCopyHearsay(result.storedEvent), false)
+    assert.equal(result.storedEvent.created_at, directInner.created_at)
+    assert.equal(plaintextByCiphertext.get(result.storedEvent.content), JSON.stringify(directInner))
+    assert.equal(result.storedEvent.tags.some(tag => tag[1] === 'obf:1006::forwarded'), true)
+  })
+
+  it('keeps hearsay contexts independent while no direct version exists', async () => {
+    const owner = hexId(31040)
+    const plaintextByCiphertext = new Map()
+    const db = getNostrDb(owner, {
+      personalCopyDecrypt: async wrapper => plaintextByCiphertext.get(wrapper.content) ?? '{}',
+      personalCopyObfuscate: async (value, kind, scope) => `obf:${kind}:${scope}:${value}`
+    })
+    const oldInner = event({ id: hexId(31041), pubkey: A, kind: 30023, created_at: 10, tags: [['d', 'post']], content: 'old' })
+    const newInner = event({ id: hexId(31042), pubkey: A, kind: 30023, created_at: 20, tags: [['d', 'post']], content: 'new' })
+    const oldHearsay = await personalCopyWrapper({
+      id: hexId(31043), owner, inner: oldInner, context: 'first', content: 'cipher-old', hearsay: true
+    })
+    const newHearsay = await personalCopyWrapper({
+      id: hexId(31044), owner, inner: newInner, context: 'second', content: 'cipher-new', hearsay: true
+    })
+    plaintextByCiphertext.set(oldHearsay.content, JSON.stringify(oldInner))
+    plaintextByCiphertext.set(newHearsay.content, JSON.stringify(newInner))
+
+    assertAddOk(await db.add(oldHearsay))
+    assertAddOk(await db.add(newHearsay))
+
+    const stored = await queryResults(db, { kinds: [eventKinds.PERSONAL_COPY] })
+    assert.equal(stored.length, 2)
+    assert.equal(stored.every(hasPersonalCopyHearsay), true)
+    assert.deepEqual(new Set(stored.map(wrapper => wrapper.content)), new Set(['cipher-old', 'cipher-new']))
+  })
+
+  it('keeps signed third-party inner versions independent across contexts', async () => {
+    const owner = hexId(31320)
+    const plaintextByCiphertext = new Map()
+    let encryptCalls = 0
+    const db = getNostrDb(owner, {
+      personalCopyDecrypt: async wrapper => plaintextByCiphertext.get(wrapper.content) ?? '{}',
+      personalCopyEncrypt: async () => {
+        encryptCalls++
+        return 'unexpected-cipher'
+      },
+      personalCopyObfuscate: async (value, kind, scope) => `obf:${kind}:${scope}:${value}`
+    })
+    const secretKey = new Uint8Array(32).fill(7)
+    const oldInner = finalizeEvent({
+      kind: 30023, created_at: 10, tags: [['d', 'post']], content: 'old signed version'
+    }, secretKey)
+    const newInner = finalizeEvent({
+      kind: 30023, created_at: 20, tags: [['d', 'post']], content: 'new signed version'
+    }, secretKey)
+    const oldWrapper = await personalCopyWrapper({
+      id: hexId(31321), owner, inner: oldInner, context: 'first', content: 'cipher-signed-old'
+    })
+    const newWrapper = await personalCopyWrapper({
+      id: hexId(31322), owner, inner: newInner, context: 'second', content: 'cipher-signed-new'
+    })
+    plaintextByCiphertext.set(oldWrapper.content, JSON.stringify(oldInner))
+    plaintextByCiphertext.set(newWrapper.content, JSON.stringify(newInner))
+
+    assertAddOk(await db.add(oldWrapper))
+    assertAddOk(await db.add(newWrapper))
+
+    const stored = await queryResults(db, { kinds: [eventKinds.PERSONAL_COPY] })
+    assert.equal(stored.length, 2)
+    assert.deepEqual(new Set(stored.map(wrapper => wrapper.content)), new Set([
+      'cipher-signed-old',
+      'cipher-signed-new'
+    ]))
+    assert.equal(encryptCalls, 0)
+  })
+
+  it('uses the deterministic inner source id to break equal direct timestamps', async () => {
+    const owner = hexId(31050)
+    const plaintextByCiphertext = new Map()
+    let encryptionIndex = 0
+    const db = getNostrDb(owner, {
+      personalCopyDecrypt: async wrapper => plaintextByCiphertext.get(wrapper.content) ?? '{}',
+      personalCopyEncrypt: async (kind, plaintext) => {
+        const content = `tie-${kind}-${++encryptionIndex}`
+        plaintextByCiphertext.set(content, plaintext)
+        return content
+      },
+      personalCopyObfuscate: async (value, kind, scope) => `obf:${kind}:${scope}:${value}`
+    })
+    const variants = [
+      event({ id: hexId(31051), pubkey: A, kind: 30023, created_at: 20, tags: [['d', 'post']], content: 'alpha' }),
+      event({ id: hexId(31052), pubkey: A, kind: 30023, created_at: 20, tags: [['d', 'post']], content: 'beta' })
+    ].sort((a, b) => personalCopySourceId(a).localeCompare(personalCopySourceId(b)))
+    const winner = variants[0]
+    const loser = variants[1]
+    const loserWrapper = await personalCopyWrapper({ id: hexId(1), owner, inner: loser, context: 'first', content: 'cipher-loser' })
+    const winnerWrapper = await personalCopyWrapper({ id: hexId(999999), owner, inner: winner, context: 'second', content: 'cipher-winner' })
+    plaintextByCiphertext.set(loserWrapper.content, JSON.stringify(loser))
+    plaintextByCiphertext.set(winnerWrapper.content, JSON.stringify(winner))
+    let nextId = 31053
+    const signEvent = template => signedFromTemplate(template, { id: hexId(nextId++), pubkey: owner })
+
+    assertAddOk(await db.add(loserWrapper))
+    assertAddOk(await db.add(winnerWrapper, { signEvent }))
+
+    const stored = await queryResults(db, { kinds: [eventKinds.PERSONAL_COPY] })
+    assert.equal(stored.length, 2)
+    assert.equal(stored.every(wrapper => plaintextByCiphertext.get(wrapper.content) === JSON.stringify(winner)), true)
+  })
+
+  it('reconciles every context beyond the public query result limit', async () => {
+    const owner = hexId(31060)
+    const plaintextByCiphertext = new Map()
+    let encryptionIndex = 0
+    const db = getNostrDb(owner, {
+      personalCopyDecrypt: async wrapper => plaintextByCiphertext.get(wrapper.content) ?? '{}',
+      personalCopyEncrypt: async (kind, plaintext) => {
+        const content = `bulk-${kind}-${++encryptionIndex}`
+        plaintextByCiphertext.set(content, plaintext)
+        return content
+      },
+      personalCopyObfuscate: async (value, kind, scope) => `obf:${kind}:${scope}:${value}`
+    })
+    const hearsayInner = event({
+      id: hexId(31061), pubkey: A, kind: 30023, created_at: 30, tags: [['d', 'post']], content: 'hearsay'
+    })
+    const directInner = event({
+      id: hexId(31062), pubkey: A, kind: 30023, created_at: 10, tags: [['d', 'post']], content: 'direct'
+    })
+
+    for (let index = 0; index < 201; index++) {
+      const content = `seed-${index}`
+      const wrapper = await personalCopyWrapper({
+        id: hexId(31100 + index),
+        owner,
+        inner: hearsayInner,
+        context: `context-${index}`,
+        content,
+        hearsay: true
+      })
+      plaintextByCiphertext.set(content, JSON.stringify(hearsayInner))
+      assertAddOk(await db.addEvent(wrapper))
+    }
+
+    const direct = await personalCopyWrapper({
+      id: hexId(31400), owner, inner: directInner, context: 'direct', content: 'cipher-direct'
+    })
+    plaintextByCiphertext.set(direct.content, JSON.stringify(directInner))
+    let nextId = 400000
+    const signEvent = template => signedFromTemplate(template, { id: hexId(nextId++), pubkey: owner })
+
+    assertAddOk(await db.add(direct, { signEvent }))
+
+    const stored = [...fakeStore(owner, 'events').records.values()].map(record => record.event)
+    assert.equal(stored.length, 202)
+    assert.equal(stored.every(wrapper => !hasPersonalCopyHearsay(wrapper)), true)
+    assert.equal(stored.every(wrapper => plaintextByCiphertext.get(wrapper.content) === JSON.stringify(directInner)), true)
+    assert.equal(encryptionIndex, 201)
+  })
+
+  it('retries address reconciliation when another context is added before commit', async () => {
+    const owner = hexId(31070)
+    const plaintextByCiphertext = new Map()
+    let encryptionIndex = 0
+    const db = getNostrDb(owner, {
+      personalCopyDecrypt: async wrapper => plaintextByCiphertext.get(wrapper.content) ?? '{}',
+      personalCopyEncrypt: async (kind, plaintext) => {
+        const content = `retry-${kind}-${++encryptionIndex}`
+        plaintextByCiphertext.set(content, plaintext)
+        return content
+      },
+      personalCopyObfuscate: async (value, kind, scope) => `obf:${kind}:${scope}:${value}`
+    })
+    const hearsayInner = event({
+      id: hexId(31071), pubkey: A, kind: 30023, created_at: 20, tags: [['d', 'post']], content: 'hearsay'
+    })
+    const directInner = event({
+      id: hexId(31072), pubkey: A, kind: 30023, created_at: 10, tags: [['d', 'post']], content: 'direct'
+    })
+    const first = await personalCopyWrapper({
+      id: hexId(31073), owner, inner: hearsayInner, context: 'first', content: 'cipher-first', hearsay: true
+    })
+    const concurrent = await personalCopyWrapper({
+      id: hexId(31074), owner, inner: hearsayInner, context: 'concurrent', content: 'cipher-concurrent', hearsay: true
+    })
+    const direct = await personalCopyWrapper({
+      id: hexId(31075), owner, inner: directInner, context: 'direct', content: 'cipher-direct'
+    })
+    plaintextByCiphertext.set(first.content, JSON.stringify(hearsayInner))
+    plaintextByCiphertext.set(concurrent.content, JSON.stringify(hearsayInner))
+    plaintextByCiphertext.set(direct.content, JSON.stringify(directInner))
+    assertAddOk(await db.addEvent(first))
+
+    let inserted = false
+    let nextId = 31076
+    const signEvent = async template => {
+      if (!inserted && template.content.startsWith('retry-')) {
+        inserted = true
+        assertAddOk(await db.addEvent(concurrent))
+      }
+      return signedFromTemplate(template, { id: hexId(nextId++), pubkey: owner })
+    }
+
+    assertAddOk(await db.add(direct, { signEvent }))
+
+    const stored = await queryResults(db, { kinds: [eventKinds.PERSONAL_COPY] })
+    assert.equal(inserted, true)
+    assert.equal(stored.length, 3)
+    assert.equal(stored.every(wrapper => !hasPersonalCopyHearsay(wrapper)), true)
+    assert.equal(stored.every(wrapper => plaintextByCiphertext.get(wrapper.content) === JSON.stringify(directInner)), true)
+    assert.equal(encryptionIndex, 3)
+  })
+
+  it('leaves every context unchanged when canonical re-encryption fails', async () => {
+    const owner = hexId(31080)
+    const plaintextByCiphertext = new Map()
+    let encryptionCalls = 0
+    const db = getNostrDb(owner, {
+      personalCopyDecrypt: async wrapper => plaintextByCiphertext.get(wrapper.content) ?? '{}',
+      personalCopyEncrypt: async (kind, plaintext) => {
+        encryptionCalls++
+        if (encryptionCalls === 2) throw new Error('ENCRYPT_FAILED')
+        const content = `unused-${kind}`
+        plaintextByCiphertext.set(content, plaintext)
+        return content
+      },
+      personalCopyObfuscate: async (value, kind, scope) => `obf:${kind}:${scope}:${value}`
+    })
+    const hearsayInner = event({
+      id: hexId(31081), pubkey: A, kind: 30023, created_at: 20, tags: [['d', 'post']], content: 'hearsay'
+    })
+    const directInner = event({
+      id: hexId(31082), pubkey: A, kind: 30023, created_at: 10, tags: [['d', 'post']], content: 'direct'
+    })
+    const first = await personalCopyWrapper({
+      id: hexId(31083), owner, inner: hearsayInner, context: 'first', content: 'cipher-first', hearsay: true
+    })
+    const second = await personalCopyWrapper({
+      id: hexId(31084), owner, inner: hearsayInner, context: 'second', content: 'cipher-second', hearsay: true
+    })
+    const direct = await personalCopyWrapper({
+      id: hexId(31085), owner, inner: directInner, context: 'direct', content: 'cipher-direct'
+    })
+    plaintextByCiphertext.set(first.content, JSON.stringify(hearsayInner))
+    plaintextByCiphertext.set(second.content, JSON.stringify(hearsayInner))
+    plaintextByCiphertext.set(direct.content, JSON.stringify(directInner))
+    assertAddOk(await db.addEvent(first))
+    assertAddOk(await db.addEvent(second))
+    let nextId = 31086
+    const signEvent = template => signedFromTemplate(template, { id: hexId(nextId++), pubkey: owner })
+
+    assertAddNotOk(await db.add(direct, { signEvent }), { code: 'invalid' })
+
+    const stored = await queryResults(db, { kinds: [eventKinds.PERSONAL_COPY] })
+    assert.equal(encryptionCalls, 2)
+    assert.deepEqual(new Set(stored.map(wrapper => wrapper.id)), new Set([first.id, second.id]))
+    assert.equal(stored.every(hasPersonalCopyHearsay), true)
   })
 
   it('stores later hearsay copies as direct when a matching direct copy already exists', async () => {

@@ -218,15 +218,25 @@ export function personalCopyDValue (context, address) {
 }
 
 export function personalCopyInnerAddress (event, { wrapperPubkey } = {}) {
+  const coordinate = personalCopyInnerCoordinate(event, { wrapperPubkey })
+  return coordinate === null
+    ? null
+    : `${coordinate.kind}:${coordinate.pubkey}:${coordinate.d}`
+}
+
+export function personalCopyInnerCoordinate (event, { wrapperPubkey } = {}) {
   const kind = normalizeEventKind(event?.kind)
   const pubkey = effectivePersonalCopyInnerPubkey(event, wrapperPubkey)
-  if (kind === null || !pubkey || !isEditableKind(kind)) return null
-  const d = getDTag(event) ?? ''
-  return `${kind}:${pubkey}:${d}`
+  if (kind === null || !pubkey) return null
+
+  const explicitD = getDTag(event)
+  if (isRegularReplaceableKind(kind)) return { kind, pubkey, d: '', explicitD: null }
+  if (isAddressableKind(kind)) return { kind, pubkey, d: explicitD ?? '', explicitD }
+  return explicitD === null ? null : { kind, pubkey, d: explicitD, explicitD }
 }
 
 export function isEditableKind (kind) {
-  return kind === 0 || kind === 3 || (kind >= 10000 && kind < 20000) || (kind >= 30000 && kind < 40000)
+  return isRegularReplaceableKind(kind) || isAddressableKind(kind)
 }
 
 export function stripPersonalCopyDerivedTags (tags) {
@@ -256,6 +266,14 @@ function getDTag (event) {
   return Array.isArray(event?.tags)
     ? event.tags.find(tag => Array.isArray(tag) && tag[0] === 'd')?.[1] ?? null
     : null
+}
+
+function isRegularReplaceableKind (kind) {
+  return kind === 0 || kind === 3 || (kind >= 10000 && kind < 20000)
+}
+
+function isAddressableKind (kind) {
+  return kind >= 30000 && kind < 40000
 }
 
 function parseJsonObject (value) {

@@ -7,8 +7,10 @@ import {
   parsePersonalCopyPlaintext,
   personalCopyHearsayState,
   personalCopyInnerAddress,
+  personalCopyInnerCoordinate,
   personalCopySourceId,
-  stripPersonalCopyDerivedTags
+  stripPersonalCopyDerivedTags,
+  stripPersonalCopyHearsayTag
 } from '#helpers/personal-copy.js'
 
 import { buildCrdtMergeTemplate } from './crdt.js'
@@ -67,7 +69,41 @@ export async function getPersonalCopyProvenance (event, { decrypt, ownerPubkey }
     selfOwned,
     signed: isVerifiedSignedPersonalCopyInner(record.inner),
     hearsayState: personalCopyHearsayState(event),
-    sourceId: selfOwned ? null : personalCopySourceId(record.inner)
+    sourceId: selfOwned ? null : personalCopySourceId(record.inner),
+    coordinate: selfOwned
+      ? null
+      : personalCopyInnerCoordinate(record.inner, { wrapperPubkey: event.pubkey })
+  }
+}
+
+// Rebuild one target context around the selected direct inner version.
+export async function buildCanonicalPersonalCopyTemplate (targetEvent, targetProvenance, canonicalProvenance, {
+  encrypt,
+  obfuscate
+} = {}) {
+  if (!targetEvent || !targetProvenance || !canonicalProvenance) return null
+  if (typeof obfuscate !== 'function') return null
+
+  const canonicalInner = canonicalProvenance.inner
+  if (!Number.isInteger(canonicalInner?.created_at) || canonicalInner.created_at < 0) return null
+
+  let content = targetEvent.content
+  if (targetProvenance.sourceId !== canonicalProvenance.sourceId) {
+    if (typeof encrypt !== 'function') return null
+    content = await encrypt(canonicalInner.kind, JSON.stringify(canonicalInner))
+  }
+
+  const mirrorTags = await buildPersonalCopyMirrorTags({
+    innerEvent: canonicalInner,
+    obfuscate
+  })
+  const contextTags = stripPersonalCopyHearsayTag(stripPersonalCopyDerivedTags(targetEvent.tags))
+
+  return {
+    ...targetEvent,
+    created_at: canonicalInner.created_at,
+    tags: [...mirrorTags, ...contextTags],
+    content
   }
 }
 
