@@ -3,8 +3,11 @@ import {
   canonicalPersonalCopyInner,
   isPersonalCopyEvent,
   isSelfOwnedPersonalCopyInner,
+  isVerifiedSignedPersonalCopyInner,
   parsePersonalCopyPlaintext,
+  personalCopyHearsayState,
   personalCopyInnerAddress,
+  personalCopySourceId,
   stripPersonalCopyDerivedTags
 } from '#helpers/personal-copy.js'
 
@@ -17,14 +20,20 @@ export async function normalizePersonalCopyForAdd (event, {
   ownerPubkey
 } = {}) {
   if (!isPersonalCopyEvent(event)) return event
+  if (personalCopyHearsayState(event) === 'invalid') return null
   if (typeof decrypt !== 'function') return event
 
-  const record = await decryptPersonalCopyRecord(event, decrypt)
-  if (!record) return null
-  const inner = canonicalPersonalCopyInner(record.inner, {
+  const provenance = await getPersonalCopyProvenance(event, { decrypt, ownerPubkey })
+  if (!provenance || provenance.hearsayState === 'invalid') return null
+  if (
+    provenance.hearsayState === 'hearsay' &&
+    (provenance.selfOwned || provenance.signed || provenance.sourceId === null)
+  ) return null
+
+  const inner = canonicalPersonalCopyInner(provenance.inner, {
     wrapperPubkey: event.pubkey,
     ownerPubkey
-  }) ?? record.inner
+  }) ?? provenance.inner
 
   if (typeof obfuscate !== 'function' || typeof signEvent !== 'function') return event
 
@@ -39,6 +48,27 @@ export async function normalizePersonalCopyForAdd (event, {
     ...event,
     tags
   })
+}
+
+export async function getPersonalCopyProvenance (event, { decrypt, ownerPubkey } = {}) {
+  if (!isPersonalCopyEvent(event) || typeof decrypt !== 'function') return null
+
+  const record = await decryptPersonalCopyRecord(event, decrypt)
+  if (!record) return null
+
+  const selfOwned = isSelfOwnedPersonalCopyInner({
+    innerEvent: record.inner,
+    wrapperPubkey: event.pubkey,
+    ownerPubkey
+  })
+
+  return {
+    inner: record.inner,
+    selfOwned,
+    signed: isVerifiedSignedPersonalCopyInner(record.inner),
+    hearsayState: personalCopyHearsayState(event),
+    sourceId: selfOwned ? null : personalCopySourceId(record.inner)
+  }
 }
 
 export async function buildPersonalCopyMergeTemplate (incoming, existing, {

@@ -5,7 +5,9 @@ import { appIdToDbAppRef } from '#helpers/app.js'
 import { base16ToBase64, base64ToBase16, bytesToBase64 } from '#helpers/base64.js'
 import {
   PERSONAL_COPY_KIND,
-  isPersonalCopyEvent
+  hasPersonalCopyHearsay,
+  isPersonalCopyEvent,
+  stripPersonalCopyHearsayTag
 } from '#helpers/personal-copy.js'
 import { run } from '#services/idb/browser/index.js'
 import {
@@ -29,6 +31,7 @@ import {
 import { buildCrdtMergeTemplate } from './crdt.js'
 import {
   buildPersonalCopyMergeTemplate,
+  getPersonalCopyProvenance,
   normalizePersonalCopyForAdd
 } from './personal-copy.js'
 
@@ -116,6 +119,7 @@ const storeCache = new Map()
 const ADD_FAILURE_CODES = new Set(['invalid', 'invalid_app', 'expired', 'blocked', 'unavailable', 'error'])
 const QUERY_SCORES = Symbol('nostrdb.queryScores')
 const STORED_RECORD = Symbol('nostrdb.storedRecord')
+const PERSONAL_COPY_PROVENANCE_REPLACEMENTS = Symbol('nostrdb.personalCopyProvenanceReplacements')
 const ADD_MESSAGES = {
   stored: 'Event was stored.',
   replaced: 'Event replaced an older stored coordinate event.',
@@ -153,7 +157,22 @@ function addResult (code, {
 }
 
 function publishResult (result) {
-  return { ...result, published: true }
+  const published = { ...result, published: true }
+  if (Object.hasOwn(result, 'storedEvent')) {
+    Object.defineProperty(published, 'storedEvent', { value: result.storedEvent })
+  }
+  return published
+}
+
+function addResultWithPersonalCopyProvenanceReplacements (code, {
+  replacements = [],
+  ...options
+} = {}) {
+  const result = addResult(code, options)
+  if (replacements.length > 0) {
+    Object.defineProperty(result, PERSONAL_COPY_PROVENANCE_REPLACEMENTS, { value: replacements })
+  }
+  return result
 }
 
 function logNostrDbIssue (method, details, error) {
@@ -263,6 +282,7 @@ export class NostrDb {
     maxTombstoneTags,
     tombstoneTagName
   } = {}) {
+    const inputEvent = event
     event = await normalizePersonalCopyForAdd(event, {
       decrypt: this.personalCopyDecrypt,
       obfuscate: this.personalCopyObfuscate,
@@ -291,6 +311,12 @@ export class NostrDb {
       return addResult('published', { published: true })
     }
 
+    const personalCopyProvenance = await this.preparePersonalCopyProvenance(event, { signEvent })
+    if (personalCopyProvenance === null) {
+      return this.reportAddResult('add', event, addResult('invalid'))
+    }
+    event = personalCopyProvenance.event
+
     let eventToStore = event
     const crdtMergeSource = normalizeCrdtMergeSource(mergeSource)
     const shouldMergeReplaceable = mergeReplaceable ?? (typeof signEvent === 'function' && event.pubkey === this.ownerPubkey)
@@ -312,14 +338,20 @@ export class NostrDb {
       now,
       appRef,
       forceCoordinateReplace: !!mergedEvent && crdtMergeSource === 'sync',
+      personalCopyProvenanceReplacements: personalCopyProvenance.replacements,
       log: false
     })
+    const provenanceReplacements = result[PERSONAL_COPY_PROVENANCE_REPLACEMENTS] ?? []
+    for (const replacement of provenanceReplacements) {
+      this.publish(replacement.event, true, replacement.record)
+    }
     if (mergedEvent && result.stored && (result.code === 'stored' || result.code === 'replaced')) {
       result.merged = true
       result.inputId = event.id
       result.storedId = mergedEvent.id
     }
     if (result.stored && (result.code === 'stored' || result.code === 'replaced')) {
+      if (eventToStore !== inputEvent) Object.defineProperty(result, 'storedEvent', { value: eventToStore })
       this.publish(eventToStore, true, result[STORED_RECORD])
       return publishResult(result)
     }
@@ -379,6 +411,71 @@ export class NostrDb {
     return null
   }
 
+  async preparePersonalCopyProvenance (event, { signEvent } = {}) {
+    if (!isPersonalCopyEvent(event)) return { event, replacements: [] }
+    if (typeof this.personalCopyDecrypt !== 'function') return { event, replacements: [] }
+
+    const provenance = await getPersonalCopyProvenance(event, {
+      decrypt: this.personalCopyDecrypt,
+      ownerPubkey: this.ownerPubkey
+    })
+    if (!provenance || provenance.hearsayState === 'invalid') return null
+    if (provenance.selfOwned || provenance.sourceId === null) return { event, replacements: [] }
+    if (typeof this.personalCopyObfuscate !== 'function') return { event, replacements: [] }
+
+    let sourceMirror
+    try {
+      sourceMirror = await this.personalCopyObfuscate(provenance.sourceId, PERSONAL_COPY_KIND, '.id')
+    } catch {
+      return null
+    }
+
+    const { results } = await this.query({
+      authors: [this.ownerPubkey],
+      kinds: [PERSONAL_COPY_KIND],
+      '#o': [sourceMirror]
+    })
+    const candidates = []
+
+    for (const candidate of results) {
+      if (candidate.id === event.id || candidate.pubkey !== this.ownerPubkey) continue
+
+      const candidateProvenance = await getPersonalCopyProvenance(candidate, {
+        decrypt: this.personalCopyDecrypt,
+        ownerPubkey: this.ownerPubkey
+      })
+      if (!candidateProvenance || candidateProvenance.hearsayState === 'invalid') continue
+      if (candidateProvenance.selfOwned || candidateProvenance.sourceId !== provenance.sourceId) continue
+
+      candidates.push({ event: candidate, provenance: candidateProvenance })
+    }
+
+    let resolvedEvent = event
+    let incomingIsHearsay = provenance.hearsayState === 'hearsay'
+    const hasDirectCopy = candidates.some(candidate => candidate.provenance.hearsayState === 'absent')
+
+    if (incomingIsHearsay && hasDirectCopy) {
+      resolvedEvent = await signPersonalCopyProvenanceTemplate(signEvent, event, this.ownerPubkey)
+      if (resolvedEvent === null) return null
+      incomingIsHearsay = false
+    }
+
+    if (incomingIsHearsay) return { event: resolvedEvent, replacements: [] }
+
+    // One direct receipt upgrades every matching local context without touching the rumor payload.
+    const replacements = []
+    for (const candidate of candidates) {
+      if (candidate.provenance.hearsayState !== 'hearsay') continue
+      if (samePersonalCopyCoordinate(candidate.event, resolvedEvent)) continue
+
+      const replacement = await signPersonalCopyProvenanceTemplate(signEvent, candidate.event, this.ownerPubkey)
+      if (replacement === null || replacement.id === candidate.event.id) return null
+      replacements.push({ expectedId: candidate.event.id, event: replacement })
+    }
+
+    return { event: resolvedEvent, replacements }
+  }
+
   // Durable write path used internally by add() and compaction; it updates
   // IndexedDB/tombstones but does not publish events by itself.
   async addEvent (event, {
@@ -387,6 +484,7 @@ export class NostrDb {
     consumeDeletionRequestIds = [],
     now = currentUnixTime(),
     forceCoordinateReplace = false,
+    personalCopyProvenanceReplacements = [],
     log = true
   } = {}) {
     if (!isValidEventShape(event)) {
@@ -411,9 +509,11 @@ export class NostrDb {
 
     const record = toStoredRecord(event, { now, appRef })
     let replaced = false
+    let provenanceReplacementRecords = []
+    let tx
 
     try {
-      const tx = db.transaction([EVENTS_STORE, DELETIONS_STORE], 'readwrite')
+      tx = db.transaction([EVENTS_STORE, DELETIONS_STORE], 'readwrite')
       const done = txDone(tx)
 
       const existingById = await run('get', [record.i], EVENTS_STORE, null, { db, tx })
@@ -431,15 +531,32 @@ export class NostrDb {
         return this.reportAddResult('addEvent', event, addResult('blocked'), { log })
       }
 
+      provenanceReplacementRecords = await applyPersonalCopyProvenanceReplacements(
+        db,
+        tx,
+        personalCopyProvenanceReplacements,
+        now
+      )
+
       if (record.a) {
         const existingByAddress = await run('get', [record.a], EVENTS_STORE, INDEX.address, { db, tx })
           .then(v => v.result)
 
-        if (existingByAddress && !forceCoordinateReplace && !isNewer(event, existingByAddress.event)) {
+        const provenancePriority = existingByAddress
+          ? personalCopyCoordinateProvenancePriority(event, existingByAddress.event)
+          : 0
+
+        if (
+          existingByAddress &&
+          (provenancePriority < 0 || (!forceCoordinateReplace && provenancePriority === 0 && !isNewer(event, existingByAddress.event)))
+        ) {
           const changed = mergeAppRef(existingByAddress, appRef)
           if (changed) await run('put', [existingByAddress], EVENTS_STORE, null, { db, tx })
           await done
-          return addResult('superseded', { stored: changed })
+          return addResultWithPersonalCopyProvenanceReplacements('superseded', {
+            stored: changed || provenanceReplacementRecords.length > 0,
+            replacements: provenanceReplacementRecords
+          })
         }
 
         if (existingByAddress) {
@@ -466,10 +583,18 @@ export class NostrDb {
       await run('put', [record], EVENTS_STORE, null, { db, tx })
       await done
     } catch {
+      try {
+        tx?.abort()
+      } catch {
+      }
       return this.reportAddResult('addEvent', event, addResult('error'), { log })
     }
 
-    return addResult(replaced ? 'replaced' : 'stored', { stored: true, storedRecord: record })
+    return addResultWithPersonalCopyProvenanceReplacements(replaced ? 'replaced' : 'stored', {
+      stored: true,
+      storedRecord: record,
+      replacements: provenanceReplacementRecords
+    })
   }
 
   reportAddResult (method, event, result, { log = true } = {}) {
@@ -2652,6 +2777,61 @@ async function getStoredRecordByAddress (db, address) {
     .then(value => value.result)
 }
 
+async function signPersonalCopyProvenanceTemplate (signEvent, event, ownerPubkey) {
+  if (typeof signEvent !== 'function' || event?.pubkey !== ownerPubkey) return null
+
+  const template = {
+    ...event,
+    tags: stripPersonalCopyHearsayTag(event.tags)
+  }
+  const signed = await signCrdtTemplate(signEvent, template)
+  if (!isValidEventShape(signed)) return null
+  if (signed.id === event.id || signed.pubkey !== ownerPubkey) return null
+  if (signed.kind !== template.kind || signed.created_at !== template.created_at || signed.content !== template.content) return null
+  if (!sameTags(signed.tags, template.tags) && !sameTagsAllowingImkcRewrite(signed.tags, template.tags)) return null
+  return signed
+}
+
+// Re-sign before entering IDB so every direct-provenance upgrade swaps atomically.
+async function applyPersonalCopyProvenanceReplacements (db, tx, replacements, now) {
+  if (!Array.isArray(replacements) || replacements.length === 0) return []
+
+  const saved = []
+  const expectedIds = new Set()
+  for (const replacement of replacements) {
+    if (!replacement?.event || typeof replacement.expectedId !== 'string') throw new Error('INVALID_PERSONAL_COPY_PROVENANCE_REPLACEMENT')
+    if (replacement.event.id === replacement.expectedId || expectedIds.has(replacement.expectedId)) {
+      throw new Error('INVALID_PERSONAL_COPY_PROVENANCE_REPLACEMENT')
+    }
+    expectedIds.add(replacement.expectedId)
+
+    const existing = await run('get', [eventIdIndexKey(replacement.expectedId)], EVENTS_STORE, null, { db, tx })
+      .then(value => value.result)
+    if (!existing || !hasPersonalCopyHearsay(existing.event)) {
+      throw new Error('STALE_PERSONAL_COPY_PROVENANCE_REPLACEMENT')
+    }
+
+    const record = toStoredRecord(replacement.event, { now })
+    if (compareKeys(record.a ?? null, existing.a ?? null) !== 0) {
+      throw new Error('INVALID_PERSONAL_COPY_PROVENANCE_REPLACEMENT')
+    }
+
+    const duplicate = await run('get', [record.i], EVENTS_STORE, null, { db, tx })
+      .then(value => value.result)
+    if (duplicate) throw new Error('DUPLICATE_PERSONAL_COPY_PROVENANCE_REPLACEMENT')
+
+    if (Array.isArray(existing.ap)) record.ap = [...existing.ap]
+    if (Number.isFinite(existing.ra)) record.ra = existing.ra
+    record.sa = await nextSyncAnchor(db, tx, replacement.event, now)
+
+    await deleteStoredEvent(db, tx, existing)
+    await run('put', [record], EVENTS_STORE, null, { db, tx })
+    saved.push({ event: replacement.event, record })
+  }
+
+  return saved
+}
+
 async function signCrdtTemplate (signEvent, template) {
   const before = JSON.stringify(template)
   let signed
@@ -2894,6 +3074,26 @@ export function isNewer (event, other) {
   if (event.created_at > other.created_at) return true
   if (event.created_at < other.created_at) return false
   return event.id < other.id
+}
+
+function samePersonalCopyCoordinate (a, b) {
+  if (!isPersonalCopyEvent(a) || !isPersonalCopyEvent(b)) return false
+  if (a.pubkey !== b.pubkey || a.kind !== b.kind) return false
+
+  const aCoordinate = getCoordinate(a)
+  const bCoordinate = getCoordinate(b)
+  return aCoordinate !== null && aCoordinate === bCoordinate
+}
+
+function personalCopyCoordinateProvenancePriority (incoming, existing) {
+  if (!isPersonalCopyEvent(incoming) || !isPersonalCopyEvent(existing)) return 0
+
+  const incomingIsHearsay = hasPersonalCopyHearsay(incoming)
+  const existingIsHearsay = hasPersonalCopyHearsay(existing)
+  if (incomingIsHearsay === existingIsHearsay) return 0
+
+  // A direct third-party receipt is stronger local evidence than a later forwarded copy.
+  return incomingIsHearsay ? -1 : 1
 }
 
 export function currentUnixTime () {

@@ -1,10 +1,14 @@
+import { getEventHash, validateEvent, verifyEvent } from 'nostr-tools'
+
 import { eventKinds } from '#constants/event.js'
 import { bytesToBase64 } from '#helpers/base64.js'
 
 const textEncoder = new TextEncoder()
 const HEX64_RE = /^[0-9a-f]{64}$/i
+const SIG_RE = /^[0-9a-f]{128}$/i
 
 export const PERSONAL_COPY_KIND = eventKinds.PERSONAL_COPY
+export const PERSONAL_COPY_HEARSAY_TAG = 'hearsay'
 
 export function normalizeEventKind (kind, { allowBroad = false } = {}) {
   if (allowBroad && kind === -1) return -1
@@ -14,6 +18,26 @@ export function normalizeEventKind (kind, { allowBroad = false } = {}) {
 
 export function isPersonalCopyEvent (event) {
   return normalizeEventKind(event?.kind) === PERSONAL_COPY_KIND
+}
+
+export function personalCopyHearsayState (event) {
+  const hearsayTags = Array.isArray(event?.tags)
+    ? event.tags.filter(tag => Array.isArray(tag) && tag[0] === PERSONAL_COPY_HEARSAY_TAG)
+    : []
+
+  if (hearsayTags.length === 0) return 'absent'
+  return hearsayTags.length === 1 && hearsayTags[0].length === 1
+    ? 'hearsay'
+    : 'invalid'
+}
+
+export function hasPersonalCopyHearsay (event) {
+  return personalCopyHearsayState(event) === 'hearsay'
+}
+
+export function stripPersonalCopyHearsayTag (tags) {
+  return (Array.isArray(tags) ? tags : [])
+    .filter(tag => !Array.isArray(tag) || tag[0] !== PERSONAL_COPY_HEARSAY_TAG)
 }
 
 export function personalCopyHintKinds (event) {
@@ -63,14 +87,57 @@ export function canonicalPersonalCopyInner (innerEvent, { wrapperPubkey, ownerPu
   return canonical
 }
 
+export function isVerifiedSignedPersonalCopyInner (event) {
+  if (!event || typeof event !== 'object') return false
+  if (!HEX64_RE.test(event.id || '') || !HEX64_RE.test(event.pubkey || '') || !SIG_RE.test(event.sig || '')) return false
+
+  try {
+    return validateEvent(event) && event.id === getEventHash(event) && verifyEvent(event)
+  } catch {
+    return false
+  }
+}
+
+// Unsigned rumors use this stable identity without adding an id to their payload.
+export function personalCopySourceId (innerEvent) {
+  const inner = normalizeInnerEvent(innerEvent)
+  if (!inner || !HEX64_RE.test(inner.pubkey || '') || !Number.isInteger(inner.created_at) || inner.created_at < 0) return null
+
+  try {
+    return getEventHash({
+      pubkey: inner.pubkey,
+      created_at: inner.created_at,
+      kind: inner.kind,
+      tags: inner.tags,
+      content: inner.content
+    })
+  } catch {
+    return null
+  }
+}
+
 export async function buildPersonalCopyUnsignedEvent ({
   originalEvent,
   ownerPubkey,
   context = '',
+  hearsay = false,
   encrypt,
   obfuscate,
   now = () => Math.floor(Date.now() / 1000)
 }) {
+  const original = normalizeInnerEvent(originalEvent)
+  if (!original) throw new Error('INVALID_PERSONAL_COPY_INNER_EVENT')
+  if (typeof hearsay !== 'boolean') throw new Error('INVALID_PERSONAL_COPY_HEARSAY')
+
+  const selfOwned = isSelfOwnedPersonalCopyInner({
+    innerEvent: original,
+    wrapperPubkey: ownerPubkey,
+    ownerPubkey
+  })
+  if (hearsay && selfOwned) throw new Error('HEARSAY_SELF_OWNED_EVENT')
+  if (hearsay && isVerifiedSignedPersonalCopyInner(originalEvent)) throw new Error('HEARSAY_SIGNED_EVENT')
+  if (hearsay && !personalCopySourceId(original)) throw new Error('HEARSAY_RUMOR_ID_REQUIRED')
+
   const inner = canonicalPersonalCopyInner(originalEvent, {
     wrapperPubkey: ownerPubkey,
     ownerPubkey
@@ -89,6 +156,8 @@ export async function buildPersonalCopyUnsignedEvent ({
     context: normalizedContext,
     obfuscate
   })
+
+  if (hearsay) tags.push([PERSONAL_COPY_HEARSAY_TAG])
 
   // This placeholder declares that addPersonalCopy() wants a content-key proof.
   // The injected NostrDB signer uses it to choose double_sign_event, and the
@@ -134,8 +203,9 @@ export async function buildPersonalCopyMirrorTags ({ innerEvent, obfuscate }) {
     tags.push(['o', await obfuscate(tag[1], PERSONAL_COPY_KIND, `#${tag[0]}`)])
   }
 
-  if (typeof inner.id === 'string' && HEX64_RE.test(inner.id)) {
-    tags.push(['o', await obfuscate(inner.id, PERSONAL_COPY_KIND, '.id')])
+  const sourceId = personalCopySourceId(inner)
+  if (sourceId !== null) {
+    tags.push(['o', await obfuscate(sourceId, PERSONAL_COPY_KIND, '.id')])
   }
   if (typeof inner.pubkey === 'string' && HEX64_RE.test(inner.pubkey)) {
     tags.push(['o', await obfuscate(inner.pubkey, PERSONAL_COPY_KIND, '.pubkey')])

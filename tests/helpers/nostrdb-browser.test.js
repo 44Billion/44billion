@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { finalizeEvent } from 'nostr-tools'
 
 import {
   BROAD_EVENT_KIND,
@@ -22,6 +23,7 @@ import {
   nostrDbSignMethodForTemplate,
   runNostrDbMethod
 } from '../../src/helpers/window-message/browser/nostrdb.js'
+import { personalCopySourceId } from '../../src/helpers/personal-copy.js'
 
 describe('nostrdb browser bridge helpers', () => {
   it('forces add appId, mergeSource, and signEvent after access permission', async () => {
@@ -157,6 +159,115 @@ describe('nostrdb browser bridge helpers', () => {
     ])
     assert.equal(added.options.appId, 'real-app')
     assert.equal(added.options.mergeSource, 'local')
+  })
+
+  it('marks unsigned third-party personal copies as hearsay without changing their payload', async () => {
+    const owner = 'f'.repeat(64)
+    const original = {
+      pubkey: 'b'.repeat(64),
+      kind: 1,
+      created_at: 123,
+      tags: [['t', 'topicexample']],
+      content: 'secret post'
+    }
+    let encryptedInner
+    let added
+    const db = {
+      ownerPubkey: owner,
+      async add (event, options) {
+        added = { event, options }
+        return { ok: true, code: 'stored' }
+      }
+    }
+
+    await runNostrDbMethod({
+      db,
+      method: 'addPersonalCopy',
+      params: [original, { context: 'dm:alice', hearsay: true }],
+      appId: 'real-app',
+      signEvent: async template => ({ ...template, id: 'e'.repeat(64), pubkey: owner, sig: '1'.repeat(128) }),
+      personalCopyEncrypt: async (kind, plaintext) => {
+        encryptedInner = JSON.parse(plaintext)
+        return `cipher-${kind}`
+      },
+      personalCopyObfuscate: async (value, kind, scope) => `obf:${kind}:${scope}:${value}`,
+      requestPermission: async () => {},
+      app: { id: 'app' }
+    })
+
+    assert.deepEqual(encryptedInner, original)
+    assert.equal('id' in encryptedInner, false)
+    assert.deepEqual(added.event.tags.filter(tag => tag[0] === 'hearsay'), [['hearsay']])
+    assert.equal(added.event.tags.some(tag => tag[1] === `obf:1006:.id:${personalCopySourceId(original)}`), true)
+    assert.equal('hearsay' in added.options, false)
+  })
+
+  it('rejects hearsay for self-owned, signed, or identityless inner events', async () => {
+    const owner = 'f'.repeat(64)
+    const db = { ownerPubkey: owner, async add () { throw new Error('UNEXPECTED_ADD') } }
+    const options = {
+      db,
+      method: 'addPersonalCopy',
+      appId: 'real-app',
+      signEvent: async () => { throw new Error('UNEXPECTED_SIGN') },
+      personalCopyEncrypt: async () => { throw new Error('UNEXPECTED_ENCRYPT') },
+      personalCopyObfuscate: async () => 'obfuscated',
+      requestPermission: async () => {},
+      app: { id: 'app' }
+    }
+
+    await assert.rejects(
+      runNostrDbMethod({
+        ...options,
+        params: [{ pubkey: owner, kind: 1, created_at: 1, tags: [], content: 'mine' }, { hearsay: true }]
+      }),
+      /HEARSAY_SELF_OWNED_EVENT/
+    )
+
+    const signed = finalizeEvent({ kind: 1, created_at: 1, tags: [['hearsay']], content: 'signed' }, new Uint8Array(32).fill(1))
+    await assert.rejects(
+      runNostrDbMethod({ ...options, params: [signed, { hearsay: true }] }),
+      /HEARSAY_SIGNED_EVENT/
+    )
+    await assert.rejects(
+      runNostrDbMethod({
+        ...options,
+        params: [{ pubkey: 'not-a-pubkey', kind: 1, created_at: 1, tags: [], content: 'unknown' }, { hearsay: true }]
+      }),
+      /HEARSAY_RUMOR_ID_REQUIRED/
+    )
+  })
+
+  it('preserves a signed inner hearsay tag as payload without marking its wrapper', async () => {
+    const owner = 'f'.repeat(64)
+    const signed = finalizeEvent({ kind: 1, created_at: 1, tags: [['hearsay']], content: 'signed' }, new Uint8Array(32).fill(2))
+    let encryptedInner
+    let added
+    const db = {
+      ownerPubkey: owner,
+      async add (event) {
+        added = event
+        return { ok: true, code: 'stored' }
+      }
+    }
+
+    await runNostrDbMethod({
+      db,
+      method: 'addPersonalCopy',
+      params: [signed],
+      appId: 'real-app',
+      signEvent: async template => ({ ...template, id: 'e'.repeat(64), pubkey: owner, sig: '1'.repeat(128) }),
+      personalCopyEncrypt: async (kind, plaintext) => {
+        encryptedInner = JSON.parse(plaintext)
+        return `cipher-${kind}`
+      },
+      personalCopyObfuscate: async () => 'obfuscated',
+      requestPermission: async () => {},
+      app: { id: 'app' }
+    })
+
+    assert.deepEqual(encryptedInner.tags, [['hearsay']])
+    assert.equal(added.tags.some(tag => tag[0] === 'hearsay'), false)
   })
 
   it('strips redundant self-owned inner fields when building personal copies', async () => {

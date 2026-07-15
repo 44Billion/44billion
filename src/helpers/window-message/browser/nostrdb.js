@@ -364,17 +364,18 @@ export async function runNostrDbMethod ({
     await requestPersonalKinds([innerKind], permissionContext)
 
     const normalizedOptions = plainOptions(options)
-    const { context = '', ...addOptions } = normalizedOptions
+    const { context = '', hearsay = false, ...addOptions } = normalizedOptions
     const unsigned = await buildPersonalCopyUnsignedEvent({
       originalEvent,
       ownerPubkey: db.ownerPubkey,
       context,
+      hearsay,
       encrypt: personalCopyEncrypt,
       obfuscate: personalCopyObfuscate
     })
     const event = await signEvent(unsigned)
     const result = await db.add(event, buildNostrDbAddOptions(addOptions, { appId, signEvent }))
-    return { event, result }
+    return { event: result?.storedEvent ?? event, result }
   }
 
   if (method === 'query') {
