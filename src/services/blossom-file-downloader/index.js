@@ -1,11 +1,24 @@
 import { sha256 } from '@noble/hashes/sha2.js'
 import mime from 'mime'
-import Base93Encoder from '#services/base93-encoder.js'
+import { Base93Encoder } from 'libp2r2p/base93'
+import NMMR from 'nmmr'
 import { bytesToBase16 } from '#helpers/base16.js'
 import { relayPool as nostrRelays } from 'libp2r2p/relay'
 import { APP_FILE_CHUNK_BYTES } from '#constants/app-file.js'
+import { warnAssetSizeMismatch } from '#helpers/asset-size.js'
 
 const HEAD_TIMEOUT_AFTER_FIRST_MS = 500
+
+function parseContentLength (value) {
+  const text = typeof value === 'string' ? value.trim() : ''
+  if (!/^(0|[1-9][0-9]*)$/.test(text)) return null
+  const size = Number(text)
+  return Number.isSafeInteger(size) ? size : null
+}
+
+function chunksForSize (size) {
+  return Math.max(1, Math.ceil(size / APP_FILE_CHUNK_BYTES))
+}
 
 export function isMimeTypeAccepted (expectedMimeType, contentTypeHeader) {
   if (!expectedMimeType) return true
@@ -18,11 +31,12 @@ export function isMimeTypeAccepted (expectedMimeType, contentTypeHeader) {
 }
 
 /**
- * Downloads a file from Blossom servers and produces kind 34600 (unsigned)
+ * Downloads a file from Blossom servers and produces local kind 34601
+ * pseudo-events (unsigned and never published).
  * file chunk events compatible with the existing IRFS storage format.
  *
  * Unlike the IRFS approach which uses an NMMR merkle tree, here we use the
- * blossom file's own sha256 hash as the "root hash" in the c tags.
+ * Blossom file's own sha256 hash as the local pseudo-root.
  * This means countFileChunksFromDb / streamFileChunksFromDb work correctly
  * since the bundle file tag also references the same sha256 hash.
  *
@@ -37,6 +51,7 @@ export default class BlossomFileDownloader {
     this.callback = callback
     this.signal = options.signal ?? null
     this.mimeType = options.mimeType ?? null
+    this.size = options.size ?? null
     this.isRunning = false
   }
 
@@ -52,7 +67,7 @@ export default class BlossomFileDownloader {
       await this.#download()
     } catch (err) {
       if (err.name !== 'AbortError' && err.message !== 'Aborted') {
-        this.callback({
+        await this.callback({
           type: 'progress',
           progress: 0,
           count: 0,
@@ -75,52 +90,103 @@ export default class BlossomFileDownloader {
     // Query all servers for HEAD simultaneously.
     // Start a 500ms timeout after the first server responds with a valid Content-Length.
     // Pick the most common Content-Length (majority vote) or the first valid one.
-    const { totalChunks, chosenServer } = await this.#queryHeadFromAllServers(blossomServers)
-
-    if (!chosenServer) {
-      throw new Error(`File ${this.fileHash} not found on any blossom server`)
-    }
-
-    // Stream the file content, trying the chosen server first then others
-    let response = null
+    const { chosenServer, headByteLengths } = await this.#queryHeadFromAllServers(blossomServers)
     const serversToTry = [chosenServer, ...blossomServers.filter(s => s !== chosenServer)]
 
     for (const serverUrl of serversToTry) {
       if (this.signal?.aborted) throw new Error('Aborted')
-
-      try {
-        const url = `${serverUrl}/${this.fileHash}`
-        const res = await fetch(url, {
-          method: 'GET',
-          signal: this.signal
-        })
-        if (res.ok && res.body) {
-          if (!isMimeTypeAccepted(this.mimeType, res.headers.get('Content-Type'))) continue
-          response = res
-          break
-        }
-      } catch (err) {
-        if (err.name === 'AbortError') throw err
-        // Try next server
-      }
+      const response = await this.#fetchFromServer(serverUrl)
+      if (!response) continue
+      await this.#downloadResponse(serverUrl, response, headByteLengths.get(serverUrl) ?? null)
+      return
     }
 
-    if (!response) {
-      throw new Error(`File ${this.fileHash} not found on any blossom server`)
+    throw new Error(`File ${this.fileHash} not found on any blossom server`)
+  }
+
+  async #fetchFromServer (serverUrl) {
+    try {
+      const response = await fetch(`${serverUrl}/${this.fileHash}`, {
+        method: 'GET',
+        signal: this.signal
+      })
+      if (!response.ok || !response.body) return null
+      if (!isMimeTypeAccepted(this.mimeType, response.headers.get('Content-Type'))) return null
+      return response
+    } catch (error) {
+      if (error.name === 'AbortError') throw error
+      return null
+    }
+  }
+
+  async #downloadResponse (serverUrl, response, headByteLength) {
+    const getByteLength = parseContentLength(response.headers.get('Content-Length'))
+    const manifestByteLength = Number.isSafeInteger(this.size) && this.size >= 0 ? this.size : null
+    const provisionalByteLength = getByteLength ?? headByteLength ?? manifestByteLength
+    const provisionalTotal = provisionalByteLength === null ? null : chunksForSize(provisionalByteLength)
+    const first = await this.#consumeBody(response.body, provisionalTotal)
+
+    if (first.hash !== this.fileHash) throw new Error('Blossom content hash mismatch')
+    warnAssetSizeMismatch({
+      service: 'blossom',
+      root: this.fileHash,
+      advertisedSize: manifestByteLength,
+      actualSize: first.byteLength
+    })
+    warnAssetSizeMismatch({
+      service: 'blossom',
+      root: this.fileHash,
+      advertisedSize: getByteLength,
+      actualSize: first.byteLength,
+      source: 'GET Content-Length'
+    })
+    warnAssetSizeMismatch({
+      service: 'blossom',
+      root: this.fileHash,
+      advertisedSize: headByteLength,
+      actualSize: first.byteLength,
+      source: 'HEAD Content-Length'
+    })
+
+    if (provisionalTotal === first.totalChunks) {
+      await this.#reportComplete(first)
+      return
     }
 
-    await this.#streamToChunkEvents(response.body, totalChunks)
+    if (provisionalTotal !== null) {
+      await this.callback({
+        type: 'reset',
+        discardChunks: true,
+        root: this.fileHash
+      })
+    }
+
+    const retry = await this.#fetchFromServer(serverUrl)
+    if (!retry) throw new Error('Failed to replay Blossom download with observed chunk total')
+    const second = await this.#consumeBody(retry.body, first.totalChunks)
+    if (second.hash !== this.fileHash || second.totalChunks !== first.totalChunks || second.byteLength !== first.byteLength) {
+      throw new Error('Blossom content changed while replaying download')
+    }
+    await this.#reportComplete(second)
+  }
+
+  async #reportComplete ({ totalChunks, byteLength }) {
+    await this.callback({
+      type: 'progress',
+      progress: 100,
+      count: totalChunks,
+      total: totalChunks,
+      byteLength
+    })
   }
 
   /**
    * Queries all servers concurrently for HEAD.
-   * As soon as the first server responds with a valid Content-Length, a 500ms
-   * timeout is started. At the end, picks the most common Content-Length value
-   * (majority vote); falls back to the first valid response.
-   * Returns { totalChunks, chosenServer }.
+   * After the first successful response, waits briefly for other servers and
+   * uses their optional Content-Length values only to choose a preferred server.
    */
   async #queryHeadFromAllServers (blossomServers) {
-    const results = [] // { serverUrl, contentLength }
+    const results = [] // { serverUrl, byteLength }
     let firstResolved = false
     let timeoutResolve = null
     const timeoutPromise = new Promise(resolve => { timeoutResolve = resolve })
@@ -135,17 +201,14 @@ export default class BlossomFileDownloader {
           signal: this.signal
         })
         if (headRes.ok) {
-          const contentLengthHeader = headRes.headers.get('Content-Length')
-          if (contentLengthHeader !== null) {
-            const byteLength = parseInt(contentLengthHeader, 10)
-            if (!Number.isNaN(byteLength) && byteLength >= 0) {
-              results.push({ serverUrl, byteLength })
-              if (!firstResolved) {
-                firstResolved = true
-                // Start the 500ms timeout so remaining servers have a chance
-                setTimeout(timeoutResolve, HEAD_TIMEOUT_AFTER_FIRST_MS)
-              }
-            }
+          results.push({
+            serverUrl,
+            byteLength: parseContentLength(headRes.headers.get('Content-Length'))
+          })
+          if (!firstResolved) {
+            firstResolved = true
+            // Give the remaining servers a short chance to provide metadata.
+            setTimeout(timeoutResolve, HEAD_TIMEOUT_AFTER_FIRST_MS)
           }
         }
       } catch (err) {
@@ -163,35 +226,41 @@ export default class BlossomFileDownloader {
     ])
 
     if (results.length === 0) {
-      return { totalChunks: null, chosenServer: null }
+      return { chosenServer: blossomServers[0], headByteLengths: new Map() }
     }
 
     // Majority vote on Content-Length
     const counts = new Map()
     for (const { byteLength } of results) {
+      if (byteLength === null) continue
       counts.set(byteLength, (counts.get(byteLength) ?? 0) + 1)
     }
-    let bestByteLength = results[0].byteLength
-    let bestCount = 1
+    let bestByteLength = null
+    let bestCount = 0
     for (const [byteLength, count] of counts) {
-      if (count > bestCount || (count === bestCount && byteLength === results[0].byteLength)) {
+      if (count > bestCount) {
         bestByteLength = byteLength
         bestCount = count
       }
     }
 
-    const totalChunks = Math.max(1, Math.ceil(bestByteLength / APP_FILE_CHUNK_BYTES))
     // Prefer a server that reported the winning Content-Length
-    const chosenServer = results.find(r => r.byteLength === bestByteLength)?.serverUrl ?? results[0].serverUrl
-
-    return { totalChunks, chosenServer }
+    const chosenServer = bestByteLength === null
+      ? results[0].serverUrl
+      : results.find(result => result.byteLength === bestByteLength)?.serverUrl ?? results[0].serverUrl
+    return {
+      chosenServer,
+      headByteLengths: new Map(results.map(result => [result.serverUrl, result.byteLength]))
+    }
   }
 
-  async #streamToChunkEvents (body, totalChunks) {
+  async #consumeBody (body, totalChunks) {
     const reader = body.getReader()
     let buffer = new Uint8Array(0)
     let chunkIndex = 0
     let processedCount = 0
+    let receivedBytes = 0
+    const hasher = sha256.create()
 
     try {
       while (true) {
@@ -199,6 +268,8 @@ export default class BlossomFileDownloader {
 
         const { done, value } = await reader.read()
         if (done) break
+        receivedBytes += value.length
+        hasher.update(value)
 
         // Accumulate bytes and emit each full CHUNK_SIZE immediately
         const newBuffer = new Uint8Array(buffer.length + value.length)
@@ -210,16 +281,18 @@ export default class BlossomFileDownloader {
           const chunk = buffer.slice(0, APP_FILE_CHUNK_BYTES)
           buffer = buffer.slice(APP_FILE_CHUNK_BYTES)
 
-          const event = this.#createChunkEvent(chunk, chunkIndex, totalChunks)
           processedCount++
-          this.callback({
-            type: 'progress',
-            progress: (processedCount / totalChunks) * 100,
-            count: processedCount,
-            total: totalChunks,
-            chunkIndex,
-            event
-          })
+          if (totalChunks !== null && chunkIndex < totalChunks) {
+            const event = this.#createChunkEvent(chunk, chunkIndex, totalChunks)
+            await this.callback({
+              type: 'progress',
+              progress: Math.min(99, (processedCount / totalChunks) * 100),
+              count: processedCount,
+              total: totalChunks,
+              chunkIndex,
+              event
+            })
+          }
           chunkIndex++
         }
       }
@@ -228,55 +301,49 @@ export default class BlossomFileDownloader {
     }
 
     // Emit the remaining bytes (last partial chunk)
-    if (buffer.length > 0) {
-      const event = this.#createChunkEvent(buffer, chunkIndex, totalChunks)
+    if (buffer.length > 0 || receivedBytes === 0) {
       processedCount++
-      this.callback({
-        type: 'progress',
-        progress: (processedCount / totalChunks) * 100,
-        count: processedCount,
-        total: totalChunks,
-        chunkIndex,
-        event
-      })
+      // A partial chunk is valid only when it is the provisional last chunk.
+      // If the hint predicted too many chunks, wait for the authenticated
+      // replay instead of persisting an event that cannot pass local checks.
+      if (totalChunks !== null && chunkIndex === totalChunks - 1) {
+        const event = this.#createChunkEvent(buffer, chunkIndex, totalChunks)
+        await this.callback({
+          type: 'progress',
+          progress: Math.min(99, (processedCount / totalChunks) * 100),
+          count: processedCount,
+          total: totalChunks,
+          chunkIndex,
+          event
+        })
+      }
       chunkIndex++
     }
 
-    // Report any missing chunks if the stream ended before totalChunks were received
-    if (totalChunks !== null && chunkIndex < totalChunks) {
-      const missing = []
-      for (let i = chunkIndex; i < totalChunks; i++) missing.push(i)
-      this.callback({
-        type: 'progress',
-        progress: (processedCount / totalChunks) * 100,
-        count: processedCount,
-        total: totalChunks,
-        error: new Error('Missing file chunks'),
-        chunkIndexes: missing
-      })
+    return {
+      byteLength: receivedBytes,
+      hash: bytesToBase16(hasher.digest()),
+      totalChunks: chunksForSize(receivedBytes)
     }
   }
 
   /**
-   * Creates an unsigned kind 34600 event from a raw byte slice.
+   * Creates an unsigned, local-only kind 34601 event from a raw byte slice.
    *
-   * Uses the blossom file sha256 hash as the "root hash" in the c tag,
+   * Uses the Blossom file SHA-256 hash as the local pseudo-root,
    * matching what countFileChunksFromDb and saveFileChunksToDB expect when
    * looking up chunks by rootHash = fileHash from the bundle file tag.
    */
   #createChunkEvent (bytes, chunkIndex, totalChunks) {
-    // Use fileHash:chunkIndex as deterministic chunk identity for the d tag
-    const dTagValue = `${this.fileHash}:${chunkIndex}`
+    const dTagValue = NMMR.deriveChunkId(this.fileHash, chunkIndex)
 
     // This is a synthetic event format for the chunk, not actually signed or published to relays.
     const event = {
-      kind: 34600,
+      kind: 34601,
       pubkey: this.pubkey,
       tags: [
         ['d', dTagValue],
-        // c tag: rootHash:position, totalChunks — using fileHash as root
-        // No merkle proof elements since there's no merkle tree
-        ['c', `${this.fileHash}:${chunkIndex}`, String(totalChunks)]
+        ['mmr', String(chunkIndex), String(totalChunks), '']
       ],
       content: new Base93Encoder().update(bytes).getEncoded(),
       created_at: Math.floor(Date.now() / 1000)

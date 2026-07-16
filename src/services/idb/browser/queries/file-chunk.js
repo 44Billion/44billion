@@ -1,6 +1,8 @@
 import { run } from '#services/idb/browser/index.js'
 import { addressObjToAppId } from '#helpers/app.js'
 import { APP_FILE_CHUNK_BYTES } from '#constants/app-file.js'
+import { getManifestAssetDescriptors } from '#helpers/site-manifest.js'
+import { parseIrfsChunkEvent, parsePseudoBlossomChunkEvent } from '#services/irfs-chunk.js'
 import {
   applyAssetBudgetDelta,
   ensureAssetBudgetInitialized,
@@ -10,9 +12,7 @@ import {
 export async function countFileChunksFromDb (appId, rootHash) {
   let total = null
   for await (const storedChunk of streamFileChunksFromDb(appId, rootHash)) {
-    const cTag = storedChunk.evt.tags.find(t => t[0] === 'c' && t[1].startsWith(`${rootHash}:`))
-    if (!cTag) continue
-    const parsedTotal = parseInt(cTag[2])
+    const parsedTotal = storedChunk.total ?? Number(storedChunk.evt.tags.find(tag => tag[0] === 'mmr')?.[2])
     if (Number.isNaN(parsedTotal)) continue
     if (parsedTotal > 0) { total = parsedTotal; break }
   }
@@ -116,6 +116,8 @@ export async function sumFileChunkBytesFromDb (appId, rootHashes = null) {
 
 export async function saveFileChunksToDB (siteManifest, fileChunks, appId, {
   assetBudget = {},
+  service,
+  rootHash,
   _applyAssetBudgetDelta = applyAssetBudgetDelta,
   _ensureCanStoreAppAssetBytes = ensureCanStoreAppAssetBytes
 } = {}) {
@@ -125,53 +127,48 @@ export async function saveFileChunksToDB (siteManifest, fileChunks, appId, {
     dTag: siteManifest.tags.find(t => t[0] === 'd')?.[1] ?? ''
   })
   await ensureAssetBudgetInitialized({ appId, _countFileChunksForApp: countFileChunkRowsFromDb })
-  const manifestRootHashesObj = siteManifest.tags
-    .filter(t => t[0] === 'path' && !!t[2])
-    .map(t => t[2])
-    .reduce((r, v) => ({ ...r, [v]: true }), {})
+  const descriptors = getManifestAssetDescriptors(siteManifest)
+  const descriptorByRoot = new Map(descriptors.map(descriptor => [descriptor.root, descriptor]))
 
   for (const chunkEvent of fileChunks) {
-    if (chunkEvent.kind !== 34600) throw new Error('Wrong chunk kind')
-    let dTag
-    const formatedCTags = []
-    for (const tag of chunkEvent.tags) {
-      if (tag[0] === 'd') dTag = tag
-      // Although rare,
-      // a chunk can have many c tags by being a chunk that
-      // appears on 2+ files (2 fileRootHashes) at same or different positions
-      // or appears twice+ on same file at different positions
-      if (tag[0] === 'c') {
-        const [fileRootHash, chunkPosition] = tag[1].split(':')
-        if (chunkPosition !== undefined && manifestRootHashesObj[fileRootHash]) {
-          formatedCTags.push([fileRootHash, parseInt(chunkPosition)])
-        }
+    if (chunkEvent.kind !== 34601) throw new Error('Wrong chunk kind')
+    let descriptor = rootHash ? { root: rootHash, service } : null
+    let parsed
+    if (!descriptor && descriptors[0]?.service === 'blossom') {
+      for (const candidate of descriptors) {
+        try {
+          parsed = parsePseudoBlossomChunkEvent(chunkEvent, candidate)
+          descriptor = candidate
+          break
+        } catch (_) {}
       }
+      if (!parsed) throw new Error('Chunk is not referenced by the Blossom manifest')
+    } else if (descriptor?.service === 'blossom') {
+      parsed = parsePseudoBlossomChunkEvent(chunkEvent, descriptor)
+    } else {
+      parsed = parseIrfsChunkEvent(chunkEvent, { root: descriptor?.root })
+      descriptor ??= descriptorByRoot.get(parsed.root)
+      if (!descriptor || descriptor.service !== 'irfs') throw new Error('Chunk is not referenced by the IRFS manifest')
     }
-    for (const [fileRootHash, chunkPosition] of formatedCTags) {
-      const chunk = {
-        appId,
-        x: dTag[1],
-        fx: fileRootHash,
-        pos: chunkPosition,
-        // We're not caring about normalizing the chunk.evt to a separate store
-        // because this loop rarely has more than 1 iteration
-        // In fact, the most space preserving structure would be chunk.x as store keypath
-        // but it is rare to share file chunks across different files or apps
-        evt: chunkEvent
-      }
-      const key = [appId, fileRootHash, chunkPosition]
-      const old = (await run('get', [key], 'fileChunks')).result
-      const deltaBytes = old ? 0 : APP_FILE_CHUNK_BYTES
-      if (deltaBytes > 0) {
-        await _ensureCanStoreAppAssetBytes(deltaBytes, {
-          ...assetBudget,
-          appId
-        })
-        if (assetBudget.replacement) assetBudget.replacement.newBytes += deltaBytes
-      }
 
-      await run('put', [chunk], 'fileChunks')
-      if (deltaBytes !== 0) _applyAssetBudgetDelta(deltaBytes, { appId })
+    const chunk = {
+      appId,
+      x: parsed.d,
+      fx: parsed.root,
+      pos: parsed.index,
+      total: parsed.total,
+      service: descriptor.service,
+      evt: chunkEvent
     }
+    const key = [appId, parsed.root, parsed.index]
+    const old = (await run('get', [key], 'fileChunks')).result
+    const deltaBytes = old ? 0 : APP_FILE_CHUNK_BYTES
+    if (deltaBytes > 0) {
+      await _ensureCanStoreAppAssetBytes(deltaBytes, { ...assetBudget, appId })
+      if (assetBudget.replacement) assetBudget.replacement.newBytes += deltaBytes
+    }
+
+    await run('put', [chunk], 'fileChunks')
+    if (deltaBytes !== 0) _applyAssetBudgetDelta(deltaBytes, { appId })
   }
 }

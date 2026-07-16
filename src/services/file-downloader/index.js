@@ -1,394 +1,707 @@
+import NMMR from 'nmmr'
 import { relayPool as nostrRelays } from 'libp2r2p/relay'
+import { parseIrfsChunkEvent } from '#services/irfs-chunk.js'
+import { APP_FILE_CHUNK_BYTES } from '#constants/app-file.js'
+import { warnAssetSizeMismatch } from '#helpers/asset-size.js'
 
-// Untried indexes are those that have not yet been added to a batch by anyone else.
-// In-flight indexes are still being downloaded by someone else; they are not in the untried indexes;
-// they are asc sorted by number of people downloading them
+const MAX_RANGE_LENGTH = 4096
+const MIN_RANGE_LENGTH = 256
+const MAX_RELAY_BATCHES = 3
+const MAX_MISSING_SAMPLE = 100
+
+// Untried indexes have not been selected by any relay yet. In-flight indexes
+// are ordered by how many relays are already trying them. Positional stepping
+// spreads the sorted missing indexes among relays without assigning each relay
+// a permanently fixed chunk-index modulo.
 export function getBatchIndexes ({ batchSize, untriedIndexes, orderedInFlightIndexes, step, offset }) {
-  const selectedIndexes = [/* { idx, wasUntried } */]
-  const availableIndexesGroups = [untriedIndexes, orderedInFlightIndexes]
-    .filter(v => v.length > 0)
-
-  while (availableIndexesGroups.length > 0) {
-    const availableIndexes = availableIndexesGroups.shift()
-    const isUntried = availableIndexes === untriedIndexes
-    let currentOffset = isUntried
-      // A different offset argument for each consumer prevents all of them
-      // from selecting the same indexes when they start
-      ? offset
-      // Start from the first index for ordered in-flight indexes
-      : 0
-    const effectiveStep = isUntried
-      ? step // Round-robin for untried
-      : 1 // For ordered in-flight, we want to check every contiguous index
+  const selectedIndexes = []
+  const groups = [untriedIndexes, orderedInFlightIndexes].filter(group => group.length)
+  for (const availableIndexes of groups) {
+    const wasUntried = availableIndexes === untriedIndexes
+    let currentOffset = wasUntried ? offset : 0
+    const effectiveStep = wasUntried ? step : 1
     const offsetLimit = currentOffset + effectiveStep
-
-    while ((selectedIndexes.length < batchSize) && (currentOffset < offsetLimit)) {
-      // forward
-      for (let i = currentOffset; i < availableIndexes.length; i += effectiveStep) {
-        selectedIndexes.push({ idx: availableIndexes[i], wasUntried: isUntried })
-
+    while (selectedIndexes.length < batchSize && currentOffset < offsetLimit) {
+      for (let index = currentOffset; index < availableIndexes.length; index += effectiveStep) {
+        selectedIndexes.push({ idx: availableIndexes[index], wasUntried })
         if (selectedIndexes.length >= batchSize) break
       }
-
-      // rewind, because if initial offset was > 0, it wouldn't try first position(s)
       if (selectedIndexes.length < batchSize) {
         const start = currentOffset % effectiveStep
-        for (let i = start; i < currentOffset; i += effectiveStep) {
-          selectedIndexes.push({ idx: availableIndexes[i], wasUntried: isUntried })
-
+        for (let index = start; index < currentOffset; index += effectiveStep) {
+          selectedIndexes.push({ idx: availableIndexes[index], wasUntried })
           if (selectedIndexes.length >= batchSize) break
         }
       }
-
       currentOffset++
     }
+    if (selectedIndexes.length >= batchSize) break
   }
-
   return selectedIndexes
 }
 
-export default class FileDownloader {
-  constructor (fileRootHash, pubkeysByRelay, callback, options = {}) {
-    const abortOnFailure = options.abortOnFailure ?? true
-    let abortSignal = null
-    let onFailureAbortController = null
-    if (abortOnFailure) {
-      onFailureAbortController = new AbortController()
-      abortSignal = AbortSignal.any([options.signal, onFailureAbortController.signal].filter(Boolean))
-    }
-    const relayStates = new Map()
-    let relayOffset = 0
-    for (const url of Object.keys(pubkeysByRelay)) {
-      relayStates.set(url, {
-        url,
-        offset: relayOffset++,
-        activeBatches: 0,
-        triedIndexes: new Set()
-      })
-    }
+function abortError () {
+  return new Error('Aborted')
+}
 
-    const batchSize = options.batchSize ?? 20
-    // This is effectively limited to 3 and kicks in just when needed the most (see halfBatchTriggered flag)
-    // to eliminate round-trip bottlenecks while avoiding relay ratelimits triggering
-    const maxRelayParallelBatches = Math.max(1, Math.min(options.maxRelayParallelBatches ?? 3, 3))
-    const totalChunks =
-      options.totalChunks &&
-      Number.isInteger(options.totalChunks) &&
-      options.totalChunks > 0
-        ? options.totalChunks
-        : null
-    const tempTotalChunks = totalChunks === null ? batchSize * relayStates.size : null
-    const maxTotalChunks = totalChunks ?? 100000 // ~5GB
+function assertSafeIndex (value, name = 'index') {
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${name} must be a non-negative safe integer`)
+  return value
+}
 
-    const downloadedChunkIndexes = new Set(options.downloadedChunkIndexes || [])
-    const downloadedCount = downloadedChunkIndexes.size
-    if (downloadedCount > 0 && options.totalChunks == null) {
-      throw new Error(
-        'totalChunks must be provided if downloadedChunkIndexes is provided' +
-        ' or else the downloader may report missing chunks for trying indexes above the total chunks that actually exist'
-      )
-    }
+function canonicalTotal (value) {
+  if (value == null) return null
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error('totalChunks must be a positive safe integer')
+  return value
+}
 
-    // May use tempTotalChunks if we haven't downloaded any chunks yet.
-    // Any chunk should carry the total chunks info
-    const effectiveTotalChunks = totalChunks ?? tempTotalChunks
-    const missingIndexes = new Set(
-      Array
-        .from({ length: effectiveTotalChunks }, (_, i) => i)
-        .filter(i => !downloadedChunkIndexes.has(i))
-    )
+function canonicalPositiveInteger (value, name, fallback) {
+  value ??= fallback
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${name} must be a positive safe integer`)
+  return value
+}
 
-    Object.assign(this, {
-      debug: options.debug ?? false,
-      missingIndexes,
-      downloadedCount,
-      batchSize,
-      maxRelayParallelBatches,
-      totalChunks,
-      tempTotalChunks,
-      maxTotalChunks,
-      fileRootHash,
-      pubkeysByRelay,
-      callback,
-      onFailureAbortController,
-      abortSignal,
-      // idx => count of how many relays are currently downloading this index
-      inFlightIndexCounters: new Map(),
-      relayStates,
-      activeBatches: 0,
-      isRunning: false,
-      shouldGracefullyAbortRemainingBatches: false
-    })
+// Returns the exact product until cap is reached, without ever overflowing a
+// safe integer. The downloader only needs capped products for window sizing.
+function cappedProduct (values, cap) {
+  let product = 1
+  for (const value of values) {
+    if (product > Math.floor(cap / value)) return cap
+    product *= value
+  }
+  return product
+}
+
+function combineSignals (...signals) {
+  signals = signals.filter(Boolean)
+  if (signals.length === 0) return null
+  if (signals.length === 1) return signals[0]
+  return AbortSignal.any(signals)
+}
+
+function indexesInRange (start, end) {
+  return Array.from({ length: end - start + 1 }, (_, offset) => start + offset)
+}
+
+class RelayBatchLimiter {
+  constructor (limit = MAX_RELAY_BATCHES) {
+    this.limit = limit
+    this.states = new Map()
   }
 
-  async run () {
-    if (this.isRunning) return this.runPromise
+  schedule (url, workerId, task, { signal, onStart } = {}) {
+    if (signal?.aborted) return Promise.reject(abortError())
+    const state = this.#getState(url)
+    if (state.queuedWorkers.has(workerId)) {
+      return Promise.reject(new Error('A worker already has a pending batch for this relay'))
+    }
 
+    const deferred = Promise.withResolvers()
+    const item = { deferred, onStart, signal, started: false, task, workerId }
+    const onAbort = () => {
+      if (item.started) return
+      const index = state.queue.indexOf(item)
+      if (index >= 0) state.queue.splice(index, 1)
+      state.queuedWorkers.delete(workerId)
+      deferred.reject(abortError())
+      this.#drain(state)
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+    state.queue.push(item)
+    state.queuedWorkers.add(workerId)
+    this.#drain(state)
+    return deferred.promise.finally(() => signal?.removeEventListener('abort', onAbort))
+  }
+
+  #getState (url) {
+    let state = this.states.get(url)
+    if (!state) {
+      state = { active: 0, queue: [], queuedWorkers: new Set() }
+      this.states.set(url, state)
+    }
+    return state
+  }
+
+  #drain (state) {
+    while (state.active < this.limit && state.queue.length) {
+      const item = state.queue.shift()
+      state.queuedWorkers.delete(item.workerId)
+      if (item.signal?.aborted) {
+        item.deferred.reject(abortError())
+        continue
+      }
+
+      item.started = true
+      state.active++
+      item.onStart?.()
+      Promise.resolve()
+        .then(item.task)
+        .then(item.deferred.resolve, item.deferred.reject)
+        .finally(() => {
+          state.active--
+          this.#drain(state)
+        })
+    }
+  }
+}
+
+/**
+ * Downloads one bounded, contiguous chunk range. Its arrays, Sets and relay
+ * history can therefore never grow with the full blob size. Scheduling inside
+ * the range intentionally follows the original positional round-robin logic.
+ */
+export class FileRangeDownloader {
+  constructor (fileRootHash, pubkeysByRelay, callback, options = {}) {
+    if (!/^[0-9a-f]{64}$/.test(fileRootHash)) throw new Error('Invalid MMR root hash')
+    const urls = Object.keys(pubkeysByRelay)
+    if (!urls.length) throw new Error('At least one relay is required')
+
+    const startIndex = assertSafeIndex(options.startIndex ?? 0, 'startIndex')
+    const endIndex = assertSafeIndex(options.endIndex, 'endIndex')
+    const maxEndIndex = assertSafeIndex(options.maxEndIndex ?? endIndex, 'maxEndIndex')
+    if (endIndex < startIndex || maxEndIndex < endIndex) throw new Error('Invalid chunk range')
+    if ((maxEndIndex - startIndex + 1) > MAX_RANGE_LENGTH) throw new Error('Chunk range is too large')
+
+    const totalChunks = canonicalTotal(options.totalChunks)
+    if (totalChunks !== null && endIndex >= totalChunks) throw new Error('Chunk range exceeds totalChunks')
+    const batchSize = canonicalPositiveInteger(options.batchSize, 'batchSize', 20)
+    const cachedIndexes = new Set(options.cachedChunkIndexes || [])
+    if (cachedIndexes.size > (endIndex - startIndex + 1)) throw new Error('Too many cached chunk indexes')
+    for (const index of cachedIndexes) {
+      assertSafeIndex(index, 'cached chunk index')
+      if (index < startIndex || index > endIndex) throw new Error('Cached chunk index is outside its requested range')
+    }
+
+    const relayStates = new Map()
+    urls.forEach((url, offset) => relayStates.set(url, {
+      offset,
+      pendingBatch: false,
+      scheduledBatches: 0,
+      triedIndexes: new Set(),
+      url
+    }))
+
+    this.abortController = new AbortController()
+    Object.assign(this, {
+      abortSignal: combineSignals(options.signal, this.abortController.signal),
+      batchLimiter: options.batchLimiter || new RelayBatchLimiter(),
+      batchSize,
+      callback,
+      coveredIndexes: cachedIndexes,
+      debug: options.debug ?? false,
+      fileRootHash,
+      inFlightIndexCounters: new Map(),
+      isRunning: false,
+      maxEndIndex,
+      missingIndexes: new Set(),
+      onCoverage: options.onCoverage || (() => {}),
+      onTotalChunks: options.onTotalChunks || (total => total),
+      pubkeysByRelay,
+      rangeEnd: endIndex,
+      rangeStart: startIndex,
+      relayStates,
+      reportedMissingIndexes: new Set(),
+      scheduledBatchCount: 0,
+      size: Number.isSafeInteger(options.size) && options.size >= 0 ? options.size : null,
+      totalChunks,
+      workerId: Symbol('file-range-downloader')
+    })
+    this.#rebuildMissingIndexes()
+  }
+
+  get coveredCount () {
+    return this.coveredIndexes.size
+  }
+
+  get rangeLength () {
+    return this.rangeEnd - this.rangeStart + 1
+  }
+
+  get coverageThreshold () {
+    return Math.ceil(this.rangeLength * 0.3)
+  }
+
+  get materializedIndexCount () {
+    return this.rangeLength
+  }
+
+  run () {
+    if (this.runPromise) return this.runPromise
     this.isRunning = true
     ;({ promise: this.runPromise, resolve: this.resolveRun } = Promise.withResolvers())
-
-    if (this.totalChunks && this.downloadedCount > 0) {
-      // Report initial progress if we already have some chunks downloaded,
-      // so the caller knows the total chunks and can display progress right away
-      this.reportProgress()
+    if (this.abortSignal?.aborted) {
+      this.abort()
+      return this.runPromise
     }
-
-    if (this.totalChunks && this.downloadedCount >= this.totalChunks) {
-      this.isRunning = false
-      return
-    }
-
-    for (const relayState of this.relayStates.values()) {
-      try {
-        this.downloadFromRelay(relayState) // don't await, run in parallel
-      } catch (err) {
-        console.error(`Failed to start download from relay ${relayState.url}:`, err)
-        const wasAborted = this.maybeAbort(err)
-        if (wasAborted) break
-      }
-    }
-
+    this.abortSignal?.addEventListener('abort', () => this.abort(), { once: true })
+    this.#notifyCoverage()
+    this.#scheduleRelays()
+    this.#maybeFinish()
     return this.runPromise
   }
 
-  // Set it as soon as we receive a valid chunk
   setTotalChunks (totalChunks) {
-    const diff = this.tempTotalChunks ? totalChunks - this.tempTotalChunks : 0
+    totalChunks = canonicalTotal(totalChunks)
+    if (this.totalChunks !== null && this.totalChunks !== totalChunks) throw new Error('Chunk totals disagree')
+    if (this.totalChunks !== null) return
+    if (totalChunks <= this.rangeStart) throw new Error('Discovered total does not contain this range')
+
     this.totalChunks = totalChunks
-    const previousTotalChunks = this.tempTotalChunks
-    this.tempTotalChunks = null
-
-    if (!diff) return
-
-    this.maxTotalChunks = totalChunks
-    this.fixMissingIndexes(diff, previousTotalChunks)
-  }
-
-  fixMissingIndexes (diff, previousTotalChunks) {
-    if (diff > 0) this.missingIndexes = new Set([...this.missingIndexes, ...Array.from({ length: diff }, (_, i) => i + previousTotalChunks)].sort((a, b) => a - b))
-    else if (diff < 0) this.missingIndexes = new Set([...this.missingIndexes].filter(i => i < this.totalChunks))
-  }
-
-  async downloadFromRelay (relayState) {
-    const untriedIndexes = this.getUntriedIndexes(relayState)
-    const availableInFlightIndexes = this.getAvailableInflightIndexes(relayState)
-    if (untriedIndexes.length === 0 && availableInFlightIndexes.length === 0) return this.maybeFinish()
-
-    try {
-      this.activeBatches++
-      relayState.activeBatches++
-
-      const batchIndexes = getBatchIndexes({
-        batchSize: this.batchSize,
-        untriedIndexes,
-        orderedInFlightIndexes: availableInFlightIndexes,
-        step: this.relayStates.size,
-        offset: relayState.offset
-      })
-
-      if (batchIndexes.length > 0) {
-        for (const { idx, wasUntried } of batchIndexes) {
-          // The "wasUntried" var means not tried by anyone.
-          // Even when false it wasn't tried by this relay yet,
-          // that's why we add it to triedIndexes in any case
-          relayState.triedIndexes.add(idx)
-          if (wasUntried) {
-            this.inFlightIndexCounters.set(idx, 1)
-          } else {
-            // Stealing an in-flight index from another relay, just increment the counter
-            this.inFlightIndexCounters.set(idx, this.inFlightIndexCounters.get(idx) + 1)
-          }
-        }
-
-        await this.downloadBatch(relayState, batchIndexes.map(b => b.idx))
-      }
-    } catch (err) {
-      if (err.message === 'Aborted') {
-        console.log('Download from relay aborted:', relayState.url)
-        this.finish()
-      } else if (!this.shouldGracefullyAbortRemainingBatches) {
-        console.error('Batch error', err)
-      }
-    } finally {
-      this.activeBatches--
-      relayState.activeBatches--
-      this.maybeFinish()
+    const nextEnd = Math.min(this.maxEndIndex, totalChunks - 1)
+    for (const index of this.coveredIndexes) {
+      if (index > nextEnd) this.coveredIndexes.delete(index)
     }
+    this.rangeEnd = nextEnd
+    this.#rebuildMissingIndexes()
+    this.#notifyCoverage()
+    this.#scheduleRelays()
   }
 
-  getUntriedIndexes (relayState) {
-    return Array.from(this.missingIndexes).filter(idx => {
-      if (relayState.triedIndexes.has(idx)) return false
-      const inFlightCount = this.inFlightIndexCounters.get(idx) || 0
-      if (inFlightCount > 0) return false
-      return true
+  abort () {
+    if (!this.isRunning) return
+    this.isRunning = false
+    this.abortController.abort()
+    this.resolveRun?.({ aborted: true })
+  }
+
+  #rebuildMissingIndexes () {
+    this.missingIndexes = new Set(
+      indexesInRange(this.rangeStart, this.rangeEnd)
+        .filter(index => !this.coveredIndexes.has(index))
+    )
+  }
+
+  #getUntriedIndexes (relayState) {
+    return [...this.missingIndexes]
+      .filter(index => !relayState.triedIndexes.has(index) && !this.inFlightIndexCounters.has(index))
+      .sort((a, b) => a - b)
+  }
+
+  #getAvailableInFlightIndexes (relayState) {
+    return [...this.inFlightIndexCounters]
+      .filter(([index]) => this.missingIndexes.has(index) && !relayState.triedIndexes.has(index))
+      .sort((a, b) => a[1] - b[1] || a[0] - b[0])
+      .map(([index]) => index)
+  }
+
+  #selectBatch (relayState) {
+    return getBatchIndexes({
+      batchSize: this.batchSize,
+      offset: relayState.offset,
+      orderedInFlightIndexes: this.#getAvailableInFlightIndexes(relayState),
+      step: this.relayStates.size,
+      untriedIndexes: this.#getUntriedIndexes(relayState)
     })
   }
 
-  getAvailableInflightIndexes (relayState) {
-    return Array.from(this.inFlightIndexCounters.keys())
-      .filter(idx => !relayState.triedIndexes.has(idx))
-      .sort((a, b) => (this.inFlightIndexCounters.get(a) || 0) - (this.inFlightIndexCounters.get(b) || 0))
-  }
+  #requestFromRelay (relayState) {
+    if (!this.isRunning || relayState.pendingBatch || relayState.scheduledBatches >= MAX_RELAY_BATCHES) return false
+    const selected = this.#selectBatch(relayState)
+    if (!selected.length) return false
 
-  async downloadBatch (relayState, indexes) {
-    const limit = indexes.length
-    const filter = {
-      kinds: [34600],
-      authors: this.pubkeysByRelay[relayState.url],
-      '#c': indexes.map(i => `${this.fileRootHash}:${i}`),
-      limit
+    const indexes = selected.map(item => item.idx)
+    for (const { idx, wasUntried } of selected) {
+      relayState.triedIndexes.add(idx)
+      const current = this.inFlightIndexCounters.get(idx) || 0
+      this.inFlightIndexCounters.set(idx, wasUntried ? 1 : current + 1)
     }
-    const generator = nostrRelays.getEventsGenerator(filter, [relayState.url], { signal: this.abortSignal })
 
-    let eventMeta
-    let halfBatchTriggered = false
-    let rawReceivedCount = 0
-    const receivedIndexes = []
-    for await (const { event, type } of generator) {
-      if (!this.isRunning) break
-      if (type === 'event') rawReceivedCount++
-      if (rawReceivedCount > limit) break
-
-      // If more than half of the batch is received, trigger another batch to keep the pipeline full,
-      // but only if there aren't many batches already in flight for this relay to avoid overloading it
-      if (
-        !halfBatchTriggered &&
-        (indexes.length > 1 || this.batchSize === 1) &&
-        relayState.activeBatches < this.maxRelayParallelBatches &&
-        rawReceivedCount >= Math.ceil(indexes.length / 2) &&
-        this.missingIndexes.size > 0
-      ) {
-        halfBatchTriggered = true
-        this.downloadFromRelay(relayState)
+    relayState.pendingBatch = true
+    relayState.scheduledBatches++
+    this.scheduledBatchCount++
+    let started = false
+    this.batchLimiter.schedule(relayState.url, this.workerId, async () => {
+      if (!this.isRunning) throw abortError()
+      await this.#downloadBatch(relayState, indexes)
+    }, {
+      signal: this.abortSignal,
+      onStart: () => {
+        started = true
+        relayState.pendingBatch = false
       }
-
-      if (
-        type === 'error' ||
-        !event ||
-        !(eventMeta = this.isValidChunk(event))
-      ) continue
-
-      if (this.totalChunks === null) this.setTotalChunks(eventMeta.total)
-
-      // Skip if already processed
-      if (!this.missingIndexes.has(eventMeta.index)) continue
-
-      this.downloadedCount++
-      this.missingIndexes.delete(eventMeta.index)
-      receivedIndexes.push(eventMeta.index)
-
-      const inflightCount = this.inFlightIndexCounters.get(eventMeta.index)
-      if (inflightCount > 1) this.inFlightIndexCounters.set(eventMeta.index, inflightCount - 1)
-      else this.inFlightIndexCounters.delete(eventMeta.index)
-
-      this.reportProgress({ chunkIndex: eventMeta.index, event, relay: relayState.url })
-    }
-    // At the end of this batch, maybe trigger another batch too
-    if (
-      (relayState.activeBatches - 1) < this.maxRelayParallelBatches &&
-      this.missingIndexes.size > 0
-    ) this.downloadFromRelay(relayState)
-
-    for (const i of indexes) {
-      if (!this.missingIndexes.has(i)) continue
-
-      const inflightCount = this.inFlightIndexCounters.get(i)
-      if (inflightCount > 1) this.inFlightIndexCounters.set(i, inflightCount - 1)
-      else this.inFlightIndexCounters.delete(i)
-
-      // Don't report missing chunks if we don't know the real total chunks yet,
-      // as they might not exist and we don't want to trigger false alarms
-      // However, index 0 is guaranteed to exist
-      if (this.totalChunks === null && i > 0) continue
-
-      if (
-        (this.inFlightIndexCounters.get(i) ?? 0) > 0 ||
-        // This checks if some haven't tried.
-        // However "tried" in fact means picked, but the download itself may not have been attempted yet,
-        // so we also need to check if there are in-flight downloads for this index
-        Array.from(this.relayStates.values()).some(s => !s.triedIndexes.has(i))
-      ) continue
-
-      const error = new Error('Missing file chunk')
-      this.reportProgress({ error, chunkIndex: i })
-      const wasAborted = this.maybeAbort(error)
-      if (wasAborted) return
-    }
-  }
-
-  maybeAbort (err) {
-    if (!this.abortOnFailure || err.message === 'Aborted') return false
-
-    console.log('Aborting file download due to error:', err)
-    this.onFailureAbortController.abort()
-    this.finish()
+    }).catch(error => {
+      if (error.message !== 'Aborted' && this.debug) console.error('IRFS batch error', error)
+    }).finally(() => {
+      if (!started) relayState.pendingBatch = false
+      relayState.scheduledBatches--
+      this.scheduledBatchCount--
+      for (const index of indexes) {
+        if (!this.missingIndexes.has(index)) continue
+        const count = this.inFlightIndexCounters.get(index) || 0
+        if (count > 1) this.inFlightIndexCounters.set(index, count - 1)
+        else this.inFlightIndexCounters.delete(index)
+      }
+      if (!this.isRunning) return
+      this.#checkExhaustedIndexes(indexes)
+      this.#scheduleRelays()
+      this.#maybeFinish()
+    })
     return true
   }
 
-  reportProgress (extraData = {}) {
-    const total = this.totalChunks || 0
-    const count = this.downloadedCount
-    const progress = total > 0 ? (count / total) * 100 : 0
+  #scheduleRelays () {
+    if (!this.isRunning || this.missingIndexes.size === 0) return
+    for (const relayState of this.relayStates.values()) this.#requestFromRelay(relayState)
+  }
 
+  async #downloadBatch (relayState, indexes) {
+    const requested = new Set(indexes)
+    const filter = {
+      kinds: [34601],
+      authors: this.pubkeysByRelay[relayState.url],
+      '#d': indexes.map(index => NMMR.deriveChunkId(this.fileRootHash, index)),
+      limit: indexes.length
+    }
+    const generator = nostrRelays.getEventsGenerator(filter, [relayState.url], { signal: this.abortSignal })
+    let rawReceivedCount = 0
+    let halfBatchTriggered = false
+    for await (const { event, type } of generator) {
+      if (!this.isRunning) break
+      if (type !== 'event' || !event) continue
+      if (++rawReceivedCount > indexes.length * 4) break
+
+      if (!halfBatchTriggered && rawReceivedCount >= Math.ceil(indexes.length / 2)) {
+        halfBatchTriggered = true
+        this.#requestFromRelay(relayState)
+      }
+
+      let metadata
+      try {
+        metadata = parseIrfsChunkEvent(event, { root: this.fileRootHash })
+        if (!requested.has(metadata.index)) continue
+        if (this.totalChunks === null) {
+          const acceptedTotal = this.onTotalChunks(metadata.total)
+          if (acceptedTotal !== metadata.total) throw new Error('Chunk totals disagree')
+          this.setTotalChunks(acceptedTotal)
+        } else if (metadata.total !== this.totalChunks) {
+          continue
+        }
+      } catch (_) {
+        continue
+      }
+      if (!this.isRunning || !this.missingIndexes.has(metadata.index)) continue
+
+      if (metadata.index === metadata.total - 1) {
+        const actualSize = ((metadata.total - 1) * APP_FILE_CHUNK_BYTES) + metadata.contentBytes.length
+        if (Number.isSafeInteger(actualSize)) {
+          warnAssetSizeMismatch({
+            service: 'irfs',
+            root: this.fileRootHash,
+            advertisedSize: this.size,
+            actualSize
+          })
+        }
+      }
+
+      this.missingIndexes.delete(metadata.index)
+      this.coveredIndexes.add(metadata.index)
+      this.inFlightIndexCounters.delete(metadata.index)
+      this.callback({ chunkIndex: metadata.index, event, relay: relayState.url })
+      this.#notifyCoverage()
+    }
+  }
+
+  #notifyCoverage () {
+    this.onCoverage({
+      covered: this.coveredCount,
+      length: this.rangeLength,
+      threshold: this.coverageThreshold
+    })
+  }
+
+  #checkExhaustedIndexes (indexes) {
+    if (!this.isRunning) return
+    for (const index of new Set(indexes)) {
+      if (!this.missingIndexes.has(index) || this.reportedMissingIndexes.has(index)) continue
+      if (this.totalChunks === null && index > 0) continue
+      if ((this.inFlightIndexCounters.get(index) || 0) > 0) continue
+      if ([...this.relayStates.values()].some(state => !state.triedIndexes.has(index))) continue
+
+      this.reportedMissingIndexes.add(index)
+      this.callback({ error: new Error('Missing file chunk'), chunkIndex: index })
+      if (!this.isRunning) return
+    }
+  }
+
+  #maybeFinish () {
+    if (!this.isRunning || this.scheduledBatchCount > 0) return
+    if (this.missingIndexes.size > 0) {
+      this.#scheduleRelays()
+      if (this.scheduledBatchCount > 0) return
+      this.#checkExhaustedIndexes(this.missingIndexes)
+    }
+    if (!this.isRunning) return
+    this.isRunning = false
+    this.resolveRun({
+      missingCount: this.reportedMissingIndexes.size,
+      missingIndexes: [...this.reportedMissingIndexes].slice(0, MAX_MISSING_SAMPLE)
+    })
+  }
+}
+
+/**
+ * Orchestrates at most two bounded FileRangeDownloader instances. Completed
+ * ranges are discarded, so memory is bounded by the active windows rather than
+ * by the authenticated total number of chunks.
+ */
+export default class FileDownloader {
+  constructor (fileRootHash, pubkeysByRelay, callback, options = {}) {
+    if (!/^[0-9a-f]{64}$/.test(fileRootHash)) throw new Error('Invalid MMR root hash')
+    const urls = Object.keys(pubkeysByRelay)
+    if (!urls.length) throw new Error('At least one relay is required')
+
+    const totalChunks = canonicalTotal(options.totalChunks)
+    const batchSize = canonicalPositiveInteger(options.batchSize, 'batchSize', 20)
+    const downloadedCount = options.downloadedCount ?? 0
+    assertSafeIndex(downloadedCount, 'downloadedCount')
+    if (totalChunks !== null && downloadedCount > totalChunks) throw new Error('downloadedCount exceeds totalChunks')
+    if (downloadedCount > 0 && (totalChunks === null || typeof options.loadDownloadedChunkIndexes !== 'function')) {
+      throw new Error('downloadedCount requires totalChunks and loadDownloadedChunkIndexes')
+    }
+
+    const windowSize = Math.min(
+      MAX_RANGE_LENGTH,
+      Math.max(MIN_RANGE_LENGTH, cappedProduct([batchSize, urls.length, 4], MAX_RANGE_LENGTH))
+    )
+    const discoveryLength = cappedProduct([batchSize, urls.length], windowSize)
+    const abortOnFailure = options.abortOnFailure ?? true
+
+    this.abortController = new AbortController()
+    Object.assign(this, {
+      FileRangeDownloaderClass: options._FileRangeDownloader || FileRangeDownloader,
+      abortOnFailure,
+      abortSignal: combineSignals(options.signal, this.abortController.signal),
+      activeRanges: new Map(),
+      batchLimiter: new RelayBatchLimiter(),
+      batchSize,
+      callback,
+      debug: options.debug ?? false,
+      discoveryLength,
+      downloadedCount,
+      fileRootHash,
+      hasStartedFirstRange: false,
+      isRunning: false,
+      loadDownloadedChunkIndexes: options.loadDownloadedChunkIndexes || (async () => []),
+      loadedCachedCount: 0,
+      missingCount: 0,
+      missingSample: [],
+      nextRangeStart: 0,
+      pubkeysByRelay,
+      size: Number.isSafeInteger(options.size) && options.size >= 0 ? options.size : null,
+      totalChunks,
+      windowSize
+    })
+  }
+
+  run () {
+    if (this.runPromise) return this.runPromise
+    this.isRunning = true
+    ;({ promise: this.runPromise, resolve: this.resolveRun } = Promise.withResolvers())
+
+    if (this.abortSignal?.aborted) {
+      this.#finish()
+      return this.runPromise
+    }
+    this.abortSignal?.addEventListener('abort', () => {
+      for (const slot of this.activeRanges.values()) slot.worker?.abort?.()
+      this.#finish({ reportMissingSummary: false })
+    }, { once: true })
+
+    if (this.totalChunks !== null && this.downloadedCount > 0) this.#reportProgress()
+    if (this.totalChunks !== null && this.downloadedCount === this.totalChunks) {
+      this.#finish()
+      return this.runPromise
+    }
+
+    this.#startNextRange()
+    return this.runPromise
+  }
+
+  abort () {
+    if (!this.isRunning) return
+    this.abortController.abort()
+    for (const slot of this.activeRanges.values()) slot.worker?.abort?.()
+    this.#finish()
+  }
+
+  _isComplete () {
+    return !this.isRunning
+  }
+
+  #setTotalChunks (totalChunks) {
+    totalChunks = canonicalTotal(totalChunks)
+    if (this.totalChunks !== null && this.totalChunks !== totalChunks) throw new Error('Chunk totals disagree')
+    if (this.downloadedCount > totalChunks) throw new Error('downloadedCount exceeds discovered totalChunks')
+    this.totalChunks = totalChunks
+    return totalChunks
+  }
+
+  #startNextRange () {
+    if (!this.isRunning || this.activeRanges.size >= 2) return false
+
+    let start
+    let end
+    let maxEnd
+    if (this.totalChunks === null) {
+      if (this.hasStartedFirstRange) return false
+      start = 0
+      maxEnd = this.windowSize - 1
+      end = this.discoveryLength - 1
+      this.nextRangeStart = this.windowSize
+      this.hasStartedFirstRange = true
+    } else {
+      if (this.nextRangeStart >= this.totalChunks) return false
+      start = this.nextRangeStart
+      const length = Math.min(this.windowSize, this.totalChunks - start)
+      end = start + length - 1
+      maxEnd = end
+      this.nextRangeStart = end + 1
+      this.hasStartedFirstRange = true
+    }
+
+    const length = end - start + 1
+    const slot = { covered: 0, end, length, maxEnd, start, threshold: Math.ceil(length * 0.3), worker: null }
+    this.activeRanges.set(start, slot)
+    this.#loadAndRunRange(slot)
+    return true
+  }
+
+  async #loadAndRunRange (slot) {
+    try {
+      const cachedIndexes = await this.#loadCachedIndexes(slot.start, slot.end)
+      if (!this.isRunning || !this.activeRanges.has(slot.start)) return
+
+      const worker = new this.FileRangeDownloaderClass(
+        this.fileRootHash,
+        this.pubkeysByRelay,
+        data => this.#handleWorkerReport(slot, data),
+        {
+          batchLimiter: this.batchLimiter,
+          batchSize: this.batchSize,
+          cachedChunkIndexes: cachedIndexes,
+          debug: this.debug,
+          endIndex: slot.end,
+          maxEndIndex: slot.maxEnd,
+          onCoverage: coverage => this.#handleCoverage(slot, coverage),
+          onTotalChunks: total => this.#setTotalChunks(total),
+          signal: this.abortSignal,
+          size: this.size,
+          startIndex: slot.start,
+          totalChunks: this.totalChunks
+        }
+      )
+      slot.worker = worker
+      await worker.run()
+      this.#handleRangeFinished(slot)
+    } catch (error) {
+      this.#fail(error)
+    }
+  }
+
+  async #loadCachedIndexes (start, end) {
+    const values = await this.loadDownloadedChunkIndexes({ start, end })
+    if (!values || typeof values[Symbol.iterator] !== 'function') {
+      throw new Error('loadDownloadedChunkIndexes must return an iterable')
+    }
+
+    const indexes = []
+    const seen = new Set()
+    for (const index of values) {
+      assertSafeIndex(index, 'downloaded chunk index')
+      if (index < start || index > end) throw new Error('Downloaded chunk index is outside its requested range')
+      if (seen.has(index)) throw new Error('Duplicate downloaded chunk index')
+      seen.add(index)
+      indexes.push(index)
+      if (indexes.length > (end - start + 1)) throw new Error('Too many downloaded chunk indexes')
+    }
+    this.loadedCachedCount += indexes.length
+    if (this.loadedCachedCount > this.downloadedCount) {
+      throw new Error('Loaded chunk indexes exceed downloadedCount')
+    }
+    return indexes
+  }
+
+  #handleCoverage (slot, { covered, length, threshold }) {
+    if (!this.isRunning || !this.activeRanges.has(slot.start)) return
+    slot.covered = covered
+    slot.length = length
+    slot.threshold = threshold ?? Math.ceil(length * 0.3)
+    if (covered >= slot.threshold) this.#startNextRange()
+  }
+
+  #handleWorkerReport (slot, data) {
+    if (!this.isRunning || !this.activeRanges.has(slot.start)) return
+    if (data.event) {
+      this.downloadedCount++
+      if (this.totalChunks !== null && this.downloadedCount > this.totalChunks) {
+        this.#fail(new Error('Downloaded chunk count exceeds totalChunks'))
+        return
+      }
+      this.#reportProgress(data)
+      return
+    }
+    if (!data.error) return
+
+    this.missingCount++
+    if (this.missingSample.length < MAX_MISSING_SAMPLE) this.missingSample.push(data.chunkIndex)
+    this.#reportProgress({
+      ...data,
+      chunkIndexes: [...this.missingSample],
+      missingCount: this.missingCount
+    })
+    if (this.abortOnFailure) {
+      this.abortController.abort()
+      for (const activeSlot of this.activeRanges.values()) activeSlot.worker?.abort?.()
+      this.#finish({ reportMissingSummary: false })
+    }
+  }
+
+  #handleRangeFinished (slot) {
+    if (!this.activeRanges.has(slot.start)) return
+    this.activeRanges.delete(slot.start)
+    if (!this.isRunning) return
+
+    if (this.activeRanges.size === 0) this.#startNextRange()
+    else {
+      const remaining = this.activeRanges.values().next().value
+      if (remaining.worker && remaining.covered >= remaining.threshold) this.#startNextRange()
+    }
+
+    if (this.activeRanges.size === 0 && (this.totalChunks === null || this.nextRangeStart >= this.totalChunks)) {
+      this.#finish()
+    }
+  }
+
+  #reportProgress (extraData = {}) {
+    const total = this.totalChunks || 0
     this.callback({
       type: 'progress',
-      progress,
-      count,
+      progress: total ? (this.downloadedCount / total) * 100 : 0,
+      count: this.downloadedCount,
       total: this.totalChunks,
       ...extraData
     })
   }
 
-  isValidChunk (event) {
-    const cTag = event.tags.find(t => t[0] === 'c' && t[1].startsWith(this.fileRootHash + ':'))
-    if (!cTag || cTag.length < 3) return false
-
-    const parts = cTag[1].split(':')
-    const index = parseInt(parts[1])
-    if (isNaN(index) || index < 0 || index >= this.maxTotalChunks) return false
-
-    const total = parseInt(cTag[2])
-    if (isNaN(total) || total <= 0 || total > this.maxTotalChunks) return false
-
-    if (this.totalChunks !== null && this.totalChunks !== total) return false
-
-    return {
-      index,
-      total
-    }
+  #fail (error) {
+    if (!this.isRunning) return
+    this.#reportProgress({ error })
+    this.abortController.abort()
+    for (const slot of this.activeRanges.values()) slot.worker?.abort?.()
+    this.#finish({ reportMissingSummary: false })
   }
 
-  maybeFinish () {
-    if ((this.missingIndexes.size > 0 && this.activeBatches > 0) || this.isRunning === false) return
-
-    this.finish()
-  }
-
-  finish () {
-    try {
-      this.isRunning = false
-      if (this.missingIndexes.size > 0) {
-        const missing = this.totalChunks !== null ? Array.from(this.missingIndexes) : [0]
-        if (this.debug) {
-          const filter = {
-            kinds: [34600],
-            authors: [...new Set(Object.values(this.pubkeysByRelay).flat())],
-            '#c': missing.map(i => `${this.fileRootHash}:${i}`),
-            limit: missing.length
-          }
-          console.log('Check missing chunks with filter', filter)
-        }
-        this.reportProgress({ error: new Error('Missing file chunks'), chunkIndexes: missing })
-      } else if (this.activeBatches > 0) {
-        this.shouldGracefullyAbortRemainingBatches = true
-      }
-    } catch (err) {
-      if (this.debug) console.error('Error during finish:', err)
-    } finally {
-      if (this.debug) console.log('Resolving run promise...')
-      if (this.shouldGracefullyAbortRemainingBatches) this.onFailureAbortController.abort()
-      this.resolveRun()
+  #finish ({ reportMissingSummary = true } = {}) {
+    if (!this.isRunning) return
+    this.isRunning = false
+    this.activeRanges.clear()
+    if (reportMissingSummary && !this.abortOnFailure && this.missingCount > 0) {
+      this.#reportProgress({
+        error: new Error('Missing file chunks'),
+        chunkIndexes: [...this.missingSample],
+        missingCount: this.missingCount
+      })
     }
+    this.resolveRun?.()
   }
 }

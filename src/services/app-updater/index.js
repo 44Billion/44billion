@@ -9,6 +9,7 @@ import {
 } from '#services/idb/browser/queries/site-manifest.js'
 import { deleteStaleFileChunksFromDb, sumFileChunkBytesFromDb } from '#services/idb/browser/queries/file-chunk.js'
 import { addressObjToAppId, appIdToAddressObj } from '#helpers/app.js'
+import { getManifestAssetDescriptors } from '#helpers/site-manifest.js'
 import { base62ToBase16 } from '#helpers/base62.js'
 import { getUserRelays } from '#helpers/nostr-queries.js'
 import { cleanupNostrDbAppForOwner as cleanupNostrDbAppForOwnerBase } from '#helpers/nostrdb-app-cleanup.js'
@@ -1030,9 +1031,7 @@ export default class AppUpdater {
               })
             }
 
-            const fileRootHashes = manifest.tags
-              .filter(t => t[0] === 'path')
-              .map(t => t[2])
+            const fileRootHashes = getManifestAssetDescriptors(manifest).map(asset => asset.root)
             await _deleteStaleFileChunksFromDb(appId, fileRootHashes)
           }
         }
@@ -1168,14 +1167,23 @@ export default class AppUpdater {
         writeRelays = Array.from(relays[nextSiteManifestEvent.pubkey].write)
       }
 
-      const files = nextSiteManifestEvent.tags
-        .filter(t => t[0] === 'path')
-        .map(t => ({ rootHash: t[2], filename: t[1] }))
+      const filesByRoot = new Map()
+      for (const asset of getManifestAssetDescriptors(nextSiteManifestEvent)) {
+        if (!asset.paths.length || filesByRoot.has(asset.root)) continue
+        filesByRoot.set(asset.root, {
+          rootHash: asset.root,
+          filename: asset.paths[0],
+          service: asset.service,
+          mimeType: asset.mimeType,
+          size: asset.size
+        })
+      }
+      const files = [...filesByRoot.values()]
       const fileRootHashes = files.map(f => f.rootHash)
       const localManifestBeforeUpdate = await _getSiteManifestFromDb(appId)
-      const oldRootHashes = localManifestBeforeUpdate?.tags
-        ?.filter(t => t[0] === 'path' && t[2])
-        .map(t => t[2]) ?? []
+      const oldRootHashes = localManifestBeforeUpdate
+        ? getManifestAssetDescriptors(localManifestBeforeUpdate).map(asset => asset.root)
+        : []
       const replacement = {
         oldBytes: oldRootHashes.length > 0
           ? await _sumFileChunkBytesFromDb(appId, oldRootHashes)
@@ -1187,7 +1195,11 @@ export default class AppUpdater {
 
       for (let i = 0; i < totalFiles; i++) {
         const file = files[i]
-        const downloader = new _AppFileDownloader(appId, file.rootHash, writeRelays)
+        const downloader = new _AppFileDownloader(appId, file.rootHash, writeRelays, {
+          service: file.service,
+          mimeType: file.mimeType,
+          size: file.size
+        })
 
         try {
           for await (const report of downloader.run({

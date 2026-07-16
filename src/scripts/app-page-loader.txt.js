@@ -1,5 +1,5 @@
 import { tell, askStream } from '#helpers/window-message/index.js'
-import Base93Decoder from '#services/base93-decoder.js'
+import { Base93Decoder } from 'libp2r2p/base93'
 
 // ERROR: Top-level await is currently not supported with the "iife" output format [plugin js-text]
 // https://github.com/evanw/esbuild/issues/253

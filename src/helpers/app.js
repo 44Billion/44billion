@@ -1,13 +1,10 @@
 import { base62ToBase16, base16ToBase62 } from '#helpers/base62.js'
 import { base16ToBytes } from '#helpers/base16.js'
+import { findRouteAssetDescriptor } from '#helpers/site-manifest.js'
 
 const nappEventKinds = {
   // file chunk
-  34600: true,
-  // app listing
-  37348: true, // main
-  37349: true, // next
-  37350: true, // draft
+  34601: true,
   // site manifest
   35128: true, // main
   35129: true, // next
@@ -74,38 +71,9 @@ export function addressObjToAppId (obj) {
 // '/a/b', '/a/b/', '/a/b.html', '/a/b.htm', '/a/b/index.html' and '/a/b/index.htm'
 //  should match /a/b/index.html or /a/b/index.htm or /a/b.html or /a/b.htm
 export function findRouteFileTag (pathname, manifestTags) {
-  const pathTags = manifestTags.filter(t => t[0] === 'path')
-  let tag
-  for (const filename of getPotentialFilenameMatches(pathname)) {
-    if ((tag = pathTags.find(v => {
-      // Be defensive: allow leading "/" in tag value even though spec says no leading "/"
-      const tagPath = v[1]?.[0] === '/' ? v[1].slice(1) : v[1]
-      return tagPath === filename
-    }))) return tag
-  }
-
-  return null
-}
-
-function * getPotentialFilenameMatches (pathname, htmlOnly = false) {
-  // Remove the leading '/'
-  let basePath = pathname[0] === '/' ? pathname.slice(1) : pathname
-  const endsWithHtml = /\.html?$/.test(basePath)
-  if (endsWithHtml || (!htmlOnly && !!basePath)) yield basePath
-  if (!endsWithHtml && basePath.endsWith('/')) basePath = basePath.slice(0, -1)
-
-  let cleanPath = basePath.replace(/(?:\/index)?\.html?$/, '')
-  if (cleanPath.endsWith('/')) cleanPath = cleanPath.slice(0, -1)
-
-  let next
-  if (cleanPath.length > 0) {
-    if ((next = `${cleanPath}.html`) !== basePath) yield next
-    if ((next = `${cleanPath}.htm`) !== basePath) yield next
-    if ((next = `${cleanPath}/index.html`) !== basePath) yield next
-    if ((next = `${cleanPath}/index.htm`) !== basePath) yield next
-  }
-
-  // fallbacks
-  if (basePath !== 'index.html') yield 'index.html'
-  if (basePath !== 'index.htm') yield 'index.htm'
+  const descriptor = findRouteAssetDescriptor(pathname, { tags: manifestTags })
+  if (!descriptor) return null
+  const tag = ['path', descriptor.filename, descriptor.root]
+  Object.defineProperty(tag, 'descriptor', { value: descriptor })
+  return tag
 }

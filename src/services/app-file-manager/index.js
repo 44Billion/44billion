@@ -1,4 +1,5 @@
-import { appIdToAddressObj, findRouteFileTag } from '#helpers/app.js'
+import { appIdToAddressObj } from '#helpers/app.js'
+import { findRouteAssetDescriptor, getManifestAssetDescriptors } from '#helpers/site-manifest.js'
 import getSiteManifestEvent from './get-site-manifest-event.js'
 import AppFileDownloader from '#services/app-file-downloader/index.js'
 import { getUserRelays } from '#helpers/nostr-queries.js'
@@ -45,6 +46,22 @@ function getContentType (mimeType) {
   return /^(?:text\/|application\/json)[^;]*$/.test(mimeType)
     ? `${mimeType}; charset=utf-8`
     : mimeType
+}
+
+function normalizeAssetArgument (asset, manifest, pathname) {
+  if (!asset) return findRouteAssetDescriptor(pathname, manifest)
+  if (!Array.isArray(asset)) return asset
+  if (asset.descriptor) return asset.descriptor
+  const filename = asset[1]?.startsWith('/') ? asset[1].slice(1) : asset[1]
+  return {
+    service: manifest.tags.find(tag => tag[0] === 'service')?.[1] === 'irfs' ? 'irfs' : 'blossom',
+    root: asset[2],
+    paths: filename ? [filename] : [],
+    filename,
+    mimeType: null,
+    size: null,
+    tag: asset
+  }
 }
 
 const createToken = Symbol('createToken')
@@ -152,37 +169,40 @@ export default class AppFileManager {
   #faviconMetadata
   getFaviconMetadata () {
     if (this.#faviconMetadata) return this.#faviconMetadata
-    let mimeType
-    const tag = this.siteManifest.tags.find(t =>
-      t[0] === 'path' &&
-      /^favicon\.\w{3,}$/.test(t[1]) &&
-      ((mimeType = mime.getType(t[1])) || '').startsWith('image/')
+    const asset = getManifestAssetDescriptors(this.siteManifest).find(descriptor =>
+      descriptor.paths.some(path => /^favicon\.\w{3,}$/.test(path))
     )
-    if (!tag) return
+    if (!asset) return
+    const filename = asset.paths.find(path => /^favicon\.\w{3,}$/.test(path))
+    const mimeType = asset.mimeType || mime.getType(filename)
+    if (!(mimeType || '').startsWith('image/')) return
 
     return (this.#faviconMetadata = {
-      rootHash: tag[2],
-      filename: tag[1],
+      rootHash: asset.root,
+      filename,
       mimeType,
       contentType: getContentType(mimeType),
-      tag
+      size: asset.size,
+      service: asset.service,
+      tag: asset
     })
   }
 
-  getFileRootHash (pathname, pathTag) {
-    pathTag ??= findRouteFileTag(pathname, this.siteManifest.tags)
-    if (!pathTag) throw new Error(`No matching path tag found for path: ${pathname}`)
-    return pathTag[2]
+  getFileRootHash (pathname, asset) {
+    asset = normalizeAssetArgument(asset, this.siteManifest, pathname)
+    if (!asset) throw new Error(`No matching manifest asset found for path: ${pathname}`)
+    return asset.root
   }
 
-  async getFileCacheStatus (pathname, pathTag, { withMeta = false } = {}) {
-    pathTag ??= findRouteFileTag(pathname, this.siteManifest.tags)
-    if (!pathTag) throw new Error(`No matching path tag found for path: ${pathname}`)
-    const fileRootHash = this.getFileRootHash(null, pathTag)
+  async getFileCacheStatus (pathname, asset, { withMeta = false } = {}) {
+    asset = normalizeAssetArgument(asset, this.siteManifest, pathname)
+    if (!asset) throw new Error(`No matching manifest asset found for path: ${pathname}`)
+    const fileRootHash = asset.root
     const chunkStatus = await countFileChunksFromDb(this.appId, fileRootHash)
     if (!withMeta) return { isCached: chunkStatus.count === chunkStatus.total }
 
-    const mimeType = mime.getType(pathTag[1])
+    const filename = asset.filename || asset.paths[0]
+    const mimeType = asset.mimeType || mime.getType(filename)
 
     return {
       ...chunkStatus,
@@ -191,7 +211,9 @@ export default class AppFileManager {
       contentType: getContentType(mimeType),
       isHtml: /^text\/html\b/.test(mimeType),
       fileRootHash,
-      pathTag
+      size: asset.size,
+      service: asset.service,
+      pathTag: asset
     }
   }
 
@@ -206,13 +228,13 @@ export default class AppFileManager {
   }
   // runs caching process and calls progressCallback with { progress: 0-100 } or { error }
   // !navigator.connection?.metered is true if user is on cheap internet
-  async cacheFile (pathname, pathTag, progressCallback, {
+  async cacheFile (pathname, asset, progressCallback, {
     shouldCacheMissingFiles = !navigator.connection?.metered,
     assetBudget = {}
   } = {}) {
-    pathTag ??= findRouteFileTag(pathname, this.siteManifest.tags)
-    if (!pathTag) throw new Error(`No matching path tag found for path: ${pathname}`)
-    const filename = pathTag[1]
+    asset = normalizeAssetArgument(asset, this.siteManifest, pathname)
+    if (!asset) throw new Error(`No matching manifest asset found for path: ${pathname}`)
+    const filename = asset.filename || asset.paths[0]
     const config = this.#getCacheFilePubSubConfig(filename)
 
     if (progressCallback) {
@@ -229,7 +251,7 @@ export default class AppFileManager {
         this.cacheMissingAppFiles(filename) // does nothing if already running
       } else if (error) p.reject(error)
     })
-    this.#cacheFileInBackground(filename, pathTag, assetBudget)
+    this.#cacheFileInBackground(filename, asset, assetBudget)
     return p.promise
   }
 
@@ -239,17 +261,20 @@ export default class AppFileManager {
 
     this.#isCacheMissingAppFilesRunning = true
     try {
-      const seenFilenames = { ...(lastCachedFilename && { [lastCachedFilename]: true }) }
-      const pathTags = this.siteManifest.tags
-        .filter(t => {
-          if (t[0] !== 'path' || !t[1] || !t[2] || seenFilenames[t[1]]) return false
-          return (seenFilenames[t[1]] = true)
-        })
+      const seenFilenames = new Set(lastCachedFilename ? [lastCachedFilename] : [])
+      const assets = []
+      for (const descriptor of getManifestAssetDescriptors(this.siteManifest)) {
+        for (const filename of descriptor.paths) {
+          if (seenFilenames.has(filename)) continue
+          seenFilenames.add(filename)
+          assets.push({ ...descriptor, filename })
+        }
+      }
 
-      for (const pathTag of pathTags) {
+      for (const asset of assets) {
         if (!this.#isCacheMissingAppFilesRunning) break // poor man's abort controller
         try {
-          await this.cacheFile(pathTag[1], pathTag, null, {
+          await this.cacheFile(asset.filename, asset, null, {
             shouldCacheMissingFiles: false,
             assetBudget: { mode: 'background' }
           })
@@ -264,7 +289,7 @@ export default class AppFileManager {
   }
 
   #isCacheFileInBackgroundRunning = {} // { [filename]: true }
-  async #cacheFileInBackground (filename, pathTag, assetBudget = {}) {
+  async #cacheFileInBackground (filename, asset, assetBudget = {}) {
     if (this.#isCacheFileInBackgroundRunning[filename]) return
 
     this.#isCacheFileInBackgroundRunning[filename] = true
@@ -275,9 +300,12 @@ export default class AppFileManager {
       const writeRelays = Array.from(relays[this.siteManifest.pubkey]?.write || [])
       if (writeRelays.length === 0) writeRelays.push(...nappRelays)
 
-      const service = this.service
-      const mimeType = mime.getType(pathTag[1])
-      const downloader = new AppFileDownloader(this.appId, pathTag[2], writeRelays, { service, mimeType })
+      const mimeType = asset.mimeType || mime.getType(filename)
+      const downloader = new AppFileDownloader(this.appId, asset.root, writeRelays, {
+        service: asset.service,
+        mimeType,
+        size: asset.size
+      })
 
       for await (const report of downloader.run({ assetBudget: { ...assetBudget, filename } })) {
         if (!this.#isCacheFileInBackgroundRunning[filename]) break // poor man's abort controller

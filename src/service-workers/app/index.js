@@ -2,7 +2,7 @@
 import '#config/polyfills.js'
 import { injectIntoTheHeadTag } from '#helpers/html.js'
 import { askStream } from '#helpers/window-message/index.js'
-import Base93Decoder from '#services/base93-decoder.js'
+import { Base93Decoder } from 'libp2r2p/base93'
 import appPageScriptContent from '#scripts/app-page.txt.js'
 import _appPageLoader from '../../assets/html/app-page-loader.txt.html'
 import appPageLoaderScriptContent from '#scripts/app-page-loader.txt.js'

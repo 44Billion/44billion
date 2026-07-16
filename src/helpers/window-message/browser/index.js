@@ -21,8 +21,7 @@ import { getNostrDb } from '#services/idb/nostrdb/index.js'
 import AppFileManager from '#services/app-file-manager/index.js'
 import AppUpdater from '#services/app-updater/index.js'
 import { setWebStorageItem } from '#hooks/use-web-storage.js'
-import { decode } from '#services/base93-decoder.js'
-import Base93Encoder from '#services/base93-encoder.js'
+import { Base93Encoder, decode } from 'libp2r2p/base93'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToBase16 } from '#helpers/base16.js'
 import {
@@ -238,8 +237,7 @@ export async function initMessageListener (
 
                       const chunk = chunks[0]
                       if (totalChunks === null) {
-                        const cTag = chunk.evt.tags.find(t => t[0] === 'c' && t[1].startsWith(`${fileRootHash}:`))
-                        const parsedTotal = parseInt(cTag?.[2])
+                        const parsedTotal = chunk.total ?? Number(chunk.evt.tags.find(tag => tag[0] === 'mmr')?.[2])
                         if (!Number.isNaN(parsedTotal) && parsedTotal > 0) totalChunks = parsedTotal
                       }
 
@@ -563,7 +561,7 @@ export async function initMessageListener (
             // and if not cached, cache it completly, only then stream chunks
             const favicon = appFiles.getFaviconMetadata()
             if (!favicon) {
-              // Fallback: getIcon() handles listing event fetching and localStorage caching,
+              // Fallback: getIcon() reads the manifest and updates localStorage,
               // so subsequent calls are served from cache without re-downloading.
               const icon = await appFiles.getIcon()
               if (!icon?.url) {
@@ -598,7 +596,7 @@ export async function initMessageListener (
               cacheStatus = (await appFiles.getFileCacheStatus(null, favicon.tag, { withMeta: true }))
             }
 
-            if (appFiles.service === 'blossom') {
+            if (favicon.service === 'blossom') {
               const hasher = sha256.create()
               for await (const chunk of streamFileChunksFromDb(appId, favicon.rootHash)) {
                 hasher.update(decode(chunk.evt.content))

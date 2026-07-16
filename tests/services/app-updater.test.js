@@ -893,7 +893,7 @@ describe('AppUpdater', () => {
       AppUpdater._activeUpdates = 0
       AppUpdater._updateQueue = []
 
-      const event = { kind: 35128, pubkey: 'pk', tags: [['d', 'app1'], ['path', 'f', 'h']] }
+      const event = { kind: 35128, pubkey: 'pk', tags: [['d', 'app1'], ['path', 'f', '1'.repeat(64)]] }
 
       // The first call's downloader is a deferred async iterator we hold paused
       // so the slot stays held until we explicitly release.
@@ -973,7 +973,7 @@ describe('AppUpdater', () => {
       AppUpdater._activeUpdates = 0
       AppUpdater._updateQueue = []
 
-      const event = { kind: 35128, pubkey: 'pk', tags: [['d', 'app1'], ['path', 'f', 'h']] }
+      const event = { kind: 35128, pubkey: 'pk', tags: [['d', 'app1'], ['path', 'f', '1'.repeat(64)]] }
       const error = new Error('boom')
       const downloader = {
         run: async function * () { yield { progress: 0, error } }
@@ -1003,8 +1003,8 @@ describe('AppUpdater', () => {
       pubkey: 'pubkey1',
       tags: [
         ['d', 'app1'],
-        ['path', 'file1.js', 'hash1'],
-        ['path', 'file2.css', 'hash2']
+        ['path', 'file1.js', '1'.repeat(64)],
+        ['path', 'file2.css', '2'.repeat(64)]
       ]
     }
     const appId = 'app1_id'
@@ -1058,7 +1058,7 @@ describe('AppUpdater', () => {
 
       // Check DB calls
       assert.equal(mockDeleteStale.mock.callCount(), 1)
-      assert.deepEqual(mockDeleteStale.mock.calls[0].arguments, [appId, ['hash1', 'hash2']])
+      assert.deepEqual(mockDeleteStale.mock.calls[0].arguments, [appId, ['1'.repeat(64), '2'.repeat(64)]])
 
       assert.equal(mockSaveManifest.mock.callCount(), 1)
       const [savedEvent, savedMeta] = mockSaveManifest.mock.calls[0].arguments
@@ -1413,7 +1413,7 @@ describe('AppUpdater', () => {
       const mockSessionStorage = {
         getItem: mock.fn(() => JSON.stringify([]))
       }
-      const mockGetManifest = mock.fn(async () => ({ tags: [['path', 'file1.js', 'hash1']] }))
+      const mockGetManifest = mock.fn(async () => ({ tags: [['path', 'file1.js', '1'.repeat(64)]] }))
       const mockDeleteStale = mock.fn(async () => {})
 
       await AppUpdater.scheduleCleanup(['app1'], {
@@ -1426,7 +1426,7 @@ describe('AppUpdater', () => {
 
       assert.equal(mockNavigator.locks.request.mock.callCount(), 1)
       assert.equal(mockDeleteStale.mock.callCount(), 1)
-      assert.deepEqual(mockDeleteStale.mock.calls[0].arguments, ['app1', ['hash1']])
+      assert.deepEqual(mockDeleteStale.mock.calls[0].arguments, ['app1', ['1'.repeat(64)]])
     })
 
     it('should prune stale single-napp owners while keeping recent owner caches', async () => {
@@ -1445,7 +1445,7 @@ describe('AppUpdater', () => {
         getItem: mock.fn(() => JSON.stringify([]))
       }
       const mockGetManifest = mock.fn(async () => ({
-        tags: [['path', 'file1.js', 'hash1']],
+        tags: [['path', 'file1.js', '1'.repeat(64)]],
         meta: {
           singleNappOpenedAtByOwner: {
             [staleOwner]: 1,
@@ -1504,7 +1504,7 @@ describe('AppUpdater', () => {
         getItem: mock.fn(() => JSON.stringify([]))
       }
       const mockGetManifest = mock.fn(async () => ({
-        tags: [['path', 'file1.js', 'hash1']],
+        tags: [['path', 'file1.js', '1'.repeat(64)]],
         meta: {
           singleNappOpenedAtByOwner: { [staleOwner]: 1 }
         }

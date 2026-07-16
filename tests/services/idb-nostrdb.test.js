@@ -140,6 +140,20 @@ describe('nostrdb', () => {
     assert.equal(fakeStore(owner, KIND_REGISTRY_STORE).records.has('appNeutralKinds'), true)
   })
 
+  it('treats retired chunk and listing kinds as unknown app-specific data', async () => {
+    const owner = `${OWNER}retired-kinds`
+    const db = getNostrDb(owner)
+    const appRef = appIdToDbAppRef(APP1)
+    const retiredKinds = [34600, 37348, 37349, 37350]
+
+    for (const [index, kind] of retiredKinds.entries()) {
+      const retired = event({ id: hexId(index + 20), kind })
+      assert.deepEqual(toStoredRecord(retired, { appRef }).ap, [appRef])
+      assertAddOk(await db.add(retired, { appId: APP1 }))
+      assertAppRefs(fakeStore(owner, EVENTS_STORE).records.get(eventIdIndexKey(retired.id)), [APP1])
+    }
+  })
+
   it('rejects invalid app ids without storing events', async () => {
     const owner = `${OWNER}73`
     const db = getNostrDb(owner)

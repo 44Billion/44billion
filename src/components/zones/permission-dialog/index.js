@@ -177,10 +177,7 @@ f('permissionDialogStack', function () {
       31923: 'time events',
       31924: 'calendars',
       31925: 'event RSVPs',
-      34600: 'files',
-      37348: 'app listings',
-      37349: '(next) app listings',
-      37350: '(draft) app listings',
+      34601: 'files',
       35128: 'site manifests',
       35129: '(next) site manifests',
       35130: '(draft) site manifests'

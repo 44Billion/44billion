@@ -1,127 +1,101 @@
 import { streamFileChunksFromDb, deleteFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
-import { decode } from '#services/base93-decoder.js'
+import { decode } from 'libp2r2p/base93'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToBase16 } from '#helpers/base16.js'
-import { getEventByAddress, getUserRelays } from '#helpers/nostr-queries.js'
-import { nappRelays } from '#config/relays.js'
-import AppFileDownloader from '#services/app-file-downloader/index.js'
+import { findMarkedAssetDescriptors, getManifestMetadata } from '#helpers/site-manifest.js'
+import { warnAssetSizeMismatch } from '#helpers/asset-size.js'
 
 export async function getIcon (appFileManager, staleWhileRevalidate = false) {
-  const metadata = appFileManager.getCachedMetadata(appFileManager.appId, ['icon'])
-  const cachedIcon = metadata?.icon
-
-  // If staleWhileRevalidate is true and we have a cached icon, start revalidation in background
+  const cachedIcon = appFileManager.getCachedMetadata(appFileManager.appId, ['icon'])?.icon
   if (staleWhileRevalidate && cachedIcon) {
-    // Don't await this, let it run in background
     fetchAndCacheIcon(appFileManager, cachedIcon)
     return cachedIcon
   }
-
-  // Return cached icon if available (and we're not doing stale-while-revalidate)
   if (cachedIcon) return cachedIcon
-
-  // Fetch and cache icon
-  return await fetchAndCacheIcon(appFileManager)
+  return fetchAndCacheIcon(appFileManager)
 }
 
 export async function getName (appFileManager, staleWhileRevalidate = false) {
-  const metadata = appFileManager.getCachedMetadata(appFileManager.appId, ['name', 'description'])
-  const cachedName = metadata?.name
-
-  // If staleWhileRevalidate is true and we have cached metadata, start revalidation in background
-  if (staleWhileRevalidate && (cachedName !== undefined || metadata?.description !== undefined)) {
-    // Don't await this, let it run in background
-    fetchAndCacheHtmlMetadata(appFileManager)
-    return cachedName
+  const manifestName = getManifestMetadata(appFileManager.siteManifest).name
+  if (manifestName) {
+    appFileManager.cacheMetadata(appFileManager.appId, { name: manifestName })
+    return manifestName
   }
 
-  // Return cached name if available (and we're not doing stale-while-revalidate)
-  if (cachedName !== undefined) return cachedName
-
-  // Fetch and cache metadata
-  const result = await fetchAndCacheHtmlMetadata(appFileManager)
-  return result?.name?.trim() || null
+  const metadata = appFileManager.getCachedMetadata(appFileManager.appId, ['name', 'description'])
+  if (staleWhileRevalidate && (metadata?.name !== undefined || metadata?.description !== undefined)) {
+    fetchAndCacheHtmlMetadata(appFileManager)
+    return metadata.name
+  }
+  if (metadata?.name !== undefined) return metadata.name
+  return (await fetchAndCacheHtmlMetadata(appFileManager))?.name?.trim() || null
 }
 
 export async function getDescription (appFileManager, staleWhileRevalidate = false) {
-  const metadata = appFileManager.getCachedMetadata(appFileManager.appId, ['name', 'description'])
-  const cachedDescription = metadata?.description
-
-  // If staleWhileRevalidate is true and we have cached metadata, start revalidation in background
-  if (staleWhileRevalidate && (cachedDescription !== undefined || metadata?.name !== undefined)) {
-    // Don't await this, let it run in background
-    fetchAndCacheHtmlMetadata(appFileManager)
-    return cachedDescription
+  const manifestMetadata = getManifestMetadata(appFileManager.siteManifest)
+  const manifestDescription = manifestMetadata.descriptions[0]?.text || manifestMetadata.summary
+  if (manifestDescription) {
+    appFileManager.cacheMetadata(appFileManager.appId, { description: manifestDescription })
+    return manifestDescription
   }
 
-  // Return cached description if available (and we're not doing stale-while-revalidate)
-  if (cachedDescription !== undefined) return cachedDescription
-
-  // Fetch and cache metadata
-  const result = await fetchAndCacheHtmlMetadata(appFileManager)
-  return result?.description?.trim() || null
+  const metadata = appFileManager.getCachedMetadata(appFileManager.appId, ['name', 'description'])
+  if (staleWhileRevalidate && (metadata?.description !== undefined || metadata?.name !== undefined)) {
+    fetchAndCacheHtmlMetadata(appFileManager)
+    return metadata.description
+  }
+  if (metadata?.description !== undefined) return metadata.description
+  return (await fetchAndCacheHtmlMetadata(appFileManager))?.description?.trim() || null
 }
 
-const MANIFEST_TO_LISTING_KIND = { 35128: 37348, 35129: 37349, 35130: 37350 }
-
 async function fetchAndCacheIcon (appFileManager, cachedIcon = null) {
-  // Get current favicon metadata
-  const favicon = appFileManager.getFaviconMetadata()
-  if (!favicon) return fetchAndCacheIconFromListing(appFileManager, cachedIcon)
-
-  // If we have a cached icon and the hash hasn't changed, return the cached one
-  if (cachedIcon && cachedIcon.fx === favicon.rootHash) {
-    return cachedIcon
-  }
+  const marked = findMarkedAssetDescriptors('icon', appFileManager.siteManifest)[0]
+  const asset = marked || appFileManager.getFaviconMetadata()?.tag
+  if (!asset) return null
+  if (cachedIcon?.fx === asset.root) return cachedIcon
 
   try {
-    // Check if favicon file is cached
-    let cacheStatus = await appFileManager.getFileCacheStatus(null, favicon.tag, { withMeta: true })
+    let cacheStatus = await appFileManager.getFileCacheStatus(null, asset, { withMeta: true })
     if (!cacheStatus.isCached) {
-      // Cache the file if not already cached
-      await appFileManager.cacheFile(null, favicon.tag)
-      cacheStatus = await appFileManager.getFileCacheStatus(null, favicon.tag, { withMeta: true })
+      await appFileManager.cacheFile(null, { ...asset, filename: asset.paths[0] || `@icon:${asset.root}` })
+      cacheStatus = await appFileManager.getFileCacheStatus(null, asset, { withMeta: true })
     }
 
-    // Get all chunks for the favicon
-    const allChunks = []
-    for await (const chunk of streamFileChunksFromDb(appFileManager.appId, favicon.rootHash)) {
-      allChunks.push(chunk.evt.content)
+    const binaryChunks = []
+    let byteLength = 0
+    for await (const chunk of streamFileChunksFromDb(appFileManager.appId, asset.root)) {
+      const bytes = decode(chunk.evt.content)
+      binaryChunks.push(bytes)
+      byteLength += bytes.length
     }
-    if (allChunks.length === 0) return null
-
-    // Process chunks to create data URL
-    const binaryChunks = allChunks.map(chunk => decode(chunk))
-
-    if (appFileManager.service === 'blossom') {
+    if (!binaryChunks.length) return null
+    if (asset.size !== null && asset.size !== byteLength) {
+      warnAssetSizeMismatch({
+        service: asset.service,
+        root: asset.root,
+        advertisedSize: asset.size,
+        actualSize: byteLength
+      })
+    }
+    if (asset.service === 'blossom') {
       const hasher = sha256.create()
       for (const bytes of binaryChunks) hasher.update(bytes)
-      if (bytesToBase16(hasher.digest()) !== favicon.rootHash) {
-        if (favicon.rootHash) await deleteFileChunksFromDb(appFileManager.appId, favicon.rootHash)
+      if (bytesToBase16(hasher.digest()) !== asset.root) {
+        await deleteFileChunksFromDb(appFileManager.appId, asset.root)
         return null
       }
     }
 
-    const blob = new Blob(binaryChunks, { type: favicon.contentType })
-
+    const mimeType = asset.mimeType || cacheStatus.mimeType || 'application/octet-stream'
+    const blob = new Blob(binaryChunks, { type: mimeType })
     const reader = new FileReader()
-    const dataUrlPromise = new Promise((resolve, reject) => {
+    const dataUrl = await new Promise((resolve, reject) => {
       reader.onload = () => resolve(reader.result)
       reader.onerror = reject
       reader.readAsDataURL(blob)
     })
-
-    const dataUrl = await dataUrlPromise
-
-    // Create icon object
-    const icon = {
-      fx: favicon.rootHash,
-      url: dataUrl
-    }
-
-    // Cache the icon metadata
+    const icon = { fx: asset.root, url: dataUrl }
     appFileManager.cacheMetadata(appFileManager.appId, { icon })
-
     return icon
   } catch (error) {
     console.log('Failed to fetch icon:', error)
@@ -129,189 +103,64 @@ async function fetchAndCacheIcon (appFileManager, cachedIcon = null) {
   }
 }
 
-// Returns { iconHash, mimeType, contentType, chunks } where chunks are sorted base93 strings,
-// or null if unavailable. Downloads without persisting to IDB.
-export async function getListingIconData (appFileManager) {
-  const listingKind = MANIFEST_TO_LISTING_KIND[appFileManager.addressObj.kind]
-  if (!listingKind) return null
-
-  const { pubkey, dTag } = appFileManager.addressObj
-
-  let listingEvent
-  try {
-    listingEvent = await getEventByAddress({ kind: listingKind, pubkey, dTag })
-  } catch (err) {
-    console.log('Failed to fetch app listing event for icon:', err)
-    return null
-  }
-  if (!listingEvent) return null
-
-  const iconTag = listingEvent.tags.find(t => t[0] === 'icon')
-  if (!iconTag?.[1]) return null
-
-  const iconHash = iconTag[1]
-  const mimeType = iconTag[2] || null
-  const listingService = listingEvent.tags.find(t => t[0] === 'service')?.[1] || 'blossom'
-  const contentType = mimeType
-    ? (/^(?:text\/|application\/json)[^;]*$/.test(mimeType) ? `${mimeType}; charset=utf-8` : mimeType)
-    : 'application/octet-stream'
-
-  const relaysInfo = await getUserRelays([pubkey])
-  const writeRelays = Array.from(relaysInfo[pubkey]?.write || [])
-  if (writeRelays.length === 0) writeRelays.push(...nappRelays)
-
-  const chunksByIndex = new Map()
-  const downloader = new AppFileDownloader(appFileManager.appId, iconHash, writeRelays, { service: listingService, mimeType })
-  for await (const report of downloader.run({ skipDb: true })) {
-    if (report.error) {
-      console.log('Failed to download app listing icon:', report.error)
-      return null
-    }
-    if (report.event) {
-      const cTag = report.event.tags?.find(t => t[0] === 'c')
-      const chunkIdx = cTag ? parseInt(cTag[1].split(':').pop()) : 0
-      if (!Number.isNaN(chunkIdx)) chunksByIndex.set(chunkIdx, report.event.content)
-    }
-  }
-
-  if (chunksByIndex.size === 0) return null
-
-  const chunks = Array.from(chunksByIndex.entries())
-    .sort((a, b) => a[0] - b[0])
-    .map(([, content]) => content)
-
-  if (listingService === 'blossom') {
-    const hasher = sha256.create()
-    for (const content of chunks) hasher.update(decode(content))
-    if (bytesToBase16(hasher.digest()) !== iconHash) return null
-  }
-
-  return { iconHash, mimeType, contentType, chunks }
-}
-
-async function fetchAndCacheIconFromListing (appFileManager, cachedIcon = null) {
-  const data = await getListingIconData(appFileManager)
-  if (!data) return null
-
-  if (cachedIcon?.fx === data.iconHash) return cachedIcon
-
-  const binaryChunks = data.chunks.map(content => decode(content))
-  const blob = new Blob(binaryChunks, { type: data.contentType })
-  const reader = new FileReader()
-  const dataUrl = await new Promise((resolve, reject) => {
-    reader.onload = () => resolve(reader.result)
-    reader.onerror = reject
-    reader.readAsDataURL(blob)
-  })
-
-  const icon = { fx: data.iconHash, url: dataUrl }
-  appFileManager.cacheMetadata(appFileManager.appId, { icon })
-  return icon
-}
-
 async function fetchAndCacheHtmlMetadata (appFileManager) {
   try {
-    // Get the index file status
-    const cacheStatus = await appFileManager.getFileCacheStatus('/', null, { withMeta: true })
+    let cacheStatus = await appFileManager.getFileCacheStatus('/', null, { withMeta: true })
     if (!cacheStatus.isCached) {
-      // Cache the file if not already cached
       await appFileManager.cacheFile('/', null)
+      cacheStatus = await appFileManager.getFileCacheStatus('/', null, { withMeta: true })
     }
 
-    // Get all chunks for the index file
-    const allChunks = []
+    const binaryChunks = []
+    let byteLength = 0
     for await (const chunk of streamFileChunksFromDb(appFileManager.appId, cacheStatus.fileRootHash)) {
-      allChunks.push(chunk.evt.content)
+      const bytes = decode(chunk.evt.content)
+      binaryChunks.push(bytes)
+      byteLength += bytes.length
     }
-    if (allChunks.length === 0) return { name: undefined, description: undefined }
-
-    // Process chunks to create HTML content
-    const binaryChunks = allChunks.map(chunk => decode(chunk))
-    const blob = new Blob(binaryChunks, { type: cacheStatus.contentType })
+    if (!binaryChunks.length) return { name: undefined, description: undefined }
+    if (cacheStatus.size !== null && cacheStatus.size !== byteLength) {
+      warnAssetSizeMismatch({
+        service: cacheStatus.service,
+        root: cacheStatus.fileRootHash,
+        advertisedSize: cacheStatus.size,
+        actualSize: byteLength
+      })
+    }
 
     const reader = new FileReader()
-    const htmlPromise = new Promise((resolve, reject) => {
+    const htmlContent = await new Promise((resolve, reject) => {
       reader.onload = () => resolve(reader.result)
       reader.onerror = reject
-      reader.readAsText(blob)
+      reader.readAsText(new Blob(binaryChunks, { type: cacheStatus.contentType }))
     })
-
-    const htmlContent = await htmlPromise
-
-    // Extract name and description from HTML
-    const { name, description } = extractMetadataFromHtml(htmlContent)
-
-    // Cache the metadata if we have values
-    const metadataToCache = {}
-    if (name !== undefined) metadataToCache.name = name
-    if (description !== undefined) metadataToCache.description = description
-
-    if (Object.keys(metadataToCache).length > 0) {
-      appFileManager.cacheMetadata(appFileManager.appId, metadataToCache)
-    }
-
-    return { name, description }
+    const metadata = extractMetadataFromHtml(htmlContent)
+    const toCache = {}
+    if (metadata.name !== undefined) toCache.name = metadata.name
+    if (metadata.description !== undefined) toCache.description = metadata.description
+    if (Object.keys(toCache).length) appFileManager.cacheMetadata(appFileManager.appId, toCache)
+    return metadata
   } catch (error) {
     console.log('Failed to fetch HTML metadata:', error)
     return { name: undefined, description: undefined }
   }
 }
 
-function extractMetadataFromHtml (htmlContent) {
+export function extractMetadataFromHtml (htmlContent) {
   let name
   let description
-
   try {
-    const titleRegex = /<title[^>]*>([\s\S]*?)<\/title>/i
-    const titleMatch = htmlContent.match(titleRegex)
-    if (titleMatch && titleMatch[1]) {
-      name = titleMatch[1].trim()
-    }
-
+    name = htmlContent.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.trim()
     if (!name) {
-      const ogTitleRegex = /<meta\s+[^>]*(?:property|name)\s*=\s*["']og:title["'][^>]*content\s*=\s*["']([^"']+)["'][^>]*>/i
-      const ogTitleMatch = htmlContent.match(ogTitleRegex)
-      if (ogTitleMatch && ogTitleMatch[1]) {
-        name = ogTitleMatch[1].trim()
-      } else {
-        const altOgTitleRegex = /<meta\s+[^>]*content\s*=\s*["']([^"']+)["'][^>]*(?:property|name)\s*=\s*["']og:title["'][^>]*>/i
-        const altOgTitleMatch = htmlContent.match(altOgTitleRegex)
-        if (altOgTitleMatch && altOgTitleMatch[1]) {
-          name = altOgTitleMatch[1].trim()
-        }
-      }
+      name = htmlContent.match(/<meta\s+[^>]*(?:property|name)\s*=\s*["']og:title["'][^>]*content\s*=\s*["']([^"']+)["'][^>]*>/i)?.[1]?.trim() ||
+        htmlContent.match(/<meta\s+[^>]*content\s*=\s*["']([^"']+)["'][^>]*(?:property|name)\s*=\s*["']og:title["'][^>]*>/i)?.[1]?.trim()
     }
-
-    const metaDescRegex = /<meta\s+[^>]*name\s*=\s*["']description["'][^>]*content\s*=\s*["']([^"']+)["'][^>]*>/i
-    const metaDescMatch = htmlContent.match(metaDescRegex)
-    if (metaDescMatch && metaDescMatch[1]) {
-      description = metaDescMatch[1].trim()
-    }
-
-    if (!description) {
-      const altMetaDescRegex = /<meta\s+[^>]*content\s*=\s*["']([^"']+)["'][^>]*name\s*=\s*["']description["'][^>]*>/i
-      const altMetaDescMatch = htmlContent.match(altMetaDescRegex)
-      if (altMetaDescMatch && altMetaDescMatch[1]) {
-        description = altMetaDescMatch[1].trim()
-      }
-    }
-
-    if (!description) {
-      const ogDescRegex = /<meta\s+[^>]*(?:property|name)\s*=\s*["']og:description["'][^>]*content\s*=\s*["']([^"']+)["'][^>]*>/i
-      const ogDescMatch = htmlContent.match(ogDescRegex)
-      if (ogDescMatch && ogDescMatch[1]) {
-        description = ogDescMatch[1].trim()
-      } else {
-        const altOgDescRegex = /<meta\s+[^>]*content\s*=\s*["']([^"']+)["'][^>]*(?:property|name)\s*=\s*["']og:description["'][^>]*>/i
-        const altOgDescMatch = htmlContent.match(altOgDescRegex)
-        if (altOgDescMatch && altOgDescMatch[1]) {
-          description = altOgDescMatch[1].trim()
-        }
-      }
-    }
+    description = htmlContent.match(/<meta\s+[^>]*name\s*=\s*["']description["'][^>]*content\s*=\s*["']([^"']+)["'][^>]*>/i)?.[1]?.trim() ||
+      htmlContent.match(/<meta\s+[^>]*content\s*=\s*["']([^"']+)["'][^>]*name\s*=\s*["']description["'][^>]*>/i)?.[1]?.trim() ||
+      htmlContent.match(/<meta\s+[^>]*(?:property|name)\s*=\s*["']og:description["'][^>]*content\s*=\s*["']([^"']+)["'][^>]*>/i)?.[1]?.trim() ||
+      htmlContent.match(/<meta\s+[^>]*content\s*=\s*["']([^"']+)["'][^>]*(?:property|name)\s*=\s*["']og:description["'][^>]*>/i)?.[1]?.trim()
   } catch (error) {
     console.log('Error parsing HTML metadata:', error)
   }
-
   return { name, description }
 }

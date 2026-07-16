@@ -4,7 +4,8 @@ import { nappRelays } from '#config/relays.js'
 import {
   saveFileChunksToDB,
   countFileChunksFromDb,
-  getFileChunksFromDb
+  getFileChunksFromDb,
+  deleteFileChunksFromDb
 } from '#services/idb/browser/queries/file-chunk.js'
 import FileDownloader from '#services/file-downloader/index.js'
 import BlossomFileDownloader from '#services/blossom-file-downloader/index.js'
@@ -17,14 +18,16 @@ export default class AppFileDownloader {
    * @param {object} [options]
    * @param {string} [options.service='blossom'] - 'blossom' or 'irfs'
    * @param {string|null} [options.mimeType=null] - expected MIME type of the file
+   * @param {number|null} [options.size=null] - signed byte-size hint from the manifest
    */
-  constructor (appId, fileHash, writeRelays, { service = 'blossom', mimeType = null } = {}) {
+  constructor (appId, fileHash, writeRelays, { service = 'blossom', mimeType = null, size = null } = {}) {
     if (!writeRelays || writeRelays.length === 0) throw new Error('Write relays cannot be empty')
     this.appId = appId
     this.fileRootHash = fileHash
     this.writeRelays = [...new Set([...writeRelays, ...nappRelays])]
     this.service = service
     this.mimeType = mimeType
+    this.size = size
   }
 
   static async getSiteManifestEvents (appIds, {
@@ -94,12 +97,13 @@ export default class AppFileDownloader {
     _BlossomFileDownloader = BlossomFileDownloader,
     _countFileChunksFromDb = countFileChunksFromDb,
     _getFileChunksFromDb = getFileChunksFromDb,
+    _deleteFileChunksFromDb = deleteFileChunksFromDb,
     _saveFileChunksToDB = saveFileChunksToDB,
     skipDb = false,
     assetBudget = null
   } = {}) {
     if (this.service === 'blossom') {
-      yield * this.#runBlossom({ _BlossomFileDownloader, _countFileChunksFromDb, _saveFileChunksToDB, skipDb, assetBudget })
+      yield * this.#runBlossom({ _BlossomFileDownloader, _countFileChunksFromDb, _saveFileChunksToDB, _deleteFileChunksFromDb, skipDb, assetBudget })
     } else {
       yield * this.#runIrfs({ _FileDownloader, _countFileChunksFromDb, _getFileChunksFromDb, _saveFileChunksToDB, skipDb, assetBudget })
     }
@@ -109,6 +113,7 @@ export default class AppFileDownloader {
     _BlossomFileDownloader,
     _countFileChunksFromDb,
     _saveFileChunksToDB,
+    _deleteFileChunksFromDb,
     skipDb = false,
     assetBudget = null
   }) {
@@ -134,6 +139,7 @@ export default class AppFileDownloader {
     }
 
     const pendingOperations = new Set()
+    let storageChain = Promise.resolve()
     const trackOperation = (operation) => {
       pendingOperations.add(operation)
       operation.finally(() => pendingOperations.delete(operation))
@@ -144,23 +150,30 @@ export default class AppFileDownloader {
       pubkey,
       this.writeRelays,
       async data => {
-        const op = (async () => {
+        const op = (storageChain = storageChain.then(async () => {
           try {
             const { event, ...rest } = data
 
+            if (rest.discardChunks) {
+              if (!skipDb) await _deleteFileChunksFromDb(this.appId, this.fileRootHash)
+              else push(rest)
+              return
+            }
+
             if (event && !skipDb) {
               const fakeManifest = { tags: [['path', '', this.fileRootHash]] }
-              await _saveFileChunksToDB(fakeManifest, [event], this.appId, { assetBudget })
+              await _saveFileChunksToDB(fakeManifest, [event], this.appId, { assetBudget, service: 'blossom', rootHash: this.fileRootHash })
             }
+            if (rest.error && !skipDb) await _deleteFileChunksFromDb(this.appId, this.fileRootHash)
             push({ ...rest, ...(skipDb && event ? { event } : {}) })
           } catch (error) {
             push({ type: 'progress', progress: 0, count: 0, total: 0, error })
           }
-        })()
+        }))
         trackOperation(op)
         await op
       },
-      { mimeType: this.mimeType }
+      { mimeType: this.mimeType, size: this.size }
     )
 
     downloader.run().finally(async () => {
@@ -193,14 +206,22 @@ export default class AppFileDownloader {
     skipDb = false,
     assetBudget = null
   }) {
-    let dbInfo = { total: null }
-    const downloadedChunkIndexes = new Set()
+    let dbInfo = { count: 0, total: null }
 
     if (!skipDb) {
       dbInfo = await _countFileChunksFromDb(this.appId, this.fileRootHash)
-      const keys = await _getFileChunksFromDb(this.appId, this.fileRootHash, { justKeys: true })
-      keys.forEach(k => downloadedChunkIndexes.add(k[2])) // k is [appId, rootHash, pos]
     }
+
+    const loadDownloadedChunkIndexes = skipDb
+      ? async () => []
+      : async ({ start, end }) => {
+        const keys = await _getFileChunksFromDb(this.appId, this.fileRootHash, {
+          fromPos: start,
+          justKeys: true,
+          toPos: end
+        })
+        return keys.map(key => key[2])
+      }
 
     const { pubkey } = appIdToAddressObj(this.appId)
     const pubkeysByRelay = {}
@@ -219,6 +240,7 @@ export default class AppFileDownloader {
     }
 
     const pendingOperations = new Set()
+    let storageChain = Promise.resolve()
     const trackOperation = (operation) => {
       pendingOperations.add(operation)
       operation.finally(() => pendingOperations.delete(operation))
@@ -228,25 +250,31 @@ export default class AppFileDownloader {
       this.fileRootHash,
       pubkeysByRelay,
       async data => {
-        const op = (async () => {
+        const op = (storageChain = storageChain.then(async () => {
           try {
             const { event, ...rest } = data
             if (event && !skipDb) {
               const fakeManifest = { tags: [['path', '', this.fileRootHash]] }
-              await _saveFileChunksToDB(fakeManifest, [event], this.appId, { assetBudget })
+              await _saveFileChunksToDB(fakeManifest, [event], this.appId, {
+                assetBudget,
+                service: 'irfs',
+                rootHash: this.fileRootHash
+              })
             }
             push({ ...rest, ...(skipDb && event ? { event } : {}) })
           } catch (error) {
             push({ type: 'progress', progress: 0, count: 0, total: 0, error })
           }
-        })()
+        }))
         trackOperation(op)
         await op
       },
       {
         totalChunks: dbInfo.total,
-        downloadedChunkIndexes,
-        abortOnFailure: true
+        downloadedCount: dbInfo.count ?? 0,
+        loadDownloadedChunkIndexes,
+        abortOnFailure: true,
+        size: this.size
       }
     )
 

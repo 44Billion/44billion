@@ -1,69 +1,64 @@
-import { test, describe, beforeEach, afterEach, mock } from 'node:test'
 import assert from 'node:assert/strict'
-import FileDownloader, { getBatchIndexes } from '#services/file-downloader/index.js'
+import { afterEach, beforeEach, describe, mock, test } from 'node:test'
+import NMMR from 'nmmr'
+import { encode } from 'libp2r2p/base93'
+import FileDownloader, { FileRangeDownloader, getBatchIndexes } from '#services/file-downloader/index.js'
 import { relayPool as nostrRelays } from 'libp2r2p/relay'
 
-describe('getBatchIndexes', () => {
-  test('should pick untried indexes using round-robin step/offset', () => {
-    const untriedIndexes = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-    // Consumer 1: step 2, offset 0 -> 0, 2, 4, 6, 8
-    const result1 = getBatchIndexes({
-      batchSize: 3,
-      untriedIndexes,
-      orderedInFlightIndexes: [],
-      step: 2,
-      offset: 0
+const PUBKEY = 'a'.repeat(64)
+
+async function createChunks (total = 5) {
+  const mmr = new NMMR()
+  for (let index = 0; index < total; index++) {
+    const length = index === total - 1 ? 17 : 51000
+    await mmr.append(new Uint8Array(length).fill(index + 1))
+  }
+  const root = mmr.getRoot()
+  const events = []
+  for await (const chunk of mmr.getChunks()) {
+    events.push({
+      kind: 34601,
+      pubkey: PUBKEY,
+      id: NMMR.deriveChunkId(root, chunk.index),
+      tags: [
+        ['d', NMMR.deriveChunkId(root, chunk.index)],
+        ['mmr', String(chunk.index), String(chunk.total), encode(chunk.proof)]
+      ],
+      content: encode(chunk.contentBytes),
+      created_at: 1
     })
-    assert.deepEqual(result1, [
+  }
+  return { events, root: mmr.getRoot(), size: ((total - 1) * 51000) + 17 }
+}
+
+describe('getBatchIndexes', () => {
+  test('interleaves untried indexes by position', () => {
+    const options = {
+      batchSize: 3,
+      untriedIndexes: [0, 1, 2, 3, 4, 5],
+      orderedInFlightIndexes: [],
+      step: 2
+    }
+    assert.deepEqual(getBatchIndexes({ ...options, offset: 0 }), [
       { idx: 0, wasUntried: true },
       { idx: 2, wasUntried: true },
       { idx: 4, wasUntried: true }
     ])
-
-    // Consumer 2: step 2, offset 1 -> 1, 3, 5, 7, 9
-    const result2 = getBatchIndexes({
-      batchSize: 3,
-      untriedIndexes,
-      orderedInFlightIndexes: [],
-      step: 2,
-      offset: 1
-    })
-    assert.deepEqual(result2, [
+    assert.deepEqual(getBatchIndexes({ ...options, offset: 1 }), [
       { idx: 1, wasUntried: true },
       { idx: 3, wasUntried: true },
       { idx: 5, wasUntried: true }
     ])
   })
 
-  test('should pick contiguous in-flight indexes regardless of consumer step/offset', () => {
-    const orderedInFlightIndexes = [10, 11, 12, 13, 14, 15]
-    // Even if consumer has step 5, offset 3, it should pick inflights contiguously: 10, 11, 12...
-    const result = getBatchIndexes({
-      batchSize: 3,
-      untriedIndexes: [],
-      orderedInFlightIndexes,
-      step: 5,
-      offset: 3
-    })
-    assert.deepEqual(result, [
-      { idx: 10, wasUntried: false },
-      { idx: 11, wasUntried: false },
-      { idx: 12, wasUntried: false }
-    ])
-  })
-
-  test('should fallback to in-flight indexes if untried are exhausted', () => {
-    const untriedIndexes = [0, 1]
-    const orderedInFlightIndexes = [10, 11, 12]
-    // step 1, offset 0
-    const result = getBatchIndexes({
+  test('uses contiguous ordered in-flight indexes after untried indexes', () => {
+    assert.deepEqual(getBatchIndexes({
       batchSize: 4,
-      untriedIndexes,
-      orderedInFlightIndexes,
+      untriedIndexes: [0, 1],
+      orderedInFlightIndexes: [10, 11, 12],
       step: 1,
       offset: 0
-    })
-    assert.deepEqual(result, [
+    }), [
       { idx: 0, wasUntried: true },
       { idx: 1, wasUntried: true },
       { idx: 10, wasUntried: false },
@@ -71,573 +66,538 @@ describe('getBatchIndexes', () => {
     ])
   })
 
-  test('should initially skip untried indexes that do not match round-robin slot than eventually pick remaining then check in-flight', () => {
-    const untriedIndexes = [0, 1, 2, 3]
-    // step 2, offset 0 -> should match 0, 2. Should skip 1.
-    // batchSize 4.
-    // It should pick 0, 2 from untried.
-    // Then fallback to in-flight?
-    const result = getBatchIndexes({
-      batchSize: 5,
-      untriedIndexes,
-      orderedInFlightIndexes: [10, 11],
-      step: 2,
-      offset: 0
-    })
-    // 0 (matches), 1 (skips but eventually picked because offset wraps), 2 (matches)
-    // Actually our new implementation wraps around if untried exhausted.
-    // 0 % 2 = 0.
-    // 2 % 2 = 0.
-    // 1 % 2 = 1.
-    // So 0, 2, 1.
-    // Then checks in-flight 10.
-    assert.deepEqual(result, [
-      { idx: 0, wasUntried: true },
-      { idx: 2, wasUntried: true },
-      { idx: 1, wasUntried: true },
-      { idx: 3, wasUntried: true },
-      { idx: 10, wasUntried: false }
-    ])
-  })
-
-  test('should rewind after reaching array end if batch not full (offset: 3, step: 2)', () => {
-    // offset: 3, step: 2, untried: [0, 1, 2, 3, 4, 5, 6], batchSize: 7
-    // Expected trace:
-    // It 1: start 3. Picks 3, 5. Rewinds (start 1). Picks 1. -> [3, 5, 1]
-    // It 2: start 4. Picks 4, 6. Rewinds (start 0). Picks 0, 2. -> [3, 5, 1, 4, 6, 0, 2]
-    const untriedIndexes = [0, 1, 2, 3, 4, 5, 6]
-    const result = getBatchIndexes({
+  test('rewinds to fill a batch without dropping positional groups', () => {
+    assert.deepEqual(getBatchIndexes({
       batchSize: 7,
-      untriedIndexes,
+      untriedIndexes: [0, 1, 2, 3, 4, 5, 6],
       orderedInFlightIndexes: [],
       step: 2,
       offset: 3
-    })
-
-    assert.deepEqual(result, [
-      { idx: 3, wasUntried: true },
-      { idx: 5, wasUntried: true },
-      { idx: 1, wasUntried: true },
-
-      { idx: 4, wasUntried: true },
-      { idx: 6, wasUntried: true },
-      { idx: 0, wasUntried: true },
-      { idx: 2, wasUntried: true }
-    ])
+    }).map(item => item.idx), [3, 5, 1, 4, 6, 0, 2])
   })
 
-  test('should handle offset greater than array length (offset: 4, step: 8)', () => {
-    // offset: 4, step: 8, untried: [0, 1, 2, 3, 4, 5, 6], batchSize: 7
-    // Expected trace:
-    // It 1 (off 4): Picks 4. Rewind (start 4) no-op. -> [4]
-    // It 2 (off 5): Picks 5. Rewind (start 5) no-op. -> [4, 5]
-    // It 3 (off 6): Picks 6. Rewind (start 6) no-op. -> [4, 5, 6]
-    // It 4 (off 7): 7>=7. Rewind (start 7) no-op. -> [4, 5, 6]
-    // It 5 (off 8): 8>=7. Rewind (start 0): Picks 0. -> [4, 5, 6, 0]
-    // ...
-    // Final: 4, 5, 6, 0, 1, 2, 3
-    const untriedIndexes = [0, 1, 2, 3, 4, 5, 6]
-    const result = getBatchIndexes({
+  test('rewinds when the initial offset is greater than the list length', () => {
+    assert.deepEqual(getBatchIndexes({
       batchSize: 7,
-      untriedIndexes,
+      untriedIndexes: [0, 1, 2, 3, 4, 5, 6],
       orderedInFlightIndexes: [],
       step: 8,
       offset: 4
-    })
+    }).map(item => item.idx), [4, 5, 6, 0, 1, 2, 3])
+  })
 
-    assert.deepEqual(result, [
-      { idx: 4, wasUntried: true },
-      { idx: 5, wasUntried: true },
-      { idx: 6, wasUntried: true },
-      { idx: 0, wasUntried: true },
-      { idx: 1, wasUntried: true },
-      { idx: 2, wasUntried: true },
-      { idx: 3, wasUntried: true }
-    ])
+  test('preserves the caller-provided in-flight concurrency order', () => {
+    assert.deepEqual(getBatchIndexes({
+      batchSize: 3,
+      untriedIndexes: [],
+      orderedInFlightIndexes: [12, 10, 11],
+      step: 5,
+      offset: 3
+    }).map(item => item.idx), [12, 10, 11])
   })
 })
 
-function createChunkTracker (options = {}, callback) {
-  const downloadedChunkIndexes = new Set(options.downloadedChunkIndexes || [])
-  const track = (data) => {
-    if (data.type === 'progress' && data.chunkIndex !== undefined && data.event !== undefined) {
-      downloadedChunkIndexes.add(data.chunkIndex)
-    }
-    if (callback) callback(data)
+async function waitFor (predicate) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (predicate()) return
+    await new Promise(resolve => setImmediate(resolve))
   }
-  return { downloadedChunkIndexes, track }
+  throw new Error('Timed out waiting for test state')
 }
 
-describe('FileDownloader', () => {
-  let downloadGeneratorMock
+describe('FileRangeDownloader scheduler', () => {
+  let generatorMock
 
   beforeEach(() => {
-    // Just mock it. If it throws because already mocked, we catch it or use restoreAll if possible.
-    // But safer to just re-implement if it persists?
-    // Or check if it is already a mock?
+    generatorMock = mock.method(nostrRelays, 'getEventsGenerator', async function * () {})
+  })
 
-    // Correct way: restore specifically if we have reference.
-    if (downloadGeneratorMock?.mock?.restore) {
-      downloadGeneratorMock.mock.restore()
-    } else if (downloadGeneratorMock?.restore) {
-      downloadGeneratorMock.restore()
+  afterEach(() => generatorMock.mock.restore())
+
+  test('interleaves contiguous missing positions across two relays', async () => {
+    const fixture = await createChunks(6)
+    const indexByD = new Map(fixture.events.map((event, index) => [event.tags[0][1], index]))
+    const firstRequest = new Map()
+    const allRequests = new Map()
+    generatorMock.mock.mockImplementation(async function * (filter, [relay]) {
+      const indexes = filter['#d'].map(d => indexByD.get(d))
+      if (!firstRequest.has(relay)) firstRequest.set(relay, indexes)
+      allRequests.set(relay, [...(allRequests.get(relay) || []), ...indexes])
+    })
+
+    await new FileRangeDownloader(fixture.root, {
+      'wss://first.test': [PUBKEY],
+      'wss://second.test': [PUBKEY]
+    }, () => {}, {
+      batchSize: 3,
+      endIndex: 5,
+      startIndex: 0,
+      totalChunks: 6
+    }).run()
+
+    assert.deepEqual(firstRequest.get('wss://first.test'), [0, 2, 4])
+    assert.deepEqual(firstRequest.get('wss://second.test').toSorted((a, b) => a - b), [1, 3, 5])
+    for (const indexes of allRequests.values()) assert.equal(new Set(indexes).size, indexes.length)
+  })
+
+  test('interleaves the positions of sparse missing indexes', async () => {
+    const fixture = await createChunks(11)
+    const indexByD = new Map(fixture.events.map((event, index) => [event.tags[0][1], index]))
+    const firstRequest = new Map()
+    generatorMock.mock.mockImplementation(async function * (filter, [relay]) {
+      if (!firstRequest.has(relay)) firstRequest.set(relay, filter['#d'].map(d => indexByD.get(d)))
+    })
+
+    await new FileRangeDownloader(fixture.root, {
+      'wss://first.test': [PUBKEY],
+      'wss://second.test': [PUBKEY]
+    }, () => {}, {
+      batchSize: 3,
+      cachedChunkIndexes: [1, 3, 5, 7, 9],
+      endIndex: 10,
+      startIndex: 0,
+      totalChunks: 11
+    }).run()
+
+    assert.deepEqual(firstRequest.get('wss://first.test'), [0, 4, 8])
+    assert.deepEqual(firstRequest.get('wss://second.test').toSorted((a, b) => a - b), [2, 6, 10])
+  })
+
+  test('materializes at most one 4096-index window even for a huge total', () => {
+    const worker = new FileRangeDownloader('a'.repeat(64), { r: [PUBKEY] }, () => {}, {
+      endIndex: 4095,
+      startIndex: 0,
+      totalChunks: Number.MAX_SAFE_INTEGER
+    })
+    assert.equal(worker.materializedIndexCount, 4096)
+    assert.equal(worker.missingIndexes.size, 4096)
+  })
+})
+
+describe('FileDownloader range orchestration', () => {
+  class ControlledRangeDownloader {
+    static instances = []
+
+    constructor (_root, _relays, callback, options) {
+      this.callback = callback
+      this.options = options
+      this.deferred = Promise.withResolvers()
+      ControlledRangeDownloader.instances.push(this)
     }
 
-    downloadGeneratorMock = mock.method(nostrRelays, 'getEventsGenerator', async function * (_filter, _relays) {
+    run () {
+      this.options.onCoverage({
+        covered: this.options.cachedChunkIndexes.length,
+        length: this.options.endIndex - this.options.startIndex + 1
+      })
+      return this.deferred.promise
+    }
+
+    cover (covered) {
+      this.options.onCoverage({
+        covered,
+        length: this.options.endIndex - this.options.startIndex + 1
+      })
+    }
+
+    finish () {
+      this.deferred.resolve({ missingCount: 0, missingIndexes: [] })
+    }
+
+    abort () {
+      this.deferred.resolve({ aborted: true })
+    }
+  }
+
+  beforeEach(() => { ControlledRangeDownloader.instances = [] })
+
+  test('starts a second range at 30% and rotates without exceeding two workers', async () => {
+    const downloader = new FileDownloader('a'.repeat(64), { 'wss://relay.test': [PUBKEY] }, () => {}, {
+      _FileRangeDownloader: ControlledRangeDownloader,
+      batchSize: 20,
+      totalChunks: 700
+    })
+    const runPromise = downloader.run()
+    await waitFor(() => ControlledRangeDownloader.instances.length === 1)
+    const first = ControlledRangeDownloader.instances[0]
+    assert.equal(first.options.startIndex, 0)
+    assert.equal(first.options.endIndex, 255)
+
+    first.cover(76)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(ControlledRangeDownloader.instances.length, 1)
+    first.cover(77)
+    await waitFor(() => ControlledRangeDownloader.instances.length === 2)
+    assert.equal(downloader.activeRanges.size, 2)
+
+    first.finish()
+    await waitFor(() => downloader.activeRanges.size === 1)
+    assert.equal(ControlledRangeDownloader.instances.length, 2)
+    ControlledRangeDownloader.instances[1].cover(77)
+    await waitFor(() => ControlledRangeDownloader.instances.length === 3)
+    assert.equal(downloader.activeRanges.size, 2)
+    assert.equal(ControlledRangeDownloader.instances[2].options.startIndex, 512)
+    assert.equal(ControlledRangeDownloader.instances[2].options.endIndex, 699)
+
+    downloader.abort()
+    await runPromise
+  })
+
+  test('counts cached chunks toward the 30% threshold and loads cache by window', async () => {
+    const loadedRanges = []
+    const downloader = new FileDownloader('b'.repeat(64), { 'wss://relay.test': [PUBKEY] }, () => {}, {
+      _FileRangeDownloader: ControlledRangeDownloader,
+      batchSize: 20,
+      downloadedCount: 77,
+      loadDownloadedChunkIndexes: async range => {
+        loadedRanges.push(range)
+        return range.start === 0 ? Array.from({ length: 77 }, (_, index) => index) : []
+      },
+      totalChunks: 600
+    })
+    const runPromise = downloader.run()
+    await waitFor(() => ControlledRangeDownloader.instances.length === 2)
+
+    assert.deepEqual(loadedRanges, [{ start: 0, end: 255 }, { start: 256, end: 511 }])
+    assert.equal(downloader.activeRanges.size, 2)
+    downloader.abort()
+    await runPromise
+  })
+
+  test('materializes only two bounded ranges for a huge authenticated total', async () => {
+    const relays = Object.fromEntries(Array.from({ length: 4 }, (_, index) => [`wss://relay-${index}.test`, [PUBKEY]]))
+    const downloader = new FileDownloader('c'.repeat(64), relays, () => {}, {
+      _FileRangeDownloader: ControlledRangeDownloader,
+      batchSize: 1024,
+      totalChunks: Number.MAX_SAFE_INTEGER
+    })
+    const runPromise = downloader.run()
+    await waitFor(() => ControlledRangeDownloader.instances.length === 1)
+    ControlledRangeDownloader.instances[0].cover(Math.ceil(4096 * 0.3))
+    await waitFor(() => ControlledRangeDownloader.instances.length === 2)
+
+    assert.equal(downloader.windowSize, 4096)
+    assert.equal(downloader.activeRanges.size, 2)
+    assert.ok(ControlledRangeDownloader.instances.every(worker =>
+      (worker.options.maxEndIndex - worker.options.startIndex + 1) <= 4096
+    ))
+    downloader.abort()
+    await runPromise
+  })
+
+  test('enforces the shared limit of three active batches per relay', async () => {
+    let instanceCount = 0
+    let active = 0
+    let maxActive = 0
+    class LimiterProbeRangeDownloader extends ControlledRangeDownloader {
+      constructor (...args) {
+        super(...args)
+        this.instanceNumber = instanceCount++
+      }
+
+      async run () {
+        const length = this.options.endIndex - this.options.startIndex + 1
+        this.options.onCoverage({ covered: Math.ceil(length * 0.3), length })
+        const workerId = Symbol('limiter-probe')
+        const count = this.instanceNumber === 0 ? 4 : 1
+        const batches = Array.from({ length: count }, () =>
+          this.options.batchLimiter.schedule('wss://relay.test', workerId, async () => {
+            active++
+            maxActive = Math.max(maxActive, active)
+            await new Promise(resolve => setTimeout(resolve, 2))
+            active--
+          }).catch(() => {})
+        )
+        await Promise.all(batches)
+        return { missingCount: 0, missingIndexes: [] }
+      }
+    }
+
+    const downloader = new FileDownloader('d'.repeat(64), { 'wss://relay.test': [PUBKEY] }, () => {}, {
+      _FileRangeDownloader: LimiterProbeRangeDownloader,
+      batchSize: 20,
+      totalChunks: 300
+    })
+    await downloader.run()
+    assert.equal(maxActive, 3)
+  })
+
+  test('requires a total and bounded loader when downloadedCount is non-zero', () => {
+    assert.throws(() => new FileDownloader('e'.repeat(64), { r: [PUBKEY] }, () => {}, {
+      downloadedCount: 1
+    }), /requires totalChunks/)
+    assert.throws(() => new FileDownloader('e'.repeat(64), { r: [PUBKEY] }, () => {}, {
+      downloadedCount: 1,
+      totalChunks: 2
+    }), /loadDownloadedChunkIndexes/)
+  })
+
+  test('rejects duplicate or out-of-window indexes returned by the cache loader', async () => {
+    for (const cachedIndexes of [[0, 0], [3]]) {
+      const reports = []
+      await new FileDownloader('f'.repeat(64), { r: [PUBKEY] }, report => reports.push(report), {
+        downloadedCount: 1,
+        loadDownloadedChunkIndexes: async () => cachedIndexes,
+        totalChunks: 3
+      }).run()
+      assert.match(reports.at(-1).error.message, /Duplicate|outside its requested range/)
+    }
+  })
+
+  test('does not start a range whose cache load finishes after cancellation', async () => {
+    const secondLoad = Promise.withResolvers()
+    const downloader = new FileDownloader('1'.repeat(64), { r: [PUBKEY] }, () => {}, {
+      _FileRangeDownloader: ControlledRangeDownloader,
+      batchSize: 20,
+      loadDownloadedChunkIndexes: ({ start }) => start === 0 ? [] : secondLoad.promise,
+      totalChunks: 600
+    })
+    const runPromise = downloader.run()
+    await waitFor(() => ControlledRangeDownloader.instances.length === 1)
+    ControlledRangeDownloader.instances[0].cover(77)
+    await waitFor(() => downloader.activeRanges.size === 2)
+
+    downloader.abort()
+    secondLoad.resolve([])
+    await runPromise
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(ControlledRangeDownloader.instances.length, 1)
+    assert.equal(downloader.activeRanges.size, 0)
+  })
+})
+
+describe('FileDownloader IRFS v2', () => {
+  let generatorMock
+
+  beforeEach(() => {
+    generatorMock = mock.method(nostrRelays, 'getEventsGenerator', async function * () {
       yield { type: 'eose' }
     })
   })
 
-  afterEach(() => {
-    if (downloadGeneratorMock?.mock?.restore) {
-      downloadGeneratorMock.mock.restore()
-    } else if (downloadGeneratorMock?.restore) {
-      downloadGeneratorMock.restore()
-    }
-    downloadGeneratorMock = null
+  afterEach(() => generatorMock.mock.restore())
+
+  test('downloads and cryptographically validates every leaf of a non-perfect MMR', async () => {
+    const fixture = await createChunks(5)
+    const byD = new Map(fixture.events.map(event => [event.tags[0][1], event]))
+    const filters = []
+    generatorMock.mock.mockImplementation(async function * (filter) {
+      filters.push(filter)
+      for (const d of filter['#d']) {
+        const event = byD.get(d)
+        if (event) yield { type: 'event', event }
+      }
+      yield { type: 'eose' }
+    })
+    const reports = []
+    const downloader = new FileDownloader(fixture.root, { 'wss://relay.test': [PUBKEY] }, report => reports.push(report), {
+      totalChunks: 5,
+      size: fixture.size,
+      batchSize: 2
+    })
+    await downloader.run()
+
+    assert.equal(reports.filter(report => report.event).length, 5)
+    assert.equal(reports.at(-1).progress, 100)
+    assert.ok(filters.every(filter => filter.kinds[0] === 34601 && !filter['#c']))
+    assert.ok(filters.every(filter => filter['#d'].every(value => /^[0-9a-f]{64}$/.test(value))))
   })
 
-  test('should initialize correctly', () => {
-    const fd = new FileDownloader('hash', { 'ws://r1': ['pk1'] }, () => {}, { totalChunks: 100, batchSize: 40 })
-    assert.equal(fd.fileRootHash, 'hash')
-    assert.equal(fd.totalChunks, 100)
-    assert.equal(fd.relayStates.size, 1)
-  })
-
-  test('should download chunks from single relay', async () => {
-    const total = 50
-    const hash = 'root1'
-
-    downloadGeneratorMock.mock.mockImplementation(async function * (filter) {
-      const indexes = filter['#c'].map(s => parseInt(s.split(':')[1]))
-      for (const idx of indexes) {
-        yield {
-          type: 'event',
-          event: {
-            tags: [['c', `${hash}:${idx}`, `${total}`]]
-          }
-        }
+  test('downloads across a full 256-chunk window and a smaller final range', async () => {
+    const fixture = await createChunks(257)
+    const byD = new Map(fixture.events.map(event => [event.tags[0][1], event]))
+    generatorMock.mock.mockImplementation(async function * (filter) {
+      for (const d of filter['#d']) {
+        const event = byD.get(d)
+        if (event) yield { type: 'event', event }
       }
     })
-
-    const callbackCalls = []
-    const options = { totalChunks: total, batchSize: 40 }
-    const { downloadedChunkIndexes, track } = createChunkTracker(options, (data) => {
-      callbackCalls.push(data)
+    const reports = []
+    const downloader = new FileDownloader(fixture.root, { 'wss://relay.test': [PUBKEY] }, report => reports.push(report), {
+      batchSize: 64,
+      totalChunks: 257
     })
-    const fd = new FileDownloader(hash, { 'ws://r1': ['pk1'] }, track, options)
+    await downloader.run()
 
-    await fd.run()
-
-    assert.equal(downloadedChunkIndexes.size, 50)
-    // No initial progress because downloadedChunkIndexes is empty
-    assert.equal(callbackCalls.length, 50, `Expected 50 calls, got ${callbackCalls.length}`)
-    assert.equal(callbackCalls[49].progress, 100)
+    assert.equal(downloader.windowSize, 256)
+    assert.equal(reports.filter(report => report.event).length, 257)
+    assert.equal(reports.at(-1).progress, 100)
   })
 
-  test('should send initial progress if chunks already downloaded', async () => {
-    const total = 50
-    const hash = 'root1-resume'
-
-    downloadGeneratorMock.mock.mockImplementation(async function * (_filter) {
-      // yield { type: 'eose' } // there is no such message. it ends when internal promise resolves
-    })
-
-    const callbackCalls = []
-    const options = { totalChunks: total, downloadedChunkIndexes: [0, 1], batchSize: 40 }
-    const { track } = createChunkTracker(options, (data) => {
-      callbackCalls.push(data)
-    })
-    const fd = new FileDownloader(hash, { 'ws://r1': ['pk1'] }, track, options)
-
-    await fd.run()
-
-    // Should verify initial progress was sent
-    assert.ok(callbackCalls.length >= 1)
-    assert.equal(callbackCalls[0].type, 'progress')
-    assert.equal(callbackCalls[0].count, 2)
-    assert.equal(callbackCalls[0].error, undefined)
-  })
-
-  test('should detect total chunks from c tag if unknown', async () => {
-    const total = 10
-    const hash = 'root2'
-
-    downloadGeneratorMock.mock.mockImplementation(async function * (filter) {
-      const indexes = filter['#c'].map(s => parseInt(s.split(':')[1]))
-      for (const idx of indexes) {
-        if (idx < total) {
-          yield {
-            type: 'event',
-            event: {
-              tags: [['c', `${hash}:${idx}`, `${total}`]]
-            }
-          }
-        }
+  test('bootstraps a bounded speculative window and learns total from a non-zero chunk', async () => {
+    const fixture = await createChunks(3)
+    const filters = []
+    generatorMock.mock.mockImplementation(async function * (filter) {
+      filters.push(filter)
+      const requested = new Set(filter['#d'])
+      if (requested.has(fixture.events[1].tags[0][1])) yield { type: 'event', event: fixture.events[1] }
+      for (const event of fixture.events) {
+        if (event === fixture.events[1]) continue
+        if (requested.has(event.tags[0][1])) yield { type: 'event', event }
       }
     })
-
-    const options = { batchSize: 40 }
-    const { downloadedChunkIndexes, track } = createChunkTracker(options)
-    const fd = new FileDownloader(hash, { 'ws://r1': ['pk1'] }, track, options)
-
-    await fd.run()
-
-    assert.equal(fd.totalChunks, 10)
-    assert.equal(downloadedChunkIndexes.size, 10)
+    const reports = []
+    const downloader = new FileDownloader(fixture.root, { 'wss://relay.test': [PUBKEY] }, report => reports.push(report), {
+      batchSize: 2
+    })
+    await downloader.run()
+    assert.deepEqual(filters[0]['#d'], fixture.events.slice(0, 2).map(event => event.tags[0][1]))
+    assert.equal(downloader.totalChunks, 3)
+    assert.equal(downloader.windowSize, 256)
+    assert.equal(reports.at(-1).progress, 100)
   })
 
-  test('should trigger parallel batch when half batch is done', async () => {
-    const total = 100
-    const hash = 'root3'
-    const relay = 'ws://r1'
-
-    let concurrentCalls = 0
-    let maxConcurrent = 0
-
-    downloadGeneratorMock.mock.mockImplementation(async function * (filter) {
-      concurrentCalls++
-      maxConcurrent = Math.max(maxConcurrent, concurrentCalls)
-
-      const indexes = filter['#c'].map(s => parseInt(s.split(':')[1]))
-
-      for (let i = 0; i < indexes.length; i++) {
-        yield {
-          type: 'event',
-          event: {
-            tags: [['c', `${hash}:${indexes[i]}`, `${total}`]]
-          }
-        }
-        if (i >= 20 && i < 25) {
-          await new Promise(resolve => setTimeout(resolve, 5))
-        }
-      }
-
-      concurrentCalls--
-    })
-
-    const options = { totalChunks: total, batchSize: 40 }
-    const { downloadedChunkIndexes, track } = createChunkTracker(options)
-    const fd = new FileDownloader(hash, { [relay]: ['pk1'] }, track, options)
-
-    await fd.run()
-
-    assert.equal(downloadedChunkIndexes.size, 100)
-    assert.ok(maxConcurrent >= 2, `Expected maxConcurrent to be at least 2, got ${maxConcurrent}`)
-  })
-
-  test('should fallback if one relay fails', async () => {
-    const total = 100
-    const hash = 'root5'
-    const relays = { 'ws://r1': ['p'], 'ws://r2': ['p'] }
-
-    downloadGeneratorMock.mock.mockImplementation(async function * (filter, relayList) {
-      const indexes = filter['#c'].map(s => parseInt(s.split(':')[1]))
-      if (relayList[0] === 'ws://r2') {
-        for (const idx of indexes) {
-          yield { type: 'event', event: { tags: [['c', `${hash}:${idx}`, `${total}`]] } }
-        }
-      } else {
-        // yield { type: 'eose' }
+  test('does not report speculative indexes beyond the authenticated total as missing', async () => {
+    const fixture = await createChunks(2)
+    const reports = []
+    generatorMock.mock.mockImplementation(async function * (filter) {
+      for (const d of filter['#d']) {
+        const event = fixture.events.find(candidate => candidate.tags[0][1] === d)
+        if (event) yield { type: 'event', event }
       }
     })
-
-    const options = { totalChunks: total, batchSize: 40 }
-    const { downloadedChunkIndexes, track } = createChunkTracker(options)
-    const fd = new FileDownloader(hash, relays, track, options)
-    await fd.run()
-    assert.equal(downloadedChunkIndexes.size, 100)
-  })
-
-  test('single relay should batch contiguously', async () => {
-    const total = 100
-    const hash = 'root6'
-
-    const requests = []
-    downloadGeneratorMock.mock.mockImplementation(async function * (filter) {
-      const indexes = filter['#c'].map(s => parseInt(s.split(':')[1]))
-      requests.push(...indexes)
-      for (const idx of indexes) {
-        yield { type: 'event', event: { tags: [['c', `${hash}:${idx}`, `${total}`]] } }
-      }
-    })
-
-    const options = { totalChunks: total, batchSize: 40 }
-    const { track } = createChunkTracker(options)
-    const fd = new FileDownloader(hash, { 'ws://r1': ['p'] }, track, options)
-    await fd.run()
-
-    const firstBatch = requests.slice(0, 40)
-    assert.equal(firstBatch[0], 0)
-    assert.equal(firstBatch[39], 39)
-    const sorted = [...firstBatch].sort((a, b) => a - b)
-    assert.deepEqual(firstBatch, sorted)
-  })
-
-  test('should ignore invalid chunks', async () => {
-    const total = 5
-    const hash = 'root7'
-
-    downloadGeneratorMock.mock.mockImplementation(async function * (filter) {
-      const indexes = filter['#c'].map(s => parseInt(s.split(':')[1]))
-      for (const idx of indexes) {
-        if (idx === 1) {
-          yield { type: 'event', event: { tags: [['c', `${hash}:${idx}`, '999999']] } }
-        } else if (idx === 2) {
-          yield { type: 'event', event: { tags: [['c', `wrong:${idx}`, `${total}`]] } }
-        } else if (idx === 3) {
-          yield { type: 'event', event: { tags: [['c', `${hash}:${idx}`, 'bad']] } }
-        } else {
-          yield { type: 'event', event: { tags: [['c', `${hash}:${idx}`, `${total}`]] } }
-        }
-      }
-    })
-
-    let events = 0
-    const options = { totalChunks: total, batchSize: 40, abortOnFailure: false }
-    const { downloadedChunkIndexes, track } = createChunkTracker(options, (d) => {
-      if (d.type === 'progress' && d.chunkIndex !== undefined && !d.error) events++
-    })
-    const fd = new FileDownloader(hash, { 'ws://r1': ['p'] }, track, options)
-    await fd.run()
-
-    assert.equal(downloadedChunkIndexes.size, 2)
-    assert.ok(downloadedChunkIndexes.has(0))
-    assert.ok(downloadedChunkIndexes.has(4))
-    assert.equal(events, 2, 'Should strictly report progress for valid chunks only')
-  })
-
-  test('should interleave chunks among multiple relays and backfill', async () => {
-    const total = 100
-    const hash = 'root4'
-    const relays = { 'ws://r1': ['p1'], 'ws://r2': ['p2'] }
-
-    const relayRequests = { 'ws://r1': [], 'ws://r2': [] }
-
-    downloadGeneratorMock.mock.mockImplementation(async function * (filter, relayList) {
-      const relayUrl = relayList[0]
-      const indexes = filter['#c'].map(s => parseInt(s.split(':')[1]))
-      if (relayRequests[relayUrl]) relayRequests[relayUrl].push(...indexes)
-
-      for (const idx of indexes) {
-        yield {
-          type: 'event',
-          event: { tags: [['c', `${hash}:${idx}`, `${total}`]] }
-        }
-      }
-    })
-
-    const options = { totalChunks: total, batchSize: 40 }
-    const { downloadedChunkIndexes, track } = createChunkTracker(options)
-    const fd = new FileDownloader(hash, relays, track, options)
-    await fd.run()
-
-    const r1FirstBatch = relayRequests['ws://r1'].slice(0, 40)
-    const r2FirstBatch = relayRequests['ws://r2'].slice(0, 40)
-
-    const r1Evens = r1FirstBatch.filter(i => i % 2 === 0).length
-    const r2Odds = r2FirstBatch.filter(i => i % 2 !== 0).length
-
-    assert.ok(r1Evens >= 1, 'Relay 1 should have some even indexes')
-    assert.ok(r2Odds >= 1, 'Relay 2 should have some odd indexes')
-
-    assert.equal(downloadedChunkIndexes.size, 100)
-  })
-
-  test('should report error and abort if chunk cannot be downloaded from any relay', async () => {
-    const total = 5
-    const hash = 'root8'
-    const relays = { 'ws://r1': ['p'], 'ws://r2': ['p'] }
-
-    // Mock: fail to serve chunk 3 on all relays
-    downloadGeneratorMock.mock.mockImplementation(async function * (filter, _relayList) {
-      const indexes = filter['#c'].map(s => parseInt(s.split(':')[1]))
-
-      for (const idx of indexes) {
-        if (idx === 3) {
-          // Both relays simulate failure/missing for chunk 3
-          // Just don't yield it
-          continue
-        }
-
-        // Add artificial delay to allow abort to process before everything finishes
-        if (idx === 4) await new Promise(resolve => setTimeout(resolve, 10))
-
-        yield {
-          type: 'event',
-          event: { tags: [['c', `${hash}:${idx}`, `${total}`]] }
-        }
-      }
-    })
-
-    const errors = []
-    const options = { totalChunks: total, abortOnFailure: true, batchSize: 40 }
-    const { downloadedChunkIndexes, track } = createChunkTracker(options, (d) => { if (d.error) errors.push(d) })
-    const fd = new FileDownloader(
-      hash,
-      relays,
-      track,
-      options
+    const downloader = new FileDownloader(
+      fixture.root,
+      { 'wss://relay.test': [PUBKEY] },
+      report => reports.push(report),
+      { batchSize: 5 }
     )
 
-    await fd.run()
-
-    // Should have reported error for chunk 3
-    const hasMissingChunk3Error = errors.some(e =>
-      // Could be 'Missing file chunk' and e.chunkIndex=3 but when that index was tried to be downloaded,
-      // the totalChunks was not yet known, so it will just report at the end with plural 'Missing file chunks'
-      // and chunkIndexes array.
-      e.error && e.error.message === 'Missing file chunks' && e.chunkIndexes[0] === 3 && e.chunkIndexes.length === 1
-    )
-    assert.ok(hasMissingChunk3Error, 'Should report missing chunk 3 error')
-
-    // Chunk 3 is missing
-    assert.ok(!downloadedChunkIndexes.has(3))
-
-    // Because we aborted, we might not have downloaded chunk 4 either (due to delay)
-    // or maybe we did if it raced. But main point is run() finished, error reported.
-    assert.equal(fd.isRunning, false)
+    await downloader.run()
+    assert.equal(reports.some(report => report.error), false)
+    assert.equal(reports.at(-1).progress, 100)
   })
 
-  test('should NOT report missing chunk if it is beyond the discovered totalChunks', async () => {
-    // Scenario:
-    // We don't know total chunks initially.
-    // effectiveTotal defaults to maxTempTotal (BATCH_SIZE * 1 = 40).
-    // We request batch 0..39.
-    // We receive chunk 0 which says totalChunks = 5.
-    // We receive chunks 0..4.
-    // Chunks 5..39 are not received.
-    // They should NOT be marked as missing because they are >= totalChunks.
+  test('warns but completes when the manifest size hint is wrong', async () => {
+    const fixture = await createChunks(2)
+    const reports = []
+    generatorMock.mock.mockImplementation(async function * (filter) {
+      for (const d of filter['#d']) {
+        const event = fixture.events.find(candidate => candidate.tags[0][1] === d)
+        if (event) yield { type: 'event', event }
+      }
+    })
+    const consoleWarn = mock.method(console, 'warn', () => {})
+    await new FileDownloader(
+      fixture.root,
+      { 'wss://relay.test': [PUBKEY] },
+      report => reports.push(report),
+      { size: 1 }
+    ).run()
+    const warningCount = consoleWarn.mock.callCount()
+    consoleWarn.mock.restore()
 
-    const actualTotal = 5
-    const hash = 'root9-false-positive'
-    const relays = { 'ws://r1': ['p'] }
+    assert.equal(warningCount, 1)
+    assert.equal(reports.some(report => report.error), false)
+    assert.equal(reports.at(-1).progress, 100)
+  })
 
-    downloadGeneratorMock.mock.mockImplementation(async function * (filter, _relayList) {
-      const indexes = filter['#c'].map(s => parseInt(s.split(':')[1]))
-      for (const idx of indexes) {
-        if (idx < actualTotal) {
-          yield {
-            type: 'event',
-            event: { tags: [['c', `${hash}:${idx}`, `${actualTotal}`]] }
-          }
-        }
+  test('ignores mutated events and reports one bounded missing-index sample', async () => {
+    const fixture = await createChunks(2)
+    const bad = structuredClone(fixture.events[0])
+    bad.content = encode(Uint8Array.of(9))
+    generatorMock.mock.mockImplementation(async function * () {
+      yield { type: 'event', event: bad }
+    })
+    const reports = []
+    await new FileDownloader(fixture.root, { 'wss://relay.test': [PUBKEY] }, report => reports.push(report), {
+      totalChunks: 2,
+      batchSize: 2
+    }).run()
+    const failure = reports.find(report => report.error)
+    assert.equal(failure.error.message, 'Missing file chunk')
+    assert.ok(failure.chunkIndexes.length <= 100)
+  })
+
+  test('resumes from sparse ranges and treats size as an informational hint', async () => {
+    const fixture = await createChunks(3)
+    const byD = new Map(fixture.events.map(event => [event.tags[0][1], event]))
+    generatorMock.mock.mockImplementation(async function * (filter) {
+      for (const d of filter['#d']) if (byD.has(d)) yield { type: 'event', event: byD.get(d) }
+    })
+    const reports = []
+    const loadedRanges = []
+    const downloader = new FileDownloader(fixture.root, { 'wss://relay.test': [PUBKEY] }, report => reports.push(report), {
+      totalChunks: 3,
+      downloadedCount: 2,
+      loadDownloadedChunkIndexes: async range => {
+        loadedRanges.push(range)
+        return [0, 1]
+      },
+      size: fixture.size
+    })
+    await downloader.run()
+    assert.equal(reports[0].count, 2)
+    assert.equal(reports.at(-1).progress, 100)
+    assert.deepEqual(loadedRanges, [{ start: 0, end: 2 }])
+    assert.doesNotThrow(() => new FileDownloader(fixture.root, { r: [PUBKEY] }, () => {}, {
+      totalChunks: 2,
+      size: fixture.size
+    }))
+  })
+
+  test('continues when one relay misses a chunk that another relay provides', async () => {
+    const fixture = await createChunks(3)
+    const reports = []
+    generatorMock.mock.mockImplementation(async function * (filter, [relay]) {
+      for (const d of filter['#d']) {
+        const event = fixture.events.find(candidate => candidate.tags[0][1] === d)
+        if (event && (relay === 'wss://second.test' || event !== fixture.events[0])) yield { type: 'event', event }
       }
     })
 
-    const errors = []
-    const options = { abortOnFailure: true, batchSize: 40 }
-    const { downloadedChunkIndexes, track } = createChunkTracker(options, (d) => { if (d.error) errors.push(d) })
-    const fd = new FileDownloader(
-      hash,
-      relays,
-      track,
-      // totalChunks not provided specifically to rely on maxTempTotal
-      options
-    )
+    await new FileDownloader(fixture.root, {
+      'wss://first.test': [PUBKEY],
+      'wss://second.test': [PUBKEY]
+    }, report => reports.push(report), { batchSize: 2 }).run()
 
-    await fd.run()
-
-    // Should NOT have reported error for chunk 5, 6, etc.
-    if (errors.length > 0) {
-      console.error('Unexpected errors:', errors)
-    }
-    assert.equal(errors.length, 0, 'Should not report errors for chunks outside total')
-    assert.equal(fd.totalChunks, actualTotal)
-    assert.equal(downloadedChunkIndexes.size, actualTotal)
+    assert.equal(reports.filter(report => report.event).length, 3)
+    assert.equal(reports.at(-1).progress, 100)
+    assert.equal(reports.some(report => report.error), false)
   })
 
-  test('should not report missing chunk error if totalChunks is unknown, unless index is 0', async () => {
-    const hash = 'root-unknown'
-    const relays = { 'ws://r1': ['p'] }
-
-    // Simulate empty relay (file not found)
-    downloadGeneratorMock.mock.mockImplementation(async function * (_filter, _relayList) {
-      // yield { type: 'eose' }
+  test('aborts only after every relay has missed the same known chunk', async () => {
+    const fixture = await createChunks(3)
+    const missingD = fixture.events[1].tags[0][1]
+    const reports = []
+    generatorMock.mock.mockImplementation(async function * (filter) {
+      for (const d of filter['#d']) {
+        if (d === missingD) continue
+        const event = fixture.events.find(candidate => candidate.tags[0][1] === d)
+        if (event) yield { type: 'event', event }
+      }
     })
 
-    const errors = []
-    const options = { abortOnFailure: true, batchSize: 40 }
-    const { downloadedChunkIndexes, track } = createChunkTracker(options, (d) => { if (d.error) errors.push(d) })
-    const fd = new FileDownloader(
-      hash,
-      relays,
-      track,
-      options
-    )
+    await new FileDownloader(fixture.root, {
+      'wss://first.test': [PUBKEY],
+      'wss://second.test': [PUBKEY]
+    }, report => reports.push(report), { batchSize: 2 }).run()
 
-    await fd.run()
-    assert.equal(errors[0].chunkIndex, 0, 'Should report missing chunk error for index 0 when no chunks are found and total is unknown')
-    assert.equal(downloadedChunkIndexes.size, 0)
-    assert.equal(fd.totalChunks, null)
-  })
-})
-
-describe.skip('Integration (Real Network)', () => {
-  const TIMEOUT = 60000
-
-  test('should download from 44billion relay', { timeout: TIMEOUT }, async () => {
-    const rootHash = '09a8fee6b54ace1e08d5dabaebeed4ed05a556f11656a10caab3ad4ebee0caf7'
-    const relays = {
-      'wss://relay.44billion.net': [
-        '5a8bc85694d8fbb4f30208649c1c52509636d1e6fdb1f0f4c84a3f10f9383ec9'
-      ]
-    }
-
-    const errors = []
-    const { downloadedChunkIndexes, track } = createChunkTracker({}, (d) => { if (d.error) errors.push(d) })
-    const fd = new FileDownloader(rootHash, relays, track, { batchSize: 10, totalChunks: null })
-
-    await fd.run()
-    await nostrRelays.disconnectAll()
-
-    if (errors.length > 0) console.error('Unexpected errors:', errors)
-    const missingChunkErrors = errors.filter(e =>
-      e.error && (e.error.message === 'Missing file chunk' || e.error.message === 'Missing file chunks')
-    )
-    assert.equal(missingChunkErrors.length, 0, 'Should not report missing chunk errors')
-
-    assert.ok(downloadedChunkIndexes.size > 0, 'No chunks downloaded')
-    if (fd.totalChunks) {
-      assert.equal(downloadedChunkIndexes.size, fd.totalChunks, 'Should download all chunks')
-    } else console.warn('Total chunks unknown, cannot assert all chunks downloaded')
+    const errors = reports.filter(report => report.error)
+    assert.equal(errors.length, 1)
+    assert.equal(errors[0].chunkIndex, 1)
   })
 
-  test('should download from multiple relays', { timeout: TIMEOUT }, async () => {
-    const rootHash = '09a8fee6b54ace1e08d5dabaebeed4ed05a556f11656a10caab3ad4ebee0caf7'
-    const relays = {
-      'wss://relay.primal.net': [
-        '5a8bc85694d8fbb4f30208649c1c52509636d1e6fdb1f0f4c84a3f10f9383ec9'
-      ],
-      'wss://nos.lol': [
-        '5a8bc85694d8fbb4f30208649c1c52509636d1e6fdb1f0f4c84a3f10f9383ec9'
-      ],
-      'wss://relay.44billion.net': [
-        '5a8bc85694d8fbb4f30208649c1c52509636d1e6fdb1f0f4c84a3f10f9383ec9'
-      ]
-    }
-
-    const errors = []
-    const previouslyDownloaded = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 16]
-    const { downloadedChunkIndexes, track } = createChunkTracker({ downloadedChunkIndexes: previouslyDownloaded }, (d) => { if (d.error) errors.push(d) })
-    const fd = new FileDownloader(rootHash, relays, track, {
-      batchSize: 10,
-      totalChunks: 17,
-      downloadedChunkIndexes: previouslyDownloaded
+  test('reports an exhausted chunk but continues when abortOnFailure is false', async () => {
+    const fixture = await createChunks(3)
+    const missingD = fixture.events[1].tags[0][1]
+    const reports = []
+    generatorMock.mock.mockImplementation(async function * (filter) {
+      for (const d of filter['#d']) {
+        if (d === missingD) continue
+        const event = fixture.events.find(candidate => candidate.tags[0][1] === d)
+        if (event) yield { type: 'event', event }
+      }
     })
 
-    await fd.run()
-    await nostrRelays.disconnectAll()
+    await new FileDownloader(fixture.root, { 'wss://relay.test': [PUBKEY] }, report => reports.push(report), {
+      abortOnFailure: false,
+      batchSize: 1
+    }).run()
 
-    if (errors.length > 0) console.error('Unexpected errors:', errors)
-    const missingChunkErrors = errors.filter(e =>
-      e.error && (e.error.message === 'Missing file chunk' || e.error.message === 'Missing file chunks')
-    )
-    assert.equal(missingChunkErrors.length, 0, 'Should not report missing chunk errors')
-
-    assert.ok(downloadedChunkIndexes.size > 0, 'No chunks downloaded')
-    if (fd.totalChunks) {
-      assert.equal(downloadedChunkIndexes.size, fd.totalChunks, 'Should download all chunks')
-    } else console.warn('Total chunks unknown, cannot assert all chunks downloaded')
+    const missingReportIndex = reports.findIndex(report => report.chunkIndex === 1 && report.error)
+    assert.ok(missingReportIndex >= 0)
+    assert.ok(reports.some(report => report.chunkIndex === 2 && report.event))
+    assert.equal(reports.at(-1).error.message, 'Missing file chunks')
   })
 })
