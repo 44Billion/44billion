@@ -174,6 +174,7 @@ export class FileRangeDownloader {
 
     const relayStates = new Map()
     urls.forEach((url, offset) => relayStates.set(url, {
+      fallbackTriedIndexes: new Set(),
       offset,
       pendingBatch: false,
       scheduledBatches: 0,
@@ -190,6 +191,9 @@ export class FileRangeDownloader {
       coveredIndexes: cachedIndexes,
       debug: options.debug ?? false,
       fileRootHash,
+      fallbackIndexes: new Set(),
+      fallbackToAnyAuthor: options.fallbackToAnyAuthor === true,
+      hasAuthorFilter: urls.some(url => Array.isArray(pubkeysByRelay[url]) && pubkeysByRelay[url].length > 0),
       inFlightIndexCounters: new Map(),
       isRunning: false,
       maxEndIndex,
@@ -271,37 +275,46 @@ export class FileRangeDownloader {
     )
   }
 
-  #getUntriedIndexes (relayState) {
+  #getUntriedIndexes (relayState, fallback) {
+    const triedIndexes = fallback ? relayState.fallbackTriedIndexes : relayState.triedIndexes
     return [...this.missingIndexes]
-      .filter(index => !relayState.triedIndexes.has(index) && !this.inFlightIndexCounters.has(index))
+      .filter(index => this.fallbackIndexes.has(index) === fallback)
+      .filter(index => !triedIndexes.has(index) && !this.inFlightIndexCounters.has(index))
       .sort((a, b) => a - b)
   }
 
-  #getAvailableInFlightIndexes (relayState) {
+  #getAvailableInFlightIndexes (relayState, fallback) {
+    const triedIndexes = fallback ? relayState.fallbackTriedIndexes : relayState.triedIndexes
     return [...this.inFlightIndexCounters]
-      .filter(([index]) => this.missingIndexes.has(index) && !relayState.triedIndexes.has(index))
+      .filter(([index]) => this.missingIndexes.has(index) && this.fallbackIndexes.has(index) === fallback)
+      .filter(([index]) => !triedIndexes.has(index))
       .sort((a, b) => a[1] - b[1] || a[0] - b[0])
       .map(([index]) => index)
   }
 
   #selectBatch (relayState) {
-    return getBatchIndexes({
-      batchSize: this.batchSize,
-      offset: relayState.offset,
-      orderedInFlightIndexes: this.#getAvailableInFlightIndexes(relayState),
-      step: this.relayStates.size,
-      untriedIndexes: this.#getUntriedIndexes(relayState)
-    })
+    for (const fallback of [false, true]) {
+      const selected = getBatchIndexes({
+        batchSize: this.batchSize,
+        offset: relayState.offset,
+        orderedInFlightIndexes: this.#getAvailableInFlightIndexes(relayState, fallback),
+        step: this.relayStates.size,
+        untriedIndexes: this.#getUntriedIndexes(relayState, fallback)
+      })
+      if (selected.length) return { fallback, selected }
+    }
+    return { fallback: false, selected: [] }
   }
 
   #requestFromRelay (relayState) {
     if (!this.isRunning || relayState.pendingBatch || relayState.scheduledBatches >= MAX_RELAY_BATCHES) return false
-    const selected = this.#selectBatch(relayState)
+    const { fallback, selected } = this.#selectBatch(relayState)
     if (!selected.length) return false
 
     const indexes = selected.map(item => item.idx)
+    const triedIndexes = fallback ? relayState.fallbackTriedIndexes : relayState.triedIndexes
     for (const { idx, wasUntried } of selected) {
-      relayState.triedIndexes.add(idx)
+      triedIndexes.add(idx)
       const current = this.inFlightIndexCounters.get(idx) || 0
       this.inFlightIndexCounters.set(idx, wasUntried ? 1 : current + 1)
     }
@@ -312,7 +325,7 @@ export class FileRangeDownloader {
     let started = false
     this.batchLimiter.schedule(relayState.url, this.workerId, async () => {
       if (!this.isRunning) throw abortError()
-      await this.#downloadBatch(relayState, indexes)
+      await this.#downloadBatch(relayState, indexes, { fallback })
     }, {
       signal: this.abortSignal,
       onStart: () => {
@@ -344,14 +357,15 @@ export class FileRangeDownloader {
     for (const relayState of this.relayStates.values()) this.#requestFromRelay(relayState)
   }
 
-  async #downloadBatch (relayState, indexes) {
+  async #downloadBatch (relayState, indexes, { fallback }) {
     const requested = new Set(indexes)
     const filter = {
       kinds: [34601],
-      authors: this.pubkeysByRelay[relayState.url],
       '#d': indexes.map(index => NMMR.deriveChunkId(this.fileRootHash, index)),
       limit: indexes.length
     }
+    const authors = this.pubkeysByRelay[relayState.url]
+    if (!fallback && Array.isArray(authors) && authors.length > 0) filter.authors = authors
     const generator = nostrRelays.getEventsGenerator(filter, [relayState.url], { signal: this.abortSignal })
     let rawReceivedCount = 0
     let halfBatchTriggered = false
@@ -396,7 +410,7 @@ export class FileRangeDownloader {
       this.missingIndexes.delete(metadata.index)
       this.coveredIndexes.add(metadata.index)
       this.inFlightIndexCounters.delete(metadata.index)
-      this.callback({ chunkIndex: metadata.index, event, relay: relayState.url })
+      this.callback({ chunkIndex: metadata.index, event, relay: relayState.url, authorFallback: fallback })
       this.#notifyCoverage()
     }
   }
@@ -415,7 +429,15 @@ export class FileRangeDownloader {
       if (!this.missingIndexes.has(index) || this.reportedMissingIndexes.has(index)) continue
       if (this.totalChunks === null && index > 0) continue
       if ((this.inFlightIndexCounters.get(index) || 0) > 0) continue
-      if ([...this.relayStates.values()].some(state => !state.triedIndexes.has(index))) continue
+      const fallback = this.fallbackIndexes.has(index)
+      if ([...this.relayStates.values()].some(state =>
+        !(fallback ? state.fallbackTriedIndexes : state.triedIndexes).has(index)
+      )) continue
+
+      if (!fallback && this.fallbackToAnyAuthor && this.hasAuthorFilter) {
+        this.fallbackIndexes.add(index)
+        continue
+      }
 
       this.reportedMissingIndexes.add(index)
       this.callback({ error: new Error('Missing file chunk'), chunkIndex: index })
@@ -451,10 +473,26 @@ export default class FileDownloader {
     if (!urls.length) throw new Error('At least one relay is required')
 
     const totalChunks = canonicalTotal(options.totalChunks)
+    const requestedStart = assertSafeIndex(options.startIndex ?? 0, 'startIndex')
+    const requestedEnd = options.endIndex == null
+      ? null
+      : assertSafeIndex(options.endIndex, 'endIndex')
+    if (requestedEnd !== null && requestedEnd < requestedStart) throw new Error('Invalid requested chunk interval')
+    if (totalChunks === null && requestedStart !== 0) {
+      throw new Error('A non-zero startIndex requires totalChunks')
+    }
+    if (totalChunks !== null && requestedStart >= totalChunks) throw new Error('startIndex exceeds totalChunks')
+    if (totalChunks !== null && requestedEnd !== null && requestedEnd >= totalChunks) {
+      throw new Error('endIndex exceeds totalChunks')
+    }
+    const downloadEnd = totalChunks === null
+      ? null
+      : Math.min(requestedEnd ?? (totalChunks - 1), totalChunks - 1)
+    const targetLength = downloadEnd === null ? null : downloadEnd - requestedStart + 1
     const batchSize = canonicalPositiveInteger(options.batchSize, 'batchSize', 20)
     const downloadedCount = options.downloadedCount ?? 0
     assertSafeIndex(downloadedCount, 'downloadedCount')
-    if (totalChunks !== null && downloadedCount > totalChunks) throw new Error('downloadedCount exceeds totalChunks')
+    if (targetLength !== null && downloadedCount > targetLength) throw new Error('downloadedCount exceeds requested interval')
     if (downloadedCount > 0 && (totalChunks === null || typeof options.loadDownloadedChunkIndexes !== 'function')) {
       throw new Error('downloadedCount requires totalChunks and loadDownloadedChunkIndexes')
     }
@@ -479,16 +517,21 @@ export default class FileDownloader {
       discoveryLength,
       downloadedCount,
       fileRootHash,
+      fallbackToAnyAuthor: options.fallbackToAnyAuthor === true,
       hasStartedFirstRange: false,
       isRunning: false,
       loadDownloadedChunkIndexes: options.loadDownloadedChunkIndexes || (async () => []),
       loadedCachedCount: 0,
       missingCount: 0,
       missingSample: [],
-      nextRangeStart: 0,
+      nextRangeStart: requestedStart,
       pubkeysByRelay,
+      requestedEnd,
+      requestedStart,
       size: Number.isSafeInteger(options.size) && options.size >= 0 ? options.size : null,
       totalChunks,
+      downloadEnd,
+      targetLength,
       windowSize
     })
   }
@@ -508,7 +551,7 @@ export default class FileDownloader {
     }, { once: true })
 
     if (this.totalChunks !== null && this.downloadedCount > 0) this.#reportProgress()
-    if (this.totalChunks !== null && this.downloadedCount === this.totalChunks) {
+    if (this.targetLength !== null && this.downloadedCount === this.targetLength) {
       this.#finish()
       return this.runPromise
     }
@@ -531,8 +574,12 @@ export default class FileDownloader {
   #setTotalChunks (totalChunks) {
     totalChunks = canonicalTotal(totalChunks)
     if (this.totalChunks !== null && this.totalChunks !== totalChunks) throw new Error('Chunk totals disagree')
-    if (this.downloadedCount > totalChunks) throw new Error('downloadedCount exceeds discovered totalChunks')
+    if (this.requestedStart >= totalChunks) throw new Error('Requested interval exceeds discovered totalChunks')
+    if (this.requestedEnd !== null && this.requestedEnd >= totalChunks) throw new Error('Requested interval exceeds discovered totalChunks')
     this.totalChunks = totalChunks
+    this.downloadEnd = Math.min(this.requestedEnd ?? (totalChunks - 1), totalChunks - 1)
+    this.targetLength = this.downloadEnd - this.requestedStart + 1
+    if (this.downloadedCount > this.targetLength) throw new Error('downloadedCount exceeds requested interval')
     return totalChunks
   }
 
@@ -550,9 +597,9 @@ export default class FileDownloader {
       this.nextRangeStart = this.windowSize
       this.hasStartedFirstRange = true
     } else {
-      if (this.nextRangeStart >= this.totalChunks) return false
+      if (this.nextRangeStart > this.downloadEnd) return false
       start = this.nextRangeStart
-      const length = Math.min(this.windowSize, this.totalChunks - start)
+      const length = Math.min(this.windowSize, this.downloadEnd - start + 1)
       end = start + length - 1
       maxEnd = end
       this.nextRangeStart = end + 1
@@ -581,6 +628,7 @@ export default class FileDownloader {
           cachedChunkIndexes: cachedIndexes,
           debug: this.debug,
           endIndex: slot.end,
+          fallbackToAnyAuthor: this.fallbackToAnyAuthor,
           maxEndIndex: slot.maxEnd,
           onCoverage: coverage => this.#handleCoverage(slot, coverage),
           onTotalChunks: total => this.#setTotalChunks(total),
@@ -633,8 +681,8 @@ export default class FileDownloader {
     if (!this.isRunning || !this.activeRanges.has(slot.start)) return
     if (data.event) {
       this.downloadedCount++
-      if (this.totalChunks !== null && this.downloadedCount > this.totalChunks) {
-        this.#fail(new Error('Downloaded chunk count exceeds totalChunks'))
+      if (this.targetLength !== null && this.downloadedCount > this.targetLength) {
+        this.#fail(new Error('Downloaded chunk count exceeds requested interval'))
         return
       }
       this.#reportProgress(data)
@@ -667,7 +715,7 @@ export default class FileDownloader {
       if (remaining.worker && remaining.covered >= remaining.threshold) this.#startNextRange()
     }
 
-    if (this.activeRanges.size === 0 && (this.totalChunks === null || this.nextRangeStart >= this.totalChunks)) {
+    if (this.activeRanges.size === 0 && (this.totalChunks === null || this.nextRangeStart > this.downloadEnd)) {
       this.#finish()
     }
   }

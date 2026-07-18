@@ -21,6 +21,7 @@ export const NOSTRDB_MAINTENANCE_CONTEXT = 'nostrdb_maintenance'
 export const NOSTRDB_PERSONAL_COPY_CONTEXT = 'nostrdb_personal_copy'
 
 const textDecoder = new TextDecoder()
+const PUBLIC_CHUNK_KIND = 34601
 
 export function nostrDbSignMethodForTemplate (event) {
   return event?.tags?.some(tag => Array.isArray(tag) && tag[0] === 'imkc')
@@ -75,7 +76,7 @@ export function createNostrDbSignEvent ({ askNip07, askVault, pubkey, app, isDef
   }
 }
 
-export function createNostrDbMaintenanceSignEvent ({ askVault, pubkey }) {
+export function createNostrDbMaintenanceSignEvent ({ askVault, pubkey, timeoutMs = 120000 }) {
   return async event => {
     const { payload, error } = await askVault({
       code: 'NIP07',
@@ -86,7 +87,7 @@ export function createNostrDbMaintenanceSignEvent ({ askVault, pubkey }) {
         params: [event],
         context: NOSTRDB_MAINTENANCE_CONTEXT
       }
-    }, { timeout: 120000 })
+    }, { timeout: timeoutMs })
     if (error) throw error
     return payload
   }
@@ -215,7 +216,7 @@ function explicitPermissionInfoFromParams (params = []) {
 }
 
 function normalExplicitKinds (explicitKinds) {
-  return (explicitKinds ?? []).filter(kind => kind !== PERSONAL_COPY_KIND)
+  return (explicitKinds ?? []).filter(kind => kind !== PERSONAL_COPY_KIND && kind !== PUBLIC_CHUNK_KIND)
 }
 
 function mayIncludeNormalEvents (explicitKinds) {
@@ -251,6 +252,8 @@ function resultPermissionRequests (result, { mayIncludeNormal, mayIncludePersona
       ...(mayIncludePersonal ? [eventAccessPersonalPermission(BROAD_EVENT_KIND)] : [])
     ]
   }
+
+  if (kind === PUBLIC_CHUNK_KIND) return []
 
   return eventAccessPermissionRequestsForKind(kind)
 }
@@ -318,10 +321,18 @@ export function createNostrDbSubscriptionAuthorizer ({ app, requestPermission, p
 
   return {
     async authorizeBeforeStart () {
-      if (explicitKinds !== null) await requestOnce(normalExplicitKinds(explicitKinds).flatMap(kind => eventAccessPermissionRequestsForKind(kind)))
+      if (explicitKinds === null) {
+        await requestOnce([
+          ...eventAccessPermissionRequestsForKind(BROAD_EVENT_KIND),
+          eventAccessPersonalPermission(BROAD_EVENT_KIND)
+        ])
+        return
+      }
+      await requestOnce(normalExplicitKinds(explicitKinds).flatMap(kind => eventAccessPermissionRequestsForKind(kind)))
       if (explicitPersonalKinds !== null) await requestOnce(explicitPersonalKinds.map(kind => eventAccessPersonalPermission(kind)))
     },
     async authorizeItem (item) {
+      if (explicitKinds === null) return
       if (explicitKinds !== null && explicitPersonalKinds !== null) return
       await requestOnce(resultPermissionRequests(item?.result, {
         mayIncludeNormal: mayIncludeNormalEvents(explicitKinds),
@@ -380,11 +391,16 @@ export async function runNostrDbMethod ({
 
   if (method === 'query') {
     const { explicitKinds, explicitPersonalKinds } = explicitPermissionInfoFromParams(args)
-    if (explicitKinds !== null) await requestAccessKinds(normalExplicitKinds(explicitKinds), permissionContext)
-    if (explicitPersonalKinds !== null) await requestPersonalKinds(explicitPersonalKinds, permissionContext)
+    if (explicitKinds === null) {
+      await requestAccessKinds([BROAD_EVENT_KIND], permissionContext)
+      await requestPersonalKinds([BROAD_EVENT_KIND], permissionContext)
+    } else {
+      await requestAccessKinds(normalExplicitKinds(explicitKinds), permissionContext)
+      if (explicitPersonalKinds !== null) await requestPersonalKinds(explicitPersonalKinds, permissionContext)
+    }
 
     const payload = await db.query(...nostrDbReadParamsWithAppId(args, { appId }))
-    if (explicitKinds === null || explicitPersonalKinds === null) {
+    if (explicitKinds !== null && explicitPersonalKinds === null) {
       await requestPermissionsForQueryResult(payload, permissionContext, { explicitKinds })
     }
     return payload

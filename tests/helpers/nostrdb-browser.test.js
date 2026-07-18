@@ -443,7 +443,77 @@ describe('nostrdb browser bridge helpers', () => {
     ])
   })
 
-  it('gates query results by returned kinds when filters do not declare kinds', async () => {
+  it('allows only explicitly chunk-limited reads without permission', async () => {
+    const calls = []
+    const requestPermission = async req => calls.push(['permission', req.name, req.eKind])
+    const db = {
+      async query () {
+        calls.push('query')
+        return { results: [{ kind: 34601 }] }
+      },
+      async count () {
+        calls.push('count')
+        return 1
+      }
+    }
+
+    await runNostrDbMethod({
+      db,
+      method: 'query',
+      params: [{ kinds: [34601] }],
+      requestPermission,
+      app: { id: 'app' }
+    })
+    await runNostrDbMethod({
+      db,
+      method: 'count',
+      params: [{ kinds: [34601] }],
+      requestPermission,
+      app: { id: 'app' }
+    })
+    assert.deepEqual(calls, ['query', 'count'])
+  })
+
+  it('keeps mixed, broad and chunk writes protected', async () => {
+    const calls = []
+    const requestPermission = async req => calls.push([req.name, req.eKind])
+    const db = {
+      async query () { return { results: [{ kind: 34601 }, { kind: 1 }] } },
+      async count () { return 2 },
+      async add () { return { ok: true } }
+    }
+
+    await runNostrDbMethod({
+      db,
+      method: 'query',
+      params: [{ kinds: [34601, 1] }],
+      requestPermission,
+      app: { id: 'app' }
+    })
+    await runNostrDbMethod({
+      db,
+      method: 'count',
+      params: [{ authors: ['a'.repeat(64)] }],
+      requestPermission,
+      app: { id: 'app' }
+    })
+    await runNostrDbMethod({
+      db,
+      method: 'add',
+      params: [{ kind: 34601, tags: [] }],
+      requestPermission,
+      app: { id: 'app' }
+    })
+
+    assert.deepEqual(calls, [
+      [EVENT_ACCESS_PERMISSION, 1],
+      [EVENT_ACCESS_PERMISSION, BROAD_EVENT_KIND],
+      [EVENT_ACCESS_PERSONAL_PERMISSION, BROAD_EVENT_KIND],
+      [EVENT_ACCESS_PERMISSION, 34601]
+    ])
+  })
+
+  it('requires broad permissions before a query that does not declare kinds', async () => {
     const seen = []
     const db = {
       async query () {
@@ -462,11 +532,9 @@ describe('nostrdb browser bridge helpers', () => {
     })
 
     assert.deepEqual(seen, [
-      'query',
-      [EVENT_ACCESS_PERMISSION, 1],
-      [EVENT_ACCESS_PERMISSION, 30023],
       [EVENT_ACCESS_PERMISSION, BROAD_EVENT_KIND],
-      [EVENT_ACCESS_PERSONAL_PERMISSION, BROAD_EVENT_KIND]
+      [EVENT_ACCESS_PERSONAL_PERMISSION, BROAD_EVENT_KIND],
+      'query'
     ])
   })
 
@@ -558,6 +626,16 @@ describe('nostrdb browser bridge helpers', () => {
   })
 
   it('authorizes subscriptions before start or per streamed item', async () => {
+    const chunkCalls = []
+    const chunks = createNostrDbSubscriptionAuthorizer({
+      app: { id: 'app' },
+      requestPermission: async req => { chunkCalls.push([req.name, req.eKind]) },
+      params: [{ kinds: [34601] }]
+    })
+    await chunks.authorizeBeforeStart()
+    await chunks.authorizeItem({ result: { kind: 34601 } })
+    assert.deepEqual(chunkCalls, [])
+
     const explicitCalls = []
     const explicit = createNostrDbSubscriptionAuthorizer({
       app: { id: 'app' },
@@ -582,7 +660,6 @@ describe('nostrdb browser bridge helpers', () => {
     await dynamic.authorizeItem({ result: { kind: 1 } })
     await dynamic.authorizeItem({ result: 'id-only' })
     assert.deepEqual(dynamicCalls, [
-      [EVENT_ACCESS_PERMISSION, 1],
       [EVENT_ACCESS_PERMISSION, BROAD_EVENT_KIND],
       [EVENT_ACCESS_PERSONAL_PERMISSION, BROAD_EVENT_KIND]
     ])

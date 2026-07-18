@@ -71,6 +71,25 @@ export async function validatePersonalCopyForStorage (event, {
   return metadataForEvent(personalCopy, event)
 }
 
+// Chunk personal copies are an ingest envelope only. The caller converts the
+// decrypted inner event into a public owner event and never stores the wrapper.
+// `undefined` means this wrapper does not claim to contain a chunk; `null`
+// means it does, but decrypting or validating it failed.
+export async function extractPersonalCopyChunkForAdd (event, {
+  decrypt,
+  obfuscate,
+  ownerPubkey
+} = {}) {
+  if (!isPersonalCopyEvent(event) || personalCopyEncryptionKind(event) !== 34601) return undefined
+  const personalCopy = await inspectPersonalCopy(event, { decrypt, obfuscate, ownerPubkey })
+  if (
+    !personalCopy ||
+    personalCopy.inner?.kind !== 34601 ||
+    !sameTags(event.tags, personalCopy.canonicalTags)
+  ) return null
+  return personalCopy.inner
+}
+
 async function inspectPersonalCopy (event, { decrypt, obfuscate, ownerPubkey }) {
   if (typeof decrypt !== 'function' || typeof obfuscate !== 'function') return null
 

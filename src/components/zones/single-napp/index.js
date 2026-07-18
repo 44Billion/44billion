@@ -1,6 +1,6 @@
 import { f, useClosestStore, useSignal, useTask, useComputed } from '#f'
 import useWebStorage from '#hooks/use-web-storage.js'
-import { appDecode } from '#helpers/nip19.js'
+import { appDecode } from 'libp2r2p/nip19'
 import { addressObjToAppId } from '#helpers/app.js'
 import { base62ToBase36 } from '#helpers/base36.js'
 import { initMessageListener } from '#helpers/window-message/browser/index.js'

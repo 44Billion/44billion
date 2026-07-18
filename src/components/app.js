@@ -2,7 +2,7 @@ import '#config/polyfills.js'
 import resetCssString from '#assets/styles/reset.css'
 import globalCssString from '#assets/styles/global.css'
 import { f, useSignal, useTask } from '#f'
-import { appEncode, NAPP_ENTITY_REGEX } from '#helpers/nip19.js'
+import { appEncode, NAPP_ENTITY_REGEX } from 'libp2r2p/nip19'
 import { appIdToAddressObj } from '#helpers/app.js'
 
 // Clear old localStorage data from pre-v2 schema (bundle→siteManifest migration)

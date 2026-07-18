@@ -18,6 +18,7 @@
     "esbuild": "^0.25.1",
     "eslint": "^9.22.0",
     "eslint-plugin-html": "^8.1.2",
+    "fake-indexeddb": "^6.2.5",
     "globals": "^15.12.0",
     "neostandard": "^0.12.1"
   },
@@ -43,8 +44,7 @@
   "dependencies": {
     "@leeoniya/ufuzzy": "^1.0.19",
     "@noble/hashes": "^2.0.1",
-    "@scure/base": "^2.0.0",
-    "libp2r2p": "^0.1.0",
+    "libp2r2p": "^0.2.0",
     "meilisearch": "^0.54.0",
     "mime": "^4.0.7",
     "nmmr": "^2.0.0",

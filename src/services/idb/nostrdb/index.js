@@ -1,4 +1,5 @@
 import { sha256 } from '@noble/hashes/sha2.js'
+import { encode as base93Encode } from 'libp2r2p/base93'
 
 import { eventKinds } from '#constants/event.js'
 import { appIdToDbAppRef } from '#helpers/app.js'
@@ -7,9 +8,30 @@ import {
   PERSONAL_COPY_KIND,
   isPersonalCopyEvent,
   personalCopyContextValue,
+  personalCopyEncryptionKind,
   personalCopyProvenanceValue
 } from '#helpers/personal-copy.js'
 import { run } from '#services/idb/browser/index.js'
+import {
+  ChunkQuotaError,
+  abortChunkPayloadStage,
+  clearOwnerChunkCache,
+  commitChunkCopy,
+  getChunkPayload,
+  getChunkPayloadForEvent,
+  getOwnerChunkCopy,
+  getOwnerChunkRoot,
+  listChunkRootPurgeCandidates,
+  listChunkCacheOwners,
+  listOwnerChunkCopiesPage,
+  listOwnerChunkRootsPage,
+  markChunkReconciled,
+  reconcileStaleChunkPayloadStages,
+  removeChunkCopy,
+  removeOwnerRootCopies,
+  setOwnerRootReferenceCount,
+  stageChunkPayload
+} from '#services/idb/browser/queries/chunk-cache.js'
 import {
   SEARCH_BATCH_SIZE,
   SEARCH_MATCH_MULTIPLIER,
@@ -30,9 +52,16 @@ import {
 } from './scheduled.js'
 import { buildCrdtMergeTemplate } from './crdt.js'
 import {
+  extractPersonalCopyChunkForAdd,
   normalizePersonalCopyForAdd,
   validatePersonalCopyForStorage
 } from './personal-copy.js'
+import {
+  blobReferencesFromTags,
+  normalizeChunkEventForOwner,
+  validateCanonicalOwnerChunkEvent,
+  verifyNostrEventWithoutCache
+} from './chunk-event.js'
 
 export const NOSTRDB_VERSION = 1
 export const NOSTRDB_PREFIX = '44billion_nostrdb:'
@@ -54,7 +83,9 @@ events, keyPath "i"
   ex    optional NIP-40 expiration timestamp
   ap    optional multiEntry app refs for custom/unknown app-data ownership
   t     multiEntry tag index keys: [tagName, sha256(tagValue), created_at]
-  event original Nostr event
+  cr/ci/ct/ch/cb optional externalized chunk root/index/total/content hash/byte length
+  br    optional multiEntry roots referenced by public or decrypted personal r tags
+  event original Nostr event; chunk events omit content and are rehydrated on reads
 
 events indexes
   byAddress   a, unique, sparse
@@ -66,6 +97,8 @@ events indexes
   byKind      [k, ca]
   byPubkeyKind [p, k, ca]
   byTag       t, multiEntry
+  byChunk     [cr, ci], unique, sparse
+  byBlobRef   br, multiEntry, sparse
 
 deletions, keyPath "ref"
   ref   "e:<base64url-id>:<base64url-pubkey>" or "a:<base64url-sha256-coordinate>"
@@ -91,7 +124,9 @@ export const INDEX = {
   pubkey: 'byPubkey',
   kind: 'byKind',
   pubkeyKind: 'byPubkeyKind',
-  tag: 'byTag'
+  tag: 'byTag',
+  chunk: 'byChunk',
+  blobRef: 'byBlobRef'
 }
 
 export const DELETION_INDEX = {
@@ -111,11 +146,15 @@ const UNCLAIMED_APP_DATA_GRACE_MS = 30 * 24 * 60 * 60 * 1000
 const UNCLAIMED_APP_DATA_BATCH_SIZE = 100
 const UNCLAIMED_APP_DATA_MAX_SCANNED = 1000
 const UNCLAIMED_APP_DATA_PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000
+const CHUNK_ROOT_GRACE_MS = 10 * 60 * 1000
+const CHUNK_MAINTENANCE_INTERVAL_MS = 60 * 1000
+const CHUNK_PURGE_BATCH_SIZE = 256
 const textEncoder = new TextEncoder()
 const dbCache = new Map()
 const storeCache = new Map()
+let globalChunkMaintenance
 
-const ADD_FAILURE_CODES = new Set(['invalid', 'invalid_app', 'expired', 'blocked', 'unavailable', 'error'])
+const ADD_FAILURE_CODES = new Set(['invalid', 'invalid_app', 'expired', 'blocked', 'quota', 'unavailable', 'error'])
 const QUERY_SCORES = Symbol('nostrdb.queryScores')
 const STORED_RECORD = Symbol('nostrdb.storedRecord')
 const PERSONAL_COPY_PROVENANCE_STALE = Symbol('nostrdb.personalCopyProvenanceStale')
@@ -130,6 +169,7 @@ const ADD_MESSAGES = {
   invalid_app: 'App id is invalid.',
   expired: 'Event is expired.',
   blocked: 'Event is blocked by a deletion request.',
+  quota: 'Global unreferenced chunk quota exceeded.',
   unavailable: 'IndexedDB is unavailable.',
   error: 'IndexedDB transaction failed.'
 }
@@ -269,17 +309,51 @@ export class NostrDb {
     tombstoneTagName
   } = {}) {
     const inputEvent = event
-    const normalized = await normalizePersonalCopyForAdd(event, {
-      decrypt: this.personalCopyDecrypt,
-      obfuscate: this.personalCopyObfuscate,
-      signEvent,
-      ownerPubkey: this.ownerPubkey
-    })
+    let chunkData = null
+    let normalized
+
+    try {
+      const claimedPersonalChunk = isPersonalCopyEvent(event) &&
+        personalCopyEncryptionKind(event) === 34601
+      if (claimedPersonalChunk) {
+        if (!isValidEventShape(event) || !verifyNostrEventWithoutCache(event)) throw new Error('Invalid personal-copy wrapper')
+        const inner = await extractPersonalCopyChunkForAdd(event, {
+          decrypt: this.personalCopyDecrypt,
+          obfuscate: this.personalCopyObfuscate,
+          ownerPubkey: this.ownerPubkey
+        })
+        if (!inner) throw new Error('Invalid personal-copy chunk')
+        const chunk = await normalizeChunkEventForOwner(inner, {
+          ownerPubkey: this.ownerPubkey,
+          signEvent,
+          allowUnsigned: true
+        })
+        normalized = { event: chunk.event, personalCopy: null }
+        chunkData = chunk.data
+      } else if (event?.kind === 34601) {
+        const chunk = await normalizeChunkEventForOwner(event, {
+          ownerPubkey: this.ownerPubkey,
+          signEvent
+        })
+        normalized = { event: chunk.event, personalCopy: null }
+        chunkData = chunk.data
+      } else {
+        normalized = await normalizePersonalCopyForAdd(event, {
+          decrypt: this.personalCopyDecrypt,
+          obfuscate: this.personalCopyObfuscate,
+          signEvent,
+          ownerPubkey: this.ownerPubkey
+        })
+      }
+    } catch (error) {
+      return this.reportAddResult('add', event, addResult('invalid'), { error })
+    }
     if (normalized === null) {
       return this.reportAddResult('add', event, addResult('invalid'))
     }
     event = normalized.event
     const personalCopy = normalized.personalCopy
+    const blobRefs = blobReferencesFromTags(personalCopy?.inner?.tags ?? event.tags)
 
     if (!isValidEventShape(event)) {
       return this.reportAddResult('add', event, addResult('invalid'))
@@ -310,7 +384,9 @@ export class NostrDb {
       }
 
       let eventToStore = event
-      const shouldMergeReplaceable = mergeReplaceable ?? (typeof signEvent === 'function' && event.pubkey === this.ownerPubkey)
+      const shouldMergeReplaceable = event.kind === 34601
+        ? false
+        : mergeReplaceable ?? (typeof signEvent === 'function' && event.pubkey === this.ownerPubkey)
       const mergedEvent = shouldMergeReplaceable
         ? await this.signMergedReplaceableEvent(event, {
           signEvent,
@@ -331,6 +407,8 @@ export class NostrDb {
         forceCoordinateReplace: !!mergedEvent && crdtMergeSource === 'sync',
         personalCopy: mergedEvent ? null : personalCopy,
         personalCopyResolution: resolution,
+        chunkData,
+        blobRefs,
         log: false
       })
       if (result[PERSONAL_COPY_PROVENANCE_STALE] && attempt + 1 < PERSONAL_COPY_PROVENANCE_ATTEMPTS) continue
@@ -456,6 +534,8 @@ export class NostrDb {
     forceCoordinateReplace = false,
     personalCopy,
     personalCopyResolution,
+    chunkData,
+    blobRefs,
     log = true
   } = {}) {
     if (!isValidEventShape(event)) {
@@ -489,6 +569,17 @@ export class NostrDb {
       personalCopyResolution = null
     }
 
+    if (event.kind === 34601) {
+      try {
+        chunkData ??= validateCanonicalOwnerChunkEvent(event, this.ownerPubkey)
+      } catch {
+        return this.reportAddResult('addEvent', event, addResult('invalid'), { log })
+      }
+    } else {
+      chunkData = null
+    }
+    blobRefs ??= blobReferencesFromTags(personalCopy?.inner?.tags ?? event.tags)
+
     if (appRef === false) {
       return this.reportAddResult('addEvent', event, addResult('invalid_app'), { log })
     }
@@ -505,7 +596,17 @@ export class NostrDb {
     const db = await openNostrDb(this.ownerPubkey)
     if (!db) return this.reportAddResult('addEvent', event, addResult('unavailable'), { log })
 
-    const record = toStoredRecord(event, { now, appRef })
+    let chunkStage = null
+    if (chunkData) {
+      try {
+        chunkStage = await stageChunkPayloadWithPressure(this, db, chunkData)
+      } catch (error) {
+        const code = error instanceof ChunkQuotaError ? 'quota' : 'error'
+        return this.reportAddResult('addEvent', event, addResult(code), { log })
+      }
+    }
+
+    const record = toStoredRecord(event, { now, appRef, chunkData, blobRefs })
     let replaced = false
     let tx
     let done
@@ -543,11 +644,19 @@ export class NostrDb {
         ) || changed
         if (changed) await run('put', [existingById], EVENTS_STORE, null, { db, tx })
         await done
+        await finishChunkStage(chunkStage, {
+          owner: this.ownerPubkey,
+          event,
+          chunkData,
+          protectedRoot: chunkStage?.protectedRoot
+        })
+        scheduleBlobReferenceReconciliation(this.ownerPubkey, record.br)
         return addResult('duplicate', { stored: changed })
       }
 
       if (await isBlockedByDeletion(db, tx, event)) {
         await done
+        await abortChunkPayloadStage(chunkStage)
         return this.reportAddResult('addEvent', event, addResult('blocked'), { log })
       }
 
@@ -565,6 +674,7 @@ export class NostrDb {
           const changed = mergeAppRef(existingByAddress, appRef)
           if (changed) await run('put', [existingByAddress], EVENTS_STORE, null, { db, tx })
           await done
+          await abortChunkPayloadStage(chunkStage)
           return addResult('superseded', { stored: changed })
         }
 
@@ -606,12 +716,21 @@ export class NostrDb {
       } catch {
       }
       await done?.catch(() => {})
+      await abortChunkPayloadStage(chunkStage).catch(() => {})
       const result = addResult('error')
       if (error instanceof StalePersonalCopyProvenanceError) {
         Object.defineProperty(result, PERSONAL_COPY_PROVENANCE_STALE, { value: true })
       }
       return this.reportAddResult('addEvent', event, result, { log })
     }
+
+    await finishChunkStage(chunkStage, {
+      owner: this.ownerPubkey,
+      event,
+      chunkData,
+      protectedRoot: chunkStage?.protectedRoot
+    })
+    scheduleBlobReferenceReconciliation(this.ownerPubkey, record.br)
 
     return addResult(replaced ? 'replaced' : 'stored', {
       stored: true,
@@ -920,6 +1039,93 @@ export class NostrDb {
     }
   }
 
+  async purgeChunkRoot (root, { force = false, now = Date.now() } = {}) {
+    if (!/^[0-9a-f]{64}$/.test(root || '')) return 0
+    const db = await openNostrDb(this.ownerPubkey)
+    if (!db) return 0
+
+    const references = await countBlobReferences(db, root)
+    await setOwnerRootReferenceCount(this.ownerPubkey, root, references)
+    if (references > 0) return 0
+
+    if (!force) {
+      const candidates = await listChunkRootPurgeCandidates({
+        before: now - CHUNK_ROOT_GRACE_MS,
+        limit: CHUNK_PURGE_BATCH_SIZE
+      })
+      if (!candidates.some(candidate => candidate.owner === this.ownerPubkey && candidate.root === root)) return 0
+    }
+
+    let removed = 0
+    let failed = false
+    while (true) {
+      const records = await getChunkRecordBatch(db, root, CHUNK_PURGE_BATCH_SIZE)
+      if (records.length === 0) break
+      const transaction = db.transaction([EVENTS_STORE, DELETIONS_STORE], 'readwrite')
+      const done = txDone(transaction)
+      try {
+        for (const stored of records) {
+          const current = await run('get', [stored.i], EVENTS_STORE, null, { db, tx: transaction })
+            .then(value => value.result)
+          if (!current || current.cr !== root) continue
+          await deleteStoredEvent(db, transaction, current)
+          removed++
+        }
+        await done
+      } catch {
+        try { transaction.abort() } catch {}
+        await done.catch(() => {})
+        failed = true
+        break
+      }
+    }
+    if (!failed) await removeOwnerRootCopies(this.ownerPubkey, root)
+    return removed
+  }
+
+  async maintainChunks () {
+    await reconcileOwnerChunks(this)
+    const candidates = await listChunkRootPurgeCandidates({
+      before: Date.now() - CHUNK_ROOT_GRACE_MS,
+      limit: CHUNK_PURGE_BATCH_SIZE
+    })
+    let removed = 0
+    for (const candidate of candidates) {
+      if (candidate.owner !== this.ownerPubkey) continue
+      removed += await this.purgeChunkRoot(candidate.root)
+    }
+    return removed
+  }
+
+  startChunkMaintenance ({ intervalMs = CHUNK_MAINTENANCE_INTERVAL_MS, runImmediately = true } = {}) {
+    const delay = Number.isInteger(intervalMs) && intervalMs > 0
+      ? intervalMs
+      : CHUNK_MAINTENANCE_INTERVAL_MS
+    let stopped = false
+    let running = false
+    let timer
+
+    const schedule = milliseconds => {
+      if (stopped) return
+      timer = setTimeout(tick, milliseconds)
+      timer.unref?.()
+    }
+    const tick = async () => {
+      if (stopped) return
+      if (!running) {
+        running = true
+        try { await this.maintainChunks() } catch {}
+        running = false
+      }
+      schedule(delay)
+    }
+    schedule(runImmediately ? 0 : delay)
+    return () => {
+      stopped = true
+      if (timer) clearTimeout(timer)
+    }
+  }
+
   async purgeUnclaimedAppData ({
     graceMs = UNCLAIMED_APP_DATA_GRACE_MS,
     batchSize = UNCLAIMED_APP_DATA_BATCH_SIZE,
@@ -1053,6 +1259,7 @@ export class NostrDb {
         ignoreLimit: false,
         decryptPersonalCopyContent: this.personalCopyDecrypt
       })
+      await hydrateChunkResults(this.ownerPubkey, results)
       this.queueAppClaimsFromResults(results, appRef)
       return queryResult(results, filters[0])
     } catch (error) {
@@ -1140,6 +1347,8 @@ export class NostrDb {
           .filter(stored => stored?.event && hasAppRef(stored.ap, appRef))
           .map(stored => stored.event)
 
+        await hydrateChunkResults(this.ownerPubkey, events)
+
         if (events.length > 0) yield events
         if (idKeys.length < size) return
       }
@@ -1189,9 +1398,10 @@ export class NostrDb {
     })
     this.subscriptions.add(subscription)
 
-    return subscription.iterator(() => {
+    const iterator = subscription.iterator(() => {
       this.subscriptions.delete(subscription)
     })
+    return hydrateChunkSubscription(this.ownerPubkey, iterator)
   }
 
   queueAppClaimsFromResults (results, appRef) {
@@ -1275,7 +1485,338 @@ export class NostrDb {
   }
 }
 
+async function countBlobReferences (db, root) {
+  try {
+    return await run('count', [IDBKeyRange.only(root)], EVENTS_STORE, INDEX.blobRef, { db })
+      .then(value => value.result)
+  } catch {
+    return 0
+  }
+}
+
+async function getChunkRecordBatch (db, root, limit) {
+  const records = []
+  await scanCursor(
+    db,
+    EVENTS_STORE,
+    INDEX.chunk,
+    IDBKeyRange.bound([root, 0], [root, Number.MAX_SAFE_INTEGER]),
+    {
+      onItem: stored => {
+        records.push(stored)
+        return records.length < limit
+      }
+    }
+  )
+  return records
+}
+
+async function getAllChunkRecordBatch (db, after, limit) {
+  const records = []
+  const range = after
+    ? IDBKeyRange.lowerBound(after, true)
+    : null
+  await scanCursor(db, EVENTS_STORE, INDEX.chunk, range, {
+    onItem: stored => {
+      records.push(stored)
+      return records.length < limit
+    }
+  })
+  return records
+}
+
+async function stageChunkPayloadWithPressure (nostrDb, db, chunkData) {
+  const referenceCount = await countBlobReferences(db, chunkData.root)
+  const protectedRoot = referenceCount > 0
+  await setOwnerRootReferenceCount(nostrDb.ownerPubkey, chunkData.root, referenceCount)
+
+  while (true) {
+    try {
+      return await stageChunkPayload({
+        contentHash: chunkData.contentHash,
+        contentBytes: chunkData.contentBytes,
+        owner: nostrDb.ownerPubkey,
+        protectedRoot
+      })
+    } catch (error) {
+      if (!(error instanceof ChunkQuotaError)) throw error
+      if (!await purgeOneChunkRootForCapacity()) throw error
+    }
+  }
+}
+
+async function purgeOneChunkRootForCapacity () {
+  const candidates = await listChunkRootPurgeCandidates({ limit: CHUNK_PURGE_BATCH_SIZE })
+  for (const candidate of candidates) {
+    const db = getNostrDb(candidate.owner, { maintenance: false })
+    const removed = await db.purgeChunkRoot(candidate.root, { force: true })
+    if (removed > 0) return true
+    if (!await getOwnerChunkRoot(candidate.owner, candidate.root)) return true
+  }
+  return false
+}
+
+async function finishChunkStage (stage, { owner, event, chunkData, protectedRoot }) {
+  if (!stage || !chunkData) return
+  try {
+    await commitChunkCopy({
+      owner,
+      root: chunkData.root,
+      index: chunkData.index,
+      total: chunkData.total,
+      eventId: event.id,
+      contentHash: chunkData.contentHash,
+      byteLength: chunkData.byteLength,
+      protectedRoot
+    })
+  } catch (error) {
+    await abortChunkPayloadStage(stage).catch(() => {})
+    logNostrDbIssue('chunkCommit', {
+      ownerPubkey: owner,
+      code: 'error',
+      message: 'Chunk event was stored but its shared payload link needs reconciliation.',
+      event: eventLogSummary(event)
+    }, error)
+  }
+}
+
+const blobReferenceReconciliation = new Map()
+
+function scheduleBlobReferenceReconciliation (owner, roots) {
+  if (!owner || !Array.isArray(roots) || roots.length === 0) return
+  let pending = blobReferenceReconciliation.get(owner)
+  if (!pending) {
+    pending = { roots: new Set(), timer: null }
+    blobReferenceReconciliation.set(owner, pending)
+  }
+  for (const root of roots) pending.roots.add(root)
+  if (pending.timer) return
+  pending.timer = setTimeout(async () => {
+    blobReferenceReconciliation.delete(owner)
+    const db = await openNostrDb(owner)
+    if (!db) return
+    for (const root of pending.roots) {
+      const count = await countBlobReferences(db, root)
+      await setOwnerRootReferenceCount(owner, root, count).catch(() => {})
+    }
+  }, 0)
+  pending.timer.unref?.()
+}
+
+async function getReferencedRootBatch (db, after, limit) {
+  const roots = []
+  const range = after ? IDBKeyRange.lowerBound(after, true) : null
+  await scanKeyCursor(db, EVENTS_STORE, INDEX.blobRef, range, {
+    direction: 'nextunique',
+    onItem: ({ key }) => {
+      roots.push(key)
+      return roots.length < limit
+    }
+  })
+  return roots
+}
+
+async function deleteInvalidChunkRecord (db, stored) {
+  const transaction = db.transaction([EVENTS_STORE, DELETIONS_STORE], 'readwrite')
+  const done = txDone(transaction)
+  try {
+    const current = await run('get', [stored.i], EVENTS_STORE, null, { db, tx: transaction })
+      .then(value => value.result)
+    if (current?.k === 34601) await deleteStoredEvent(db, transaction, current)
+    await done
+  } catch {
+    try { transaction.abort() } catch {}
+    await done.catch(() => {})
+  }
+  await removeChunkCopy(stored.event?.pubkey, stored.cr, stored.ci).catch(() => {})
+}
+
+async function reconcileOwnerChunks (nostrDb) {
+  const db = await openNostrDb(nostrDb.ownerPubkey)
+  if (!db) return
+
+  let centralAfter
+  while (true) {
+    const centralCopies = await listOwnerChunkCopiesPage(nostrDb.ownerPubkey, {
+      after: centralAfter,
+      limit: CHUNK_PURGE_BATCH_SIZE
+    })
+    if (centralCopies.length === 0) break
+    for (const copy of centralCopies) {
+      const stored = await run('get', [eventIdIndexKey(copy.eventId)], EVENTS_STORE, null, { db })
+        .then(value => value.result)
+      if (
+        !stored ||
+        stored.k !== 34601 ||
+        stored.cr !== copy.root ||
+        stored.ci !== copy.index ||
+        stored.ch !== copy.contentHash
+      ) {
+        await removeChunkCopy(nostrDb.ownerPubkey, copy.root, copy.index).catch(() => {})
+      }
+    }
+    const last = centralCopies[centralCopies.length - 1]
+    centralAfter = { root: last.root, index: last.index }
+    if (centralCopies.length < CHUNK_PURGE_BATCH_SIZE) break
+  }
+
+  let after = null
+  while (true) {
+    const records = await getAllChunkRecordBatch(db, after, CHUNK_PURGE_BATCH_SIZE)
+    if (records.length === 0) break
+    for (const stored of records) {
+      const contentBytes = await getChunkPayload(stored.ch, { touch: false })
+      if (!contentBytes) {
+        await deleteInvalidChunkRecord(db, stored)
+        continue
+      }
+
+      let data
+      try {
+        const fullEvent = { ...stored.event, content: base93Encode(contentBytes) }
+        data = validateCanonicalOwnerChunkEvent(fullEvent, nostrDb.ownerPubkey)
+        if (
+          data.root !== stored.cr ||
+          data.index !== stored.ci ||
+          data.total !== stored.ct ||
+          data.contentHash !== stored.ch ||
+          data.byteLength !== stored.cb
+        ) throw new Error('Chunk metadata mismatch')
+      } catch {
+        await deleteInvalidChunkRecord(db, stored)
+        continue
+      }
+
+      const copy = await getOwnerChunkCopy(nostrDb.ownerPubkey, data.root, data.index)
+      if (!copy || copy.eventId !== stored.event.id || copy.contentHash !== data.contentHash) {
+        const referenceCount = await countBlobReferences(db, data.root)
+        await commitChunkCopy({
+          owner: nostrDb.ownerPubkey,
+          root: data.root,
+          index: data.index,
+          total: data.total,
+          eventId: stored.event.id,
+          contentHash: data.contentHash,
+          byteLength: data.byteLength,
+          protectedRoot: referenceCount > 0
+        }).catch(error => {
+          logNostrDbIssue('chunkReconcileCommit', {
+            ownerPubkey: nostrDb.ownerPubkey,
+            code: 'error',
+            message: 'Could not repair a shared chunk payload link.',
+            event: eventLogSummary(stored.event)
+          }, error)
+        })
+      }
+    }
+    const last = records[records.length - 1]
+    after = [last.cr, last.ci]
+    if (records.length < CHUNK_PURGE_BATCH_SIZE) break
+  }
+
+  let referenceAfter
+  while (true) {
+    const roots = await getReferencedRootBatch(db, referenceAfter, CHUNK_PURGE_BATCH_SIZE)
+    if (roots.length === 0) break
+    for (const root of roots) {
+      await setOwnerRootReferenceCount(
+        nostrDb.ownerPubkey,
+        root,
+        await countBlobReferences(db, root)
+      )
+    }
+    referenceAfter = roots[roots.length - 1]
+    if (roots.length < CHUNK_PURGE_BATCH_SIZE) break
+  }
+
+  let rootAfter
+  while (true) {
+    const roots = await listOwnerChunkRootsPage(nostrDb.ownerPubkey, {
+      after: rootAfter,
+      limit: CHUNK_PURGE_BATCH_SIZE
+    })
+    if (roots.length === 0) break
+    for (const { root } of roots) {
+      await setOwnerRootReferenceCount(
+        nostrDb.ownerPubkey,
+        root,
+        await countBlobReferences(db, root)
+      )
+    }
+    rootAfter = roots[roots.length - 1].root
+    if (roots.length < CHUNK_PURGE_BATCH_SIZE) break
+  }
+  await markChunkReconciled()
+}
+
+export async function maintainAllChunkCaches ({ fullPayloadSweep = false } = {}) {
+  if (typeof indexedDB === 'undefined') return { owners: 0 }
+  const owners = new Set(await listChunkCacheOwners().catch(() => []))
+  if (typeof indexedDB.databases === 'function') {
+    try {
+      for (const { name } of await indexedDB.databases()) {
+        if (!name?.startsWith(NOSTRDB_PREFIX)) continue
+        const owner = name.slice(NOSTRDB_PREFIX.length)
+        if (HEX64_RE.test(owner)) owners.add(owner.toLowerCase())
+      }
+    } catch {}
+  }
+
+  for (const owner of [...owners].sort()) {
+    await getNostrDb(owner, { maintenance: false }).maintainChunks().catch(() => {})
+  }
+  if (fullPayloadSweep) {
+    let restart = true
+    while (true) {
+      const result = await reconcileStaleChunkPayloadStages({ restart }).catch(() => null)
+      if (!result || result.reachedEnd) break
+      restart = false
+    }
+  } else {
+    await reconcileStaleChunkPayloadStages().catch(() => {})
+  }
+  return { owners: owners.size }
+}
+
+export function startGlobalChunkMaintenance ({
+  intervalMs = CHUNK_MAINTENANCE_INTERVAL_MS,
+  runImmediately = true
+} = {}) {
+  if (globalChunkMaintenance) return globalChunkMaintenance.stop
+  const delay = Number.isSafeInteger(intervalMs) && intervalMs > 0
+    ? intervalMs
+    : CHUNK_MAINTENANCE_INTERVAL_MS
+  let stopped = false
+  let running = false
+  let firstRun = true
+  let timer
+  const schedule = milliseconds => {
+    if (stopped) return
+    timer = setTimeout(tick, milliseconds)
+    timer.unref?.()
+  }
+  const tick = async () => {
+    if (stopped) return
+    if (!running) {
+      running = true
+      await maintainAllChunkCaches({ fullPayloadSweep: firstRun }).catch(() => {})
+      firstRun = false
+      running = false
+    }
+    schedule(delay)
+  }
+  const stop = () => {
+    stopped = true
+    if (timer) clearTimeout(timer)
+    if (globalChunkMaintenance?.stop === stop) globalChunkMaintenance = null
+  }
+  globalChunkMaintenance = { stop }
+  schedule(runImmediately ? 0 : delay)
+  return stop
+}
+
 function startNostrDbMaintenance (db, { signEvent } = {}) {
+  startMaintenanceTask(db, 'chunks', () => db.startChunkMaintenance())
   startMaintenanceTask(db, 'unclaimedAppData', () => db.startUnclaimedAppDataPurge({
     intervalMs: UNCLAIMED_APP_DATA_PURGE_INTERVAL_MS,
     runImmediately: false
@@ -1345,7 +1886,10 @@ export async function deleteNostrDb (ownerPubkey) {
       return
     }
 
-    req.onsuccess = () => resolve(true)
+    req.onsuccess = () => {
+      clearOwnerChunkCache(ownerPubkey)
+        .then(() => resolve(true), () => resolve(true))
+    }
     req.onerror = () => resolve(false)
     req.onblocked = () => resolve(false)
   })
@@ -1386,6 +1930,8 @@ function initNostrDb (dbName) {
     createIndexIfMissing(store, INDEX.kind, ['k', 'ca'])
     createIndexIfMissing(store, INDEX.pubkeyKind, ['p', 'k', 'ca'])
     createIndexIfMissing(store, INDEX.tag, 't', { multiEntry: true })
+    createIndexIfMissing(store, INDEX.chunk, ['cr', 'ci'], { unique: true })
+    createIndexIfMissing(store, INDEX.blobRef, 'br', { multiEntry: true })
 
     store = createObjectStoreIfMissing(db, tx, DELETIONS_STORE, { keyPath: 'ref' })
     createIndexIfMissing(store, DELETION_INDEX.request, 'c', { multiEntry: true })
@@ -1961,6 +2507,49 @@ function queryResult (results, filter) {
       scores,
       firstScore: scores.length > 0 ? scores[0] : null,
       lastScore: scores.length > 0 ? scores[scores.length - 1] : null
+    }
+  }
+}
+
+async function hydrateChunkEvent (ownerPubkey, event) {
+  if (!event || event.kind !== 34601 || typeof event.content === 'string') return event
+  const payload = await getChunkPayloadForEvent(ownerPubkey, event.id)
+  if (!payload) return null
+  return { ...event, content: base93Encode(payload.contentBytes) }
+}
+
+async function hydrateChunkResults (ownerPubkey, results) {
+  if (!Array.isArray(results)) return results
+  const scores = results[QUERY_SCORES]
+  for (let index = results.length - 1; index >= 0; index--) {
+    if (typeof results[index] === 'string') continue
+    const hydrated = await hydrateChunkEvent(ownerPubkey, results[index])
+    if (hydrated) {
+      results[index] = hydrated
+    } else {
+      results.splice(index, 1)
+      scores?.splice(index, 1)
+    }
+  }
+  return results
+}
+
+function hydrateChunkSubscription (ownerPubkey, iterator) {
+  return {
+    [Symbol.asyncIterator] () { return this },
+    async next () {
+      while (true) {
+        const item = await iterator.next()
+        if (item.done || typeof item.value?.result === 'string') return item
+        const event = await hydrateChunkEvent(ownerPubkey, item.value?.result)
+        if (event) return { ...item, value: { ...item.value, result: event } }
+      }
+    },
+    return (value) {
+      return iterator.return?.(value) ?? Promise.resolve({ done: true, value })
+    },
+    throw (error) {
+      return iterator.throw?.(error) ?? Promise.reject(error)
     }
   }
 }
@@ -2779,8 +3368,15 @@ export class ParsedFilter {
   }
 }
 
-export function toStoredRecord (event, { now = currentUnixTime(), appRef } = {}) {
+export function toStoredRecord (event, {
+  now = currentUnixTime(),
+  appRef,
+  chunkData,
+  blobRefs = blobReferencesFromTags(event?.tags)
+} = {}) {
   const coordinate = getCoordinate(event)
+  const storedEvent = chunkData ? { ...event } : event
+  if (chunkData) delete storedEvent.content
   const record = {
     i: eventIdIndexKey(event.id),
     p: pubkeyIndexKey(event.pubkey),
@@ -2788,13 +3384,21 @@ export function toStoredRecord (event, { now = currentUnixTime(), appRef } = {})
     ca: event.created_at,
     ra: now * 1000,
     t: tagIndexKeys(event),
-    event
+    event: storedEvent
   }
   const expiration = getExpiration(event)
 
   if (coordinate !== null) record.a = addressKey(event.kind, event.pubkey, coordinate)
   if (expiration !== null && expiration > now) record.ex = expiration
   if (appRef && isAppTrackableKind(event.kind)) record.ap = [appRef]
+  if (blobRefs.length > 0) record.br = [...blobRefs]
+  if (chunkData) {
+    record.cr = chunkData.root
+    record.ci = chunkData.index
+    record.ct = chunkData.total
+    record.ch = chunkData.contentHash
+    record.cb = chunkData.byteLength
+  }
 
   return record
 }
@@ -3400,6 +4004,28 @@ async function deleteStoredDeletionRequestById (db, tx, id, author) {
 
 async function deleteStoredEvent (db, tx, stored) {
   await run('delete', [stored.i], EVENTS_STORE, null, { db, tx })
+
+  if (stored.event.kind === 34601 && stored.cr && Number.isSafeInteger(stored.ci)) {
+    const owner = db.name.startsWith(NOSTRDB_PREFIX)
+      ? db.name.slice(NOSTRDB_PREFIX.length)
+      : null
+    if (owner) {
+      tx.addEventListener('complete', () => {
+        removeChunkCopy(owner, stored.cr, stored.ci, { eventId: stored.event.id }).catch(() => {})
+      }, { once: true })
+    }
+  }
+
+  if (stored.br?.length) {
+    const owner = db.name.startsWith(NOSTRDB_PREFIX)
+      ? db.name.slice(NOSTRDB_PREFIX.length)
+      : null
+    if (owner) {
+      tx.addEventListener('complete', () => {
+        scheduleBlobReferenceReconciliation(owner, stored.br)
+      }, { once: true })
+    }
+  }
 
   if (stored.event.kind === 5) {
     await removeDeletionRequestContributions(db, tx, stored.i)

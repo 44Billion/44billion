@@ -1,7 +1,7 @@
 import { useTask, useCallback, useGlobalStore } from '#f'
 import useLocation from '#hooks/use-location.js'
 import useWebStorage from '#hooks/use-web-storage.js'
-import { NAPP_ENTITY_REGEX, appDecode } from '#helpers/nip19.js'
+import { NAPP_ENTITY_REGEX, appDecode } from 'libp2r2p/nip19'
 import { addressObjToAppId } from '#helpers/app.js'
 import { isValidRelayUrl } from '#helpers/relay.js'
 import router from '#zones/multi-napp/router.js'

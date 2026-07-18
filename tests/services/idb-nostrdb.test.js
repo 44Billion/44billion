@@ -4205,6 +4205,9 @@ function queueFakeTask (fn) {
 
 function indexKeys (value, index) {
   const key = getByKeyPath(value, index.keyPath)
+  // IndexedDB does not create a compound index entry when any component is
+  // missing. Keep the fake sparse-index behavior aligned with browsers.
+  if (Array.isArray(index.keyPath) && key.some(component => component === undefined)) return []
   const keys = index.options.multiEntry && Array.isArray(key) ? key : [key]
   return keys.filter(key => key !== undefined)
 }

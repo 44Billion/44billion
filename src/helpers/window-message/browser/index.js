@@ -15,9 +15,9 @@ import { needsNip07Permission, nip07PermissionContext } from './nip07-permission
 import { appIdToAddressObj, addressObjToAppId } from '#helpers/app.js'
 import { base36ToBase16 } from '#helpers/base36.js'
 import { base16ToBase62 } from '#helpers/base62.js'
-import { appEncode, appDecode } from '#helpers/nip19.js'
+import { appEncode, appDecode } from 'libp2r2p/nip19'
 import { streamFileChunksFromDb, getFileChunksFromDb, deleteFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
-import { getNostrDb } from '#services/idb/nostrdb/index.js'
+import { getNostrDb, startGlobalChunkMaintenance } from '#services/idb/nostrdb/index.js'
 import AppFileManager from '#services/app-file-manager/index.js'
 import AppUpdater from '#services/app-updater/index.js'
 import { setWebStorageItem } from '#hooks/use-web-storage.js'
@@ -29,6 +29,7 @@ import {
   ASSET_BUDGET_DENIED_BY_USER
 } from '#services/app-asset-budget/index.js'
 import { APP_FILE_CHUNK_BYTES } from '#constants/app-file.js'
+import NFileDownloader from '#services/nfile-downloader/index.js'
 
 function isAssetBudgetError (error) {
   return [ASSET_BUDGET_BACKGROUND_DENIED, ASSET_BUDGET_DENIED_BY_USER].includes(error?.code)
@@ -69,6 +70,7 @@ export async function initMessageListener (
   cachingProgress$, askVault, requestPermission, openApp,
   { signal: componentSignal, isSingleNapp = false, onFileNotCached = null, requestAssetBudgetConfirmation = null } = {}
 ) {
+  startGlobalChunkMaintenance()
   const userPkB16 = base36ToBase16(userPkB36)
   const isDefaultUser = base16ToBase62(userPkB16) === JSON.parse(localStorage.getItem('session_defaultUserPk'))
   const currentVaultUrl = new URL(JSON.parse(localStorage.getItem('config_vaultUrl')))
@@ -119,6 +121,7 @@ export async function initMessageListener (
   let currentTrustedAppPagePort = null
   let currentAppPagePort = null
   const nostrDbSubscriptions = new Map()
+  const nfileDownloads = new Map()
   // Setup cleanup
   componentSignal?.addEventListener('abort', () => {
     if (currentTrustedAppPagePort) {
@@ -130,6 +133,8 @@ export async function initMessageListener (
       currentAppPagePort = null
     }
     closeNostrDbSubscriptions(nostrDbSubscriptions)
+    for (const downloader of nfileDownloads.values()) downloader.close()
+    nfileDownloads.clear()
   }, { once: true })
 
   let ac
@@ -190,6 +195,69 @@ export async function initMessageListener (
         //   break
         // }
 
+        case 'STREAM_NFILE': {
+          const { entity, method, range, localOnly, requestToken } = e.data.payload || {}
+          if (!requestToken || nfileDownloads.has(requestToken)) {
+            reply(e, { error: new Error('INVALID_NFILE_REQUEST'), isLast: true }, { to: trustedAppPagePort })
+            break
+          }
+
+          const signEvent = isDefaultUser
+            ? null
+            : createNostrDbMaintenanceSignEvent({ askVault, pubkey: userPkB16, timeoutMs: 5000 })
+          const cacheDb = signEvent
+            ? getNostrDb(userPkB16, {
+              ...nostrDbMaintenanceOptions(signEvent)
+            })
+            : null
+          let downloader
+          try {
+            downloader = new NFileDownloader(entity, {
+              activeOwner: userPkB16,
+              cacheEvent: cacheDb
+                ? async event => {
+                  const result = await cacheDb.add(event, {
+                    mergeReplaceable: false,
+                    signEvent
+                  })
+                  if (!result.ok) throw new Error(result.message)
+                  return result
+                }
+                : null,
+              signal
+            })
+            nfileDownloads.set(requestToken, downloader)
+            const response = await downloader.open({ method, range, localOnly: localOnly === true })
+            if (nfileDownloads.get(requestToken) !== downloader) break
+            reply(e, {
+              payload: { status: response.status, headers: response.headers },
+              isLast: !response.body
+            }, { to: trustedAppPagePort })
+            if (response.body) {
+              for await (const chunk of response.body) {
+                if (nfileDownloads.get(requestToken) !== downloader) break
+                reply(e, { payload: { chunk }, isLast: false }, { to: trustedAppPagePort })
+              }
+              if (nfileDownloads.get(requestToken) === downloader) {
+                reply(e, { payload: { done: true }, isLast: true }, { to: trustedAppPagePort })
+              }
+            }
+          } catch (error) {
+            if (nfileDownloads.get(requestToken) === downloader) {
+              reply(e, { error, isLast: true }, { to: trustedAppPagePort })
+            }
+          } finally {
+            downloader?.close()
+            nfileDownloads.delete(requestToken)
+          }
+          break
+        }
+        case 'CANCEL_NFILE': {
+          const downloader = nfileDownloads.get(e.data.payload?.requestToken)
+          downloader?.close()
+          nfileDownloads.delete(e.data.payload?.requestToken)
+          break
+        }
         case 'STREAM_APP_FILE': {
           const handleStreamError = (originalError, errorToSend = new Error('FILE_NOT_CACHED')) => {
             if (originalError) console.log(originalError)

@@ -116,7 +116,10 @@ describe('FileRangeDownloader scheduler', () => {
 
   test('interleaves contiguous missing positions across two relays', async () => {
     const fixture = await createChunks(6)
-    const indexByD = new Map(fixture.events.map((event, index) => [event.tags[0][1], index]))
+    const indexByD = new Map(Array.from({ length: 6 }, (_value, index) => [
+      NMMR.deriveChunkId(fixture.root, index),
+      index
+    ]))
     const firstRequest = new Map()
     const allRequests = new Map()
     generatorMock.mock.mockImplementation(async function * (filter, [relay]) {
@@ -142,7 +145,10 @@ describe('FileRangeDownloader scheduler', () => {
 
   test('interleaves the positions of sparse missing indexes', async () => {
     const fixture = await createChunks(11)
-    const indexByD = new Map(fixture.events.map((event, index) => [event.tags[0][1], index]))
+    const indexByD = new Map(Array.from({ length: 11 }, (_value, index) => [
+      NMMR.deriveChunkId(fixture.root, index),
+      index
+    ]))
     const firstRequest = new Map()
     generatorMock.mock.mockImplementation(async function * (filter, [relay]) {
       if (!firstRequest.has(relay)) firstRequest.set(relay, filter['#d'].map(d => indexByD.get(d)))
@@ -171,6 +177,57 @@ describe('FileRangeDownloader scheduler', () => {
     })
     assert.equal(worker.materializedIndexCount, 4096)
     assert.equal(worker.missingIndexes.size, 4096)
+  })
+
+  test('falls back to any author only after the hinted-author phase is exhausted', async () => {
+    const fixture = await createChunks(1)
+    const filters = []
+    const reports = []
+    generatorMock.mock.mockImplementation(async function * (filter) {
+      filters.push(filter)
+      if (!filter.authors) yield { type: 'event', event: fixture.events[0] }
+    })
+
+    await new FileRangeDownloader(fixture.root, {
+      'wss://relay.test': [PUBKEY]
+    }, report => reports.push(report), {
+      batchSize: 1,
+      endIndex: 0,
+      fallbackToAnyAuthor: true,
+      startIndex: 0,
+      totalChunks: 1
+    }).run()
+
+    assert.deepEqual(filters.map(filter => filter.authors), [[PUBKEY], undefined])
+    assert.equal(reports.filter(report => report.event).length, 1)
+    assert.equal(reports.some(report => report.error), false)
+  })
+
+  test('caps raw candidates before accepting an unbounded stream of fake chunks', async () => {
+    const fixture = await createChunks(1)
+    const reports = []
+    let yielded = 0
+    generatorMock.mock.mockImplementation(async function * () {
+      for (let index = 0; index < 4; index++) {
+        yielded++
+        yield { type: 'event', event: { ...fixture.events[0], content: 'invalid' } }
+      }
+      yielded++
+      yield { type: 'event', event: fixture.events[0] }
+    })
+
+    await new FileRangeDownloader(fixture.root, {
+      'wss://relay.test': undefined
+    }, report => reports.push(report), {
+      batchSize: 1,
+      endIndex: 0,
+      startIndex: 0,
+      totalChunks: 1
+    }).run()
+
+    assert.equal(yielded, 5)
+    assert.equal(reports.some(report => report.event), false)
+    assert.equal(reports.filter(report => report.error).length, 1)
   })
 })
 
@@ -330,6 +387,29 @@ describe('FileDownloader range orchestration', () => {
       downloadedCount: 1,
       totalChunks: 2
     }), /loadDownloadedChunkIndexes/)
+  })
+
+  test('orchestrates only the requested authenticated interval', async () => {
+    const downloader = new FileDownloader('9'.repeat(64), { 'wss://relay.test': [PUBKEY] }, () => {}, {
+      _FileRangeDownloader: ControlledRangeDownloader,
+      endIndex: 599,
+      startIndex: 300,
+      totalChunks: 1000
+    })
+    const runPromise = downloader.run()
+    await waitFor(() => ControlledRangeDownloader.instances.length === 1)
+    const first = ControlledRangeDownloader.instances[0]
+    assert.equal(first.options.startIndex, 300)
+    assert.equal(first.options.endIndex, 555)
+    first.cover(77)
+    await waitFor(() => ControlledRangeDownloader.instances.length === 2)
+    const second = ControlledRangeDownloader.instances[1]
+    assert.equal(second.options.startIndex, 556)
+    assert.equal(second.options.endIndex, 599)
+    first.finish()
+    second.finish()
+    await runPromise
+    assert.equal(downloader.nextRangeStart, 600)
   })
 
   test('rejects duplicate or out-of-window indexes returned by the cache loader', async () => {

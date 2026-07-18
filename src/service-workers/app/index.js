@@ -1,7 +1,7 @@
 // Any change to this file will reinstall sw
 import '#config/polyfills.js'
 import { injectIntoTheHeadTag } from '#helpers/html.js'
-import { askStream } from '#helpers/window-message/index.js'
+import { askStream, tell } from '#helpers/window-message/index.js'
 import { Base93Decoder } from 'libp2r2p/base93'
 import appPageScriptContent from '#scripts/app-page.txt.js'
 import _appPageLoader from '../../assets/html/app-page-loader.txt.html'
@@ -52,9 +52,18 @@ self.addEventListener('fetch', e => {
   // // Normal fetch handling
 
   // console.log('Service Worker: fetching', e.request.url)
+  const requestUrl = new URL(e.request.url)
+  const isNfile = requestUrl.origin === 'https://nostr.alt' &&
+    /^\/nfile1[0-9a-z]+$/.test(requestUrl.pathname)
+  if (isNfile) {
+    if (!['GET', 'HEAD'].includes(e.request.method) || e.request.mode === 'navigate') return
+    e.respondWith(handleNfileRequest(e.request, requestUrl))
+    return
+  }
+
   if (e.request.method !== 'GET') return
   let origin
-  ;({ pathname: e.request.pathname, origin } = new URL(e.request.url))
+  ;({ pathname: e.request.pathname, origin } = requestUrl)
   if (origin !== self.location.origin) return
 
   // Top-level browser navigation to numeric subdomain - redirect to main domain
@@ -88,6 +97,81 @@ self.addEventListener('fetch', e => {
       }))
   })())
 })
+
+async function handleNfileRequest (request, url) {
+  const toPort = await selectClientToPostMessagesTo()
+  const requestToken = globalThis.crypto?.randomUUID?.() || `${Date.now()}:${Math.random()}`
+  let cancelSent = false
+  const cancel = () => {
+    if (cancelSent) return
+    cancelSent = true
+    tell(toPort, {
+      code: 'CANCEL_NFILE',
+      payload: { requestToken }
+    }, {})
+  }
+  request.signal?.addEventListener('abort', cancel, { once: true })
+  const iterator = askStream(toPort, {
+    code: 'STREAM_NFILE',
+    payload: {
+      entity: url.pathname.slice(1),
+      method: request.method,
+      range: request.headers.get('range'),
+      localOnly: url.searchParams.get('localOnly') === '1',
+      requestToken
+    }
+  }, { targetOrigin: self.location.origin || '*' })
+
+  const first = await iterator.next()
+  if (first.done || first.value?.error) {
+    cancel()
+    request.signal?.removeEventListener('abort', cancel)
+    throw first.value?.error || new Error('Nfile request ended without a response')
+  }
+  const { status, headers } = first.value.payload
+  if (request.method === 'HEAD' || status === 404 || status === 416) {
+    await iterator.return?.()
+    cancel()
+    request.signal?.removeEventListener('abort', cancel)
+    return new Response(null, { status, headers })
+  }
+
+  let finished = false
+  const finish = async () => {
+    if (finished) return
+    finished = true
+    await iterator.return?.()
+    cancel()
+    request.signal?.removeEventListener('abort', cancel)
+  }
+  const body = new ReadableStream({
+    async pull (controller) {
+      try {
+        while (true) {
+          const next = await iterator.next()
+          if (next.done || next.value?.payload?.done) {
+            controller.close()
+            await finish()
+            return
+          }
+          if (next.value?.error) throw next.value.error
+          const chunk = next.value?.payload?.chunk
+          if (chunk instanceof Uint8Array) {
+            controller.enqueue(chunk)
+            return
+          }
+        }
+      } catch (error) {
+        controller.error(error)
+        await finish()
+      }
+    },
+    cancel () {
+      return finish()
+    }
+  })
+  return new Response(body, { status, headers })
+}
 
 // TODO: add timeout to askStream, catch error and if it's a timeout one
 // call selectClientToPostMessagesTo again by recursively retrying handleRequest

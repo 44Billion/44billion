@@ -1,7 +1,7 @@
 export const getDb = (db => async () => (db ??= await initDb()))()
 const initDb = () => {
   const p = Promise.withResolvers()
-  const req = indexedDB.open('44billion_browser', 3)
+  const req = indexedDB.open('44billion_browser', 4)
   req.onerror = () => p.reject(req.error)
   req.onsuccess = () => {
     const db = req.result
@@ -52,6 +52,48 @@ const initDb = () => {
         cursor.continue()
       }
       try { globalThis.localStorage?.removeItem('44billion:app-asset-budget:v1') } catch (_) {}
+    }
+    console.log(`[${db.name}DB v${db.version}] ${store.name} store is ready`)
+
+    if (!db.objectStoreNames.contains('chunkPayloads')) {
+      store = db.createObjectStore('chunkPayloads', { keyPath: 'contentHash' })
+    } else {
+      store = tx.objectStore('chunkPayloads')
+    }
+    console.log(`[${db.name}DB v${db.version}] ${store.name} store is ready`)
+
+    if (!db.objectStoreNames.contains('chunkCopies')) {
+      store = db.createObjectStore('chunkCopies', { keyPath: ['owner', 'root', 'index'] })
+    } else {
+      store = tx.objectStore('chunkCopies')
+    }
+    if (!store.indexNames.contains('byRootIndex')) store.createIndex('byRootIndex', ['root', 'index'])
+    if (!store.indexNames.contains('byOwnerEvent')) store.createIndex('byOwnerEvent', ['owner', 'eventId'], { unique: true })
+    if (!store.indexNames.contains('byOwnerRoot')) store.createIndex('byOwnerRoot', ['owner', 'root'])
+    if (!store.indexNames.contains('byContentHash')) store.createIndex('byContentHash', 'contentHash')
+    console.log(`[${db.name}DB v${db.version}] ${store.name} store is ready`)
+
+    if (!db.objectStoreNames.contains('chunkPayloadRoots')) {
+      store = db.createObjectStore('chunkPayloadRoots', { keyPath: ['owner', 'root', 'contentHash'] })
+    } else {
+      store = tx.objectStore('chunkPayloadRoots')
+    }
+    if (!store.indexNames.contains('byOwnerRoot')) store.createIndex('byOwnerRoot', ['owner', 'root'])
+    if (!store.indexNames.contains('byContentHash')) store.createIndex('byContentHash', 'contentHash')
+    console.log(`[${db.name}DB v${db.version}] ${store.name} store is ready`)
+
+    if (!db.objectStoreNames.contains('chunkRoots')) {
+      store = db.createObjectStore('chunkRoots', { keyPath: ['owner', 'root'] })
+    } else {
+      store = tx.objectStore('chunkRoots')
+    }
+    if (!store.indexNames.contains('byPurge')) store.createIndex('byPurge', ['referenced', 'lastActivityAt'])
+    console.log(`[${db.name}DB v${db.version}] ${store.name} store is ready`)
+
+    if (!db.objectStoreNames.contains('chunkState')) {
+      store = db.createObjectStore('chunkState', { keyPath: 'key' })
+    } else {
+      store = tx.objectStore('chunkState')
     }
     console.log(`[${db.name}DB v${db.version}] ${store.name} store is ready`)
   }

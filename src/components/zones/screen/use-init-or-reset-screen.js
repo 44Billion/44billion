@@ -1,6 +1,6 @@
 import { useTask, useGlobalSignal } from '#f'
 import useWebStorage from '#hooks/use-web-storage.js'
-import { appDecode, npubEncode } from '#helpers/nip19.js'
+import { appDecode, npubEncode } from 'libp2r2p/nip19'
 import { generateB62SecretKey as getB62PublicKeyStub } from '#helpers/nip01.js'
 import { addressObjToAppId } from '#helpers/app.js'
 import { base16ToBase62, base62ToBase16 } from '#helpers/base62.js'
