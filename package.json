@@ -44,7 +44,7 @@
   "dependencies": {
     "@leeoniya/ufuzzy": "^1.0.19",
     "@noble/hashes": "^2.0.1",
-    "libp2r2p": "^0.2.0",
+    "libp2r2p": "^0.3.0",
     "meilisearch": "^0.54.0",
     "mime": "^4.0.7",
     "nmmr": "^2.0.0",

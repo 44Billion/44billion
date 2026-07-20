@@ -1,7 +1,7 @@
 import { streamFileChunksFromDb, deleteFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
 import { decode } from 'libp2r2p/base93'
 import { sha256 } from '@noble/hashes/sha2.js'
-import { bytesToBase16 } from '#helpers/base16.js'
+import { bytesToBase16 } from 'libp2r2p/base16'
 import { findMarkedAssetDescriptors, getManifestMetadata } from '#helpers/site-manifest.js'
 import { warnAssetSizeMismatch } from '#helpers/asset-size.js'
 

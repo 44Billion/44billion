@@ -1,9 +1,10 @@
 import { sha256 } from '@noble/hashes/sha2.js'
 import { encode as base93Encode } from 'libp2r2p/base93'
+import { base16ToBytes, bytesToBase16 } from 'libp2r2p/base16'
+import { base64UrlToBytes, bytesToBase64Url } from 'libp2r2p/base64'
 
 import { eventKinds } from '#constants/event.js'
 import { appIdToDbAppRef } from '#helpers/app.js'
-import { base16ToBase64, base64ToBase16, bytesToBase64 } from '#helpers/base64.js'
 import {
   PERSONAL_COPY_KIND,
   isPersonalCopyEvent,
@@ -3711,19 +3712,19 @@ export function deletionCoordinateRef (kind, pubkey, dtag) {
 }
 
 export function eventIdIndexKey (id) {
-  return base16ToBase64(id)
+  return bytesToBase64Url(base16ToBytes(id))
 }
 
 export function idKeyToEventId (idKey) {
-  return base64ToBase16(idKey)
+  return bytesToBase16(base64UrlToBytes(idKey))
 }
 
 export function pubkeyIndexKey (pubkey) {
-  return base16ToBase64(pubkey)
+  return bytesToBase64Url(base16ToBytes(pubkey))
 }
 
 export function tagValueIndexKey (value) {
-  return bytesToBase64(sha256(textEncoder.encode(value)))
+  return bytesToBase64Url(sha256(textEncoder.encode(value)))
 }
 
 export function tagIndexKeys (event) {

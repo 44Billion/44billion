@@ -10,7 +10,7 @@ import {
 import { deleteStaleFileChunksFromDb, sumFileChunkBytesFromDb } from '#services/idb/browser/queries/file-chunk.js'
 import { addressObjToAppId, appIdToAddressObj } from '#helpers/app.js'
 import { getManifestAssetDescriptors } from '#helpers/site-manifest.js'
-import { base62ToBase16 } from '#helpers/base62.js'
+import { base62ToBase16 } from 'libp2r2p/base62'
 import { getUserRelays } from '#helpers/nostr-queries.js'
 import { cleanupNostrDbAppForOwner as cleanupNostrDbAppForOwnerBase } from '#helpers/nostrdb-app-cleanup.js'
 import { addSubdomainFreeId } from '#helpers/subdomain-mapping.js'
@@ -136,7 +136,7 @@ export default class AppUpdater {
       if (!userPk || userPk === defaultUserPk) continue
 
       try {
-        const owner = base62ToBase16(userPk).toLowerCase()
+        const owner = base62ToBase16(userPk, { mode: 'integer', byteLength: 32 }).toLowerCase()
         if (HEX_PUBKEY.test(owner)) owners.add(owner)
       } catch (_err) {
         continue

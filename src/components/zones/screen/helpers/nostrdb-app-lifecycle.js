@@ -1,4 +1,4 @@
-import { base62ToBase16 } from '#helpers/base62.js'
+import { base62ToBase16 } from 'libp2r2p/base62'
 import {
   cleanupNostrDbAppForOwner as cleanupNostrDbAppForOwnerBase,
   NOSTRDB_APP_BACKFILL_CODE
@@ -24,7 +24,7 @@ export function workspaceOwnerPubkey (storage, wsKey) {
   const userPk = storage?.[`session_workspaceByKey_${wsKey}_userPk$`]?.()
   if (!userPk || userPk === storage?.session_defaultUserPk$?.()) return ''
   try {
-    const pubkey = base62ToBase16(userPk).toLowerCase()
+    const pubkey = base62ToBase16(userPk, { mode: 'integer', byteLength: 32 }).toLowerCase()
     return HEX32.test(pubkey) ? pubkey : ''
   } catch {
     return ''

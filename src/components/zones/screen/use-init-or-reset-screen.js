@@ -3,7 +3,7 @@ import useWebStorage from '#hooks/use-web-storage.js'
 import { appDecode, npubEncode } from 'libp2r2p/nip19'
 import { generateB62SecretKey as getB62PublicKeyStub } from '#helpers/nip01.js'
 import { addressObjToAppId } from '#helpers/app.js'
-import { base16ToBase62, base62ToBase16 } from '#helpers/base62.js'
+import { base16ToBase62, base62ToBase16 } from 'libp2r2p/base62'
 import AppUpdater from '#services/app-updater/index.js'
 import { cleanupNostrDbAppForWorkspace } from './helpers/nostrdb-app-lifecycle.js'
 import { requestNostrDbAppBackfillsForWorkspace } from './helpers/nostrdb-app-backfill.js'
@@ -131,7 +131,10 @@ function addUser ({ userPk, storage, tabStorage, isFirstTimeUser: _ }) {
   // storage.session_accountUserPks$([userPk])
   storage[`session_accountByUserPk_${userPk}_isReadOnly$`](true)
   storage[`session_accountByUserPk_${userPk}_isLocked$`](false)
-  storage[`session_accountByUserPk_${userPk}_profile$`]({ npub: npubEncode(base62ToBase16(userPk)), meta: { events: [] } })
+  storage[`session_accountByUserPk_${userPk}_profile$`]({
+    npub: npubEncode(base62ToBase16(userPk, { mode: 'integer', byteLength: 32 })),
+    meta: { events: [] }
+  })
   storage[`session_accountByUserPk_${userPk}_relays$`]({ meta: { events: [] } })
 
   storage.session_accountUserPks$([userPk])

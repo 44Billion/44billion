@@ -17,6 +17,7 @@ import {
   deletionEventRef,
   eventRef,
   eventIdIndexKey,
+  idKeyToEventId,
   getNostrDb,
   isNewer,
   openNostrDb,
@@ -86,6 +87,8 @@ describe('nostrdb', () => {
     assert.equal(toStoredRecord(expiring, { now: 50 }).ex, 100)
     assert.equal(toStoredRecord(regular, { now: 50 }).ra, 50000)
     assert.equal('ex' in toStoredRecord(regular), false)
+    assert.equal(eventIdIndexKey('f'.repeat(64)), '_'.repeat(42) + '8')
+    assert.equal(idKeyToEventId('_'.repeat(42) + '8'), 'f'.repeat(64))
   })
 
   it('derives deletion refs', () => {

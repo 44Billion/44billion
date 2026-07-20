@@ -3,7 +3,7 @@ import { afterEach, describe, it, mock } from 'node:test'
 import { sha256 } from '@noble/hashes/sha2.js'
 import NMMR from 'nmmr'
 import { decode } from 'libp2r2p/base93'
-import { bytesToBase16 } from '#helpers/base16.js'
+import { bytesToBase16 } from 'libp2r2p/base16'
 import BlossomFileDownloader, { isMimeTypeAccepted } from '#services/blossom-file-downloader/index.js'
 import { relayPool as nostrRelays } from 'libp2r2p/relay'
 

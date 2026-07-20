@@ -14,7 +14,7 @@ import AppFileManager from '#services/app-file-manager/index.js'
 import AppUpdater from '#services/app-updater/index.js'
 import { formatAssetBudgetBytes } from '#services/app-asset-budget/index.js'
 import { getEventsByStrategy } from '#helpers/nostr-queries.js'
-import { base16ToBase62 } from '#helpers/base62.js'
+import { base16ToBase62 } from 'libp2r2p/base62'
 import { useConfirmationDialogStore } from '#zones/confirmation-dialog/index.js'
 
 f('napp-updates', function () {

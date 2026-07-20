@@ -1,6 +1,6 @@
 import { run } from '#services/idb/browser/index.js'
 import { isNostrAppDTagSafe, appIdToDbAppRef } from '#helpers/app.js'
-import { base16ToBytes, bytesToBase16 } from '#helpers/base16.js'
+import { base16ToBytes, bytesToBase16 } from 'libp2r2p/base16'
 
 const HEX_PUBKEY = /^[0-9a-f]{64}$/i
 

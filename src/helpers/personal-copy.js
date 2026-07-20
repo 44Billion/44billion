@@ -1,7 +1,7 @@
 import { getEventHash, validateEvent, verifyEvent } from 'nostr-tools'
 
 import { eventKinds } from '#constants/event.js'
-import { bytesToBase64 } from '#helpers/base64.js'
+import { bytesToBase64Url } from 'libp2r2p/base64'
 
 const textEncoder = new TextEncoder()
 const HEX64_RE = /^[0-9a-f]{64}$/i
@@ -233,7 +233,7 @@ export function isPersonalCopyDerivedTag (tag) {
 }
 
 export function plaintextBase64 (plaintext) {
-  return bytesToBase64(textEncoder.encode(String(plaintext ?? '')))
+  return bytesToBase64Url(textEncoder.encode(String(plaintext ?? '')))
 }
 
 function preparePersonalCopyInner (innerEvent, ownerPubkey) {

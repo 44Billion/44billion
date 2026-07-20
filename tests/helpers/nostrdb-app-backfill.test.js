@@ -12,7 +12,7 @@ mock.module('#zones/vault-modal/index.js', {
   }
 })
 
-const { base16ToBase62 } = await import('#helpers/base62.js')
+const { base16ToBase62 } = await import('libp2r2p/base62')
 const {
   readVaultAcceptedMessageQueue,
   vaultAcceptedMessageQueueInternals

@@ -2,7 +2,7 @@ import { f, useStore, useAsyncComputed } from '#f'
 import { getSvgAvatar } from '#helpers/avatar.js'
 import '#shared/icons/icon-user-circle.js'
 import '#shared/svg.js'
-import { base62ToBase16 } from '#helpers/base62.js'
+import { base62ToBase16 } from 'libp2r2p/base62'
 import useWebStorage from '#hooks/use-web-storage.js'
 import { cssVars } from '#assets/styles/theme.js'
 
@@ -26,7 +26,7 @@ f('aAvatar', function () {
     svg$: useAsyncComputed(() => {
       const seed = store.pk$()
       if (!seed) return
-      return getSvgAvatar(base62ToBase16(seed))
+      return getSvgAvatar(base62ToBase16(seed, { mode: 'integer', byteLength: 32 }))
     })
   })
 

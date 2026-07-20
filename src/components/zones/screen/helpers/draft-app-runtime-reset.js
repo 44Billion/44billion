@@ -1,4 +1,4 @@
-import { base62ToBase16 } from '#helpers/base62.js'
+import { base62ToBase16 } from 'libp2r2p/base62'
 
 function defaultGetNostrDb (ownerPubkey) {
   return {
@@ -69,7 +69,10 @@ export async function resetDraftAppRuntimeData ({
   }
 
   try {
-    const ownerPubkey = _base62ToBase16(userPk).toLowerCase()
+    const ownerPubkey = _base62ToBase16(
+      userPk,
+      { mode: 'integer', byteLength: 32 }
+    ).toLowerCase()
     await _getNostrDb(ownerPubkey).deleteEventsByApp(appId)
   } catch (err) {
     _console.warn('Failed to clear draft app NostrDB rows before reload', err)

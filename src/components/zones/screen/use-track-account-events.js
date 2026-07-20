@@ -2,7 +2,7 @@ import { useTask } from '#f'
 import useWebStorage from '#hooks/use-web-storage.js'
 import { relayPool as nostrRelays, seedRelays } from 'libp2r2p/relay'
 import { tellVault } from '#zones/vault-modal/index.js'
-import { base62ToBase16 } from '#helpers/base62.js'
+import { base62ToBase16 } from 'libp2r2p/base62'
 import { isValidRelayUrl } from '#helpers/relay.js'
 
 // pk (base62) -> AbortController for all subscriptions related to that account
@@ -50,7 +50,7 @@ function extractWriteRelays (event) {
 }
 
 async function trackEventsForAccount (pk, signal, storage) {
-  const pkBase16 = base62ToBase16(pk)
+  const pkBase16 = base62ToBase16(pk, { mode: 'integer', byteLength: 32 })
 
   const getStoredEventAt = (kind) => {
     if (kind === 0) {

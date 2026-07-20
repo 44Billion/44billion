@@ -13,8 +13,8 @@ import {
 } from './nostrdb.js'
 import { needsNip07Permission, nip07PermissionContext } from './nip07-permission-context.js'
 import { appIdToAddressObj, addressObjToAppId } from '#helpers/app.js'
-import { base36ToBase16 } from '#helpers/base36.js'
-import { base16ToBase62 } from '#helpers/base62.js'
+import { nsiteBase36ToBase16 } from 'libp2r2p/base36'
+import { base16ToBase62 } from 'libp2r2p/base62'
 import { appEncode, appDecode } from 'libp2r2p/nip19'
 import { streamFileChunksFromDb, getFileChunksFromDb, deleteFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
 import { getNostrDb, startGlobalChunkMaintenance } from '#services/idb/nostrdb/index.js'
@@ -23,7 +23,7 @@ import AppUpdater from '#services/app-updater/index.js'
 import { setWebStorageItem } from '#hooks/use-web-storage.js'
 import { Base93Encoder, decode } from 'libp2r2p/base93'
 import { sha256 } from '@noble/hashes/sha2.js'
-import { bytesToBase16 } from '#helpers/base16.js'
+import { bytesToBase16 } from 'libp2r2p/base16'
 import {
   ASSET_BUDGET_BACKGROUND_DENIED,
   ASSET_BUDGET_DENIED_BY_USER
@@ -71,8 +71,11 @@ export async function initMessageListener (
   { signal: componentSignal, isSingleNapp = false, onFileNotCached = null, requestAssetBudgetConfirmation = null } = {}
 ) {
   startGlobalChunkMaintenance()
-  const userPkB16 = base36ToBase16(userPkB36)
-  const isDefaultUser = base16ToBase62(userPkB16) === JSON.parse(localStorage.getItem('session_defaultUserPk'))
+  const userPkB16 = nsiteBase36ToBase16(userPkB36)
+  const isDefaultUser = base16ToBase62(
+    userPkB16,
+    { mode: 'integer', minLength: 43 }
+  ) === JSON.parse(localStorage.getItem('session_defaultUserPk'))
   const currentVaultUrl = new URL(JSON.parse(localStorage.getItem('config_vaultUrl')))
   const vaultIframe = document.querySelector(`iframe[src="${currentVaultUrl.href.replace(/\/$/, '')}"]`)
   if (!vaultIframe) console.warn('Vault iframe not found')

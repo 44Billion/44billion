@@ -1,8 +1,8 @@
 /* eslint-disable camelcase */
 import { db } from '../../services/db/mdb.js'
 import { maxDateNowSeconds } from '../../config/mdb.js'
-import { bytesToBase64 } from '../../../src/helpers/base64.js'
-import { base16ToBytes } from '../../../src/helpers/base16.js'
+import { bytesToBase64Url } from 'libp2r2p/base64'
+import { base16ToBytes } from 'libp2r2p/base16'
 import { sha256 } from '@noble/hashes/sha2.js'
 
 export async function getEventByRef (ref, options = {}) {
@@ -138,8 +138,8 @@ function eventToRecord (event, { language, expiresAt, lastAccessedAt, receivedAt
   const now = Math.floor(Date.now() / 1000)
   Object.assign(record, {
     ref: dTag
-      ? bytesToBase64(sha256(textEncoder.encode(`${kind}:${pubkey}:${dTag}`)))
-      : bytesToBase64(base16ToBytes(event.id)),
+      ? bytesToBase64Url(sha256(textEncoder.encode(`${kind}:${pubkey}:${dTag}`)))
+      : bytesToBase64Url(base16ToBytes(event.id)),
     ...(language && { language }),
     ...(fts && { fts }),
     ...(isContentSearchable ? { ftsContent: event.content } : { nonFtsContent: event.content }),

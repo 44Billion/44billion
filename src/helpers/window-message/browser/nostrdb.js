@@ -6,7 +6,7 @@ import {
   normalizeEventKind
 } from './event-permissions.js'
 import { NOSTRDB_ONE_SHOT_METHODS } from '../nostrdb-protocol.js'
-import { base64ToBytes } from '#helpers/base64.js'
+import { base64UrlToBytes } from 'libp2r2p/base64'
 import {
   PERSONAL_COPY_KIND,
   buildPersonalCopyUnsignedEvent,
@@ -108,7 +108,7 @@ export function createNostrDbPersonalCopyDecrypt ({ askVault, pubkey }) {
       }
     }, { timeout: 120000 })
     if (error) throw error
-    return textDecoder.decode(base64ToBytes(String(payload ?? '')))
+    return textDecoder.decode(base64UrlToBytes(String(payload ?? '')))
   }
 }
 

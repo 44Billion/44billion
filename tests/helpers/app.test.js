@@ -16,5 +16,17 @@ describe('App helpers', () => {
 
       assert.deepEqual(result, addressObj)
     })
+
+    it('preserves a 32-byte pubkey with leading zero bytes', () => {
+      const addressObj = {
+        kind: 35130,
+        pubkey: '000001' + '23'.repeat(29),
+        dTag: 'leading-zero'
+      }
+
+      const appId = addressObjToAppId(addressObj)
+      assert.equal(appId.slice(1, 44).length, 43)
+      assert.deepEqual(appIdToAddressObj(appId), addressObj)
+    })
   })
 })

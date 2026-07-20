@@ -28,10 +28,10 @@ import { useFileNotCachedDialogStore } from '#zones/file-not-cached-dialog/index
 import '#shared/route.js'
 import { initMessageListener } from '#helpers/window-message/browser/index.js'
 import { isOnline } from '#helpers/network.js'
-import { base62ToBase36 } from '#helpers/base36.js'
+import { bytesToNsiteBase36 } from 'libp2r2p/base36'
 import { allocateAppSubdomain, releaseAppSubdomain } from '#helpers/subdomain-mapping.js'
 import { useVaultModalStore, useVaultActor } from '#zones/vault-modal/index.js'
-import { base62ToBase16 } from '#helpers/base62.js'
+import { base62ToBase16, base62ToBytes } from 'libp2r2p/base62'
 import { formatAssetBudgetBytes } from '#services/app-asset-budget/index.js'
 import { useConfirmationDialogStore } from '#zones/confirmation-dialog/index.js'
 import '#shared/napp-assets-caching-progress-bar.js'
@@ -272,7 +272,9 @@ f('appWindow', function () {
   const {
     [`session_appByKey_${this.props.appKey}_visibility$`]: appVisibility$
   } = tabStorage
-  const userPkB36$ = useComputed(() => (userPk$() || '') && base62ToBase36(userPk$(), 50))
+  const userPkB36$ = useComputed(() => (userPk$() || '') && bytesToNsiteBase36(
+    base62ToBytes(userPk$(), { mode: 'integer', byteLength: 32 })
+  ))
   const appSubdomain$ = useComputed(() => {
     const userPk = userPk$()
     const appId = appId$()
@@ -444,7 +446,11 @@ f('appWindow', function () {
           }
 
           let ownerPubkey = ''
-          try { ownerPubkey = base62ToBase16(userPk).toLowerCase() } catch (_err) { ownerPubkey = '' }
+          try {
+            ownerPubkey = base62ToBase16(userPk, { mode: 'integer', byteLength: 32 }).toLowerCase()
+          } catch (_err) {
+            ownerPubkey = ''
+          }
           const recentForOwner = await hasRecentSingleNappOpenForOwner({ appId, ownerPubkey })
           const anyRecentSingleNapp = recentForOwner || await hasAnyRecentSingleNappOpen({ appId })
 
@@ -716,7 +722,10 @@ f('toolbarMenu', function () {
           userPk,
           wsKey,
           profile,
-          name: profile?.name || profile?.npub || (userPk !== defaultUserPk$() && base62ToBase16(userPk)) || 'Default User',
+          name: profile?.name || profile?.npub ||
+            (userPk !== defaultUserPk$() &&
+              base62ToBase16(userPk, { mode: 'integer', byteLength: 32 })) ||
+            'Default User',
           isLocked,
           index: userCounts[userPk], // User-specific index (1-indexed)
           totalCount: userCounts[userPk] // Current count (will be final after loop)
@@ -763,7 +772,7 @@ f('toolbarMenu', function () {
       unlockErrors$({ ...unlockErrors$(), [userKey]: null })
 
       try {
-        const userPkB16 = base62ToBase16(userPk)
+        const userPkB16 = base62ToBase16(userPk, { mode: 'integer', byteLength: 32 })
         const response = await askVault(
           { code: 'UNLOCK_ACCOUNT', payload: { pubkey: userPkB16 } },
           { timeout: 120000, instant: true }
@@ -1288,7 +1297,11 @@ f('appLaunchersMenu', function () {
       const userPk = storage[`session_workspaceByKey_${workspaceKey}_userPk$`]()
 
       let ownerPubkey = ''
-      try { ownerPubkey = base62ToBase16(userPk).toLowerCase() } catch (_err) { ownerPubkey = '' }
+      try {
+        ownerPubkey = base62ToBase16(userPk, { mode: 'integer', byteLength: 32 }).toLowerCase()
+      } catch (_err) {
+        ownerPubkey = ''
+      }
       const recentForOwner = await hasRecentSingleNappOpenForOwner({ appId, ownerPubkey })
       const anyRecentSingleNapp = recentForOwner || await hasAnyRecentSingleNappOpen({ appId })
 

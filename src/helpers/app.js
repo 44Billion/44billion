@@ -1,5 +1,5 @@
-import { base62ToBase16, base16ToBase62 } from '#helpers/base62.js'
-import { base16ToBytes } from '#helpers/base16.js'
+import { base62ToBase16, base16ToBase62 } from 'libp2r2p/base62'
+import { base16ToBytes } from 'libp2r2p/base16'
 import { findRouteAssetDescriptor } from '#helpers/site-manifest.js'
 
 const nappEventKinds = {
@@ -42,7 +42,7 @@ export function appIdToAddressObj (appId) {
     next: 35129,
     draft: 35130
   }[channel]
-  const pubkey = base62ToBase16(pubkeyB62)
+  const pubkey = base62ToBase16(pubkeyB62, { mode: 'integer', byteLength: 32 })
   return {
     kind,
     pubkey,
@@ -53,7 +53,11 @@ export function appIdToAddressObj (appId) {
 export function appIdToDbAppRef (appId) {
   const { channelEnum, pubkeyB62, dTag } = parseAppId(appId)
   if (!isNostrAppDTagSafe(dTag)) throw new Error('Invalid d tag')
-  return [channelEnum, base16ToBytes(base62ToBase16(pubkeyB62)), dTag]
+  return [
+    channelEnum,
+    base16ToBytes(base62ToBase16(pubkeyB62, { mode: 'integer', byteLength: 32 })),
+    dTag
+  ]
 }
 
 export function addressObjToAppId (obj) {
@@ -63,7 +67,7 @@ export function addressObjToAppId (obj) {
     35130: 'c'
   }[obj.kind]
   if (!channelEnum) throw new Error('Invalid kind')
-  const pubkeyB62 = base16ToBase62(obj.pubkey, 43)
+  const pubkeyB62 = base16ToBase62(obj.pubkey, { mode: 'integer', minLength: 43 })
   if (!isNostrAppDTagSafe(obj.dTag)) throw new Error('Invalid d tag')
   return `${channelEnum}${pubkeyB62}${obj.dTag}`
 }

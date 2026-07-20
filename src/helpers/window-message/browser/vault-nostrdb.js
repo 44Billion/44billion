@@ -1,5 +1,5 @@
 import { ask as defaultAsk, reply as defaultReply } from '../index.js'
-import { base64ToBytes } from '#helpers/base64.js'
+import { base64UrlToBytes } from 'libp2r2p/base64'
 import {
   personalCopyEncryptionKind,
   plaintextBase64
@@ -129,7 +129,7 @@ export function createTrustedVaultNostrDbPersonalCopyDecrypt ({
       }
     }, { timeout: 120000 })
     if (error) throw error
-    return textDecoder.decode(base64ToBytes(String(payload ?? '')))
+    return textDecoder.decode(base64UrlToBytes(String(payload ?? '')))
   }
 }
 

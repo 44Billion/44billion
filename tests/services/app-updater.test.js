@@ -6,7 +6,7 @@ import AppUpdater, {
   MAX_RETAINED_EMBEDDED_APPS
 } from '../../src/services/app-updater/index.js'
 import { addressObjToAppId } from '../../src/helpers/app.js'
-import { base16ToBase62 } from '../../src/helpers/base62.js'
+import { base16ToBase62 } from 'libp2r2p/base62'
 
 const MAIN_PUBKEY = '1'.repeat(64)
 const DRAFT_PUBKEY = '2'.repeat(64)
