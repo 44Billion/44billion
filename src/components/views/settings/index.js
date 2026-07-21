@@ -7,11 +7,21 @@ import '#shared/toggle-switch.js'
 import '#shared/icons/icon-check.js'
 import '#shared/icons/icon-cancel.js'
 import '#shared/icons/icon-chevron-left.js'
-import { getT } from '#i18n/index.js'
+import {
+  AUTO_LOCALE,
+  getLocalePreference,
+  getT,
+  setLocalePreference,
+  SUPPORTED_LOCALES
+} from '#i18n/index.js'
+import useLocale from '#i18n/use-locale.js'
 
 export const settingsLocales = {
   Settings: { en: 'Settings', fr: 'Paramètres', it: 'Impostazioni', de: 'Einstellungen', es: 'Configuración', 'pt-BR': 'Configurações', ru: 'Настройки', 'zh-CN': '设置', 'zh-TW': '設定', ja: '設定', ko: '설정' },
   General: { en: 'General', fr: 'Général', it: 'Generali', de: 'Allgemein', es: 'General', 'pt-BR': 'Geral', ru: 'Общие', 'zh-CN': '常规', 'zh-TW': '一般', ja: '一般', ko: '일반' },
+  Language: { en: 'Language', fr: 'Langue', it: 'Lingua', de: 'Sprache', es: 'Idioma', 'pt-BR': 'Idioma', ru: 'Язык', 'zh-CN': '语言', 'zh-TW': '語言', ja: '言語', ko: '언어' },
+  'Choose the interface language': { en: 'Choose the interface language', fr: 'Choisir la langue de l’interface', it: 'Scegli la lingua dell’interfaccia', de: 'Sprache der Benutzeroberfläche auswählen', es: 'Elegir el idioma de la interfaz', 'pt-BR': 'Escolher o idioma da interface', ru: 'Выбрать язык интерфейса', 'zh-CN': '选择界面语言', 'zh-TW': '選擇介面語言', ja: 'インターフェースの言語を選択', ko: '인터페이스 언어 선택' },
+  Automatic: { en: 'Automatic', fr: 'Automatique', it: 'Automatico', de: 'Automatisch', es: 'Automático', 'pt-BR': 'Automático', ru: 'Автоматически', 'zh-CN': '自动', 'zh-TW': '自動', ja: '自動', ko: '자동' },
   'Auto Update': { en: 'Auto Update', fr: 'Mise à jour automatique', it: 'Aggiornamento automatico', de: 'Automatische Updates', es: 'Actualización automática', 'pt-BR': 'Atualização automática', ru: 'Автообновление', 'zh-CN': '自动更新', 'zh-TW': '自動更新', ja: '自動更新', ko: '자동 업데이트' },
   'When to install app updates': { en: 'When to install app updates', fr: 'Quand installer les mises à jour', it: 'Quando installare gli aggiornamenti', de: 'Wann App-Updates installiert werden', es: 'Cuándo instalar actualizaciones', 'pt-BR': 'Quando instalar atualizações de apps', ru: 'Когда устанавливать обновления', 'zh-CN': '何时安装应用更新', 'zh-TW': '何時安裝應用程式更新', ja: 'アプリの更新をインストールするタイミング', ko: '앱 업데이트 설치 시기' },
   Always: { en: 'Always', fr: 'Toujours', it: 'Sempre', de: 'Immer', es: 'Siempre', 'pt-BR': 'Sempre', ru: 'Всегда', 'zh-CN': '始终', 'zh-TW': '一律', ja: '常に', ko: '항상' },
@@ -27,7 +37,22 @@ export const settingsLocales = {
 
 const t = getT(settingsLocales)
 
+const LOCALE_NAMES = Object.freeze({
+  en: 'English',
+  fr: 'Français',
+  it: 'Italiano',
+  de: 'Deutsch',
+  es: 'Español',
+  'pt-BR': 'Português (Brasil)',
+  ru: 'Русский',
+  'zh-CN': '简体中文',
+  'zh-TW': '繁體中文',
+  ja: '日本語',
+  ko: '한국어'
+})
+
 f('a-settings', function () {
+  useLocale()
   const storage = useWebStorage(localStorage)
   const {
     config_isSingleWindow$: isSingleWindow$,
@@ -206,6 +231,22 @@ f('a-settings', function () {
     <div class="content">
       <div class="section">
         <div class="section-title">${t('General')}</div>
+
+        <div class="item">
+          <div class="item-content">
+            <div class="item-title">${t('Language')}</div>
+            <div class="item-subtitle">${t('Choose the interface language')}</div>
+          </div>
+          <div class="update-mode-select-wrapper">
+            <select class="update-mode-select" name="locale" onchange=${e => setLocalePreference(e.target.value)}>
+              <option value=${AUTO_LOCALE} selected=${getLocalePreference() === AUTO_LOCALE}>${t('Automatic')}</option>
+              ${SUPPORTED_LOCALES.map(locale => this.h`
+                <option value=${locale} selected=${getLocalePreference() === locale}>${LOCALE_NAMES[locale]}</option>
+              `)}
+            </select>
+            <icon-chevron-left class="update-mode-select-chevron" props=${{ rotate: 270, size: '16px' }} />
+          </div>
+        </div>
 
         <div class="item">
           <div class="item-content">

@@ -8,6 +8,7 @@ import '#shared/app-icon.js'
 import '#shared/icons/icon-x.js'
 import useWebStorage from '#hooks/use-web-storage.js'
 import { getT } from '#i18n/index.js'
+import useLocale from '#i18n/use-locale.js'
 
 const l = (en, fr, it, de, es, ptBR, ru, zhCN, zhTW, ja, ko) => ({
   en, fr, it, de, es, 'pt-BR': ptBR, ru, 'zh-CN': zhCN, 'zh-TW': zhTW, ja, ko
@@ -271,6 +272,7 @@ export function usePermissionDialogStore () {
 
 // On the nip07 handler, call await pdStore.requestPermission(req)
 f('permissionDialog', function () {
+  useLocale()
   const pdStore = usePermissionDialogStore()
   const modalProps = useStore(() => ({
     isOpen$: pdStore.isOpen$,
@@ -285,6 +287,7 @@ f('permissionDialog', function () {
 })
 
 f('permissionDialogStack', function () {
+  useLocale()
   const storage = useWebStorage(localStorage)
   const pdStore = usePermissionDialogStore()
   const store = useClosestStore('<permission-dialog-stack>', () => ({
@@ -347,6 +350,7 @@ f('permissionDialogStack', function () {
 })
 
 f('permissionDialogCard', function () {
+  useLocale()
   const storage = useWebStorage(localStorage)
   const pdsStore = useClosestStore('<permission-dialog-stack>')
   const store = useStore(() => ({

@@ -4,6 +4,7 @@ import { cssVars } from '#assets/styles/theme.js'
 import AppFileManager from '#services/app-file-manager/index.js'
 import { debounce } from '#helpers/function.js'
 import { getT } from '#i18n/index.js'
+import useLocale from '#i18n/use-locale.js'
 
 export const appIconLocales = {
   'App icon': { en: 'App icon', fr: 'Icône de l’application', it: 'Icona dell’app', de: 'App-Symbol', es: 'Icono de la aplicación', 'pt-BR': 'Ícone do app', ru: 'Значок приложения', 'zh-CN': '应用图标', 'zh-TW': '應用程式圖示', ja: 'アプリアイコン', ko: '앱 아이콘' }
@@ -18,6 +19,7 @@ async function addIconToCache (appId) {
 const debouncedAddIconToCache = debounce(addIconToCache, 1000)
 
 f('appIcon', function () {
+  useLocale()
   const storage = useWebStorage(localStorage)
   const appId$ = useComputed(() => this.props.app$().id)
   const appIndex$ = useComputed(() => this.props.app$().index ?? '?')

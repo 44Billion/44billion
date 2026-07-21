@@ -5,6 +5,7 @@ import '#shared/icons/icon-x.js'
 import '#shared/icons/icon-reload.js'
 import '#shared/icons/icon-exclamation-mark.js'
 import { getT } from '#i18n/index.js'
+import useLocale from '#i18n/use-locale.js'
 
 export const fileNotCachedDialogLocales = {
   'App Download': { en: 'App Download', fr: 'Téléchargement de l’application', it: 'Download dell’app', de: 'App-Download', es: 'Descarga de la aplicación', 'pt-BR': 'Download do app', ru: 'Загрузка приложения', 'zh-CN': '应用下载', 'zh-TW': '應用程式下載', ja: 'アプリのダウンロード', ko: '앱 다운로드' },
@@ -68,6 +69,7 @@ export function useFileNotCachedDialogStore () {
 //   // user clicked Cancel — delete the app
 // }
 f('fileNotCachedDialog', function () {
+  useLocale()
   const store = useFileNotCachedDialogStore()
   const modalProps = useStore(() => ({
     isOpen$: store.isOpen$,
@@ -81,6 +83,7 @@ f('fileNotCachedDialog', function () {
 })
 
 f('fileNotCachedDialogCard', function () {
+  useLocale()
   const store = useFileNotCachedDialogStore()
   const local = useStore(() => ({
     isButtonsDisabled$: false,

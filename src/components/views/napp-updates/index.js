@@ -18,6 +18,7 @@ import { base16ToBase62 } from 'libp2r2p/base62'
 import { useConfirmationDialogStore } from '#zones/confirmation-dialog/index.js'
 import { getAssetBudgetConfirmation } from '#i18n/asset-budget.js'
 import { getT } from '#i18n/index.js'
+import useLocale from '#i18n/use-locale.js'
 
 export const nappUpdatesLocales = {
   'App Updates': { en: 'App Updates', fr: 'Mises à jour des applications', it: 'Aggiornamenti delle app', de: 'App-Updates', es: 'Actualizaciones de aplicaciones', 'pt-BR': 'Atualizações de apps', ru: 'Обновления приложений', 'zh-CN': '应用更新', 'zh-TW': '應用程式更新', ja: 'アプリの更新', ko: '앱 업데이트' },
@@ -35,6 +36,7 @@ export const nappUpdatesLocales = {
 const t = getT(nappUpdatesLocales)
 
 f('napp-updates', function () {
+  useLocale()
   const storage = useWebStorage(localStorage)
   const { session_unread_appUpdateCount$: appUpdateCount$ } = storage
   const { requestConfirmation } = useConfirmationDialogStore()
@@ -470,6 +472,7 @@ f('napp-updates', function () {
 })
 
 f('napp-update-card', function () {
+  useLocale()
   const storage = useWebStorage(localStorage)
   const { appId, publisherProfiles$, updateInfo$, updateState$, onUpdate } = this.props
 

@@ -14,6 +14,7 @@ import { useConfirmationDialogStore } from '#zones/confirmation-dialog/index.js'
 import '#shared/napp-assets-caching-progress-bar.js'
 import { getAssetBudgetConfirmation } from '#i18n/asset-budget.js'
 import { getT } from '#i18n/index.js'
+import useLocale from '#i18n/use-locale.js'
 
 export const singleNappLocales = {
   'Too many embedded apps are open. Close one and try again.': {
@@ -24,6 +25,7 @@ export const singleNappLocales = {
 const t = getT(singleNappLocales)
 
 f('singleNapp', function () {
+  useLocale()
   const storage = useWebStorage(localStorage)
   const {
     session_openWorkspaceKeys$: openWorkspaceKeys$
@@ -67,6 +69,7 @@ f('singleNapp', function () {
 
 // this won't add napp to web storage, it's supposed to be ephemeral-ish
 f('singleNappLauncher', function () {
+  useLocale()
   const { wsKey, appId, initialRoute } = useClosestStore('napp')
   const storage = useWebStorage(localStorage)
   const {

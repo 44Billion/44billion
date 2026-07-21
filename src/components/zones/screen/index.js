@@ -46,6 +46,7 @@ import '#shared/icons/icon-delete.js'
 import '#shared/icons/icon-lock.js'
 import { getAssetBudgetConfirmation } from '#i18n/asset-budget.js'
 import { getT } from '#i18n/index.js'
+import useLocale from '#i18n/use-locale.js'
 import './menus/toolbar-more-menu.js'
 
 export const screenLocales = {
@@ -53,6 +54,7 @@ export const screenLocales = {
   'Failed to unlock account': { en: 'Failed to unlock account', fr: 'Impossible de déverrouiller le compte', it: 'Impossibile sbloccare l’account', de: 'Konto konnte nicht entsperrt werden', es: 'No se pudo desbloquear la cuenta', 'pt-BR': 'Falha ao desbloquear a conta', ru: 'Не удалось разблокировать учётную запись', 'zh-CN': '无法解锁账户', 'zh-TW': '無法解鎖帳號', ja: 'アカウントのロックを解除できませんでした', ko: '계정 잠금을 해제하지 못했습니다' },
   'Error unlocking': { en: 'Error unlocking', fr: 'Erreur de déverrouillage', it: 'Errore durante lo sblocco', de: 'Fehler beim Entsperren', es: 'Error al desbloquear', 'pt-BR': 'Erro ao desbloquear', ru: 'Ошибка разблокировки', 'zh-CN': '解锁时出错', 'zh-TW': '解鎖時發生錯誤', ja: 'ロック解除エラー', ko: '잠금 해제 오류' },
   'Touch to unlock': { en: 'Touch to unlock', fr: 'Touchez pour déverrouiller', it: 'Tocca per sbloccare', de: 'Zum Entsperren berühren', es: 'Toca para desbloquear', 'pt-BR': 'Toque para desbloquear', ru: 'Нажмите, чтобы разблокировать', 'zh-CN': '轻触以解锁', 'zh-TW': '輕觸以解鎖', ja: 'タップしてロック解除', ko: '탭하여 잠금 해제' },
+  'Please open an app': { en: 'Please open an app', fr: 'Veuillez ouvrir une application', it: 'Apri un’app', de: 'Bitte eine App öffnen', es: 'Abre una aplicación', 'pt-BR': 'Abra um app', ru: 'Откройте приложение', 'zh-CN': '请打开一个应用', 'zh-TW': '請開啟一個應用程式', ja: 'アプリを開いてください', ko: '앱을 열어 주세요' },
   Open: { en: 'Open', fr: 'Ouvrir', it: 'Apri', de: 'Öffnen', es: 'Abrir', 'pt-BR': 'Abrir', ru: 'Открыть', 'zh-CN': '打开', 'zh-TW': '開啟', ja: '開く', ko: '열기' },
   Maximize: { en: 'Maximize', fr: 'Agrandir', it: 'Ingrandisci', de: 'Maximieren', es: 'Maximizar', 'pt-BR': 'Maximizar', ru: 'Развернуть', 'zh-CN': '最大化', 'zh-TW': '最大化', ja: '最大化', ko: '최대화' },
   'Bring to First': { en: 'Bring to First', fr: 'Mettre au premier plan', it: 'Porta in primo piano', de: 'In den Vordergrund', es: 'Traer al frente', 'pt-BR': 'Trazer para frente', ru: 'На передний план', 'zh-CN': '置于最前', 'zh-TW': '移至最前', ja: '最前面に移動', ko: '맨 앞으로 가져오기' },
@@ -65,6 +67,7 @@ export const screenLocales = {
 const t = getT(screenLocales)
 
 f('aScreen', function () {
+  useLocale()
   useInitOrResetScreen()
   useTrackAccountEvents()
   useAppRouter()
@@ -184,6 +187,7 @@ f('aScreen', function () {
 })
 
 f('system-views', function () {
+  useLocale()
   return this.h`
     <a-route props=${{ path: '/settings' }} />
     <a-route props=${{ path: '/app-updates' }} />
@@ -191,6 +195,7 @@ f('system-views', function () {
 })
 
 f('aWindows', function () {
+  useLocale()
   const {
     // Order is important, that's why we didn't compute from workspaceKeys$
     // Recently opened/clicked first
@@ -216,6 +221,7 @@ f('aWindows', function () {
   `
 })
 f('windowsBackground', function () {
+  useLocale()
   return this.h`
     <div
       id='windows-background'
@@ -243,7 +249,7 @@ f('windowsBackground', function () {
           }
         }
       `}</style>
-      Please open an app
+      ${t('Please open an app')}
     </div>
   `
 })
@@ -704,6 +710,7 @@ f('toolbarActiveAvatar', function () {
   `
 })
 f('toolbarMenu', function () {
+  useLocale()
   const storage = useWebStorage(localStorage)
   const { session_openWorkspaceKeys$: openWorkspaceKeys$, session_workspaceKeys$: workspaceKeys$ } = storage
   const { close: closeMenu } = useClosestStore('<a-menu>')
@@ -1203,6 +1210,7 @@ f('toolbarUnpinnedApps', function () {
   `
 })
 f('appLaunchersMenu', function () {
+  useLocale()
   const store = useClosestStore('<a-menu>')
   const storage = useWebStorage(localStorage)
   const tabStorage = useWebStorage(sessionStorage)

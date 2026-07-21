@@ -11,6 +11,7 @@ import {
 } from '#helpers/window-message/browser/vault-nostrdb.js'
 import { flushVaultAcceptedMessageQueue } from '#helpers/window-message/browser/vault-accepted-message-queue.js'
 import { isNostrDbAppInstalledForOwner } from '#zones/screen/helpers/nostrdb-app-lifecycle.js'
+import { getEffectiveLocale, subscribeLocaleChanged } from '#i18n/index.js'
 import '#shared/modal.js'
 
 export function useVaultModalStore (init) {
@@ -276,8 +277,12 @@ function initMessageListener ({
 }) {
   let currentVaultPort = null
   const vaultNostrDbSubscriptions = new Map()
+  const unsubscribeLocale = subscribeLocaleChanged(() => {
+    if (currentVaultPort) translateVault(currentVaultPort)
+  })
   // Setup cleanup
   componentSignal?.addEventListener('abort', () => {
+    unsubscribeLocale()
     if (currentVaultPort) {
       currentVaultPort.close()
       currentVaultPort = null
@@ -313,6 +318,7 @@ function initMessageListener ({
     tellVaultImReady(currentVaultPort)
     // Make it work with ez-vault's simplified messenger
     if (e.data.reqId) reply(e, { payload: true })
+    translateVault(currentVaultPort)
     _pendingVaultMessages.splice(0).forEach(msg => tell(_activeVaultPort, msg))
     flushQueuedVaultAcceptedMessages({ vaultPort: currentVaultPort })
       .catch(err => console.warn('Failed to flush queued vault messages', err))
@@ -395,6 +401,19 @@ function initMessageListener ({
       payload: null
     }
     tell(vaultPort, readyMsg)
+  }
+
+  function translateVault (vaultPort) {
+    const locale = getEffectiveLocale()
+    ask(vaultPort, {
+      code: 'TRANSLATE',
+      payload: {
+        locale,
+        lang: locale === 'pt-BR' ? 'pt' : 'en'
+      }
+    }, { timeout: 5000 }).then(({ error }) => {
+      if (error) console.warn('Failed to update vault locale', error)
+    })
   }
 }
 

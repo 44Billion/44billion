@@ -30,6 +30,7 @@ import {
 } from '#services/app-asset-budget/index.js'
 import { APP_FILE_CHUNK_BYTES } from '#constants/app-file.js'
 import NFileDownloader from '#services/nfile-downloader/index.js'
+import { getEffectiveLocale, subscribeLocaleChanged } from '#i18n/index.js'
 
 function isAssetBudgetError (error) {
   return [ASSET_BUDGET_BACKGROUND_DENIED, ASSET_BUDGET_DENIED_BY_USER].includes(error?.code)
@@ -740,7 +741,11 @@ export async function initMessageListener (
       }
     }, { signal })
     appPagePort.start()
-    tell(appPagePort, { code: 'BROWSER_READY', payload: null })
+    tell(appPagePort, { code: 'BROWSER_READY', payload: { locale: getEffectiveLocale() } })
+    const unsubscribeLocale = subscribeLocaleChanged(locale => {
+      tell(appPagePort, { code: 'LOCALE_CHANGED', payload: { locale } })
+    })
+    signal.addEventListener('abort', unsubscribeLocale, { once: true })
   }
 }
 

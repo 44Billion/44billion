@@ -2,7 +2,23 @@ import { describe, it, mock } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { assetBudgetLocales, getAssetBudgetConfirmation } from '../../src/i18n/asset-budget.js'
-import { getT, SUPPORTED_LOCALES } from '../../src/i18n/index.js'
+import {
+  getEffectiveLocale,
+  getT,
+  resolveSupportedLocale,
+  setLocalePreference,
+  subscribeLocaleChanged,
+  SUPPORTED_LOCALES
+} from '../../src/i18n/index.js'
+
+if (!globalThis.localStorage) {
+  const values = new Map()
+  globalThis.localStorage = {
+    getItem: key => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+    removeItem: key => values.delete(key)
+  }
+}
 
 mock.module('#f', {
   namedExports: {
@@ -10,7 +26,16 @@ mock.module('#f', {
     useGlobalStore: () => {},
     useClosestStore: () => {},
     useStore: () => {},
-    useCallback: value => value
+    useCallback: value => value,
+    useSignal: value => {
+      let current = typeof value === 'function' ? value() : value
+      return (...args) => args.length ? (current = args[0]) : current
+    },
+    useGlobalSignal: (_namespace, value) => {
+      let current = typeof value === 'function' ? value() : value
+      return (...args) => args.length ? (current = args[0]) : current
+    },
+    useTask: () => {}
   }
 })
 mock.module('#f/components/f-to-signals.js', { namedExports: {} })
@@ -88,5 +113,29 @@ describe('permission translations', () => {
     assert.equal(format('en', { name: 'delete', eKind: 5, meta: { params: [event(2)] } }), 'Can I delete 2 items?')
     assert.equal(format('ru', { name: 'delete', eKind: 5, meta: { params: [event(5)] } }), 'Можно удалить 5 элементов?')
     assert.equal(format('zh-CN', { name: 'eventAccess', eKind: 34601, meta: { scope: 'asset' } }), '可以访问此类数据吗：文件 (范围：asset)？')
+  })
+})
+
+describe('reactive locale preference', () => {
+  it('normalizes compatible and Chinese locales', () => {
+    assert.equal(resolveSupportedLocale('pt-PT'), 'pt-BR')
+    assert.equal(resolveSupportedLocale('zh-Hant-HK'), 'zh-TW')
+    assert.equal(resolveSupportedLocale('zh-Hans-SG'), 'zh-CN')
+    assert.equal(resolveSupportedLocale('not a locale'), 'en')
+  })
+
+  it('notifies effective changes once and supports idempotent unlisten', async () => {
+    const seen = []
+    const unlisten = subscribeLocaleChanged(locale => seen.push(locale))
+    setLocalePreference('pt-BR')
+    setLocalePreference('pt-BR')
+    await Promise.resolve()
+    assert.equal(getEffectiveLocale(), 'pt-BR')
+    assert.deepEqual(seen, ['pt-BR'])
+    unlisten()
+    unlisten()
+    setLocalePreference('en')
+    await Promise.resolve()
+    assert.deepEqual(seen, ['pt-BR'])
   })
 })

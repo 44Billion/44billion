@@ -4,6 +4,7 @@ import globalCssString from '#assets/styles/global.css'
 import { f, useSignal, useTask } from '#f'
 import { appEncode, NAPP_ENTITY_REGEX } from 'libp2r2p/nip19'
 import { appIdToAddressObj } from '#helpers/app.js'
+import { useInitLocale } from '#i18n/use-locale.js'
 
 // Clear old localStorage data from pre-v2 schema (bundle→siteManifest migration)
 // Runs before any component mounts so useWebStorage signals start fresh
@@ -48,6 +49,7 @@ if (IS_DEVELOPMENT) {
 }
 
 f('aApp', function () {
+  useInitLocale()
   // we rely on us being the top for reusing same
   // key for storage partition
   if (window.location.origin !== window.top.location.origin) {

@@ -1,11 +1,24 @@
 import { tell, ask } from '#helpers/window-message/index.js'
 import { createNostrDb } from '#helpers/window-message/nostrdb-client.js'
+import { createAppLocaleClient } from '#helpers/window-message/app-locale-client.js'
+
+const localeClient = createAppLocaleClient({
+  reportError: error => console.error('window.napp locale listener failed', error)
+})
+
+function injectLocale () {
+  Object.assign(window.napp, {
+    getLocale: localeClient.getLocale,
+    onLocaleChanged: localeClient.onLocaleChanged
+  })
+}
 
 // ERROR: Top-level await is currently not supported with the "iife" output format [plugin js-text]
 // https://github.com/evanw/esbuild/issues/253
 (async () => {
   const p = Promise.withResolvers()
   injectNip07(p.promise) // first thing
+  injectLocale()
   injectNostrDb(p.promise)
   interceptNavigations(p.promise)
   tellParentImReady(p)
@@ -52,8 +65,12 @@ function tellParentImReady (p) {
   }
   browserPort.addEventListener('message', e => {
     if (e.data.code !== 'BROWSER_READY') return p.reject()
+    localeClient.setLocale(e.data.payload?.locale)
     p.resolve(browserPort)
   }, { once: true })
+  browserPort.addEventListener('message', e => {
+    if (e.data.code === 'LOCALE_CHANGED') localeClient.setLocale(e.data.payload?.locale)
+  })
   browserPort.start()
   tell(window.parent, readyMsg, { targetOrigin: '*', transfer: [appPagePortForBrowser] })
 }

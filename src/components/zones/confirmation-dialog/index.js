@@ -5,6 +5,7 @@ import '#shared/icons/icon-x.js'
 import '#shared/icons/icon-check.js'
 import '#shared/icons/icon-help-hexagon-filled.js'
 import { getT } from '#i18n/index.js'
+import useLocale from '#i18n/use-locale.js'
 
 export const confirmationDialogLocales = {
   Confirmation: { en: 'Confirmation', fr: 'Confirmation', it: 'Conferma', de: 'Bestätigung', es: 'Confirmación', 'pt-BR': 'Confirmação', ru: 'Подтверждение', 'zh-CN': '确认', 'zh-TW': '確認', ja: '確認', ko: '확인' },
@@ -83,6 +84,7 @@ export function useConfirmationDialogStore () {
 //   // user denied or another request superseded it
 // }
 f('confirmation-dialog', function () {
+  useLocale()
   const cdStore = useConfirmationDialogStore()
   const modalProps = useStore(() => ({
     isOpen$: cdStore.isOpen$,
@@ -98,6 +100,7 @@ f('confirmation-dialog', function () {
 })
 
 f('confirmation-dialog-card', function () {
+  useLocale()
   const cdStore = useConfirmationDialogStore()
   const localStore = useStore(() => ({
     isButtonsDisabled$: false,
