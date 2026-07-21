@@ -5,6 +5,13 @@ import '#shared/svg.js'
 import { base62ToBase16 } from 'libp2r2p/base62'
 import useWebStorage from '#hooks/use-web-storage.js'
 import { cssVars } from '#assets/styles/theme.js'
+import { getT } from '#i18n/index.js'
+
+export const avatarLocales = {
+  'User avatar': { en: 'User avatar', fr: 'Avatar de l’utilisateur', it: 'Avatar utente', de: 'Benutzeravatar', es: 'Avatar del usuario', 'pt-BR': 'Avatar do usuário', ru: 'Аватар пользователя', 'zh-CN': '用户头像', 'zh-TW': '使用者頭像', ja: 'ユーザーのアバター', ko: '사용자 아바타' }
+}
+
+const t = getT(avatarLocales)
 
 f('aAvatar', function () {
   const storage = useWebStorage(localStorage)
@@ -33,7 +40,7 @@ f('aAvatar', function () {
   if (store.picture$()) {
     return this.h`<img
       src=${store.picture$()}
-      alt='User avatar'
+      alt=${t('User avatar')}
       style=${`
         width: 100%;
         height: 100%;

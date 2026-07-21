@@ -3,6 +3,13 @@ import useWebStorage from '#hooks/use-web-storage.js'
 import { cssVars } from '#assets/styles/theme.js'
 import AppFileManager from '#services/app-file-manager/index.js'
 import { debounce } from '#helpers/function.js'
+import { getT } from '#i18n/index.js'
+
+export const appIconLocales = {
+  'App icon': { en: 'App icon', fr: 'Icône de l’application', it: 'Icona dell’app', de: 'App-Symbol', es: 'Icono de la aplicación', 'pt-BR': 'Ícone do app', ru: 'Значок приложения', 'zh-CN': '应用图标', 'zh-TW': '應用程式圖示', ja: 'アプリアイコン', ko: '앱 아이콘' }
+}
+
+const t = getT(appIconLocales)
 
 async function addIconToCache (appId) {
   const appFiles = await AppFileManager.create(appId)
@@ -87,7 +94,7 @@ f('appIcon', function () {
     ? this.h`
       <img
         src=${iconUrl$()}
-        alt="App Icon"
+        alt=${t('App icon')}
         style=${`
           width: 100%;
           height: 100%;

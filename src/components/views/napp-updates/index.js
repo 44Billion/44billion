@@ -16,16 +16,33 @@ import { formatAssetBudgetBytes } from '#services/app-asset-budget/index.js'
 import { getEventsByStrategy } from '#helpers/nostr-queries.js'
 import { base16ToBase62 } from 'libp2r2p/base62'
 import { useConfirmationDialogStore } from '#zones/confirmation-dialog/index.js'
+import { getAssetBudgetConfirmation } from '#i18n/asset-budget.js'
+import { getT } from '#i18n/index.js'
+
+export const nappUpdatesLocales = {
+  'App Updates': { en: 'App Updates', fr: 'Mises à jour des applications', it: 'Aggiornamenti delle app', de: 'App-Updates', es: 'Actualizaciones de aplicaciones', 'pt-BR': 'Atualizações de apps', ru: 'Обновления приложений', 'zh-CN': '应用更新', 'zh-TW': '應用程式更新', ja: 'アプリの更新', ko: '앱 업데이트' },
+  'Searching...': { en: 'Searching...', fr: 'Recherche...', it: 'Ricerca...', de: 'Suche...', es: 'Buscando...', 'pt-BR': 'Procurando...', ru: 'Поиск...', 'zh-CN': '正在搜索...', 'zh-TW': '正在搜尋...', ja: '検索中...', ko: '검색 중...' },
+  'Search for Updates': { en: 'Search for Updates', fr: 'Rechercher des mises à jour', it: 'Cerca aggiornamenti', de: 'Nach Updates suchen', es: 'Buscar actualizaciones', 'pt-BR': 'Procurar atualizações', ru: 'Проверить обновления', 'zh-CN': '检查更新', 'zh-TW': '檢查更新', ja: '更新を確認', ko: '업데이트 확인' },
+  'Update All': { en: 'Update All', fr: 'Tout mettre à jour', it: 'Aggiorna tutto', de: 'Alle aktualisieren', es: 'Actualizar todo', 'pt-BR': 'Atualizar tudo', ru: 'Обновить все', 'zh-CN': '全部更新', 'zh-TW': '全部更新', ja: 'すべて更新', ko: '모두 업데이트' },
+  'Updating... {{progress}}%': { en: 'Updating... {{progress}}%', fr: 'Mise à jour... {{progress}} %', it: 'Aggiornamento... {{progress}}%', de: 'Aktualisierung... {{progress}} %', es: 'Actualizando... {{progress}} %', 'pt-BR': 'Atualizando... {{progress}}%', ru: 'Обновление... {{progress}} %', 'zh-CN': '正在更新... {{progress}}%', 'zh-TW': '正在更新... {{progress}}%', ja: '更新中... {{progress}}%', ko: '업데이트 중... {{progress}}%' },
+  'Updates Available': { en: 'Updates Available', fr: 'Mises à jour disponibles', it: 'Aggiornamenti disponibili', de: 'Updates verfügbar', es: 'Actualizaciones disponibles', 'pt-BR': 'Atualizações disponíveis', ru: 'Доступны обновления', 'zh-CN': '有可用更新', 'zh-TW': '有可用更新', ja: '更新があります', ko: '업데이트 있음' },
+  'No Updates Available': { en: 'No Updates Available', fr: 'Aucune mise à jour disponible', it: 'Nessun aggiornamento disponibile', de: 'Keine Updates verfügbar', es: 'No hay actualizaciones disponibles', 'pt-BR': 'Nenhuma atualização disponível', ru: 'Нет доступных обновлений', 'zh-CN': '没有可用更新', 'zh-TW': '沒有可用更新', ja: '更新はありません', ko: '사용 가능한 업데이트 없음' },
+  'No apps found': { en: 'No apps found', fr: 'Aucune application trouvée', it: 'Nessuna app trovata', de: 'Keine Apps gefunden', es: 'No se encontraron aplicaciones', 'pt-BR': 'Nenhum app encontrado', ru: 'Приложения не найдены', 'zh-CN': '未找到应用', 'zh-TW': '找不到應用程式', ja: 'アプリが見つかりません', ko: '앱을 찾을 수 없음' },
+  Unknown: { en: 'Unknown', fr: 'Inconnue', it: 'Sconosciuta', de: 'Unbekannt', es: 'Desconocida', 'pt-BR': 'Desconhecida', ru: 'Неизвестно', 'zh-CN': '未知', 'zh-TW': '未知', ja: '不明', ko: '알 수 없음' },
+  Update: { en: 'Update', fr: 'Mettre à jour', it: 'Aggiorna', de: 'Aktualisieren', es: 'Actualizar', 'pt-BR': 'Atualizar', ru: 'Обновить', 'zh-CN': '更新', 'zh-TW': '更新', ja: '更新', ko: '업데이트' }
+}
+
+const t = getT(nappUpdatesLocales)
 
 f('napp-updates', function () {
   const storage = useWebStorage(localStorage)
   const { session_unread_appUpdateCount$: appUpdateCount$ } = storage
   const { requestConfirmation } = useConfirmationDialogStore()
-  const requestAssetBudgetConfirmation = ({ nextApprovedBytes, filename }) => requestConfirmation({
-    title: 'More app storage?',
-    message: `${filename ? `${filename} needs` : 'This update needs'} more cached storage. Allow this app's assets up to ${formatAssetBudgetBytes(nextApprovedBytes)}?`,
-    confirmText: `Allow ${formatAssetBudgetBytes(nextApprovedBytes)}`
-  })
+  const requestAssetBudgetConfirmation = details => requestConfirmation(getAssetBudgetConfirmation({
+    ...details,
+    subject: 'update',
+    formatBytes: formatAssetBudgetBytes
+  }))
 
   useTask(({ cleanup }) => {
     AppUpdater.isUserViewingUpdates = true
@@ -404,22 +421,22 @@ f('napp-updates', function () {
       <div class='btn-wrapper-136713'>
         <back-btn />
       </div>
-      <div class='title-gd7a98'>App Updates</div>
+      <div class='title-gd7a98'>${t('App Updates')}</div>
       <div class="actions-wrapper">
         <button class="action-btn" onclick=${performSearch} disabled=${isSearching$()}>
-          <span class="search-text">${isSearching$() ? 'Searching...' : 'Search for Updates'}</span>
+          <span class="search-text">${isSearching$() ? t('Searching...') : t('Search for Updates')}</span>
           <span class=${`search-icon ${isSearching$() ? 'spinning' : ''}`}><icon-reload props=${{ size: '20px' }} /></span>
         </button>
-        ${updatesCount$() > 0 && !isUpdatingAll$() ? this.h`<button class="action-btn update-all-btn desktop-update-all" onclick=${handleUpdateAll} disabled=${startableUpdateIds$().length === 0}>Update All</button>` : ''}
-        ${isUpdatingAll$() ? this.h`<div class="desktop-update-all" style=${`font-size:14rem;color:${cssVars.colors.fg2}`}>Updating... ${overallProgress$()}%</div>` : ''}
+        ${updatesCount$() > 0 && !isUpdatingAll$() ? this.h`<button class="action-btn update-all-btn desktop-update-all" onclick=${handleUpdateAll} disabled=${startableUpdateIds$().length === 0}>${t('Update All')}</button>` : ''}
+        ${isUpdatingAll$() ? this.h`<div class="desktop-update-all" style=${`font-size:14rem;color:${cssVars.colors.fg2}`}>${t('Updating... {{progress}}%', { progress: overallProgress$() })}</div>` : ''}
       </div>
     </div>
     ${updatesCount$() > 0
       ? this.h`
       <div class="mobile-updates-bar">
-        <div>Updates Available</div>
+        <div>${t('Updates Available')}</div>
         ${!isUpdatingAll$()
-          ? this.h`<button class="action-btn update-all-btn" onclick=${handleUpdateAll} disabled=${startableUpdateIds$().length === 0}>Update All</button>`
+          ? this.h`<button class="action-btn update-all-btn" onclick=${handleUpdateAll} disabled=${startableUpdateIds$().length === 0}>${t('Update All')}</button>`
           : this.h`<span>${overallProgress$()}%</span>`
         }
       </div>
@@ -427,7 +444,7 @@ f('napp-updates', function () {
       : (!isLoading$()
           ? this.h`
       <div class="no-updates-bar">
-        No Updates Available
+        ${t('No Updates Available')}
       </div>
     `
           : '')}
@@ -447,7 +464,7 @@ f('napp-updates', function () {
           }}
         />
       `)}
-      ${allAppIds$().length === 0 ? this.h`<div style=${`padding: 20px; text-align: center; color: ${cssVars.colors.fg2}`}>No apps found</div>` : ''}
+      ${allAppIds$().length === 0 ? this.h`<div style=${`padding: 20px; text-align: center; color: ${cssVars.colors.fg2}`}>${t('No apps found')}</div>` : ''}
     </div>
   `
 })
@@ -490,7 +507,7 @@ f('napp-update-card', function () {
       }
     } catch (e) {
       console.error('Error fetching app info', e)
-      version$('Unknown')
+      version$(t('Unknown'))
     }
   })
 
@@ -752,7 +769,7 @@ f('napp-update-card', function () {
             </div>
           </div>
         `
-        : (nextVersion$() ? this.h`<button class="update-btn" onclick=${onUpdate}>Update</button>` : '')
+        : (nextVersion$() ? this.h`<button class="update-btn" onclick=${onUpdate}>${t('Update')}</button>` : '')
       }
     </div>
   `

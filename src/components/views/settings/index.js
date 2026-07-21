@@ -7,6 +7,25 @@ import '#shared/toggle-switch.js'
 import '#shared/icons/icon-check.js'
 import '#shared/icons/icon-cancel.js'
 import '#shared/icons/icon-chevron-left.js'
+import { getT } from '#i18n/index.js'
+
+export const settingsLocales = {
+  Settings: { en: 'Settings', fr: 'Paramètres', it: 'Impostazioni', de: 'Einstellungen', es: 'Configuración', 'pt-BR': 'Configurações', ru: 'Настройки', 'zh-CN': '设置', 'zh-TW': '設定', ja: '設定', ko: '설정' },
+  General: { en: 'General', fr: 'Général', it: 'Generali', de: 'Allgemein', es: 'General', 'pt-BR': 'Geral', ru: 'Общие', 'zh-CN': '常规', 'zh-TW': '一般', ja: '一般', ko: '일반' },
+  'Auto Update': { en: 'Auto Update', fr: 'Mise à jour automatique', it: 'Aggiornamento automatico', de: 'Automatische Updates', es: 'Actualización automática', 'pt-BR': 'Atualização automática', ru: 'Автообновление', 'zh-CN': '自动更新', 'zh-TW': '自動更新', ja: '自動更新', ko: '자동 업데이트' },
+  'When to install app updates': { en: 'When to install app updates', fr: 'Quand installer les mises à jour', it: 'Quando installare gli aggiornamenti', de: 'Wann App-Updates installiert werden', es: 'Cuándo instalar actualizaciones', 'pt-BR': 'Quando instalar atualizações de apps', ru: 'Когда устанавливать обновления', 'zh-CN': '何时安装应用更新', 'zh-TW': '何時安裝應用程式更新', ja: 'アプリの更新をインストールするタイミング', ko: '앱 업데이트 설치 시기' },
+  Always: { en: 'Always', fr: 'Toujours', it: 'Sempre', de: 'Immer', es: 'Siempre', 'pt-BR': 'Sempre', ru: 'Всегда', 'zh-CN': '始终', 'zh-TW': '一律', ja: '常に', ko: '항상' },
+  'Wi-Fi only': { en: 'Wi-Fi only', fr: 'Wi-Fi uniquement', it: 'Solo Wi-Fi', de: 'Nur WLAN', es: 'Solo Wi-Fi', 'pt-BR': 'Somente Wi-Fi', ru: 'Только Wi-Fi', 'zh-CN': '仅 Wi-Fi', 'zh-TW': '僅限 Wi-Fi', ja: 'Wi-Fi のみ', ko: 'Wi-Fi만' },
+  Manual: { en: 'Manual', fr: 'Manuel', it: 'Manuale', de: 'Manuell', es: 'Manual', 'pt-BR': 'Manual', ru: 'Вручную', 'zh-CN': '手动', 'zh-TW': '手動', ja: '手動', ko: '수동' },
+  'App Updates': { en: 'App Updates', fr: 'Mises à jour des applications', it: 'Aggiornamenti delle app', de: 'App-Updates', es: 'Actualizaciones de aplicaciones', 'pt-BR': 'Atualizações de apps', ru: 'Обновления приложений', 'zh-CN': '应用更新', 'zh-TW': '應用程式更新', ja: 'アプリの更新', ko: '앱 업데이트' },
+  'Check for updates': { en: 'Check for updates', fr: 'Rechercher des mises à jour', it: 'Controlla aggiornamenti', de: 'Nach Updates suchen', es: 'Buscar actualizaciones', 'pt-BR': 'Procurar atualizações', ru: 'Проверить обновления', 'zh-CN': '检查更新', 'zh-TW': '檢查更新', ja: '更新を確認', ko: '업데이트 확인' },
+  'Multi-Window Mode': { en: 'Multi-Window Mode', fr: 'Mode multifenêtre', it: 'Modalità multi-finestra', de: 'Mehrfenstermodus', es: 'Modo multiventana', 'pt-BR': 'Modo de múltiplas janelas', ru: 'Многооконный режим', 'zh-CN': '多窗口模式', 'zh-TW': '多視窗模式', ja: 'マルチウィンドウモード', ko: '다중 창 모드' },
+  'Toggle between single and multi-window mode': { en: 'Toggle between single and multi-window mode', fr: 'Basculer entre une ou plusieurs fenêtres', it: 'Passa dalla modalità a finestra singola a quella multipla', de: 'Zwischen Ein- und Mehrfenstermodus wechseln', es: 'Alternar entre una y varias ventanas', 'pt-BR': 'Alternar entre uma ou várias janelas', ru: 'Переключить однооконный или многооконный режим', 'zh-CN': '切换单窗口和多窗口模式', 'zh-TW': '切換單視窗與多視窗模式', ja: '単一ウィンドウとマルチウィンドウを切り替え', ko: '단일 창과 다중 창 모드 전환' },
+  Advanced: { en: 'Advanced', fr: 'Avancé', it: 'Avanzate', de: 'Erweitert', es: 'Avanzado', 'pt-BR': 'Avançado', ru: 'Дополнительно', 'zh-CN': '高级', 'zh-TW': '進階', ja: '詳細設定', ko: '고급' },
+  'Credential Vault URL': { en: 'Credential Vault URL', fr: 'URL du coffre d’identifiants', it: 'URL del vault delle credenziali', de: 'URL des Anmeldedatentresors', es: 'URL de la bóveda de credenciales', 'pt-BR': 'URL do cofre de credenciais', ru: 'URL хранилища учётных данных', 'zh-CN': '凭据保管库 URL', 'zh-TW': '憑證保管庫 URL', ja: '認証情報保管庫の URL', ko: '자격 증명 보관소 URL' }
+}
+
+const t = getT(settingsLocales)
 
 f('a-settings', function () {
   const storage = useWebStorage(localStorage)
@@ -181,23 +200,23 @@ f('a-settings', function () {
 
     <div class="header">
       <back-btn />
-      <div class="title">Settings</div>
+      <div class="title">${t('Settings')}</div>
     </div>
 
     <div class="content">
       <div class="section">
-        <div class="section-title">General</div>
+        <div class="section-title">${t('General')}</div>
 
         <div class="item">
           <div class="item-content">
-            <div class="item-title">Auto Update</div>
-            <div class="item-subtitle">When to install app updates</div>
+            <div class="item-title">${t('Auto Update')}</div>
+            <div class="item-subtitle">${t('When to install app updates')}</div>
           </div>
           <div class="update-mode-select-wrapper">
             <select class="update-mode-select" name="appUpdateMode" onchange=${(e) => appUpdateMode$(e.target.value)}>
-              <option value="always" selected=${updateMode$() === 'always'}>Always</option>
-              <option value="wifi" selected=${updateMode$() === 'wifi'}>Wi-Fi only</option>
-              <option value="manual" selected=${updateMode$() === 'manual'}>Manual</option>
+              <option value="always" selected=${updateMode$() === 'always'}>${t('Always')}</option>
+              <option value="wifi" selected=${updateMode$() === 'wifi'}>${t('Wi-Fi only')}</option>
+              <option value="manual" selected=${updateMode$() === 'manual'}>${t('Manual')}</option>
             </select>
             <icon-chevron-left class="update-mode-select-chevron" props=${{ rotate: 270, size: '16px' }} />
           </div>
@@ -209,16 +228,16 @@ f('a-settings', function () {
           collapsed: !isManualUpdate$()
         }} onclick=${() => location.pushState({}, '', '/app-updates')}>
           <div class="item-content">
-            <div class="item-title">App Updates</div>
-            <div class="item-subtitle">Check for updates</div>
+            <div class="item-title">${t('App Updates')}</div>
+            <div class="item-subtitle">${t('Check for updates')}</div>
           </div>
           ${showAppUpdatesBadge$() ? this.h`<div class="badge">${appUpdateCount$()}</div>` : ''}
         </div>
 
         <div class="item">
           <div class="item-content">
-            <div class="item-title">Multi-Window Mode</div>
-            <div class="item-subtitle">Toggle between single and multi-window mode</div>
+            <div class="item-title">${t('Multi-Window Mode')}</div>
+            <div class="item-subtitle">${t('Toggle between single and multi-window mode')}</div>
           </div>
           <toggle-switch props=${{
             checked: !isSingleWindow$(),
@@ -228,11 +247,11 @@ f('a-settings', function () {
       </div>
 
       <div class="section">
-        <div class="section-title">Advanced</div>
+        <div class="section-title">${t('Advanced')}</div>
 
         <div class="item" style="cursor: default;">
           <div class="input-group" style="width: 100%;">
-            <div class="item-title">Credential Vault URL</div>
+            <div class="item-title">${t('Credential Vault URL')}</div>
             <div style="display: flex; gap: 8px; align-items: center;">
               <input type="text" style=${{
                 flexGrow: 1,

@@ -7,6 +7,15 @@ import '#shared/icons/icon-settings.js'
 import '#shared/icons/icon-shopping-bag.js'
 import useLocation from '#hooks/use-location.js'
 import useWebStorage from '#hooks/use-web-storage.js'
+import { getT } from '#i18n/index.js'
+
+export const toolbarMoreMenuLocales = {
+  'Hide Toolbar': { en: 'Hide Toolbar', fr: 'Masquer la barre d’outils', it: 'Nascondi barra degli strumenti', de: 'Symbolleiste ausblenden', es: 'Ocultar barra de herramientas', 'pt-BR': 'Ocultar barra de ferramentas', ru: 'Скрыть панель инструментов', 'zh-CN': '隐藏工具栏', 'zh-TW': '隱藏工具列', ja: 'ツールバーを隠す', ko: '도구 모음 숨기기' },
+  'App Store': { en: 'App Store', fr: 'Boutique d’applications', it: 'App Store', de: 'App-Store', es: 'Tienda de aplicaciones', 'pt-BR': 'Loja de apps', ru: 'Магазин приложений', 'zh-CN': '应用商店', 'zh-TW': '應用程式商店', ja: 'アプリストア', ko: '앱 스토어' },
+  Settings: { en: 'Settings', fr: 'Paramètres', it: 'Impostazioni', de: 'Einstellungen', es: 'Configuración', 'pt-BR': 'Configurações', ru: 'Настройки', 'zh-CN': '设置', 'zh-TW': '設定', ja: '設定', ko: '설정' }
+}
+
+const t = getT(toolbarMoreMenuLocales)
 
 f('toolbar-more-menu', function () {
   const { isHidden$ } = useGlobalStore('toolbarState', { isHidden$: false })
@@ -94,7 +103,7 @@ f('toolbar-more-menu', function () {
           isOpen$.set(false)
         }}>
           <div class='icon-wrapper'><icon-eye-closed props=${{ size: '16px' }} /></div>
-          <div class='menu-label'>Hide Toolbar</div>
+          <div class='menu-label'>${t('Hide Toolbar')}</div>
         </div>
         <div onclick=${() => {
           // or location.pushState({}, '', '/+3swFhu23QNl8er5yOtc8bf9ueHCdwF8CzoDUiSSwwKIWoS8Ki5TwMyeA3Js1')
@@ -102,14 +111,14 @@ f('toolbar-more-menu', function () {
           isOpen$.set(false)
         }}>
           <div class='icon-wrapper'><icon-shopping-bag props=${{ size: '16px' }} /></div>
-          <div class='menu-label'>App Store</div>
+          <div class='menu-label'>${t('App Store')}</div>
         </div>
         <div onclick=${() => {
           location.pushState({}, '', '/settings')
           isOpen$.set(false)
         }}>
           <div class='icon-wrapper'><icon-settings props=${{ size: '16px' }} /></div>
-          <div class='menu-label'>Settings</div>
+          <div class='menu-label'>${t('Settings')}</div>
           ${showUpdateIndicator$() ? this.h`<div class='badge-dot'></div>` : ''}
         </div>
       </div>

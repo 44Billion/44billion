@@ -4,6 +4,20 @@ import '#shared/modal.js'
 import '#shared/icons/icon-x.js'
 import '#shared/icons/icon-reload.js'
 import '#shared/icons/icon-exclamation-mark.js'
+import { getT } from '#i18n/index.js'
+
+export const fileNotCachedDialogLocales = {
+  'App Download': { en: 'App Download', fr: 'Téléchargement de l’application', it: 'Download dell’app', de: 'App-Download', es: 'Descarga de la aplicación', 'pt-BR': 'Download do app', ru: 'Загрузка приложения', 'zh-CN': '应用下载', 'zh-TW': '應用程式下載', ja: 'アプリのダウンロード', ko: '앱 다운로드' },
+  'Failed to load app. Retry or remove it?': { en: 'Failed to load app. Retry or remove it?', fr: 'Impossible de charger l’application. Réessayer ou la supprimer ?', it: 'Impossibile caricare l’app. Riprovare o rimuoverla?', de: 'App konnte nicht geladen werden. Erneut versuchen oder entfernen?', es: 'No se pudo cargar la aplicación. ¿Reintentar o eliminarla?', 'pt-BR': 'Falha ao carregar o app. Tentar novamente ou removê-lo?', ru: 'Не удалось загрузить приложение. Повторить или удалить его?', 'zh-CN': '无法加载应用。重试还是移除？', 'zh-TW': '無法載入應用程式。重試或移除？', ja: 'アプリを読み込めませんでした。再試行しますか、それとも削除しますか？', ko: '앱을 불러오지 못했습니다. 다시 시도하거나 제거할까요?' },
+  'Failed to load app. Retry or close it?': { en: 'Failed to load app. Retry or close it?', fr: 'Impossible de charger l’application. Réessayer ou la fermer ?', it: 'Impossibile caricare l’app. Riprovare o chiuderla?', de: 'App konnte nicht geladen werden. Erneut versuchen oder schließen?', es: 'No se pudo cargar la aplicación. ¿Reintentar o cerrarla?', 'pt-BR': 'Falha ao carregar o app. Tentar novamente ou fechá-lo?', ru: 'Не удалось загрузить приложение. Повторить или закрыть его?', 'zh-CN': '无法加载应用。重试还是关闭？', 'zh-TW': '無法載入應用程式。重試或關閉？', ja: 'アプリを読み込めませんでした。再試行しますか、それとも閉じますか？', ko: '앱을 불러오지 못했습니다. 다시 시도하거나 닫을까요?' },
+  Retry: { en: 'Retry', fr: 'Réessayer', it: 'Riprova', de: 'Erneut versuchen', es: 'Reintentar', 'pt-BR': 'Tentar novamente', ru: 'Повторить', 'zh-CN': '重试', 'zh-TW': '重試', ja: '再試行', ko: '다시 시도' }
+}
+
+const t = getT(fileNotCachedDialogLocales)
+
+export function getFileNotCachedText (key) {
+  return t(key)
+}
 
 const cancelError = err => (err = new Error('File not cached action canceled')) && (err.code = 'CANCELED') && err
 const closedError = err => (err = new Error('File not cached dialog closed')) && (err.code = 'CANCELED') && err
@@ -14,8 +28,8 @@ function createFileNotCachedDialogStore () {
     currentRequest$: null,
     lastRequest$: null,
     isOpen$ () { return Boolean(this.currentRequest$()) },
-    appName$ () { return (this.currentRequest$() ?? this.lastRequest$())?.appName ?? 'App Download' },
-    message$ () { return (this.currentRequest$() ?? this.lastRequest$())?.message ?? 'Failed to load app. Retry or remove it?' },
+    appName$ () { return (this.currentRequest$() ?? this.lastRequest$())?.appName ?? t('App Download') },
+    message$ () { return (this.currentRequest$() ?? this.lastRequest$())?.message ?? t('Failed to load app. Retry or remove it?') },
     resolveRetry () {
       const req = this.currentRequest$()
       if (!req) return
@@ -216,7 +230,7 @@ f('fileNotCachedDialogCard', function () {
           disabled=${local.isButtonsDisabled$()}
         >
           <icon-reload props=${{ size: '16px' }} />
-          <span>Retry</span>
+          <span>${t('Retry')}</span>
         </button>
         <button
           class='cancel-button'

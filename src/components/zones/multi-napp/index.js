@@ -7,17 +7,18 @@ import '#zones/screen/index.js'
 import { useVaultModalStore } from '#zones/vault-modal/index.js'
 import '#zones/permission-dialog/index.js'
 import { useConfirmationDialogStore } from '#zones/confirmation-dialog/index.js'
+import { getAssetBudgetConfirmation } from '#i18n/asset-budget.js'
 import '#zones/file-not-cached-dialog/index.js'
 
 f('multi-napp', function () {
   const { requestConfirmation } = useConfirmationDialogStore()
 
   useTask(({ cleanup }) => {
-    const requestAssetBudgetConfirmation = ({ nextApprovedBytes, filename }) => requestConfirmation({
-      title: 'More app storage?',
-      message: `${filename ? `${filename} needs` : 'An app update needs'} more cached storage. Allow this app's assets up to ${formatAssetBudgetBytes(nextApprovedBytes)}?`,
-      confirmText: `Allow ${formatAssetBudgetBytes(nextApprovedBytes)}`
-    })
+    const requestAssetBudgetConfirmation = details => requestConfirmation(getAssetBudgetConfirmation({
+      ...details,
+      subject: 'update',
+      formatBytes: formatAssetBudgetBytes
+    }))
 
     AppUpdater.initCleanupJob()
     AppUpdater.initUpdateCheckJob({

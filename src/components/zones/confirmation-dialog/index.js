@@ -4,10 +4,18 @@ import '#shared/modal.js'
 import '#shared/icons/icon-x.js'
 import '#shared/icons/icon-check.js'
 import '#shared/icons/icon-help-hexagon-filled.js'
+import { getT } from '#i18n/index.js'
 
-const DEFAULT_TITLE = 'Confirmation'
-const DEFAULT_MESSAGE = 'Are you sure?'
-const DEFAULT_CONFIRM_TEXT = 'Yes'
+export const confirmationDialogLocales = {
+  Confirmation: { en: 'Confirmation', fr: 'Confirmation', it: 'Conferma', de: 'Bestätigung', es: 'Confirmación', 'pt-BR': 'Confirmação', ru: 'Подтверждение', 'zh-CN': '确认', 'zh-TW': '確認', ja: '確認', ko: '확인' },
+  'Are you sure?': { en: 'Are you sure?', fr: 'Êtes-vous sûr ?', it: 'Confermi?', de: 'Sind Sie sicher?', es: '¿Está seguro?', 'pt-BR': 'Tem certeza?', ru: 'Вы уверены?', 'zh-CN': '确定吗？', 'zh-TW': '確定嗎？', ja: 'よろしいですか？', ko: '계속할까요?' },
+  Yes: { en: 'Yes', fr: 'Oui', it: 'Sì', de: 'Ja', es: 'Sí', 'pt-BR': 'Sim', ru: 'Да', 'zh-CN': '是', 'zh-TW': '是', ja: 'はい', ko: '예' }
+}
+
+const t = getT(confirmationDialogLocales)
+const DEFAULT_TITLE = t('Confirmation')
+const DEFAULT_MESSAGE = t('Are you sure?')
+const DEFAULT_CONFIRM_TEXT = t('Yes')
 
 const supersededError = () => new Error('Confirmation superseded')
 const rejectedError = err => (err = new Error('Confirmation denied')) && (err.code = 'DENIED_BY_USER') && err

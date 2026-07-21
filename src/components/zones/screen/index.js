@@ -24,7 +24,7 @@ import {
 } from './helpers/nostrdb-app-lifecycle.js'
 import { askAppToClearData, resetDraftAppRuntimeData } from './helpers/draft-app-runtime-reset.js'
 import { usePermissionDialogStore } from '#zones/permission-dialog/index.js'
-import { useFileNotCachedDialogStore } from '#zones/file-not-cached-dialog/index.js'
+import { getFileNotCachedText, useFileNotCachedDialogStore } from '#zones/file-not-cached-dialog/index.js'
 import '#shared/route.js'
 import { initMessageListener } from '#helpers/window-message/browser/index.js'
 import { isOnline } from '#helpers/network.js'
@@ -44,7 +44,25 @@ import '#shared/icons/icon-stack-front.js'
 import '#shared/icons/icon-remove.js'
 import '#shared/icons/icon-delete.js'
 import '#shared/icons/icon-lock.js'
+import { getAssetBudgetConfirmation } from '#i18n/asset-budget.js'
+import { getT } from '#i18n/index.js'
 import './menus/toolbar-more-menu.js'
+
+export const screenLocales = {
+  'Default User': { en: 'Default User', fr: 'Utilisateur par défaut', it: 'Utente predefinito', de: 'Standardbenutzer', es: 'Usuario predeterminado', 'pt-BR': 'Usuário padrão', ru: 'Пользователь по умолчанию', 'zh-CN': '默认用户', 'zh-TW': '預設使用者', ja: 'デフォルトユーザー', ko: '기본 사용자' },
+  'Failed to unlock account': { en: 'Failed to unlock account', fr: 'Impossible de déverrouiller le compte', it: 'Impossibile sbloccare l’account', de: 'Konto konnte nicht entsperrt werden', es: 'No se pudo desbloquear la cuenta', 'pt-BR': 'Falha ao desbloquear a conta', ru: 'Не удалось разблокировать учётную запись', 'zh-CN': '无法解锁账户', 'zh-TW': '無法解鎖帳號', ja: 'アカウントのロックを解除できませんでした', ko: '계정 잠금을 해제하지 못했습니다' },
+  'Error unlocking': { en: 'Error unlocking', fr: 'Erreur de déverrouillage', it: 'Errore durante lo sblocco', de: 'Fehler beim Entsperren', es: 'Error al desbloquear', 'pt-BR': 'Erro ao desbloquear', ru: 'Ошибка разблокировки', 'zh-CN': '解锁时出错', 'zh-TW': '解鎖時發生錯誤', ja: 'ロック解除エラー', ko: '잠금 해제 오류' },
+  'Touch to unlock': { en: 'Touch to unlock', fr: 'Touchez pour déverrouiller', it: 'Tocca per sbloccare', de: 'Zum Entsperren berühren', es: 'Toca para desbloquear', 'pt-BR': 'Toque para desbloquear', ru: 'Нажмите, чтобы разблокировать', 'zh-CN': '轻触以解锁', 'zh-TW': '輕觸以解鎖', ja: 'タップしてロック解除', ko: '탭하여 잠금 해제' },
+  Open: { en: 'Open', fr: 'Ouvrir', it: 'Apri', de: 'Öffnen', es: 'Abrir', 'pt-BR': 'Abrir', ru: 'Открыть', 'zh-CN': '打开', 'zh-TW': '開啟', ja: '開く', ko: '열기' },
+  Maximize: { en: 'Maximize', fr: 'Agrandir', it: 'Ingrandisci', de: 'Maximieren', es: 'Maximizar', 'pt-BR': 'Maximizar', ru: 'Развернуть', 'zh-CN': '最大化', 'zh-TW': '最大化', ja: '最大化', ko: '최대화' },
+  'Bring to First': { en: 'Bring to First', fr: 'Mettre au premier plan', it: 'Porta in primo piano', de: 'In den Vordergrund', es: 'Traer al frente', 'pt-BR': 'Trazer para frente', ru: 'На передний план', 'zh-CN': '置于最前', 'zh-TW': '移至最前', ja: '最前面に移動', ko: '맨 앞으로 가져오기' },
+  Minimize: { en: 'Minimize', fr: 'Réduire', it: 'Riduci', de: 'Minimieren', es: 'Minimizar', 'pt-BR': 'Minimizar', ru: 'Свернуть', 'zh-CN': '最小化', 'zh-TW': '最小化', ja: '最小化', ko: '최소화' },
+  Close: { en: 'Close', fr: 'Fermer', it: 'Chiudi', de: 'Schließen', es: 'Cerrar', 'pt-BR': 'Fechar', ru: 'Закрыть', 'zh-CN': '关闭', 'zh-TW': '關閉', ja: '閉じる', ko: '닫기' },
+  Remove: { en: 'Remove', fr: 'Retirer', it: 'Rimuovi', de: 'Entfernen', es: 'Quitar', 'pt-BR': 'Remover', ru: 'Убрать', 'zh-CN': '移除', 'zh-TW': '移除', ja: '取り除く', ko: '제거' },
+  Delete: { en: 'Delete', fr: 'Supprimer', it: 'Elimina', de: 'Löschen', es: 'Eliminar', 'pt-BR': 'Excluir', ru: 'Удалить', 'zh-CN': '删除', 'zh-TW': '刪除', ja: '削除', ko: '삭제' }
+}
+
+const t = getT(screenLocales)
 
 f('aScreen', function () {
   useInitOrResetScreen()
@@ -369,7 +387,7 @@ f('appWindow', function () {
 
         const appId = appId$()
         if (!appId) return
-        const appName = storage[`session_appById_${appId}_name$`]() || 'App Download'
+        const appName = storage[`session_appById_${appId}_name$`]() || getFileNotCachedText('App Download')
 
         // pathname === undefined means the site manifest failed to download.
         // A bare filename without leading slash is the canonical form in manifest path tags,
@@ -379,8 +397,8 @@ f('appWindow', function () {
         const onlinePromise = isCriticalFile ? isOnline() : Promise.resolve(false)
 
         const message = isCriticalFile
-          ? 'Failed to load app. Retry or remove it?'
-          : 'Failed to load app. Retry or close it?'
+          ? getFileNotCachedText('Failed to load app. Retry or remove it?')
+          : getFileNotCachedText('Failed to load app. Retry or close it?')
 
         let shouldRetry = false
         try {
@@ -492,11 +510,10 @@ f('appWindow', function () {
           signal: ac.signal,
           isSingleNapp: false,
           onFileNotCached,
-          requestAssetBudgetConfirmation: ({ nextApprovedBytes, filename }) => requestConfirmation({
-            title: 'More app storage?',
-            message: `${filename ? `${filename} needs` : 'This app needs'} more cached storage. Allow this app's assets up to ${formatAssetBudgetBytes(nextApprovedBytes)}?`,
-            confirmText: `Allow ${formatAssetBudgetBytes(nextApprovedBytes)}`
-          })
+          requestAssetBudgetConfirmation: details => requestConfirmation(getAssetBudgetConfirmation({
+            ...details,
+            formatBytes: formatAssetBudgetBytes
+          }))
         }
       )
       trustedAppIframeSrc$(`//${appSubdomain$()}.${window.location.host}/~~napp`)
@@ -725,7 +742,7 @@ f('toolbarMenu', function () {
           name: profile?.name || profile?.npub ||
             (userPk !== defaultUserPk$() &&
               base62ToBase16(userPk, { mode: 'integer', byteLength: 32 })) ||
-            'Default User',
+            t('Default User'),
           isLocked,
           index: userCounts[userPk], // User-specific index (1-indexed)
           totalCount: userCounts[userPk] // Current count (will be final after loop)
@@ -779,7 +796,7 @@ f('toolbarMenu', function () {
         )
 
         if (response.error || !response.payload?.isRouteReady) {
-          throw new Error(response.error?.message || 'Failed to unlock account')
+          throw new Error(response.error?.message || t('Failed to unlock account'))
         }
 
         closeMenu()
@@ -788,7 +805,7 @@ f('toolbarMenu', function () {
         vaultModalStore.open()
       } catch (error) {
         // Show error message
-        unlockErrors$({ ...unlockErrors$(), [userKey]: error.message || 'Error unlocking' })
+        unlockErrors$({ ...unlockErrors$(), [userKey]: error.message || t('Error unlocking') })
 
         // Clear error after 3 seconds
         setTimeout(() => {
@@ -972,7 +989,7 @@ f('toolbarMenu', function () {
               <div class="user-name">${user.name}</div>
               ${user.isLocked
                 ? this.h`<div class=${errorMessage ? 'user-unlock-error' : 'user-unlock-hint'}>
-                    ${errorMessage || 'Touch to unlock'}
+                    ${errorMessage || t('Touch to unlock')}
                   </div>`
                 : ''}
             </div>
@@ -1335,7 +1352,7 @@ f('appLaunchersMenu', function () {
     async deleteApp () {
       try {
         await requestConfirmation({
-          confirmText: 'Delete'
+          confirmText: t('Delete')
         })
       } catch (err) { if (err.code !== 'DENIED_BY_USER') console.error(err); return }
       await this._deleteApp()
@@ -1399,27 +1416,27 @@ f('appLaunchersMenu', function () {
         `}</style>
         <div class=${{ invisible: visibility === 'open' }}>
           <div class='icon-wrapper-271yiduh'><icon-maximize props=${{ size: '16px' }} /></div>
-          <div class='menu-label' onclick=${openApp}>${visibility === 'closed' ? 'Open' : 'Maximize'}</div>
+          <div class='menu-label' onclick=${openApp}>${visibility === 'closed' ? t('Open') : t('Maximize')}</div>
         </div>
         <div class=${{ invisible: visibility !== 'open' || openAppKeys[0] === appKey }}>
           <div class='icon-wrapper-271yiduh'><icon-stack-front props=${{ size: '16px' }} /></div>
-          <div class='menu-label' onclick=${bringToFirst}>Bring to First</div>
+          <div class='menu-label' onclick=${bringToFirst}>${t('Bring to First')}</div>
         </div>
         <div class=${{ invisible: visibility !== 'open' }}>
           <div class='icon-wrapper-271yiduh'><icon-minimize props=${{ size: '16px' }} /></div>
-          <div class='menu-label' onclick=${minimizeApp}>Minimize</div>
+          <div class='menu-label' onclick=${minimizeApp}>${t('Minimize')}</div>
         </div>
         <div class=${{ invisible: visibility === 'closed' }}>
           <div class='icon-wrapper-271yiduh'><icon-close props=${{ size: '16px' }} /></div>
-          <div class='menu-label' onclick=${closeApp}>Close</div>
+          <div class='menu-label' onclick=${closeApp}>${t('Close')}</div>
         </div>
         <div class=${{ invisible: appKeys.length <= 1 }}>
           <div class='icon-wrapper-271yiduh'><icon-remove props=${{ size: '16px' }} /></div>
-          <div class='menu-label' onclick=${removeApp}>Remove</div>
+          <div class='menu-label' onclick=${removeApp}>${t('Remove')}</div>
         </div>
         <div class=${{ invisible: appKeys.length !== 1 }}>
           <div class='icon-wrapper-271yiduh'><icon-delete props=${{ size: '16px' }} /></div>
-          <div class='menu-label' onclick=${deleteApp}>Delete</div>
+          <div class='menu-label' onclick=${deleteApp}>${t('Delete')}</div>
         </div>
       </div>`
     }),
