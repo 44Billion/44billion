@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 globalThis.IS_DEVELOPMENT = true
 
-const { createNostrDb } = await import('../../src/helpers/window-message/nostrdb-client.js')
+const { createNostrDb, injectEventStore } = await import('../../src/helpers/window-message/nostrdb-client.js')
 
 describe('nostrdb app-page client bridge', () => {
   it('exposes only public nostrdb methods', () => {
@@ -14,6 +14,31 @@ describe('nostrdb app-page client bridge', () => {
     })
 
     assert.deepEqual(Object.keys(nostrdb).sort(), ['add', 'addPersonalCopy', 'count', 'query', 'subscribe', 'supports'])
+  })
+
+  it('injects eventStore before the handshake', async () => {
+    const port = Promise.withResolvers()
+    const calls = []
+    const target = { napp: {} }
+    const eventStore = injectEventStore(target, port.promise, {
+      ask: async (...args) => {
+        calls.push(args)
+        return { payload: 'ok' }
+      },
+      askStream: async function * () {},
+      tell: () => {}
+    })
+
+    assert.equal(target.napp.eventStore, eventStore)
+
+    const result = eventStore.query({ kinds: [1] })
+    await Promise.resolve()
+    assert.equal(calls.length, 0)
+
+    port.resolve('port')
+    assert.equal(await result, 'ok')
+    assert.equal(calls[0][0], 'port')
+    assert.equal(calls[0][1].code, 'NOSTRDB')
   })
 
   it('sends one-shot methods over NOSTRDB', async () => {

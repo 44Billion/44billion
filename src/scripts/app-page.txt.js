@@ -1,5 +1,5 @@
 import { tell, ask } from '#helpers/window-message/index.js'
-import { createNostrDb } from '#helpers/window-message/nostrdb-client.js'
+import { injectEventStore } from '#helpers/window-message/nostrdb-client.js'
 import { createAppLocaleClient } from '#helpers/window-message/app-locale-client.js'
 
 const localeClient = createAppLocaleClient({
@@ -19,7 +19,7 @@ function injectLocale () {
   const p = Promise.withResolvers()
   injectNip07(p.promise) // first thing
   injectLocale()
-  injectNostrDb(p.promise)
+  injectEventStore(window, p.promise)
   interceptNavigations(p.promise)
   tellParentImReady(p)
   await preventSwUsage()
@@ -73,10 +73,6 @@ function tellParentImReady (p) {
   })
   browserPort.start()
   tell(window.parent, readyMsg, { targetOrigin: '*', transfer: [appPagePortForBrowser] })
-}
-
-function injectNostrDb (promise) {
-  Object.assign(window, { nostrdb: createNostrDb(promise) })
 }
 
 function injectNip07 (promise) {

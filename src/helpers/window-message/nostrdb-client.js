@@ -84,3 +84,9 @@ export function createNostrDb (browserPortPromise, {
   })
   return nostrdb
 }
+
+export function injectEventStore (target, browserPortPromise, options) {
+  const eventStore = createNostrDb(browserPortPromise, options)
+  Object.assign(target.napp, { eventStore })
+  return eventStore
+}
