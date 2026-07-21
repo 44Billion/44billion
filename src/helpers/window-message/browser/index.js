@@ -13,7 +13,7 @@ import {
 } from './nostrdb.js'
 import { needsNip07Permission, nip07PermissionContext } from './nip07-permission-context.js'
 import { appIdToAddressObj, addressObjToAppId } from '#helpers/app.js'
-import { nsiteBase36ToBase16 } from 'libp2r2p/base36'
+import { base36NsiteToBase16 } from 'libp2r2p/base36'
 import { base16ToBase62 } from 'libp2r2p/base62'
 import { appEncode, appDecode } from 'libp2r2p/nip19'
 import { streamFileChunksFromDb, getFileChunksFromDb, deleteFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
@@ -72,7 +72,7 @@ export async function initMessageListener (
   { signal: componentSignal, isSingleNapp = false, onFileNotCached = null, requestAssetBudgetConfirmation = null } = {}
 ) {
   startGlobalChunkMaintenance()
-  const userPkB16 = nsiteBase36ToBase16(userPkB36)
+  const userPkB16 = base36NsiteToBase16(userPkB36)
   const isDefaultUser = base16ToBase62(
     userPkB16,
     { mode: 'integer', minLength: 43 }

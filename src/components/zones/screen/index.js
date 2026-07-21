@@ -28,7 +28,7 @@ import { getFileNotCachedText, useFileNotCachedDialogStore } from '#zones/file-n
 import '#shared/route.js'
 import { initMessageListener } from '#helpers/window-message/browser/index.js'
 import { isOnline } from '#helpers/network.js'
-import { bytesToNsiteBase36 } from 'libp2r2p/base36'
+import { bytesToBase36Nsite } from 'libp2r2p/base36'
 import { allocateAppSubdomain, releaseAppSubdomain } from '#helpers/subdomain-mapping.js'
 import { useVaultModalStore, useVaultActor } from '#zones/vault-modal/index.js'
 import { base62ToBase16, base62ToBytes } from 'libp2r2p/base62'
@@ -296,7 +296,7 @@ f('appWindow', function () {
   const {
     [`session_appByKey_${this.props.appKey}_visibility$`]: appVisibility$
   } = tabStorage
-  const userPkB36$ = useComputed(() => (userPk$() || '') && bytesToNsiteBase36(
+  const userPkB36$ = useComputed(() => (userPk$() || '') && bytesToBase36Nsite(
     base62ToBytes(userPk$(), { mode: 'integer', byteLength: 32 })
   ))
   const appSubdomain$ = useComputed(() => {

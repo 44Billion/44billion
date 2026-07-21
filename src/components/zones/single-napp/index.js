@@ -1,7 +1,7 @@
 import { f, useClosestStore, useSignal, useTask, useComputed } from '#f'
 import useWebStorage from '#hooks/use-web-storage.js'
 import { appDecode } from 'libp2r2p/nip19'
-import { bytesToNsiteBase36 } from 'libp2r2p/base36'
+import { bytesToBase36Nsite } from 'libp2r2p/base36'
 import { base62ToBytes } from 'libp2r2p/base62'
 import { addressObjToAppId } from '#helpers/app.js'
 import { initMessageListener } from '#helpers/window-message/browser/index.js'
@@ -75,7 +75,7 @@ f('singleNappLauncher', function () {
   const {
     [`session_workspaceByKey_${wsKey}_userPk$`]: userPk$
   } = storage
-  const userPkB36$ = useComputed(() => bytesToNsiteBase36(
+  const userPkB36$ = useComputed(() => bytesToBase36Nsite(
     base62ToBytes(userPk$(), { mode: 'integer', byteLength: 32 })
   ))
   const appSubdomain$ = useComputed(() => {
