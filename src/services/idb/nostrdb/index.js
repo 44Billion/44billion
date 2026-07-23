@@ -60,9 +60,9 @@ import {
 import {
   blobReferencesFromTags,
   normalizeChunkEventForOwner,
-  validateCanonicalOwnerChunkEvent,
-  verifyNostrEventWithoutCache
+  validateCanonicalOwnerChunkEvent
 } from './chunk-event.js'
+import { isValidEvent } from 'libp2r2p/event'
 
 export const NOSTRDB_VERSION = 1
 export const NOSTRDB_PREFIX = '44billion_nostrdb:'
@@ -317,7 +317,7 @@ export class NostrDb {
       const claimedPersonalChunk = isPersonalCopyEvent(event) &&
         personalCopyEncryptionKind(event) === 34601
       if (claimedPersonalChunk) {
-        if (!isValidEventShape(event) || !verifyNostrEventWithoutCache(event)) throw new Error('Invalid personal-copy wrapper')
+        if (!isValidEventShape(event) || !isValidEvent(event)) throw new Error('Invalid personal-copy wrapper')
         const inner = await extractPersonalCopyChunkForAdd(event, {
           decrypt: this.personalCopyDecrypt,
           obfuscate: this.personalCopyObfuscate,

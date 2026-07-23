@@ -1,5 +1,4 @@
-import { getEventHash, validateEvent, verifyEvent } from 'nostr-tools'
-
+import { getEventHash, isValidEvent } from 'libp2r2p/event'
 import { eventKinds } from '#constants/event.js'
 import { bytesToBase64Url } from 'libp2r2p/base64'
 
@@ -122,7 +121,7 @@ function isVerifiedSignedPersonalCopyInner (event) {
   if (!hasValidInnerBase(event)) return false
 
   try {
-    return validateEvent(event) && event.id === getEventHash(event) && verifyEvent(event)
+    return isValidEvent(event)
   } catch {
     return false
   }

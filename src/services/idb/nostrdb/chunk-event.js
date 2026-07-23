@@ -1,7 +1,7 @@
 import { sha256 } from '@noble/hashes/sha2.js'
 import { encode } from 'libp2r2p/base93'
 import { bytesToBase16 } from 'libp2r2p/base16'
-import { verifyEvent } from 'nostr-tools'
+import { isValidEvent } from 'libp2r2p/event'
 
 import { parseIrfsChunkEvent } from '#services/irfs-chunk.js'
 
@@ -24,21 +24,6 @@ function hasSignedFields (event) {
     Object.hasOwn(event, 'id') ||
     Object.hasOwn(event, 'sig')
   )
-}
-
-export function verifyNostrEventWithoutCache (event) {
-  if (!event || typeof event !== 'object') return false
-  return verifyEvent({
-    id: event.id,
-    pubkey: event.pubkey,
-    created_at: event.created_at,
-    kind: event.kind,
-    tags: Array.isArray(event.tags)
-      ? event.tags.map(tag => Array.isArray(tag) ? [...tag] : tag)
-      : event.tags,
-    content: event.content,
-    sig: event.sig
-  })
 }
 
 function hasOnlyCanonicalEventFields (event) {
@@ -70,7 +55,7 @@ function validateSignedInput (event) {
     typeof event.id !== 'string' ||
     typeof event.sig !== 'string' ||
     typeof event.pubkey !== 'string' ||
-    !verifyNostrEventWithoutCache(event)
+    !isValidEvent(event)
   ) throw new Error('Invalid signed chunk event')
   return true
 }
@@ -89,7 +74,7 @@ function validSignedCanonicalResult (event, template, ownerPubkey, data) {
     event.content === data.canonicalContent &&
     sameTags(event.tags, data.tags) &&
     hasOnlyCanonicalEventFields(event) &&
-    verifyNostrEventWithoutCache(event)
+    isValidEvent(event)
 }
 
 export async function normalizeChunkEventForOwner (event, {

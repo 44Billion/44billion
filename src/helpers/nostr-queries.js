@@ -1,7 +1,7 @@
 import { relayPool as nostrRelays, seedRelays } from 'libp2r2p/relay'
 import { nappRelays } from '#config/relays.js'
 import { shouldIncludeNappRelays } from '#helpers/app.js'
-import { isValidRelayUrl } from '#helpers/relay.js'
+import { isValidPublicRelayUrl, normalizeRelayUrl } from 'libp2r2p/url'
 
 export async function getSiteManifest (appIdObj, userRelays) {
   if (!appIdObj.pubkey || !appIdObj.kind || !appIdObj.dTag) throw new Error('Missing args')
@@ -162,9 +162,10 @@ export async function getUserRelays (authors) {
     .reduce((r, v) => {
       ;(v.tags ?? []).forEach((tag) => {
         if (tag[0] !== 'r' || typeof tag[1] !== 'string') return
-        const url = tag[1].trim().replace(/\/+$/, '')
+        let url
+        try { url = normalizeRelayUrl(tag[1]) } catch { return }
 
-        if (isValidRelayUrl(url)) {
+        if (isValidPublicRelayUrl(url)) {
           keys = [tag[2]].filter(v2 => keyAllowList[v2])
           if (keys.length === 0) keys = defaultRelayTypes
           keys.forEach(k => r[v.pubkey][k].add(url))

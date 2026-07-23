@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { finalizeEvent } from 'nostr-tools'
+import { finalizeEvent } from 'libp2r2p/event'
 
 import {
   DELETIONS_STORE,

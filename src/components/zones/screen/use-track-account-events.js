@@ -3,7 +3,7 @@ import useWebStorage from '#hooks/use-web-storage.js'
 import { relayPool as nostrRelays, seedRelays } from 'libp2r2p/relay'
 import { tellVault } from '#zones/vault-modal/index.js'
 import { base62ToBase16 } from 'libp2r2p/base62'
-import { isValidRelayUrl } from '#helpers/relay.js'
+import { isValidPublicRelayUrl, normalizeRelayUrl } from 'libp2r2p/url'
 
 // pk (base62) -> AbortController for all subscriptions related to that account
 const activeSubscriptions = new Map()
@@ -43,8 +43,9 @@ function extractWriteRelays (event) {
     if (tag[0] !== 'r' || typeof tag[1] !== 'string') continue
     const type = tag[2]
     if (type && type !== 'write') continue // skip read-only relays
-    const url = tag[1].trim().replace(/\/+$/, '')
-    if (isValidRelayUrl(url)) relays.push(url)
+    let url
+    try { url = normalizeRelayUrl(tag[1]) } catch { continue }
+    if (isValidPublicRelayUrl(url)) relays.push(url)
   }
   return relays
 }

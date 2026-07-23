@@ -1,9 +1,9 @@
 import { freeRelays } from 'libp2r2p/relay'
 import { nfileDecode } from 'libp2r2p/nip19'
+import { isValidPublicRelayUrl, normalizeRelayUrl } from 'libp2r2p/url'
 
 import { APP_FILE_CHUNK_BYTES } from '#constants/app-file.js'
 import { getUserRelays } from '#helpers/nostr-queries.js'
-import { isValidRelayUrl } from '#helpers/relay.js'
 import {
   findAnyLocalChunk,
   findLocalChunk,
@@ -70,8 +70,10 @@ class SlidingArrivalTimeout {
 function uniqueValidRelays (values) {
   return [...new Set(values
     .filter(value => typeof value === 'string')
-    .map(value => value.trim().replace(/\/+$/, ''))
-    .filter(isValidRelayUrl))]
+    .map(value => {
+      try { return normalizeRelayUrl(value) } catch {}
+    })
+    .filter(isValidPublicRelayUrl))]
 }
 
 function safeMime (value) {

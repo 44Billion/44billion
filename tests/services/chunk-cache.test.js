@@ -3,7 +3,8 @@ import { describe, it } from 'node:test'
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import NMMR from 'nmmr'
 import { encode } from 'libp2r2p/base93'
-import { finalizeEvent, getPublicKey, verifyEvent } from 'nostr-tools'
+import { finalizeEvent, isValidEvent } from 'libp2r2p/event'
+import { getPublicKey } from 'libp2r2p/key'
 import { buildPersonalCopyUnsignedEvent } from '#helpers/personal-copy.js'
 
 globalThis.indexedDB = indexedDB
@@ -89,7 +90,7 @@ describe('normalized global chunk cache', () => {
     assert.equal(result.ok, true)
     assert.notEqual(result.storedEvent.id, fixture.event.id)
     assert.equal(result.storedEvent.pubkey, owner.pubkey)
-    assert.equal(verifyEvent(result.storedEvent), true)
+    assert.equal(isValidEvent(result.storedEvent), true)
 
     const rawDb = await openNostrDb(owner.pubkey)
     const transaction = rawDb.transaction([EVENTS_STORE], 'readonly')
@@ -104,7 +105,7 @@ describe('normalized global chunk cache', () => {
     const queried = (await db.query({ kinds: [34601] })).results[0]
     assert.equal(queried.content, fixture.template.content)
     assert.equal(queried.id, result.storedEvent.id)
-    assert.equal(verifyEvent(queried), true)
+    assert.equal(isValidEvent(queried), true)
     assert.deepEqual(
       (await getChunkPayloadForEvent(owner.pubkey, queried.id)).contentBytes,
       fixture.chunk.contentBytes
@@ -145,7 +146,7 @@ describe('normalized global chunk cache', () => {
     assert.equal(normalized.ok, true)
     assert.equal(signatures, 1)
     assert.deepEqual(normalized.storedEvent.tags, fixture.template.tags)
-    assert.equal(verifyEvent(normalized.storedEvent), true)
+    assert.equal(isValidEvent(normalized.storedEvent), true)
 
     const tampered = { ...await owner.signEvent({ ...fixture.template, created_at: 124 }), created_at: 125 }
     assert.equal((await db.add(tampered, { signEvent: owner.signEvent })).code, 'invalid')

@@ -2,8 +2,8 @@ import { useTask, useCallback, useGlobalStore } from '#f'
 import useLocation from '#hooks/use-location.js'
 import useWebStorage from '#hooks/use-web-storage.js'
 import { NAPP_ENTITY_REGEX, appDecode } from 'libp2r2p/nip19'
+import { isValidPublicRelayUrl, normalizeRelayUrl } from 'libp2r2p/url'
 import { addressObjToAppId } from '#helpers/app.js'
-import { isValidRelayUrl } from '#helpers/relay.js'
 import router from '#zones/multi-napp/router.js'
 import { requestNostrDbAppBackfillForWorkspace } from './helpers/nostrdb-app-backfill.js'
 
@@ -78,8 +78,10 @@ export default function useAppRouter () {
     const decodedApp = appDecode(napp)
     const appId = addressObjToAppId(decodedApp)
     const decodedAppRelays = decodedApp.relays.slice(0, 4)
-      .map(v => v.trim().replace(/\/+$/, ''))
-      .filter(isValidRelayUrl)
+      .map(value => {
+        try { return normalizeRelayUrl(value) } catch {}
+      })
+      .filter(isValidPublicRelayUrl)
       .slice(0, 2)
     if (decodedAppRelays.length > 0) {
       storage[`session_appById_${appId}_relayHints$`](decodedAppRelays)
