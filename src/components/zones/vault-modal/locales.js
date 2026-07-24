@@ -1,0 +1,80 @@
+export const vaultModalLocales = {
+  '44b-vault is being discontinued': {
+    en: '44b-vault is being discontinued',
+    fr: '44b-vault va être abandonné',
+    it: '44b-vault verrà dismesso',
+    de: '44b-vault wird eingestellt',
+    es: '44b-vault dejará de estar disponible',
+    'pt-BR': 'O 44b-vault será descontinuado',
+    ru: '44b-vault выводится из эксплуатации',
+    'zh-CN': '44b-vault 即将停用',
+    'zh-TW': '44b-vault 即將停用',
+    ja: '44b-vault は廃止予定です',
+    ko: '44b-vault 서비스가 종료될 예정입니다'
+  },
+  'To continue, choose an option below. Back up your keys first if you may need them; keys are not transferred automatically.': {
+    en: 'To continue, choose an option below. Back up your keys first if you may need them; keys are not transferred automatically.',
+    fr: 'Pour continuer, choisissez une option ci-dessous. Sauvegardez d’abord vos clés si vous pouvez en avoir besoin ; elles ne sont pas transférées automatiquement.',
+    it: 'Per continuare, scegli un’opzione qui sotto. Esegui prima il backup delle chiavi se potrebbero servirti; le chiavi non vengono trasferite automaticamente.',
+    de: 'Wählen Sie unten eine Option, um fortzufahren. Sichern Sie Ihre Schlüssel zuerst, falls Sie sie noch benötigen; Schlüssel werden nicht automatisch übertragen.',
+    es: 'Para continuar, elige una opción. Haz primero una copia de seguridad si puedes necesitar tus claves; no se transfieren automáticamente.',
+    'pt-BR': 'Para continuar, escolha uma opção abaixo. Faça primeiro o backup se ainda puder precisar das chaves; elas não são transferidas automaticamente.',
+    ru: 'Чтобы продолжить, выберите вариант ниже. Сначала сохраните резервную копию ключей, если они могут понадобиться; автоматически ключи не переносятся.',
+    'zh-CN': '要继续，请选择下方选项。如果以后可能需要这些密钥，请先备份；密钥不会自动转移。',
+    'zh-TW': '若要繼續，請選擇下方選項。如果之後可能需要這些金鑰，請先備份；金鑰不會自動移轉。',
+    ja: '続行するには、以下のいずれかを選択してください。鍵が必要になる可能性がある場合は先にバックアップしてください。鍵は自動では移行されません。',
+    ko: '계속하려면 아래 옵션을 선택하세요. 키가 다시 필요할 수 있다면 먼저 백업하세요. 키는 자동으로 이전되지 않습니다.'
+  },
+  'Back up in 44b-vault': {
+    en: 'Back up in 44b-vault',
+    fr: 'Sauvegarder dans 44b-vault',
+    it: 'Backup in 44b-vault',
+    de: 'In 44b-vault sichern',
+    es: 'Hacer copia en 44b-vault',
+    'pt-BR': 'Fazer backup no 44b-vault',
+    ru: 'Создать копию в 44b-vault',
+    'zh-CN': '在 44b-vault 中备份',
+    'zh-TW': '在 44b-vault 中備份',
+    ja: '44b-vault でバックアップ',
+    ko: '44b-vault에서 백업'
+  },
+  'Use EZ Vault': {
+    en: 'Use EZ Vault',
+    fr: 'Utiliser EZ Vault',
+    it: 'Usa EZ Vault',
+    de: 'EZ Vault verwenden',
+    es: 'Usar EZ Vault',
+    'pt-BR': 'Usar o EZ Vault',
+    ru: 'Использовать EZ Vault',
+    'zh-CN': '使用 EZ Vault',
+    'zh-TW': '使用 EZ Vault',
+    ja: 'EZ Vault を使用',
+    ko: 'EZ Vault 사용'
+  },
+  'Could not open the backup. Try again.': {
+    en: 'Could not open the backup. Try again.',
+    fr: 'Impossible d’ouvrir la sauvegarde. Réessayez.',
+    it: 'Impossibile aprire il backup. Riprova.',
+    de: 'Die Sicherung konnte nicht geöffnet werden. Versuchen Sie es erneut.',
+    es: 'No se pudo abrir la copia de seguridad. Inténtalo de nuevo.',
+    'pt-BR': 'Não foi possível abrir o backup. Tente novamente.',
+    ru: 'Не удалось открыть резервное копирование. Повторите попытку.',
+    'zh-CN': '无法打开备份。请重试。',
+    'zh-TW': '無法開啟備份。請再試一次。',
+    ja: 'バックアップを開けませんでした。もう一度お試しください。',
+    ko: '백업을 열 수 없습니다. 다시 시도하세요.'
+  },
+  'Close vault': {
+    en: 'Close vault',
+    fr: 'Fermer le coffre',
+    it: 'Chiudi il vault',
+    de: 'Vault schließen',
+    es: 'Cerrar vault',
+    'pt-BR': 'Fechar vault',
+    ru: 'Закрыть хранилище',
+    'zh-CN': '关闭保管库',
+    'zh-TW': '關閉保管庫',
+    ja: 'Vault を閉じる',
+    ko: 'Vault 닫기'
+  }
+}

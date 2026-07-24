@@ -11,8 +11,23 @@ import {
 } from '#helpers/window-message/browser/vault-nostrdb.js'
 import { flushVaultAcceptedMessageQueue } from '#helpers/window-message/browser/vault-accepted-message-queue.js'
 import { isNostrDbAppInstalledForOwner } from '#zones/screen/helpers/nostrdb-app-lifecycle.js'
-import { getEffectiveLocale, subscribeLocaleChanged } from '#i18n/index.js'
+import { getEffectiveLocale, getT, subscribeLocaleChanged } from '#i18n/index.js'
+import { useLocaleSignal } from '#i18n/use-locale.js'
+import { cssClasses, cssStrings, cssVars } from '#assets/styles/theme.js'
 import '#shared/modal.js'
+import '#shared/dialog.js'
+import {
+  EZ_VAULT_URL,
+  drawerPositionAtOpen,
+  isLegacyVaultUrl,
+  isSameVaultUrl,
+  shouldShowVaultMigration
+} from './presentation.js'
+import { vaultModalLocales } from './locales.js'
+
+export { isLegacyVaultUrl } from './presentation.js'
+
+const t = getT(vaultModalLocales)
 
 export function useVaultModalStore (init) {
   if (init) return useVaultModalInit(init)
@@ -23,9 +38,92 @@ function useVaultModalInit (init) {
   return useClosestStore('<a-modal>', init)
 }
 
-f('vaultModal', function () {
-  // other components may open/close it
+f('vault-modal', ({ h }) => {
+  const locale$ = useLocaleSignal()
   const upstreamStore = useVaultModalStore()
+  const storage = useWebStorage(localStorage)
+  const { config_vaultUrl$: vaultUrl$ } = storage
+  const messengerStore = useVaultMessengerStore({ shouldInit: true })
+  // init it even if vault isn't ready yet cause other components may
+  // try to use its methods
+  useVaultActor(messengerStore.vaultPort$)
+
+  const presentation = useStore(() => ({
+    drawerPosition$: drawerPositionAtOpen(),
+    drawerNoCloseOnEscape$: false,
+    drawerNoCloseOnBackdrop$: false,
+    drawerShowCloseButton$: true,
+    drawerHeading$: '',
+    drawerDescription$: '',
+    drawerThemeClass$: cssClasses.defaultTheme,
+    drawerStyle$: `
+      --a-drawer-width: min(360px, calc(100dvw - 32px));
+      --a-dialog-background: ${cssVars.colors.bg};
+      --a-dialog-border-color: ${cssVars.colors.mg2};
+      --a-dialog-text: ${cssVars.colors.fg};
+      --a-dialog-close-background: ${cssVars.colors.bg2Lighter};
+      --a-dialog-close-text: ${cssVars.colors.fg2};
+    `,
+    migrationPendingEzOpen$: false,
+    captureDrawerPosition () {
+      this.drawerPosition$(drawerPositionAtOpen())
+    }
+  }))
+  const isLegacy$ = useComputed(() => isLegacyVaultUrl(vaultUrl$()))
+  const drawerCloseLabel$ = useComputed(() => {
+    locale$()
+    return t('Close vault')
+  })
+  const migrationOpen$ = useComputed(() => shouldShowVaultMigration({
+    vaultUrl: vaultUrl$(),
+    connectedVaultUrl: messengerStore.connectedVaultUrl$(),
+    vaultPort: messengerStore.vaultPort$(),
+    isOpen: upstreamStore.isOpen$()
+  }))
+
+  // Keep the next edge current only while the EZ/custom drawer is closed.
+  // Opening removes the listener, freezing the captured edge until close.
+  useTask(({ track, cleanup }) => {
+    const [isOpen, isLegacy] = track(() => [upstreamStore.isOpen$(), isLegacy$()])
+    if (isOpen || isLegacy) return
+
+    const orientation = matchMedia('(orientation: portrait)')
+    const capture = () => presentation.captureDrawerPosition()
+    capture()
+    orientation.addEventListener('change', capture)
+    cleanup(() => orientation.removeEventListener('change', capture))
+  })
+
+  // Switching from the migration dialog waits for the replacement iframe's
+  // own port, rather than mistaking the still-connected legacy port for EZ.
+  useTask(({ track }) => {
+    const [isPending, vaultUrl, connectedVaultUrl, vaultPort] = track(() => [
+      presentation.migrationPendingEzOpen$(),
+      vaultUrl$(),
+      messengerStore.connectedVaultUrl$(),
+      messengerStore.vaultPort$()
+    ])
+    if (isPending && !isSameVaultUrl(vaultUrl, EZ_VAULT_URL)) {
+      presentation.migrationPendingEzOpen$(false)
+      return
+    }
+    if (
+      !isPending ||
+      !vaultPort ||
+      !isSameVaultUrl(vaultUrl, EZ_VAULT_URL) ||
+      !isSameVaultUrl(connectedVaultUrl, EZ_VAULT_URL)
+    ) return
+
+    presentation.migrationPendingEzOpen$(false)
+    presentation.captureDrawerPosition()
+    upstreamStore.open()
+  })
+
+  const useEzVault = () => {
+    vaultUrl$(EZ_VAULT_URL)
+    presentation.migrationPendingEzOpen$(true)
+  }
+
   const modalProps = useStore(() => ({
     ...upstreamStore,
     shouldAlwaysDisplay$: true,
@@ -33,7 +131,56 @@ f('vaultModal', function () {
       return this.h`<vault-messenger-wrapper />`
     })
   }))
-  return this.h`<a-modal props=${modalProps} />`
+
+  return h`
+    <style>${cssStrings.defaultTheme}</style>
+    ${isLegacy$()
+      ? h`<a-modal props=${modalProps} />`
+      : h`
+          <a-dialog
+            props=${{
+              open$: upstreamStore.isOpen$,
+              heading$: presentation.drawerHeading$,
+              description$: presentation.drawerDescription$,
+              noCloseOnEscape$: presentation.drawerNoCloseOnEscape$,
+              noCloseOnBackdrop$: presentation.drawerNoCloseOnBackdrop$,
+              showCloseButton$: presentation.drawerShowCloseButton$,
+              drawerPosition$: presentation.drawerPosition$,
+              closeLabel$: drawerCloseLabel$,
+              themeClass$: presentation.drawerThemeClass$,
+              style$: presentation.drawerStyle$,
+              onDialogClose: upstreamStore.close.bind(upstreamStore),
+              onDialogCancel: upstreamStore.close.bind(upstreamStore),
+              children: {
+                default: h`
+                  <div class="vault-drawer-content">
+                    <style>${/* css */`
+                      .vault-drawer-content {
+                        width: 100%;
+                        height: 100%;
+                        min-height: 0;
+                      }
+
+                      .vault-drawer-content vault-messenger-wrapper,
+                      .vault-drawer-content vault-messenger {
+                        display: block;
+                        width: 100%;
+                        height: 100%;
+                        min-height: 0;
+                      }
+                    `}</style>
+                    <vault-messenger-wrapper />
+                  </div>
+                `
+              }
+            }}
+          />
+        `}
+    <vault-migration-dialog props=${{
+      open$: migrationOpen$,
+      onUseEzVault: useEzVault
+    }} />
+  `
 })
 
 f('vault-messenger-wrapper', function () {
@@ -46,12 +193,13 @@ f('vault-messenger-wrapper', function () {
     if (vaultUrl$() !== undefined) return
 
     vaultUrl$(IS_DEVELOPMENT
+      // EZ Vault's local development server.
       // Or 'http://vault.localhost:10000' if using npm run _start
       // but Chrome support was lacking
       ? 'http://localhost:4000'
       // http://vault.localhost asks for usb device instead of for browser extension
       // ? `${location.protocol}//vault.${location.host}`
-      : 'https://44billion.github.io/44b-vault')
+      : EZ_VAULT_URL)
   })
 
   const isReachable$ = useSignal(false)
@@ -88,13 +236,187 @@ f('vault-messenger-wrapper', function () {
     check()
   }, { after: 'rendering' })
 
-  const { vaultPort$ } = useVaultMessengerStore({ shouldInit: true })
-  // init it even if vault isn't ready yet cause other components may try to use its methods
-  useVaultActor(vaultPort$)
-
   if (!vaultUrl$() || !isReachable$()) return this.h``
 
   return this.h`${this.h({ key: vaultUrl$() })`<vault-messenger />`}`
+})
+
+f('vault-migration-dialog', ({ h, props }) => {
+  const locale$ = useLocaleSignal()
+  const vaultModalStore = useVaultModalStore()
+  const { askVault } = useVaultActor()
+  const { disableStartAtVaultHomeWorkaroundThisTime } = useVaultMessengerStore()
+  const s = useStore(() => ({
+    isBusy$: false,
+    hasError$: false,
+    wasOpen: false,
+    noCloseOnEscape$: true,
+    noCloseOnBackdrop$: true,
+    showCloseButton$: false,
+    drawerPosition$: '',
+    description$: '',
+    themeClass$: cssClasses.defaultTheme,
+    dialogStyle$: `
+      --a-dialog-background: ${cssVars.colors.bg2Lighter};
+      --a-dialog-border-color: ${cssVars.colors.mg2};
+      --a-dialog-text: ${cssVars.colors.fg2};
+      --a-dialog-focus-ring: ${cssVars.colors.bgPrimary};
+      --a-dialog-z-index: 1100;
+    `,
+    async openBackup () {
+      if (this.isBusy$()) return
+      this.isBusy$(true)
+      this.hasError$(false)
+      try {
+        const response = await askVault(
+          { code: 'OPEN_VAULT_BACKUP', payload: null },
+          { timeout: 120000, instant: true }
+        )
+        if (response.error || !response.payload?.isRouteReady) {
+          throw response.error || new Error('Backup route was not ready')
+        }
+
+        // The legacy route was selected deliberately; don't let opening the
+        // modal's Firefox workaround navigate back home over it.
+        disableStartAtVaultHomeWorkaroundThisTime()
+        vaultModalStore.open()
+      } catch (error) {
+        console.warn('Failed to open the legacy vault backup', error)
+        this.hasError$(true)
+      } finally {
+        this.isBusy$(false)
+      }
+    },
+    useEzVault () {
+      if (this.isBusy$()) return
+      this.isBusy$(true)
+      this.hasError$(false)
+      try {
+        props.onUseEzVault()
+      } catch (error) {
+        console.warn('Failed to select EZ Vault', error)
+        this.hasError$(true)
+        this.isBusy$(false)
+      }
+    }
+  }))
+  const heading$ = useComputed(() => {
+    locale$()
+    return t('44b-vault is being discontinued')
+  })
+
+  useTask(({ track }) => {
+    const isOpen = track(() => props.open$())
+    if (isOpen && !s.wasOpen) {
+      s.isBusy$(false)
+      s.hasError$(false)
+    }
+    s.wasOpen = isOpen
+  })
+
+  locale$()
+  return h`
+    <a-dialog
+      props=${{
+        open$: props.open$,
+        heading$,
+        description$: s.description$,
+        noCloseOnEscape$: s.noCloseOnEscape$,
+        noCloseOnBackdrop$: s.noCloseOnBackdrop$,
+        showCloseButton$: s.showCloseButton$,
+        drawerPosition$: s.drawerPosition$,
+        themeClass$: s.themeClass$,
+        style$: s.dialogStyle$,
+        children: {
+          default: h`
+            <div class="vault-migration-card">
+              <style>${/* css */`
+                .vault-migration-card {
+                  width: min(460px, calc(100dvw - 96px));
+                  color: ${cssVars.colors.fg2};
+                }
+
+                .vault-migration-copy {
+                  margin: 0;
+                  line-height: 1.5;
+                }
+
+                .vault-migration-error {
+                  min-height: 1.4em;
+                  margin-block-start: 14px;
+                  color: ${cssVars.colors.fgError};
+                  font-size: 14rem;
+                }
+
+                .vault-migration-actions {
+                  display: flex;
+                  flex-wrap: wrap;
+                  justify-content: flex-end;
+                  gap: 10px;
+                  margin-block-start: 18px;
+                }
+
+                .vault-migration-actions button {
+                  min-height: 40px;
+                  padding: 8px 14px;
+                  border: 1px solid ${cssVars.colors.mg2};
+                  border-radius: 7px;
+                  color: ${cssVars.colors.fg2};
+                  background: ${cssVars.colors.bg3};
+                  cursor: pointer;
+                }
+
+                .vault-migration-actions button[data-primary='true'] {
+                  border-color: ${cssVars.colors.bgPrimary};
+                  color: ${cssVars.colors.fgAccent};
+                  background: ${cssVars.colors.bgPrimary};
+                }
+
+                .vault-migration-actions button:disabled {
+                  opacity: 0.55;
+                  cursor: wait;
+                }
+
+                @media (max-width: 520px) {
+                  .vault-migration-card {
+                    width: min(460px, calc(100dvw - 72px));
+                  }
+
+                  .vault-migration-actions {
+                    align-items: stretch;
+                    flex-direction: column;
+                  }
+                }
+              `}</style>
+              <p class="vault-migration-copy">
+                ${t('To continue, choose an option below. Back up your keys first if you may need them; keys are not transferred automatically.')}
+              </p>
+              <div class="vault-migration-error" role="alert">
+                ${s.hasError$() ? t('Could not open the backup. Try again.') : ''}
+              </div>
+              <div class="vault-migration-actions">
+                <button
+                  type="button"
+                  disabled=${s.isBusy$()}
+                  onclick=${s.openBackup}
+                >
+                  ${t('Back up in 44b-vault')}
+                </button>
+                <button
+                  type="button"
+                  data-primary="true"
+                  disabled=${s.isBusy$()}
+                  onclick=${s.useEzVault}
+                >
+                  ${t('Use EZ Vault')}
+                </button>
+              </div>
+            </div>
+          `
+        }
+      }}
+    />
+  `
 })
 
 function useVaultMessengerStore ({ shouldInit = false } = {}) {
@@ -109,7 +431,8 @@ function useVaultMessengerStore ({ shouldInit = false } = {}) {
     vaultIframeRef$: null,
     vaultIframeSrc$: 'about:blank',
     isVaultMessengerReady$: false,
-    widgetHeight$: 0
+    widgetHeight$: 0,
+    connectedVaultUrl$: null
   }))
 }
 
@@ -121,6 +444,7 @@ f('vault-messenger', function () {
     vaultIframeSrc$,
     isVaultMessengerReady$,
     widgetHeight$,
+    connectedVaultUrl$,
     isWorkarounEnabled$
   } = useVaultMessengerStore()
 
@@ -129,6 +453,7 @@ f('vault-messenger', function () {
   // the port won't be stuck to the previous one
   useTask(({ cleanup }) => cleanup(() => {
     vaultPort$(null)
+    connectedVaultUrl$(null)
     vaultIframeSrc$('about:blank')
   }))
 
@@ -138,7 +463,7 @@ f('vault-messenger', function () {
     config_vaultUrl$: vaultUrl$
   } = storage
 
-  const { cancelPreviousRequests, tellVault } = useVaultActor(vaultPort$)
+  const { cancelPreviousRequests, tellVault } = useVaultActor()
   const vaultModalStore = useVaultModalStore()
   const { isOpen$ } = vaultModalStore
   useTask(({ track }) => {
@@ -209,7 +534,9 @@ f('vault-messenger', function () {
       storage,
       tabStorage,
       stopRenderHandshake,
-      vaultModalStore
+      vaultModalStore,
+      connectedVaultUrl$,
+      connectedVaultUrl: vaultUrl$()
     })
     isVaultMessengerReady$(true)
   }, { after: 'rendering' })
@@ -235,8 +562,13 @@ f('vault-messenger', function () {
       allow='clipboard-write;
              publickey-credentials-create;
              publickey-credentials-get'
-      style=${{ height: `${widgetHeight$()}px` }}
+      style=${{
+        height: isLegacyVaultUrl(vaultUrl$())
+          ? `${widgetHeight$()}px`
+          : '100%'
+      }}
       id='vault'
+      title='Vault'
       ref=${vaultIframeRef$}
       src=${vaultIframeSrc$()}
     />
@@ -273,7 +605,9 @@ function initMessageListener ({
   storage,
   tabStorage,
   stopRenderHandshake,
-  vaultModalStore
+  vaultModalStore,
+  connectedVaultUrl$,
+  connectedVaultUrl
 }) {
   let currentVaultPort = null
   const vaultNostrDbSubscriptions = new Map()
@@ -287,6 +621,7 @@ function initMessageListener ({
       currentVaultPort.close()
       currentVaultPort = null
       _activeVaultPort = null
+      connectedVaultUrl$(null)
       _pendingVaultMessages.length = 0
       closeTrustedVaultNostrDbSubscriptions(vaultNostrDbSubscriptions)
     }
@@ -322,6 +657,7 @@ function initMessageListener ({
     _pendingVaultMessages.splice(0).forEach(msg => tell(_activeVaultPort, msg))
     flushQueuedVaultAcceptedMessages({ vaultPort: currentVaultPort })
       .catch(err => console.warn('Failed to flush queued vault messages', err))
+    connectedVaultUrl$(connectedVaultUrl)
     vaultPort$(currentVaultPort)
   }, { signal: componentSignal })
 

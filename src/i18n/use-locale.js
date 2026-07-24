@@ -3,7 +3,7 @@ import { getEffectiveLocale, subscribeLocaleChanged } from './index.js'
 
 const LOCALE_SIGNAL_NAMESPACE = 'i18n_effectiveLocale'
 
-function useLocaleSignal () {
+export function useLocaleSignal () {
   return useGlobalSignal(
     LOCALE_SIGNAL_NAMESPACE,
     getEffectiveLocale,

@@ -7,7 +7,7 @@
   "type": "module",
   "scripts": {
     "_start": "NODE_ENV=development npm run _build & NODE_ENV=development node server/dev-server.js",
-    "start": "cd ../44b-vault && npm run start & npm run _start",
+    "start": "cd ../ez-vault && npm run start & npm run _start",
     "build": "NODE_ENV=production npm run _build",
     "_build": "node bin/build.js",
     "test": "node --test --experimental-test-module-mocks 'tests/**/*.test.js'",

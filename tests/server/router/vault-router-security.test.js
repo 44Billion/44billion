@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import path from 'node:path'
 
 describe('Vault Router Security', () => {
-  const vaultDocsRoot = path.resolve(process.cwd(), '../vault/docs')
+  const vaultDocsRoot = path.resolve(process.cwd(), '../ez-vault/docs')
 
   describe('Path Traversal Detection', () => {
     it('should allow legitimate paths', () => {
