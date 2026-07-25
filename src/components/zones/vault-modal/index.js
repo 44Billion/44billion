@@ -12,7 +12,6 @@ import {
 import { flushVaultAcceptedMessageQueue } from '#helpers/window-message/browser/vault-accepted-message-queue.js'
 import { isNostrDbAppInstalledForOwner } from '#zones/screen/helpers/nostrdb-app-lifecycle.js'
 import { getEffectiveLocale, getT, subscribeLocaleChanged } from '#i18n/index.js'
-import { useLocaleSignal } from '#i18n/use-locale.js'
 import { cssClasses, cssStrings, cssVars } from '#assets/styles/theme.js'
 import '#shared/modal.js'
 import '#shared/dialog.js'
@@ -39,7 +38,6 @@ function useVaultModalInit (init) {
 }
 
 f('vault-modal', ({ h }) => {
-  const locale$ = useLocaleSignal()
   const upstreamStore = useVaultModalStore()
   const storage = useWebStorage(localStorage)
   const { config_vaultUrl$: vaultUrl$ } = storage
@@ -70,10 +68,7 @@ f('vault-modal', ({ h }) => {
     }
   }))
   const isLegacy$ = useComputed(() => isLegacyVaultUrl(vaultUrl$()))
-  const drawerCloseLabel$ = useComputed(() => {
-    locale$()
-    return t('Close vault')
-  })
+  const drawerCloseLabel$ = useComputed(() => t('Close vault'))
   const migrationOpen$ = useComputed(() => shouldShowVaultMigration({
     vaultUrl: vaultUrl$(),
     connectedVaultUrl: messengerStore.connectedVaultUrl$(),
@@ -242,7 +237,6 @@ f('vault-messenger-wrapper', function () {
 })
 
 f('vault-migration-dialog', ({ h, props }) => {
-  const locale$ = useLocaleSignal()
   const vaultModalStore = useVaultModalStore()
   const { askVault } = useVaultActor()
   const { disableStartAtVaultHomeWorkaroundThisTime } = useVaultMessengerStore()
@@ -300,10 +294,7 @@ f('vault-migration-dialog', ({ h, props }) => {
       }
     }
   }))
-  const heading$ = useComputed(() => {
-    locale$()
-    return t('44b-vault is being discontinued')
-  })
+  const heading$ = useComputed(() => t('44b-vault is being discontinued'))
 
   useTask(({ track }) => {
     const isOpen = track(() => props.open$())
@@ -314,7 +305,6 @@ f('vault-migration-dialog', ({ h, props }) => {
     s.wasOpen = isOpen
   })
 
-  locale$()
   return h`
     <a-dialog
       props=${{

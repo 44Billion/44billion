@@ -1,5 +1,7 @@
-import { after, test } from 'node:test'
+import { after, mock, test } from 'node:test'
 import assert from 'node:assert/strict'
+
+import { toTestSignal } from './signal-mock.js'
 
 const originalDateTimeFormat = Intl.DateTimeFormat
 const originalWindow = globalThis.window
@@ -19,6 +21,12 @@ globalThis.localStorage = {
 }
 globalThis.window = new EventTarget()
 globalThis.document = { documentElement: { lang: '' } }
+
+mock.module('#f', {
+  namedExports: {
+    toSignal: toTestSignal
+  }
+})
 
 const {
   AUTO_LOCALE,

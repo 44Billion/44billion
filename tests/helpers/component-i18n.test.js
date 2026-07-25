@@ -1,15 +1,7 @@
 import { describe, it, mock } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { assetBudgetLocales, getAssetBudgetConfirmation } from '../../src/i18n/asset-budget.js'
-import {
-  getEffectiveLocale,
-  getT,
-  resolveSupportedLocale,
-  setLocalePreference,
-  subscribeLocaleChanged,
-  SUPPORTED_LOCALES
-} from '../../src/i18n/index.js'
+import { toTestSignal, toTestStore } from './signal-mock.js'
 
 if (!globalThis.localStorage) {
   const values = new Map()
@@ -20,21 +12,21 @@ if (!globalThis.localStorage) {
   }
 }
 
+const globalStores = new Map()
+
 mock.module('#f', {
   namedExports: {
     f: () => {},
-    useGlobalStore: () => {},
+    toSignal: toTestSignal,
+    useGlobalStore: (namespace, init) => {
+      if (!globalStores.has(namespace) && init) globalStores.set(namespace, toTestStore(init))
+      return globalStores.get(namespace)
+    },
     useClosestStore: () => {},
     useStore: () => {},
     useCallback: value => value,
-    useSignal: value => {
-      let current = typeof value === 'function' ? value() : value
-      return (...args) => args.length ? (current = args[0]) : current
-    },
-    useGlobalSignal: (_namespace, value) => {
-      let current = typeof value === 'function' ? value() : value
-      return (...args) => args.length ? (current = args[0]) : current
-    },
+    useSignal: toTestSignal,
+    useGlobalSignal: (_namespace, value) => toTestSignal(value),
     useTask: () => {}
   }
 })
@@ -42,6 +34,8 @@ mock.module('#f/components/f-to-signals.js', { namedExports: {} })
 mock.module('#shared/modal.js', { namedExports: {} })
 mock.module('#shared/app-icon.js', { namedExports: {} })
 mock.module('#shared/icons/icon-x.js', { namedExports: {} })
+mock.module('#shared/icons/icon-check.js', { namedExports: {} })
+mock.module('#shared/icons/icon-help-hexagon-filled.js', { namedExports: {} })
 mock.module('#services/idb/browser/queries/permission.js', {
   namedExports: { hasPermission: async () => false, createOrUpdatePermission: async () => {} }
 })
@@ -51,9 +45,24 @@ mock.module('#assets/styles/theme.js', {
 mock.module('#hooks/use-web-storage.js', { defaultExport: () => ({}) })
 
 const {
+  getEffectiveLocale,
+  getT,
+  resolveSupportedLocale,
+  setLocalePreference,
+  subscribeLocaleChanged,
+  SUPPORTED_LOCALES
+} = await import('../../src/i18n/index.js')
+const {
+  assetBudgetLocales,
+  getAssetBudgetConfirmation
+} = await import('../../src/i18n/asset-budget.js')
+const {
   formatPermissionText,
   permissionDialogLocales
 } = await import('../../src/components/zones/permission-dialog/index.js')
+const {
+  useConfirmationDialogStore
+} = await import('../../src/components/zones/confirmation-dialog/index.js')
 
 describe('component translation catalogs', () => {
   it('requires every supported locale and matching placeholders', () => {
@@ -137,5 +146,48 @@ describe('reactive locale preference', () => {
     setLocalePreference('en')
     await Promise.resolve()
     assert.deepEqual(seen, ['pt-BR'])
+  })
+
+  it('keeps dynamic translators current and explicit-locale translators fixed', () => {
+    setLocalePreference('en')
+    const dynamicT = getT(assetBudgetLocales)
+    const fixedT = getT(assetBudgetLocales, { locale: 'fr' })
+
+    assert.equal(dynamicT('More app storage?'), 'More app storage?')
+    assert.equal(fixedT('More app storage?'), 'Plus de stockage pour l’application ?')
+
+    setLocalePreference('pt-BR')
+
+    assert.equal(dynamicT('More app storage?'), 'Mais armazenamento para o app?')
+    assert.equal(fixedT('More app storage?'), 'Plus de stockage pour l’application ?')
+  })
+
+  it('translates omitted confirmation defaults lazily without replacing custom text', async () => {
+    const store = useConfirmationDialogStore()
+
+    setLocalePreference('en')
+    const defaultRequest = store.requestConfirmation()
+    assert.equal(store.title$(), 'Confirmation')
+    assert.equal(store.message$(), 'Are you sure?')
+    assert.equal(store.confirmText$(), 'Yes')
+
+    setLocalePreference('pt-BR')
+    assert.equal(store.title$(), 'Confirmação')
+    assert.equal(store.message$(), 'Tem certeza?')
+    assert.equal(store.confirmText$(), 'Sim')
+    store.resolveCurrent()
+    await defaultRequest
+
+    const customRequest = store.requestConfirmation({
+      title: 'Custom title',
+      message: 'Custom message',
+      confirmText: 'Custom action'
+    })
+    setLocalePreference('en')
+    assert.equal(store.title$(), 'Custom title')
+    assert.equal(store.message$(), 'Custom message')
+    assert.equal(store.confirmText$(), 'Custom action')
+    store.resolveCurrent()
+    await customRequest
   })
 })

@@ -14,18 +14,11 @@ import { useConfirmationDialogStore } from '#zones/confirmation-dialog/index.js'
 import '#shared/napp-assets-caching-progress-bar.js'
 import { getAssetBudgetConfirmation } from '#i18n/asset-budget.js'
 import { getT } from '#i18n/index.js'
-import useLocale from '#i18n/use-locale.js'
 
-export const singleNappLocales = {
-  'Too many embedded apps are open. Close one and try again.': {
-    en: 'Too many embedded apps are open. Close one and try again.', fr: 'Trop d’applications intégrées sont ouvertes. Fermez-en une et réessayez.', it: 'Sono aperte troppe app incorporate. Chiudine una e riprova.', de: 'Zu viele eingebettete Apps sind geöffnet. Schließen Sie eine und versuchen Sie es erneut.', es: 'Hay demasiadas aplicaciones integradas abiertas. Cierra una y vuelve a intentarlo.', 'pt-BR': 'Há apps incorporados demais abertos. Feche um deles e tente novamente.', ru: 'Открыто слишком много встроенных приложений. Закройте одно и повторите попытку.', 'zh-CN': '打开的嵌入式应用过多。请关闭一个后重试。', 'zh-TW': '開啟的嵌入式應用程式過多。請關閉一個後重試。', ja: '埋め込みアプリが多すぎます。1つ閉じてからもう一度お試しください。', ko: '열려 있는 임베디드 앱이 너무 많습니다. 하나를 닫고 다시 시도하세요.'
-  }
-}
-
+export const singleNappLocales = getLocales()
 const t = getT(singleNappLocales)
 
 f('singleNapp', function () {
-  useLocale()
   const storage = useWebStorage(localStorage)
   const {
     session_openWorkspaceKeys$: openWorkspaceKeys$
@@ -69,7 +62,6 @@ f('singleNapp', function () {
 
 // this won't add napp to web storage, it's supposed to be ephemeral-ish
 f('singleNappLauncher', function () {
-  useLocale()
   const { wsKey, appId, initialRoute } = useClosestStore('napp')
   const storage = useWebStorage(localStorage)
   const {
@@ -227,3 +219,11 @@ f('singleNappLauncher', function () {
         `}
   `
 })
+
+function getLocales () {
+  return {
+    'Too many embedded apps are open. Close one and try again.': {
+      en: 'Too many embedded apps are open. Close one and try again.', fr: 'Trop d’applications intégrées sont ouvertes. Fermez-en une et réessayez.', it: 'Sono aperte troppe app incorporate. Chiudine una e riprova.', de: 'Zu viele eingebettete Apps sind geöffnet. Schließen Sie eine und versuchen Sie es erneut.', es: 'Hay demasiadas aplicaciones integradas abiertas. Cierra una y vuelve a intentarlo.', 'pt-BR': 'Há apps incorporados demais abertos. Feche um deles e tente novamente.', ru: 'Открыто слишком много встроенных приложений. Закройте одно и повторите попытку.', 'zh-CN': '打开的嵌入式应用过多。请关闭一个后重试。', 'zh-TW': '開啟的嵌入式應用程式過多。請關閉一個後重試。', ja: '埋め込みアプリが多すぎます。1つ閉じてからもう一度お試しください。', ko: '열려 있는 임베디드 앱이 너무 많습니다. 하나를 닫고 다시 시도하세요.'
+    }
+  }
+}

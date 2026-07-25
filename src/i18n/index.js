@@ -1,3 +1,4 @@
+import { toSignal } from '#f'
 import { getCurrentDeviceLocale, getT as getBaseT, validateLocales } from 'libp2r2p/i18n'
 
 export const SUPPORTED_LOCALES = Object.freeze([
@@ -62,7 +63,9 @@ function resolvePreference (preference = readStoredLocalePreference()) {
   return resolveSupportedLocale(preference === AUTO_LOCALE ? getCurrentDeviceLocale() : preference)
 }
 
-let effectiveLocale = resolvePreference()
+// This signal intentionally lives for the page lifetime. Keep it private so
+// locale changes continue to pass through refreshEffectiveLocale().
+const effectiveLocale$ = toSignal(resolvePreference())
 const localeListeners = new Set()
 
 function updateDocumentLocale (locale) {
@@ -70,10 +73,10 @@ function updateDocumentLocale (locale) {
 }
 
 function refreshEffectiveLocale () {
-  const previous = effectiveLocale
+  const previous = effectiveLocale$.peek()
   const locale = resolvePreference()
-  effectiveLocale = locale
   updateDocumentLocale(locale)
+  effectiveLocale$(locale)
   if (locale !== previous) {
     for (const listener of [...localeListeners]) {
       queueMicrotask(() => {
@@ -85,7 +88,7 @@ function refreshEffectiveLocale () {
   return locale
 }
 
-updateDocumentLocale(effectiveLocale)
+updateDocumentLocale(effectiveLocale$.peek())
 
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', event => {
@@ -105,7 +108,9 @@ export function setLocalePreference (preference) {
 }
 
 export function getEffectiveLocale () {
-  return effectiveLocale
+  // A tracked read is intentional: synchronous render/computed callers react,
+  // while handlers and async message flows have no observer to subscribe.
+  return effectiveLocale$()
 }
 
 export function subscribeLocaleChanged (listener, { emitCurrent = false } = {}) {
@@ -131,7 +136,7 @@ export function getT (locales, options = {}) {
 
   const translators = new Map()
   return (key, values) => {
-    const locale = effectiveLocale
+    const locale = getEffectiveLocale()
     let translate = translators.get(locale)
     if (!translate) {
       translate = getBaseT(locales, { ...options, locale })

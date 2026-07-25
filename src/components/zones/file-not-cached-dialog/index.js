@@ -5,15 +5,8 @@ import '#shared/icons/icon-x.js'
 import '#shared/icons/icon-reload.js'
 import '#shared/icons/icon-exclamation-mark.js'
 import { getT } from '#i18n/index.js'
-import useLocale from '#i18n/use-locale.js'
 
-export const fileNotCachedDialogLocales = {
-  'App Download': { en: 'App Download', fr: 'Téléchargement de l’application', it: 'Download dell’app', de: 'App-Download', es: 'Descarga de la aplicación', 'pt-BR': 'Download do app', ru: 'Загрузка приложения', 'zh-CN': '应用下载', 'zh-TW': '應用程式下載', ja: 'アプリのダウンロード', ko: '앱 다운로드' },
-  'Failed to load app. Retry or remove it?': { en: 'Failed to load app. Retry or remove it?', fr: 'Impossible de charger l’application. Réessayer ou la supprimer ?', it: 'Impossibile caricare l’app. Riprovare o rimuoverla?', de: 'App konnte nicht geladen werden. Erneut versuchen oder entfernen?', es: 'No se pudo cargar la aplicación. ¿Reintentar o eliminarla?', 'pt-BR': 'Falha ao carregar o app. Tentar novamente ou removê-lo?', ru: 'Не удалось загрузить приложение. Повторить или удалить его?', 'zh-CN': '无法加载应用。重试还是移除？', 'zh-TW': '無法載入應用程式。重試或移除？', ja: 'アプリを読み込めませんでした。再試行しますか、それとも削除しますか？', ko: '앱을 불러오지 못했습니다. 다시 시도하거나 제거할까요?' },
-  'Failed to load app. Retry or close it?': { en: 'Failed to load app. Retry or close it?', fr: 'Impossible de charger l’application. Réessayer ou la fermer ?', it: 'Impossibile caricare l’app. Riprovare o chiuderla?', de: 'App konnte nicht geladen werden. Erneut versuchen oder schließen?', es: 'No se pudo cargar la aplicación. ¿Reintentar o cerrarla?', 'pt-BR': 'Falha ao carregar o app. Tentar novamente ou fechá-lo?', ru: 'Не удалось загрузить приложение. Повторить или закрыть его?', 'zh-CN': '无法加载应用。重试还是关闭？', 'zh-TW': '無法載入應用程式。重試或關閉？', ja: 'アプリを読み込めませんでした。再試行しますか、それとも閉じますか？', ko: '앱을 불러오지 못했습니다. 다시 시도하거나 닫을까요?' },
-  Retry: { en: 'Retry', fr: 'Réessayer', it: 'Riprova', de: 'Erneut versuchen', es: 'Reintentar', 'pt-BR': 'Tentar novamente', ru: 'Повторить', 'zh-CN': '重试', 'zh-TW': '重試', ja: '再試行', ko: '다시 시도' }
-}
-
+export const fileNotCachedDialogLocales = getLocales()
 const t = getT(fileNotCachedDialogLocales)
 
 export function getFileNotCachedText (key) {
@@ -69,7 +62,6 @@ export function useFileNotCachedDialogStore () {
 //   // user clicked Cancel — delete the app
 // }
 f('fileNotCachedDialog', function () {
-  useLocale()
   const store = useFileNotCachedDialogStore()
   const modalProps = useStore(() => ({
     isOpen$: store.isOpen$,
@@ -83,7 +75,6 @@ f('fileNotCachedDialog', function () {
 })
 
 f('fileNotCachedDialogCard', function () {
-  useLocale()
   const store = useFileNotCachedDialogStore()
   const local = useStore(() => ({
     isButtonsDisabled$: false,
@@ -246,3 +237,12 @@ f('fileNotCachedDialogCard', function () {
     </div>
   `
 })
+
+function getLocales () {
+  return {
+    'App Download': { en: 'App Download', fr: 'Téléchargement de l’application', it: 'Download dell’app', de: 'App-Download', es: 'Descarga de la aplicación', 'pt-BR': 'Download do app', ru: 'Загрузка приложения', 'zh-CN': '应用下载', 'zh-TW': '應用程式下載', ja: 'アプリのダウンロード', ko: '앱 다운로드' },
+    'Failed to load app. Retry or remove it?': { en: 'Failed to load app. Retry or remove it?', fr: 'Impossible de charger l’application. Réessayer ou la supprimer ?', it: 'Impossibile caricare l’app. Riprovare o rimuoverla?', de: 'App konnte nicht geladen werden. Erneut versuchen oder entfernen?', es: 'No se pudo cargar la aplicación. ¿Reintentar o eliminarla?', 'pt-BR': 'Falha ao carregar o app. Tentar novamente ou removê-lo?', ru: 'Не удалось загрузить приложение. Повторить или удалить его?', 'zh-CN': '无法加载应用。重试还是移除？', 'zh-TW': '無法載入應用程式。重試或移除？', ja: 'アプリを読み込めませんでした。再試行しますか、それとも削除しますか？', ko: '앱을 불러오지 못했습니다. 다시 시도하거나 제거할까요?' },
+    'Failed to load app. Retry or close it?': { en: 'Failed to load app. Retry or close it?', fr: 'Impossible de charger l’application. Réessayer ou la fermer ?', it: 'Impossibile caricare l’app. Riprovare o chiuderla?', de: 'App konnte nicht geladen werden. Erneut versuchen oder schließen?', es: 'No se pudo cargar la aplicación. ¿Reintentar o cerrarla?', 'pt-BR': 'Falha ao carregar o app. Tentar novamente ou fechá-lo?', ru: 'Не удалось загрузить приложение. Повторить или закрыть его?', 'zh-CN': '无法加载应用。重试还是关闭？', 'zh-TW': '無法載入應用程式。重試或關閉？', ja: 'アプリを読み込めませんでした。再試行しますか、それとも閉じますか？', ko: '앱을 불러오지 못했습니다. 다시 시도하거나 닫을까요?' },
+    Retry: { en: 'Retry', fr: 'Réessayer', it: 'Riprova', de: 'Erneut versuchen', es: 'Reintentar', 'pt-BR': 'Tentar novamente', ru: 'Повторить', 'zh-CN': '重试', 'zh-TW': '重試', ja: '再試行', ko: '다시 시도' }
+  }
+}

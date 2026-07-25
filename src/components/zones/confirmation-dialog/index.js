@@ -5,18 +5,9 @@ import '#shared/icons/icon-x.js'
 import '#shared/icons/icon-check.js'
 import '#shared/icons/icon-help-hexagon-filled.js'
 import { getT } from '#i18n/index.js'
-import useLocale from '#i18n/use-locale.js'
 
-export const confirmationDialogLocales = {
-  Confirmation: { en: 'Confirmation', fr: 'Confirmation', it: 'Conferma', de: 'Bestätigung', es: 'Confirmación', 'pt-BR': 'Confirmação', ru: 'Подтверждение', 'zh-CN': '确认', 'zh-TW': '確認', ja: '確認', ko: '확인' },
-  'Are you sure?': { en: 'Are you sure?', fr: 'Êtes-vous sûr ?', it: 'Confermi?', de: 'Sind Sie sicher?', es: '¿Está seguro?', 'pt-BR': 'Tem certeza?', ru: 'Вы уверены?', 'zh-CN': '确定吗？', 'zh-TW': '確定嗎？', ja: 'よろしいですか？', ko: '계속할까요?' },
-  Yes: { en: 'Yes', fr: 'Oui', it: 'Sì', de: 'Ja', es: 'Sí', 'pt-BR': 'Sim', ru: 'Да', 'zh-CN': '是', 'zh-TW': '是', ja: 'はい', ko: '예' }
-}
-
+export const confirmationDialogLocales = getLocales()
 const t = getT(confirmationDialogLocales)
-const DEFAULT_TITLE = t('Confirmation')
-const DEFAULT_MESSAGE = t('Are you sure?')
-const DEFAULT_CONFIRM_TEXT = t('Yes')
 
 const supersededError = () => new Error('Confirmation superseded')
 const rejectedError = err => (err = new Error('Confirmation denied')) && (err.code = 'DENIED_BY_USER') && err
@@ -30,13 +21,13 @@ function createConfirmationDialogStore () {
       return Boolean(this.currentRequest$())
     },
     title$ () {
-      return (this.currentRequest$() ?? this.lastRequest$())?.title ?? DEFAULT_TITLE
+      return (this.currentRequest$() ?? this.lastRequest$())?.title ?? t('Confirmation')
     },
     message$ () {
-      return (this.currentRequest$() ?? this.lastRequest$())?.message ?? DEFAULT_MESSAGE
+      return (this.currentRequest$() ?? this.lastRequest$())?.message ?? t('Are you sure?')
     },
     confirmText$ () {
-      return (this.currentRequest$() ?? this.lastRequest$())?.confirmText ?? DEFAULT_CONFIRM_TEXT
+      return (this.currentRequest$() ?? this.lastRequest$())?.confirmText ?? t('Yes')
     },
     resolveCurrent () {
       const req = this.currentRequest$()
@@ -57,7 +48,7 @@ function createConfirmationDialogStore () {
     close () {
       this.rejectCurrent(closedError())
     },
-    requestConfirmation ({ title = DEFAULT_TITLE, message = DEFAULT_MESSAGE, confirmText = DEFAULT_CONFIRM_TEXT } = {}) {
+    requestConfirmation ({ title, message, confirmText } = {}) {
       const pending = this.currentRequest$()
       if (pending) pending.reject(supersededError())
 
@@ -84,7 +75,6 @@ export function useConfirmationDialogStore () {
 //   // user denied or another request superseded it
 // }
 f('confirmation-dialog', function () {
-  useLocale()
   const cdStore = useConfirmationDialogStore()
   const modalProps = useStore(() => ({
     isOpen$: cdStore.isOpen$,
@@ -100,7 +90,6 @@ f('confirmation-dialog', function () {
 })
 
 f('confirmation-dialog-card', function () {
-  useLocale()
   const cdStore = useConfirmationDialogStore()
   const localStore = useStore(() => ({
     isButtonsDisabled$: false,
@@ -267,3 +256,11 @@ f('confirmation-dialog-card', function () {
     </div>
   `
 })
+
+function getLocales () {
+  return {
+    Confirmation: { en: 'Confirmation', fr: 'Confirmation', it: 'Conferma', de: 'Bestätigung', es: 'Confirmación', 'pt-BR': 'Confirmação', ru: 'Подтверждение', 'zh-CN': '确认', 'zh-TW': '確認', ja: '確認', ko: '확인' },
+    'Are you sure?': { en: 'Are you sure?', fr: 'Êtes-vous sûr ?', it: 'Confermi?', de: 'Sind Sie sicher?', es: '¿Está seguro?', 'pt-BR': 'Tem certeza?', ru: 'Вы уверены?', 'zh-CN': '确定吗？', 'zh-TW': '確定嗎？', ja: 'よろしいですか？', ko: '계속할까요?' },
+    Yes: { en: 'Yes', fr: 'Oui', it: 'Sì', de: 'Ja', es: 'Sí', 'pt-BR': 'Sim', ru: 'Да', 'zh-CN': '是', 'zh-TW': '是', ja: 'はい', ko: '예' }
+  }
+}
