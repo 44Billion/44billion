@@ -1,7 +1,5 @@
-import { after, mock, test } from 'node:test'
+import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
-
-import { toTestSignal } from './signal-mock.js'
 
 const originalDateTimeFormat = Intl.DateTimeFormat
 const originalWindow = globalThis.window
@@ -22,19 +20,15 @@ globalThis.localStorage = {
 globalThis.window = new EventTarget()
 globalThis.document = { documentElement: { lang: '' } }
 
-mock.module('#f', {
-  namedExports: {
-    toSignal: toTestSignal
-  }
-})
-
 const {
   AUTO_LOCALE,
   getEffectiveLocale,
   getLocalePreference,
   LOCALE_STORAGE_KEY,
+  provideAppI18n,
   subscribeLocaleChanged
 } = await import('../../src/i18n/index.js?locale-events')
+const cleanupI18n = provideAppI18n()
 
 function dispatchStorage () {
   const event = new Event('storage')
@@ -46,6 +40,7 @@ function dispatchStorage () {
 }
 
 after(() => {
+  cleanupI18n()
   Intl.DateTimeFormat = originalDateTimeFormat
   globalThis.window = originalWindow
   globalThis.document = originalDocument

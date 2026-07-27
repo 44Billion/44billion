@@ -1,7 +1,6 @@
-import { describe, it, mock } from 'node:test'
+import { after, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { toTestSignal } from './signal-mock.js'
 import { vaultModalLocales } from '../../src/components/zones/vault-modal/locales.js'
 import {
   EZ_VAULT_URL,
@@ -12,13 +11,12 @@ import {
   shouldShowVaultMigration
 } from '../../src/components/zones/vault-modal/presentation.js'
 
-mock.module('#f', {
-  namedExports: {
-    toSignal: toTestSignal
-  }
-})
-
-const { getT } = await import('../../src/i18n/index.js?vault-presentation')
+const {
+  getT,
+  provideAppI18n
+} = await import('../../src/i18n/index.js?vault-presentation')
+const cleanupI18n = provideAppI18n()
+after(cleanupI18n)
 
 describe('vault presentation selection', () => {
   it('classifies only the official 44b-vault URL as legacy', () => {

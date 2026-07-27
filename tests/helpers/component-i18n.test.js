@@ -1,4 +1,4 @@
-import { describe, it, mock } from 'node:test'
+import { after, describe, it, mock } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { toTestSignal, toTestStore } from './signal-mock.js'
@@ -47,11 +47,14 @@ mock.module('#hooks/use-web-storage.js', { defaultExport: () => ({}) })
 const {
   getEffectiveLocale,
   getT,
+  provideAppI18n,
   resolveSupportedLocale,
   setLocalePreference,
   subscribeLocaleChanged,
   SUPPORTED_LOCALES
 } = await import('../../src/i18n/index.js')
+const cleanupI18n = provideAppI18n()
+after(cleanupI18n)
 const {
   assetBudgetLocales,
   getAssetBudgetConfirmation
