@@ -264,7 +264,7 @@ f('a-dialog', ({ h, props }) => {
 
           & .a-dialog__heading {
             margin: 0;
-            font-size: 1.125rem;
+            font-size: 18rem;
             font-weight: 600;
           }
 

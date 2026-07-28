@@ -321,8 +321,18 @@ f('vault-migration-dialog', ({ h, props }) => {
           default: h`
             <div class="vault-migration-card">
               <style>${/* css */`
+                /* there's no footer */
+                .scope_a_dialog {
+                  .a-dialog__content {
+                    margin-block-end: 0;
+                  }
+                  .a-dialog__footer {
+                    margin-block-start: 0;
+                  }
+                }
+
                 .vault-migration-card {
-                  width: min(460px, calc(100dvw - 96px));
+                  max-width: 460px;
                   color: ${cssVars.colors.fg2};
                 }
 
@@ -347,6 +357,7 @@ f('vault-migration-dialog', ({ h, props }) => {
                 }
 
                 .vault-migration-actions button {
+                  text-align: center;
                   min-height: 40px;
                   padding: 8px 14px;
                   border: 1px solid ${cssVars.colors.mg2};
@@ -368,10 +379,6 @@ f('vault-migration-dialog', ({ h, props }) => {
                 }
 
                 @media (max-width: 520px) {
-                  .vault-migration-card {
-                    width: min(460px, calc(100dvw - 72px));
-                  }
-
                   .vault-migration-actions {
                     align-items: stretch;
                     flex-direction: column;
