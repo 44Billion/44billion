@@ -10,6 +10,7 @@ import mime from 'mime'
 import { setWebStorageItem } from '#hooks/use-web-storage.js'
 import { getIcon, getName, getDescription } from './get-metadata.js'
 import { ASSET_BUDGET_BACKGROUND_DENIED } from '#services/app-asset-budget/index.js'
+import { registerManifestInstanceReplaceHandler } from './manifest-instance-cache.js'
 
 export function cacheAppMetadata (appId, metadata) {
   if (!appId || !metadata) { throw new Error('Missing args') }
@@ -89,6 +90,19 @@ export default class AppFileManager {
     }
   }
 
+  static async replaceCachedSiteManifest (appId, siteManifest) {
+    const pending = this.#instancePromisesByAppId[appId]
+    if (!pending || !siteManifest) return null
+    const instance = await pending.catch(() => null)
+    if (!instance) return null
+    instance.siteManifest = {
+      ...siteManifest,
+      meta: siteManifest.meta ?? instance.siteManifest?.meta ?? {}
+    }
+    instance.#faviconMetadata = undefined
+    return instance
+  }
+
   static async create (appId, addressObj, { cacheMetadata = cacheAppMetadata, getCachedMetadata = getCachedAppMetadata } = {}) {
     if (this.#instancePromisesByAppId[appId]) return this.#instancePromisesByAppId[appId]
     const p = Promise.withResolvers()
@@ -125,6 +139,14 @@ export default class AppFileManager {
 
   async getDescription (staleWhileRevalidate = false) {
     return getDescription(this, staleWhileRevalidate)
+  }
+
+  async refreshCachedMetadata () {
+    return Promise.allSettled([
+      this.getName(),
+      this.getDescription(),
+      this.getIcon()
+    ])
   }
 
   async clearAppFiles () {
@@ -344,3 +366,5 @@ export default class AppFileManager {
     }
   }
 }
+
+registerManifestInstanceReplaceHandler((appId, manifest) => AppFileManager.replaceCachedSiteManifest(appId, manifest))

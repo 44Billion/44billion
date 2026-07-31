@@ -61,8 +61,8 @@ export function withSingleNappOpenedAtByOwner (metadata, ownerPubkey, openedAt =
 
 function toDbRecord (event, {
   singleNappOpenedAtByOwner = {},
-  latestUpdateEventId = null,
-  seenUpdateEventId = null
+  latestUpdateVersion = null,
+  seenUpdateVersion = null
 } = {}) {
   const dTag = event.tags.find(t => t[0] === 'd')?.[1] ?? ''
   if (!isNostrAppDTagSafe(dTag)) throw new Error('Invalid d tag')
@@ -79,8 +79,8 @@ function toDbRecord (event, {
     p: base16ToBytes(pubkey),
     d: dTag,
     s: normalizeSingleNappOpenedAtByOwner(singleNappOpenedAtByOwner),
-    lu: latestUpdateEventId,
-    su: seenUpdateEventId,
+    lv: latestUpdateVersion,
+    sv: seenUpdateVersion,
     evt
   }
 }
@@ -98,8 +98,8 @@ function toEvent (record) {
     ...record.evt,
     meta: {
       singleNappOpenedAtByOwner: normalizeSingleNappOpenedAtByOwner(record.s),
-      latestUpdateEventId: record.lu ?? null,
-      seenUpdateEventId: record.su ?? null
+      latestUpdateVersion: record.lv ?? null,
+      seenUpdateVersion: record.sv ?? null
     }
   }
 }

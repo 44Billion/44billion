@@ -1,4 +1,5 @@
 import AppFileDownloader from '#services/app-file-downloader/index.js'
+import { replaceCachedSiteManifest } from '#services/app-file-manager/manifest-instance-cache.js'
 import { relayPool as nostrRelays } from 'libp2r2p/relay'
 import { nappRelays } from '#config/relays.js'
 import {
@@ -9,7 +10,11 @@ import {
 } from '#services/idb/browser/queries/site-manifest.js'
 import { deleteStaleFileChunksFromDb, sumFileChunkBytesFromDb } from '#services/idb/browser/queries/file-chunk.js'
 import { addressObjToAppId, appIdToAddressObj } from '#helpers/app.js'
-import { getManifestAssetDescriptors } from '#helpers/site-manifest.js'
+import {
+  getManifestAggregateHash,
+  getManifestAssetDescriptors,
+  getManifestMetadata
+} from '#helpers/site-manifest.js'
 import { base62ToBase16 } from 'libp2r2p/base62'
 import { getUserRelays } from '#helpers/nostr-queries.js'
 import { cleanupNostrDbAppForOwner as cleanupNostrDbAppForOwnerBase } from '#helpers/nostrdb-app-cleanup.js'
@@ -251,6 +256,35 @@ export default class AppUpdater {
     for (const key of ['icon', 'name', 'description', 'relayHints']) {
       _setWebStorageItem(storage, `session_appById_${appId}_${key}`, undefined)
     }
+  }
+
+  static async storeManifestAndRefreshMetadata (appId, manifest, metadata, {
+    _saveSiteManifestToDb = saveSiteManifestToDb,
+    _replaceCachedSiteManifest = replaceCachedSiteManifest,
+    _localStorage,
+    _setWebStorageItem = setWebStorageItem
+  } = {}) {
+    await _saveSiteManifestToDb(manifest, metadata)
+    const storedManifest = { ...manifest, meta: metadata }
+    const manager = await _replaceCachedSiteManifest(appId, storedManifest)
+    this.clearCachedAppMetadata(appId, { _localStorage, _setWebStorageItem })
+    const storage = _localStorage || (typeof localStorage !== 'undefined' ? localStorage : null)
+    if (storage) {
+      const manifestMetadata = getManifestMetadata(manifest)
+      const description = manifestMetadata.descriptions[0]?.text || manifestMetadata.summary
+      if (manifestMetadata.name) {
+        const name = manifestMetadata.name.length > 100
+          ? `${manifestMetadata.name.slice(0, 97)}...`
+          : manifestMetadata.name
+        _setWebStorageItem(storage, `session_appById_${appId}_name`, name)
+      }
+      if (description) {
+        const cachedDescription = description.length > 255 ? `${description.slice(0, 252)}...` : description
+        _setWebStorageItem(storage, `session_appById_${appId}_description`, cachedDescription)
+      }
+    }
+    await manager?.refreshCachedMetadata?.()
+    return storedManifest
   }
 
   static _storageKeys (storage) {
@@ -671,6 +705,14 @@ export default class AppUpdater {
       return { accepted: false, reason: 'not-newer' }
     }
 
+    const remoteVersion = getManifestAggregateHash(event)
+    if (!remoteVersion) return { accepted: false, reason: 'invalid-manifest' }
+    const localVersion = getManifestAggregateHash(localManifest)
+    if (localManifest && remoteVersion === localVersion) {
+      await this.storeManifestAndRefreshMetadata(appId, event, localManifest.meta || {}, deps)
+      return { accepted: true, metadataOnly: true }
+    }
+
     return this._queueDraftUpdateEvent(appId, event, { _getSiteManifestFromDb, ...deps })
   }
 
@@ -821,6 +863,8 @@ export default class AppUpdater {
     _AppFileDownloader = AppFileDownloader,
     _getSiteManifestFromDb = getSiteManifestFromDb,
     _saveSiteManifestToDb = saveSiteManifestToDb,
+    _replaceCachedSiteManifest = replaceCachedSiteManifest,
+    _setWebStorageItem = setWebStorageItem,
     _localStorage
   } = {}) {
     let ids = appIds
@@ -848,22 +892,35 @@ export default class AppUpdater {
 
           if (remoteResult) {
             const remoteEvent = remoteResult.event
-            const hasUpdate = !localManifest || remoteEvent.created_at > localManifest.created_at
+            const remoteVersion = getManifestAggregateHash(remoteEvent)
+            const localVersion = getManifestAggregateHash(localManifest)
+            const remoteIsNewer = !localManifest || remoteEvent.created_at > localManifest.created_at
+            const hasUpdate = Boolean(remoteVersion) && remoteIsNewer && remoteVersion !== localVersion
 
             if (hasUpdate) {
-              updates[appId] = remoteResult
+              updates[appId] = { ...remoteResult, version: remoteVersion }
             }
 
             if (localManifest) {
-              await _saveSiteManifestToDb(localManifest, {
+              const metadata = {
                 ...localManifest.meta,
-                latestUpdateEventId: hasUpdate ? remoteEvent.id : null
-              })
+                latestUpdateVersion: hasUpdate ? remoteVersion : null
+              }
+              if (remoteIsNewer && remoteVersion && remoteVersion === localVersion) {
+                await this.storeManifestAndRefreshMetadata(appId, remoteEvent, metadata, {
+                  _saveSiteManifestToDb,
+                  _replaceCachedSiteManifest,
+                  _setWebStorageItem,
+                  _localStorage
+                })
+              } else {
+                await _saveSiteManifestToDb(localManifest, metadata)
+              }
             }
           } else if (localManifest) {
             await _saveSiteManifestToDb(localManifest, {
               ...localManifest.meta,
-              latestUpdateEventId: null
+              latestUpdateVersion: null
             })
           }
         }
@@ -879,7 +936,7 @@ export default class AppUpdater {
   }
 
   // Recomputes the unread badge count from manifest meta. Counts apps that
-  // have an update available AND whose update event the user hasn't seen yet
+  // have an update available AND whose aggregate version the user hasn't seen yet
   // (i.e. hasn't visited the app updates page while that update was visible).
   // While the user is on the app updates page, the count is forced to 0.
   static async refreshUnreadCount ({
@@ -898,9 +955,9 @@ export default class AppUpdater {
     let updateCount = 0
     for (const id of allAppIds) {
       const manifest = await _getSiteManifestFromDb(id)
-      const latest = manifest?.meta?.latestUpdateEventId
+      const latest = manifest?.meta?.latestUpdateVersion
       if (latest == null) continue
-      if (latest !== manifest.meta.seenUpdateEventId) updateCount++
+      if (latest !== manifest.meta.seenUpdateVersion) updateCount++
     }
     _setWebStorageItem(local, 'session_unread_appUpdateCount', updateCount || undefined)
   }
@@ -925,17 +982,17 @@ export default class AppUpdater {
     return connection?.metered === true
   }
 
-  static async markUpdateAsSeen (appId, updateEventId, {
+  static async markUpdateAsSeen (appId, updateVersion, {
     _getSiteManifestFromDb = getSiteManifestFromDb,
     _saveSiteManifestToDb = saveSiteManifestToDb
   } = {}) {
-    if (!updateEventId) return
+    if (!updateVersion) return
     const manifest = await _getSiteManifestFromDb(appId)
     if (!manifest) return
-    if (manifest.meta?.seenUpdateEventId === updateEventId) return
+    if (manifest.meta?.seenUpdateVersion === updateVersion) return
     await _saveSiteManifestToDb(manifest, {
       ...manifest.meta,
-      seenUpdateEventId: updateEventId
+      seenUpdateVersion: updateVersion
     })
   }
 
@@ -1143,6 +1200,8 @@ export default class AppUpdater {
     _addressObjToAppId = addressObjToAppId,
     _getUserRelays = getUserRelays,
     _sumFileChunkBytesFromDb = sumFileChunkBytesFromDb,
+    _replaceCachedSiteManifest = replaceCachedSiteManifest,
+    _setWebStorageItem = setWebStorageItem,
     _localStorage,
     _sessionStorage,
     writeRelays,
@@ -1245,7 +1304,14 @@ export default class AppUpdater {
         localManifest?.meta?.singleNappOpenedAtByOwner
       )
 
-      await _saveSiteManifestToDb(nextSiteManifestEvent, { singleNappOpenedAtByOwner })
+      await this.storeManifestAndRefreshMetadata(appId, nextSiteManifestEvent, {
+        singleNappOpenedAtByOwner
+      }, {
+        _saveSiteManifestToDb,
+        _replaceCachedSiteManifest,
+        _localStorage,
+        _setWebStorageItem
+      })
     } finally {
       this._releaseUpdateSlot()
     }

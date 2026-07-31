@@ -1,9 +1,13 @@
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToBase16 } from 'libp2r2p/base16'
+
 const ROOT_HASH = /^[0-9a-f]{64}$/
 const RECOGNIZED_MARKS = new Set(['icon', 'key_art', 'screenshot'])
 
 export function normalizeManifestPath (value) {
   if (typeof value !== 'string') throw new TypeError('Manifest path must be a string')
   const path = value.startsWith('/') ? value.slice(1) : value
+  // eslint-disable-next-line no-control-regex
   if (!path || path.includes('\\') || /[\u0000-\u001f\u007f]/.test(path)) {
     throw new Error('Unsafe manifest path')
   }
@@ -20,6 +24,59 @@ function maybePath (value) {
   } catch (_) {
     return null
   }
+}
+
+function getManifestAggregateLines (manifest) {
+  const tags = Array.isArray(manifest?.tags) ? manifest.tags : []
+  const advertisedService = tags.find(tag => Array.isArray(tag) && tag[0] === 'service')?.[1]
+  if (advertisedService !== undefined && !['irfs', 'blossom'].includes(advertisedService)) return []
+  const lines = []
+
+  if (advertisedService === 'irfs') {
+    for (const tag of tags) {
+      if (!Array.isArray(tag) || tag[0] !== 'r' || !ROOT_HASH.test(tag[1])) continue
+      for (const field of tag.slice(2)) {
+        if (typeof field !== 'string' || !field.startsWith('path ')) continue
+        const path = maybePath(field.slice(5))
+        if (path) lines.push(`${tag[1]} /${path}\n`)
+      }
+    }
+  } else {
+    for (const tag of tags) {
+      if (!Array.isArray(tag) || tag[0] !== 'path' || !ROOT_HASH.test(tag[2])) continue
+      const path = maybePath(tag[1])
+      if (path) lines.push(`${tag[2]} /${path}\n`)
+    }
+  }
+
+  return lines
+}
+
+export function getManifestAggregateHash (manifest) {
+  const lines = getManifestAggregateLines(manifest)
+  if (!lines.length) return null
+  return bytesToBase16(sha256(new TextEncoder().encode(lines.sort().join(''))))
+}
+
+export function getManifestPublishedAt (manifest, {
+  now = Math.floor(Date.now() / 1000),
+  futureSkewSeconds = 600
+} = {}) {
+  const value = manifest?.tags?.find(tag => Array.isArray(tag) && tag[0] === 'published_at')?.[1]
+  if (typeof value !== 'string' || !/^(0|[1-9][0-9]*)$/.test(value)) return null
+  const timestamp = Number(value)
+  if (!Number.isSafeInteger(timestamp) || timestamp > now + futureSkewSeconds) return null
+  return timestamp
+}
+
+export function formatManifestVersion (manifest, options) {
+  const aggregateHash = getManifestAggregateHash(manifest)
+  if (!aggregateHash) return null
+  const shortHash = aggregateHash.slice(0, 8)
+  const publishedAt = getManifestPublishedAt(manifest, options)
+  if (publishedAt === null) return shortHash
+  const date = new Date(publishedAt * 1000).toISOString().split('T')[0]
+  return `${date}-${shortHash}`
 }
 
 function parseSize (value) {

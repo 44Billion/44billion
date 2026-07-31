@@ -6,12 +6,15 @@ import AppUpdater, {
   MAX_RETAINED_EMBEDDED_APPS
 } from '../../src/services/app-updater/index.js'
 import { addressObjToAppId } from '../../src/helpers/app.js'
+import { getManifestAggregateHash } from '../../src/helpers/site-manifest.js'
 import { base16ToBase62 } from 'libp2r2p/base62'
 
 const MAIN_PUBKEY = '1'.repeat(64)
 const DRAFT_PUBKEY = '2'.repeat(64)
 const MAIN_APP_ID = addressObjToAppId({ kind: 35128, pubkey: MAIN_PUBKEY, dTag: 'main-app' })
 const DRAFT_APP_ID = addressObjToAppId({ kind: 35130, pubkey: DRAFT_PUBKEY, dTag: 'draft-app' })
+const ROOT_A = 'a'.repeat(64)
+const ROOT_B = 'b'.repeat(64)
 
 function resetDraftUpdateState () {
   AppUpdater._draftPendingEvents.clear()
@@ -31,12 +34,12 @@ function storageFromEntries (entries = {}) {
   }
 }
 
-function siteManifest (appId, meta = {}) {
+function siteManifest (appId, meta = {}, root = ROOT_A) {
   return {
     kind: 35128,
     pubkey: 'a'.repeat(64),
     created_at: 100,
-    tags: [['d', appId], ['path', `${appId}.js`, `${appId}-hash`]],
+    tags: [['d', appId], ['path', `${appId}.js`, root]],
     meta
   }
 }
@@ -73,15 +76,17 @@ describe('AppUpdater', () => {
   describe('searchForUpdates', () => {
     const appId = 'app1'
 
-    it('should set latestUpdateEventId when remote is newer', async () => {
+    it('should set latestUpdateVersion when the newer remote aggregate differs', async () => {
       const localManifest = {
         id: 'local',
         created_at: 100,
+        tags: [['path', 'index.js', ROOT_A]],
         meta: {}
       }
       const remoteEvent = {
         id: 'remote',
-        created_at: 200
+        created_at: 200,
+        tags: [['path', 'index.js', ROOT_B]]
       }
 
       const mockAppFileDownloader = {
@@ -117,19 +122,22 @@ describe('AppUpdater', () => {
       assert.equal(mockSaveManifestToDb.mock.callCount(), 1)
 
       const [, savedMeta] = mockSaveManifestToDb.mock.calls[0].arguments
-      assert.equal(savedMeta.latestUpdateEventId, 'remote')
+      assert.equal(savedMeta.latestUpdateVersion, getManifestAggregateHash(remoteEvent))
+      assert.equal(updates[appId].version, getManifestAggregateHash(remoteEvent))
       assert.deepEqual(updates[appId].event, remoteEvent)
     })
 
-    it('should clear latestUpdateEventId when remote is older or same', async () => {
+    it('should clear latestUpdateVersion when remote is not newer', async () => {
       const localManifest = {
         id: 'local',
         created_at: 200,
-        meta: { latestUpdateEventId: 'old-remote' }
+        tags: [['path', 'index.js', ROOT_A]],
+        meta: { latestUpdateVersion: 'old-remote' }
       }
       const remoteEvent = {
         id: 'remote',
-        created_at: 200
+        created_at: 200,
+        tags: [['path', 'index.js', ROOT_B]]
       }
 
       const mockAppFileDownloader = {
@@ -149,8 +157,39 @@ describe('AppUpdater', () => {
       })
 
       const [, savedMeta] = mockSaveManifestToDb.mock.calls[0].arguments
-      assert.equal(savedMeta.latestUpdateEventId, null)
+      assert.equal(savedMeta.latestUpdateVersion, null)
       assert.equal(updates[appId], undefined)
+    })
+
+    it('stores a newer metadata revision with the same aggregate without exposing an update', async () => {
+      const localManifest = {
+        id: 'local', created_at: 100, tags: [['path', 'index.js', ROOT_A]],
+        meta: { singleNappOpenedAtByOwner: { ['c'.repeat(64)]: 123 } }
+      }
+      const remoteEvent = {
+        id: 'remote', created_at: 200,
+        tags: [['path', 'index.js', ROOT_A], ['name', 'Renamed']]
+      }
+      const save = mock.fn(async () => {})
+      const refreshCachedMetadata = mock.fn(async () => {})
+      const replace = mock.fn(async () => ({ refreshCachedMetadata }))
+      const setStorage = mock.fn()
+      const updates = await AppUpdater.searchForUpdates([appId], {
+        _AppFileDownloader: { getSiteManifestEvents: async () => ({ [appId]: { event: remoteEvent } }) },
+        _getSiteManifestFromDb: async () => localManifest,
+        _saveSiteManifestToDb: save,
+        _replaceCachedSiteManifest: replace,
+        _setWebStorageItem: setStorage,
+        _localStorage: storageFromEntries()
+      })
+
+      assert.deepEqual(updates, {})
+      assert.equal(save.mock.calls[0].arguments[0], remoteEvent)
+      assert.equal(save.mock.calls[0].arguments[1].latestUpdateVersion, null)
+      assert.deepEqual(save.mock.calls[0].arguments[1].singleNappOpenedAtByOwner, localManifest.meta.singleNappOpenedAtByOwner)
+      assert.equal(replace.mock.calls[0].arguments[1].meta.latestUpdateVersion, null)
+      assert.equal(refreshCachedMetadata.mock.callCount(), 1)
+      assert.equal(setStorage.mock.callCount(), 5)
     })
 
     it('should use getInstalledAppIds if no appIds provided', async () => {
@@ -188,18 +227,18 @@ describe('AppUpdater', () => {
 
       await AppUpdater.searchForUpdates([MAIN_APP_ID, DRAFT_APP_ID], {
         _AppFileDownloader: mockAppFileDownloader,
-        _getSiteManifestFromDb: async () => ({ created_at: 100, meta: {} }),
+        _getSiteManifestFromDb: async id => siteManifest(id),
         _saveSiteManifestToDb: async () => {}
       })
 
       assert.deepEqual(mockAppFileDownloader.getSiteManifestEvents.mock.calls[0].arguments[0], [MAIN_APP_ID])
     })
 
-    it('should clear latestUpdateEventId when local manifest exists but no remote manifest found', async () => {
+    it('should clear latestUpdateVersion when local manifest exists but no remote manifest found', async () => {
       const localManifest = {
         id: 'local',
         created_at: 100,
-        meta: { latestUpdateEventId: 'old-remote' }
+        meta: { latestUpdateVersion: 'old-remote' }
       }
 
       const mockAppFileDownloader = {
@@ -224,7 +263,7 @@ describe('AppUpdater', () => {
 
       assert.equal(mockSaveManifestToDb.mock.callCount(), 1)
       const [, savedMeta] = mockSaveManifestToDb.mock.calls[0].arguments
-      assert.equal(savedMeta.latestUpdateEventId, null)
+      assert.equal(savedMeta.latestUpdateVersion, null)
       assert.deepEqual(updates, {})
     })
 
@@ -272,11 +311,11 @@ describe('AppUpdater', () => {
       })
     }
 
-    it('counts only updates whose latest event id differs from the seen one', async () => {
+    it('counts only updates whose latest version differs from the seen one', async () => {
       const manifests = {
-        app1: { meta: { latestUpdateEventId: 'a', seenUpdateEventId: null } }, // unseen
-        app2: { meta: { latestUpdateEventId: 'b', seenUpdateEventId: 'b' } }, // seen
-        app3: { meta: { latestUpdateEventId: null, seenUpdateEventId: null } } // none
+        app1: { meta: { latestUpdateVersion: 'a', seenUpdateVersion: null } }, // unseen
+        app2: { meta: { latestUpdateVersion: 'b', seenUpdateVersion: 'b' } }, // seen
+        app3: { meta: { latestUpdateVersion: null, seenUpdateVersion: null } } // none
       }
       const mockGet = mock.fn(async (id) => manifests[id])
       const mockSet = mock.fn()
@@ -295,8 +334,8 @@ describe('AppUpdater', () => {
 
     it('writes undefined when no updates are unseen', async () => {
       const manifests = {
-        app1: { meta: { latestUpdateEventId: 'a', seenUpdateEventId: 'a' } },
-        app2: { meta: { latestUpdateEventId: null } },
+        app1: { meta: { latestUpdateVersion: 'a', seenUpdateVersion: 'a' } },
+        app2: { meta: { latestUpdateVersion: null } },
         app3: { meta: {} }
       }
       const mockGet = mock.fn(async (id) => manifests[id])
@@ -354,7 +393,7 @@ describe('AppUpdater', () => {
     it('does not count draft app updates in the regular unread badge', async () => {
       const mockGet = mock.fn(async id => {
         assert.equal(id, MAIN_APP_ID)
-        return { meta: { latestUpdateEventId: null } }
+        return { meta: { latestUpdateVersion: null } }
       })
       const mockSet = mock.fn()
 
@@ -375,8 +414,8 @@ describe('AppUpdater', () => {
   })
 
   describe('markUpdateAsSeen', () => {
-    it('saves the seenUpdateEventId on the manifest', async () => {
-      const manifest = { id: 'm', meta: { latestUpdateEventId: 'a' } }
+    it('saves the seenUpdateVersion on the manifest', async () => {
+      const manifest = { id: 'm', meta: { latestUpdateVersion: 'a' } }
       const mockGet = mock.fn(async () => manifest)
       const mockSave = mock.fn(async () => {})
 
@@ -387,12 +426,12 @@ describe('AppUpdater', () => {
 
       assert.equal(mockSave.mock.callCount(), 1)
       const [, savedMeta] = mockSave.mock.calls[0].arguments
-      assert.equal(savedMeta.seenUpdateEventId, 'a')
-      assert.equal(savedMeta.latestUpdateEventId, 'a')
+      assert.equal(savedMeta.seenUpdateVersion, 'a')
+      assert.equal(savedMeta.latestUpdateVersion, 'a')
     })
 
-    it('is a no-op when the seenUpdateEventId already matches', async () => {
-      const manifest = { id: 'm', meta: { latestUpdateEventId: 'a', seenUpdateEventId: 'a' } }
+    it('is a no-op when the seenUpdateVersion already matches', async () => {
+      const manifest = { id: 'm', meta: { latestUpdateVersion: 'a', seenUpdateVersion: 'a' } }
       const mockGet = mock.fn(async () => manifest)
       const mockSave = mock.fn(async () => {})
 
@@ -510,7 +549,7 @@ describe('AppUpdater', () => {
         kind: 35130,
         pubkey: DRAFT_PUBKEY,
         created_at: 200,
-        tags: [['d', 'draft-app'], ['path', 'index.html', 'hash']]
+        tags: [['d', 'draft-app'], ['path', 'index.html', ROOT_B]]
       }
       const applied = []
       const emitted = []
@@ -536,6 +575,50 @@ describe('AppUpdater', () => {
       }
     })
 
+    it('syncs same-version draft metadata without applying or emitting a reload', async () => {
+      resetDraftUpdateState()
+      const originalUpdateApp = AppUpdater.updateApp
+      const local = {
+        kind: 35130, pubkey: DRAFT_PUBKEY, created_at: 100,
+        tags: [['d', 'draft-app'], ['path', 'index.html', ROOT_A]],
+        meta: { singleNappOpenedAtByOwner: {} }
+      }
+      const event = {
+        ...local,
+        id: 'draft-metadata',
+        created_at: 200,
+        tags: [...local.tags, ['name', 'Renamed']]
+      }
+      const saved = []
+      const emitted = []
+      const refreshed = mock.fn(async () => {})
+      AppUpdater.updateApp = mock.fn(async function * () { yield { appProgress: 100, error: null } })
+      const off = AppUpdater.onDraftAppUpdated(payload => emitted.push(payload))
+
+      try {
+        const result = await AppUpdater._handleDraftUpdateEvent(
+          event,
+          AppUpdater._draftWatchTargets([DRAFT_APP_ID]),
+          {
+            _getSiteManifestFromDb: async () => local,
+            _saveSiteManifestToDb: async (manifest, metadata) => saved.push({ manifest, metadata }),
+            _replaceCachedSiteManifest: async () => ({ refreshCachedMetadata: refreshed }),
+            _setWebStorageItem: () => {},
+            _localStorage: storageFromEntries()
+          }
+        )
+        assert.deepEqual(result, { accepted: true, metadataOnly: true })
+        assert.equal(saved[0].manifest, event)
+        assert.equal(refreshed.mock.callCount(), 1)
+        assert.equal(AppUpdater.updateApp.mock.callCount(), 0)
+        assert.deepEqual(emitted, [])
+      } finally {
+        off()
+        AppUpdater.updateApp = originalUpdateApp
+        resetDraftUpdateState()
+      }
+    })
+
     it('defers draft updates on mobile metered default-wifi policy and applies them later', async () => {
       resetDraftUpdateState()
       const originalUpdateApp = AppUpdater.updateApp
@@ -544,7 +627,7 @@ describe('AppUpdater', () => {
         kind: 35130,
         pubkey: DRAFT_PUBKEY,
         created_at: 200,
-        tags: [['d', 'draft-app'], ['path', 'index.html', 'hash']]
+        tags: [['d', 'draft-app'], ['path', 'index.html', ROOT_B]]
       }
       const applied = []
       AppUpdater.updateApp = mock.fn(async function * (nextEvent) {
@@ -584,14 +667,14 @@ describe('AppUpdater', () => {
         kind: 35130,
         pubkey: DRAFT_PUBKEY,
         created_at: 300,
-        tags: [['d', 'other-draft'], ['path', 'index.html', 'hash']]
+        tags: [['d', 'other-draft'], ['path', 'index.html', ROOT_B]]
       }
       const rightEvent = {
         id: 'right-dtag',
         kind: 35130,
         pubkey: DRAFT_PUBKEY,
         created_at: 301,
-        tags: [['d', 'draft-app'], ['path', 'index.html', 'hash']]
+        tags: [['d', 'draft-app'], ['path', 'index.html', ROOT_B]]
       }
       const applied = []
       AppUpdater.updateApp = mock.fn(async function * (nextEvent) {
@@ -835,7 +918,7 @@ describe('AppUpdater', () => {
           _addressObjToAppId: ({ dTag }) => dTag,
           _AppFileDownloader: {
             getSiteManifestEvents: mock.fn(async ids => Object.fromEntries(ids.map(id => [id, {
-              event: { ...siteManifest(id), id: `remote-${id}`, created_at: 200 }
+              event: { ...siteManifest(id, {}, ROOT_B), id: `remote-${id}`, created_at: 200 }
             }])))
           },
           _getSiteManifestFromDb: async id => siteManifest(id),
@@ -1028,6 +1111,8 @@ describe('AppUpdater', () => {
       const ownerPubkey = 'a'.repeat(64)
       const mockGetManifest = mock.fn(async () => ({ meta: { singleNappOpenedAtByOwner: { [ownerPubkey]: 123 } } }))
       const mockAddressToId = mock.fn(() => appId)
+      const refreshCachedMetadata = mock.fn(async () => {})
+      const replaceCachedSiteManifest = mock.fn(async () => ({ refreshCachedMetadata }))
 
       const iterator = AppUpdater.updateApp(nextSiteManifestEvent, {
         _AppFileDownloader: MockAppFileDownloader,
@@ -1035,6 +1120,9 @@ describe('AppUpdater', () => {
         _saveSiteManifestToDb: mockSaveManifest,
         _getSiteManifestFromDb: mockGetManifest,
         _addressObjToAppId: mockAddressToId,
+        _replaceCachedSiteManifest: replaceCachedSiteManifest,
+        _setWebStorageItem: () => {},
+        _localStorage: storageFromEntries(),
         writeRelays
       })
 
@@ -1064,6 +1152,8 @@ describe('AppUpdater', () => {
       const [savedEvent, savedMeta] = mockSaveManifest.mock.calls[0].arguments
       assert.deepEqual(savedEvent, nextSiteManifestEvent)
       assert.deepEqual(savedMeta.singleNappOpenedAtByOwner, { [ownerPubkey]: 123 })
+      assert.equal(replaceCachedSiteManifest.mock.calls[0].arguments[1].meta.singleNappOpenedAtByOwner[ownerPubkey], 123)
+      assert.equal(refreshCachedMetadata.mock.callCount(), 1)
     })
 
     it('should stop on download error', async () => {

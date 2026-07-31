@@ -18,6 +18,7 @@ import { base16ToBase62 } from 'libp2r2p/base62'
 import { useConfirmationDialogStore } from '#zones/confirmation-dialog/index.js'
 import { getAssetBudgetConfirmation } from '#i18n/asset-budget.js'
 import { getT } from '#i18n/index.js'
+import { formatManifestVersion } from '#helpers/site-manifest.js'
 
 export const nappUpdatesLocales = getLocales()
 const t = getT(nappUpdatesLocales)
@@ -110,8 +111,8 @@ f('napp-updates', function () {
       // counts updates that arrive after the user leaves this page.
       const visible = availableUpdates$()
       for (const [appId, update] of Object.entries(visible)) {
-        if (update?.event?.id) {
-          await AppUpdater.markUpdateAsSeen(appId, update.event.id)
+        if (update?.version) {
+          await AppUpdater.markUpdateAsSeen(appId, update.version)
         }
       }
     } catch (e) {
@@ -485,9 +486,7 @@ f('napp-update-card', function () {
 
       const manifest = appFileManager.siteManifest
       if (manifest) {
-        const date = new Date(manifest.created_at * 1000).toISOString().split('T')[0]
-        const shortId = manifest.id.slice(0, 8)
-        version$(`${date}-${shortId}`)
+        version$(formatManifestVersion(manifest) || t('Unknown'))
         if (manifest.pubkey) {
           publisherPk$(base16ToBase62(manifest.pubkey))
           publisherHexPk$(manifest.pubkey)
@@ -506,9 +505,7 @@ f('napp-update-card', function () {
       return
     }
     const e = updateInfo.event
-    const date = new Date(e.created_at * 1000).toISOString().split('T')[0]
-    const shortId = e.id.slice(0, 8)
-    nextVersion$(`${date}-${shortId}`)
+    nextVersion$(formatManifestVersion(e))
     if (e.pubkey) {
       publisherPk$(base16ToBase62(e.pubkey))
       publisherHexPk$(e.pubkey)
