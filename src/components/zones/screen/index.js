@@ -206,6 +206,7 @@ f('aWindows', function () {
 f('windowsBackground', function () {
   return this.h`
     <div
+      class='hue-revert'
       id='windows-background'
       style=${`
         background-color: ${cssVars.colors.bg};
@@ -985,7 +986,7 @@ f('toolbarMenu', function () {
         })}
         <div class="add-user-button" onclick=${handleAddUserClick}>
           <div class="add-user-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <svg class="do-hue-invert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <line x1="12" y1="5" x2="12" y2="19"></line>
               <line x1="5" y1="12" x2="19" y2="12"></line>
             </svg>

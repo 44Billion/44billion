@@ -43,7 +43,10 @@ f('aAvatar', function () {
         height: 100%;
         object-fit: cover;
         border-radius: 50%;
-        background-color: ${cssVars.colors.bgAvatar};
+        background-color: light-dark(
+          oklch(from ${cssVars.colors.bgAvatar} calc(1 - l) c calc(h + 180)),
+          ${cssVars.colors.bgAvatar}
+        );
       `}
     />`
   }

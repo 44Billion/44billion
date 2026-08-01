@@ -57,7 +57,7 @@ f('vault-modal', ({ h }) => {
     drawerStyle$: `
       --a-drawer-width: min(360px, calc(100dvw - 32px));
       --a-dialog-background: ${cssVars.colors.bg};
-      --a-dialog-border-color: ${cssVars.colors.mg2};
+      --a-dialog-border-color: ${cssVars.colors.bg2Lighter};
       --a-dialog-text: ${cssVars.colors.fg};
       --a-dialog-close-background: ${cssVars.colors.bg2Lighter};
       --a-dialog-close-text: ${cssVars.colors.fg2};
