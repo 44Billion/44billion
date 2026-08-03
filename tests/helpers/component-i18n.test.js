@@ -126,6 +126,20 @@ describe('permission translations', () => {
     assert.equal(format('ru', { name: 'delete', eKind: 5, meta: { params: [event(5)] } }), 'Можно удалить 5 элементов?')
     assert.equal(format('zh-CN', { name: 'eventAccess', eKind: 34601, meta: { scope: 'asset' } }), '可以访问此类数据吗：文件 (范围：asset)？')
   })
+
+  it('uses the target app d tag instead of its encoded entity while metadata loads', () => {
+    assert.equal(format('en', {
+      name: 'openApp',
+      eKind: null,
+      meta: {
+        targetApp: {
+          id: 'app-id',
+          alias: 'katland',
+          napp: '+czNmYIkHEdg9XBnNcgf9STjB4kSCipoiCqyG5a7HUVOyNRc02sriJQDti'
+        }
+      }
+    }), 'Can I open the katland app?')
+  })
 })
 
 describe('reactive locale preference', () => {

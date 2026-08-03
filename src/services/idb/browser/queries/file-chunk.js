@@ -27,7 +27,7 @@ export async function deleteStaleFileChunksFromDb (appId, allowedRootHashes, { s
   const allowed = new Set(allowedRootHashes)
   const p = Promise.withResolvers()
   const range = IDBKeyRange.bound([appId, '\u0000', -Infinity], [appId, '\uffff', Infinity])
-  run('openCursor', [range], 'fileChunks', null, { p })
+  run('openCursor', [range], 'fileChunks', null, { p, txMode: 'readwrite' })
 
   const getContinueKey = cursor => {
     const [, rootHash] = cursor.key
@@ -60,7 +60,7 @@ export async function deleteFileChunksFromDb (appId, rootHash) {
 
   const range = IDBKeyRange.bound([appId, rootHash ?? '\u0000', -Infinity], [appId, rootHash ?? '\uffff', Infinity])
   const p = Promise.withResolvers()
-  await run('openCursor', [range], 'fileChunks', null, { p })
+  await run('openCursor', [range], 'fileChunks', null, { p, txMode: 'readwrite' })
 
   let cursor
   let deletedCount = 0

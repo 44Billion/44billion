@@ -431,8 +431,9 @@ export async function initMessageListener (
 
     const appObject = {
       id: appIdParam,
-      napp: appEncode(appAddressParam) // no relay hint allowed
-      // alias: +[+][+]abc@44billion.net, i.e. from +<appIdAlias>[@<domain>]
+      napp: appEncode(appAddressParam), // no relay hint allowed
+      // Always keep a human-readable fallback while richer metadata is loading.
+      alias: appAddressParam.dTag || undefined
       // name: from bundleMetadata event or index.htm(l)
     }
 
@@ -507,24 +508,29 @@ export async function initMessageListener (
             // because other parts may be using these assets too,
             // like dialogs other than the permission one,
             // or may use them soon
-            let isTargetAppInstalled = false
-            for (const wsKey of JSON.parse(localStorage.getItem('session_workspaceKeys')) ?? []) {
-              isTargetAppInstalled = Array.isArray(
-                JSON.parse(
+            try {
+              let isTargetAppInstalled = false
+              for (const wsKey of JSON.parse(localStorage.getItem('session_workspaceKeys')) ?? []) {
+                const appKeys = JSON.parse(
                   localStorage.getItem(`session_workspaceByKey_${wsKey}_appById_${targetAppId}_appKeys`)
                 )
-              )
-              if (isTargetAppInstalled) break
+                isTargetAppInstalled = Array.isArray(appKeys) && appKeys.length > 0
+                if (isTargetAppInstalled) break
+              }
+              if (targetAppId && !isTargetAppInstalled) {
+                setWebStorageItem(localStorage, `session_appById_${targetAppId}_icon`, undefined)
+                setWebStorageItem(localStorage, `session_appById_${targetAppId}_name`, undefined)
+                setWebStorageItem(localStorage, `session_appById_${targetAppId}_description`, undefined)
+                setWebStorageItem(localStorage, `session_appById_${targetAppId}_relayHints`, undefined)
+                const targetAppFiles = await AppFileManager.create(targetAppId)
+                await targetAppFiles.clearAppFiles()
+              }
+            } catch (cleanupError) {
+              console.error('Failed to clear rejected target app files:', cleanupError)
             }
-            if (!isTargetAppInstalled) {
-              setWebStorageItem(localStorage, `session_appById_${targetAppId}_icon`, undefined)
-              setWebStorageItem(localStorage, `session_appById_${targetAppId}_name`, undefined)
-              setWebStorageItem(localStorage, `session_appById_${targetAppId}_description`, undefined)
-              setWebStorageItem(localStorage, `session_appById_${targetAppId}_relayHints`, undefined)
-              const targetAppFiles = await AppFileManager.create(targetAppId)
-              await targetAppFiles.clearAppFiles()
+            if (error?.message !== 'Permission denied') {
+              console.error('Error in OPEN_APP handler:', error)
             }
-            console.error('Error in OPEN_APP handler:', error)
           }
           break
         }
