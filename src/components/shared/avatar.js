@@ -1,5 +1,5 @@
-import { f, useStore, useAsyncComputed } from '#f'
-import { getSvgAvatar } from '#helpers/avatar.js'
+import { f, useStore } from '#f'
+import { getSvgAvatar, isValidAvatarPicture } from '#helpers/avatar.js'
 import '#shared/icons/icon-user-circle.js'
 import '#shared/svg.js'
 import { base62ToBase16 } from 'libp2r2p/base62'
@@ -20,18 +20,13 @@ f('aAvatar', function () {
       const picture = props.picture$?.() ?? props.picture ?? storage[`session_accountByUserPk_${this.pk$()}_profile$`]()?.picture
       if (!picture) return null
 
-      const isDataImage = /^data:image\/[a-z0-9.+-]+(?:;[a-z0-9=.+-]+)*(?:;base64)?,/i.test(picture)
-      const isHttpImageUrl = /^(https?:\/\/)[^\s?#]+\.(png|jpe?g|gif|webp|avif|bmp|ico|svg)(?:[?#].*)?$/i.test(picture)
-      const isRelativeImageUrl = /^(?:\.{0,2}\/)?[^\s?#]+\.(png|jpe?g|gif|webp|avif|bmp|ico|svg)(?:[?#].*)?$/i.test(picture)
-      if (!(isDataImage || isHttpImageUrl || !isRelativeImageUrl)) return null
-
-      return picture
+      return isValidAvatarPicture(picture) ? picture : null
     },
-    svg$: useAsyncComputed(() => {
-      const seed = store.pk$()
+    svg$ () {
+      const seed = this.pk$()
       if (!seed) return
       return getSvgAvatar(base62ToBase16(seed, { mode: 'integer', byteLength: 32 }))
-    })
+    }
   })
 
   if (store.picture$()) {

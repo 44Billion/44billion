@@ -42,6 +42,8 @@
     "#zones/*": "./src/components/zones/*"
   },
   "dependencies": {
+    "@dicebear/core": "^10.4.0",
+    "@dicebear/styles": "^10.3.0",
     "@leeoniya/ufuzzy": "^1.0.19",
     "@noble/hashes": "^2.0.1",
     "libp2r2p": "^0.10.1",
