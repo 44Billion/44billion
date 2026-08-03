@@ -73,13 +73,13 @@ f('nappAssetsCachingProgressBar', function () {
 
   return this.h`
     <style>
-      napp-assets-caching-progress-bar {
+      .napp-assets-caching-progress {
         position: absolute;
         top: 0;
         left: 0;
         right: 0;
         z-index: 1000;
-        display: block;
+        display: none;
         width: 100%;
         max-width: 100%;
         height: 34px;
@@ -87,11 +87,20 @@ f('nappAssetsCachingProgressBar', function () {
         pointer-events: none;
         contain: paint;
       }
+
+      .napp-assets-caching-progress.active {
+        display: block;
+      }
     </style>
-    <div style=${barStyle$()} />
-    <div style=${textStyle$()}>
-      Caching ${progressSummary$().fileCount} asset${progressSummary$().fileCount !== 1 ? 's' : ''}
-      (${progressSummary$().overallProgress}%): ${progressSummary$().fileList}
+    <div class=${{
+      'napp-assets-caching-progress': true,
+      active: hasAnyProgress$()
+    }}>
+      <div style=${barStyle$()} />
+      <div style=${textStyle$()}>
+        Caching ${progressSummary$().fileCount} asset${progressSummary$().fileCount !== 1 ? 's' : ''}
+        (${progressSummary$().overallProgress}%): ${progressSummary$().fileList}
+      </div>
     </div>
   `
 })
