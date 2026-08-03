@@ -57,7 +57,10 @@ async function fetchAndCacheIcon (appFileManager, cachedIcon = null) {
   try {
     let cacheStatus = await appFileManager.getFileCacheStatus(null, asset, { withMeta: true })
     if (!cacheStatus.isCached) {
-      await appFileManager.cacheFile(null, { ...asset, filename: asset.paths[0] || `@icon:${asset.root}` })
+      await appFileManager.cacheFile(null, {
+        ...asset,
+        filename: asset.filename || asset.paths[0] || `@icon:${asset.root}`
+      })
       cacheStatus = await appFileManager.getFileCacheStatus(null, asset, { withMeta: true })
     }
 

@@ -17,14 +17,20 @@ async function runDownload (bytes, {
   advertisedHash = hash(bytes),
   size = bytes.length,
   headLength = bytes.length,
-  getLengths = [bytes.length]
+  getLengths = [bytes.length],
+  publishedServers = ['https://blossom.test'],
+  serverHints = []
 } = {}) {
   const getEvents = mock.method(nostrRelays, 'getEvents', async () => ({
-    result: [{ kind: 10063, created_at: 1, tags: [['server', 'https://blossom.test']] }]
+    result: publishedServers.length
+      ? [{ kind: 10063, created_at: 1, tags: publishedServers.map(server => ['server', server]) }]
+      : []
   }))
   const previousFetch = globalThis.fetch
   let getCount = 0
-  globalThis.fetch = mock.fn(async (_url, options = {}) => {
+  const requestedUrls = []
+  globalThis.fetch = mock.fn(async (url, options = {}) => {
+    requestedUrls.push(url)
     if (options.method === 'HEAD') {
       const headers = headLength === null ? {} : { 'Content-Length': String(headLength) }
       return new Response(null, { status: 200, headers })
@@ -40,17 +46,32 @@ async function runDownload (bytes, {
   })
   const reports = []
   try {
-    await new BlossomFileDownloader(advertisedHash, PUBKEY, ['wss://relay.test'], report => reports.push(report), { size }).run()
+    await new BlossomFileDownloader(
+      advertisedHash,
+      PUBKEY,
+      ['wss://relay.test'],
+      report => reports.push(report),
+      { size, servers: serverHints }
+    ).run()
   } finally {
     getEvents.mock.restore()
     globalThis.fetch = previousFetch
   }
-  return { getCount, reports }
+  return { getCount, reports, requestedUrls }
 }
 
 afterEach(() => mock.restoreAll())
 
 describe('BlossomFileDownloader pseudo chunks', () => {
+  it('downloads from signed manifest hints when no kind 10063 event is found', async () => {
+    const { reports, requestedUrls } = await runDownload(Uint8Array.of(1, 2, 3), {
+      publishedServers: [],
+      serverHints: ['https://manifest-blossom.test/']
+    })
+    assert.equal(reports.at(-1).progress, 100)
+    assert.ok(requestedUrls.every(url => url.startsWith('https://manifest-blossom.test/')))
+  })
+
   it('creates unsigned local kind 34601 events using derived d and empty proof', async () => {
     const bytes = new Uint8Array(51003).fill(7)
     const fileHash = hash(bytes)

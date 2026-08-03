@@ -2,11 +2,13 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { describe, it } from 'node:test'
 import {
+  findFaviconAssetDescriptor,
   findMarkedAssetDescriptors,
   findRouteAssetDescriptor,
   formatManifestVersion,
   getManifestAggregateHash,
   getManifestAssetDescriptors,
+  getManifestFileSourceHints,
   getManifestMetadata,
   getManifestPublishedAt,
   normalizeManifestPath
@@ -37,6 +39,36 @@ describe('site manifest descriptors', () => {
     const [asset] = getManifestAssetDescriptors(manifest)
     assert.equal(asset.service, 'blossom')
     assert.deepEqual(asset.paths, ['index.html'])
+  })
+
+  it('finds nested favicon paths case-insensitively with an image allowlist', () => {
+    const manifest = {
+      tags: [
+        ['service', 'irfs'],
+        ['r', A, 'path assets/favicon.txt'],
+        ['r', B, 'path index.html', 'path assets/Favicon.SVG']
+      ]
+    }
+    const favicon = findFaviconAssetDescriptor(manifest)
+    assert.equal(favicon.root, B)
+    assert.equal(favicon.filename, 'assets/Favicon.SVG')
+  })
+
+  it('normalizes signed relay and Blossom server hints', () => {
+    const hints = getManifestFileSourceHints({
+      tags: [
+        ['relay', 'wss://relay.test/'],
+        ['relay', 'wss://relay.test'],
+        ['relay', 'https://not-a-relay.test'],
+        ['server', 'https://blossom.test/'],
+        ['server', 'http://localhost:3000/'],
+        ['server', 'ftp://invalid.test']
+      ]
+    })
+    assert.deepEqual(hints, {
+      relays: ['wss://relay.test'],
+      blossomServers: ['https://blossom.test', 'http://localhost:3000']
+    })
   })
 
   it('rejects unsafe paths and ignores invalid manifest references', () => {

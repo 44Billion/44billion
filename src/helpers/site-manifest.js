@@ -3,6 +3,8 @@ import { bytesToBase16 } from 'libp2r2p/base16'
 
 const ROOT_HASH = /^[0-9a-f]{64}$/
 const RECOGNIZED_MARKS = new Set(['icon', 'key_art', 'screenshot'])
+const FAVICON_BASENAME = /^favicon\.(?:ico|svg|webp|png|jpe?g|gif)$/i
+const MAX_SOURCE_HINTS_PER_TYPE = 20
 
 export function normalizeManifestPath (value) {
   if (typeof value !== 'string') throw new TypeError('Manifest path must be a string')
@@ -168,6 +170,37 @@ export function findRouteAssetDescriptor (pathname, manifest) {
 export function findMarkedAssetDescriptors (mark, manifest) {
   if (!RECOGNIZED_MARKS.has(mark)) return []
   return getManifestAssetDescriptors(manifest).filter(asset => asset.marks.includes(mark))
+}
+
+export function findFaviconAssetDescriptor (manifest) {
+  for (const descriptor of getManifestAssetDescriptors(manifest)) {
+    const filename = descriptor.paths.find(path => FAVICON_BASENAME.test(path.split('/').pop()))
+    if (filename) return { ...descriptor, filename }
+  }
+  return null
+}
+
+function getUrlHints (manifest, tagName, protocols) {
+  const hints = []
+  for (const tag of Array.isArray(manifest?.tags) ? manifest.tags : []) {
+    if (!Array.isArray(tag) || tag[0] !== tagName || typeof tag[1] !== 'string') continue
+    try {
+      const url = new URL(tag[1].trim())
+      if (!protocols.has(url.protocol)) continue
+      url.hash = ''
+      const hint = url.toString().replace(/\/$/, '')
+      if (!hints.includes(hint)) hints.push(hint)
+      if (hints.length >= MAX_SOURCE_HINTS_PER_TYPE) break
+    } catch (_) {}
+  }
+  return hints
+}
+
+export function getManifestFileSourceHints (manifest) {
+  return {
+    relays: getUrlHints(manifest, 'relay', new Set(['ws:', 'wss:'])),
+    blossomServers: getUrlHints(manifest, 'server', new Set(['http:', 'https:']))
+  }
 }
 
 function * getPotentialFilenameMatches (pathname, htmlOnly = false) {

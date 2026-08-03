@@ -52,6 +52,11 @@ export default class BlossomFileDownloader {
     this.signal = options.signal ?? null
     this.mimeType = options.mimeType ?? null
     this.size = options.size ?? null
+    this.serverHints = [...new Set((Array.isArray(options.servers) ? options.servers : [])
+      .filter(server => typeof server === 'string')
+      .map(server => server.trim().replace(/\/$/, ''))
+      .filter(server => /^https?:\/\//.test(server))
+      .filter(Boolean))]
     this.isRunning = false
   }
 
@@ -368,20 +373,24 @@ export default class BlossomFileDownloader {
    */
   async #getBlossomServers () {
     const relays = [...new Set(this.writeRelays)]
-    const { result: events } = await nostrRelays.getEvents(
-      { kinds: [10063], authors: [this.pubkey], limit: 1 },
-      relays,
-      { signal: this.signal }
-    )
-
-    if (!events || events.length === 0) return []
+    let events = []
+    try {
+      ({ result: events = [] } = await nostrRelays.getEvents(
+        { kinds: [10063], authors: [this.pubkey], limit: 1 },
+        relays,
+        { signal: this.signal }
+      ))
+    } catch (error) {
+      if (this.serverHints.length === 0) throw error
+    }
 
     events.sort((a, b) => b.created_at - a.created_at)
     const best = events[0]
 
-    return (best.tags ?? [])
+    const publishedServers = (best?.tags ?? [])
       .filter(t => Array.isArray(t) && t[0] === 'server' && /^https?:\/\//.test(t[1]))
       .map(t => t[1].trim().replace(/\/$/, ''))
       .filter(Boolean)
+    return [...new Set([...this.serverHints, ...publishedServers])]
   }
 }

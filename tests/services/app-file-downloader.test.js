@@ -142,7 +142,10 @@ describe('AppFileDownloader', () => {
   describe('run with blossom service', () => {
     it('should use BlossomFileDownloader when service is blossom and pass blossomFileHash to save', async () => {
       const blossomSha256Hash = 'a'.repeat(64)
-      const downloader = new AppFileDownloader(appId, blossomSha256Hash, writeRelays, { service: 'blossom' })
+      const downloader = new AppFileDownloader(appId, blossomSha256Hash, writeRelays, {
+        service: 'blossom',
+        blossomServers: ['https://manifest-blossom.test']
+      })
 
       let capturedCallback, capturedOptions
       const MockBlossomDownloader = class {
@@ -190,7 +193,11 @@ describe('AppFileDownloader', () => {
       assert.ok(savedChunkEvents[0], 'pseudo chunk should be forwarded for local persistence')
       assert.equal(savedAppId, appId)
       // Verify mimeType option is forwarded to BlossomFileDownloader
-      assert.deepEqual(capturedOptions, { mimeType: null, size: null })
+      assert.deepEqual(capturedOptions, {
+        mimeType: null,
+        size: null,
+        servers: ['https://manifest-blossom.test']
+      })
     })
 
     it('should skip download when already fully cached', async () => {

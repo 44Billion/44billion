@@ -19,8 +19,11 @@ export default class AppFileDownloader {
    * @param {string} [options.service='blossom'] - 'blossom' or 'irfs'
    * @param {string|null} [options.mimeType=null] - expected MIME type of the file
    * @param {number|null} [options.size=null] - signed byte-size hint from the manifest
+   * @param {string[]} [options.blossomServers=[]] - signed server hints from the manifest
    */
-  constructor (appId, fileHash, writeRelays, { service = 'blossom', mimeType = null, size = null } = {}) {
+  constructor (appId, fileHash, writeRelays, {
+    service = 'blossom', mimeType = null, size = null, blossomServers = []
+  } = {}) {
     if (!writeRelays || writeRelays.length === 0) throw new Error('Write relays cannot be empty')
     this.appId = appId
     this.fileRootHash = fileHash
@@ -28,6 +31,7 @@ export default class AppFileDownloader {
     this.service = service
     this.mimeType = mimeType
     this.size = size
+    this.blossomServers = [...new Set(Array.isArray(blossomServers) ? blossomServers : [])]
   }
 
   static async getSiteManifestEvents (appIds, {
@@ -173,7 +177,7 @@ export default class AppFileDownloader {
         trackOperation(op)
         await op
       },
-      { mimeType: this.mimeType, size: this.size }
+      { mimeType: this.mimeType, size: this.size, servers: this.blossomServers }
     )
 
     downloader.run().finally(async () => {

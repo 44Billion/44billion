@@ -1,5 +1,10 @@
 import { appIdToAddressObj } from '#helpers/app.js'
-import { findRouteAssetDescriptor, getManifestAssetDescriptors } from '#helpers/site-manifest.js'
+import {
+  findFaviconAssetDescriptor,
+  findRouteAssetDescriptor,
+  getManifestAssetDescriptors,
+  getManifestFileSourceHints
+} from '#helpers/site-manifest.js'
 import getSiteManifestEvent from './get-site-manifest-event.js'
 import AppFileDownloader from '#services/app-file-downloader/index.js'
 import { getUserRelays } from '#helpers/nostr-queries.js'
@@ -191,11 +196,9 @@ export default class AppFileManager {
   #faviconMetadata
   getFaviconMetadata () {
     if (this.#faviconMetadata) return this.#faviconMetadata
-    const asset = getManifestAssetDescriptors(this.siteManifest).find(descriptor =>
-      descriptor.paths.some(path => /^favicon\.\w{3,}$/.test(path))
-    )
+    const asset = findFaviconAssetDescriptor(this.siteManifest)
     if (!asset) return
-    const filename = asset.paths.find(path => /^favicon\.\w{3,}$/.test(path))
+    const filename = asset.filename
     const mimeType = asset.mimeType || mime.getType(filename)
     if (!(mimeType || '').startsWith('image/')) return
 
@@ -319,14 +322,19 @@ export default class AppFileManager {
 
     try {
       const relays = await getUserRelays([this.siteManifest.pubkey])
-      const writeRelays = Array.from(relays[this.siteManifest.pubkey]?.write || [])
+      const sourceHints = getManifestFileSourceHints(this.siteManifest)
+      const writeRelays = [...new Set([
+        ...sourceHints.relays,
+        ...Array.from(relays[this.siteManifest.pubkey]?.write || [])
+      ])]
       if (writeRelays.length === 0) writeRelays.push(...nappRelays)
 
       const mimeType = asset.mimeType || mime.getType(filename)
       const downloader = new AppFileDownloader(this.appId, asset.root, writeRelays, {
         service: asset.service,
         mimeType,
-        size: asset.size
+        size: asset.size,
+        blossomServers: sourceHints.blossomServers
       })
 
       for await (const report of downloader.run({ assetBudget: { ...assetBudget, filename } })) {
