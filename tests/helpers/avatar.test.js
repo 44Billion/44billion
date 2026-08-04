@@ -32,14 +32,15 @@ describe('local avatars', () => {
 })
 
 describe('avatar picture validation', () => {
-  it('accepts supported data, HTTP and relative image sources', () => {
+  it('accepts supported data and HTTP image sources', () => {
     assert.equal(isValidAvatarPicture('data:image/svg+xml,%3Csvg%3E'), true)
     assert.equal(isValidAvatarPicture('https://example.test/avatar.webp?size=64'), true)
-    assert.equal(isValidAvatarPicture('/images/avatar.png'), true)
-    assert.equal(isValidAvatarPicture('../images/avatar.svg#face'), true)
   })
 
-  it('rejects non-image and unsafe-looking values', () => {
+  it('rejects relative, non-image and unsafe-looking values', () => {
+    assert.equal(isValidAvatarPicture('/images/avatar.png'), false)
+    assert.equal(isValidAvatarPicture('../images/avatar.svg#face'), false)
+    assert.equal(isValidAvatarPicture('avatar.png'), false)
     assert.equal(isValidAvatarPicture('javascript:alert(1)'), false)
     assert.equal(isValidAvatarPicture('https://example.test/profile'), false)
     assert.equal(isValidAvatarPicture(' avatar.png'), false)

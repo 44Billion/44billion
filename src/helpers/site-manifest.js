@@ -3,7 +3,7 @@ import { bytesToBase16 } from 'libp2r2p/base16'
 
 const ROOT_HASH = /^[0-9a-f]{64}$/
 const RECOGNIZED_MARKS = new Set(['icon', 'key_art', 'screenshot'])
-const FAVICON_BASENAME = /^favicon\.(?:ico|svg|webp|png|jpe?g|gif)$/i
+const FAVICON_BASENAME = /^favicon\.(?:ico|svg|webp|png|jpe?g|gif|avif)$/i
 const MAX_SOURCE_HINTS_PER_TYPE = 20
 
 export function normalizeManifestPath (value) {
@@ -173,11 +173,16 @@ export function findMarkedAssetDescriptors (mark, manifest) {
 }
 
 export function findFaviconAssetDescriptor (manifest) {
+  return findFaviconAssetDescriptors(manifest)[0] || null
+}
+
+export function findFaviconAssetDescriptors (manifest) {
+  const favicons = []
   for (const descriptor of getManifestAssetDescriptors(manifest)) {
     const filename = descriptor.paths.find(path => FAVICON_BASENAME.test(path.split('/').pop()))
-    if (filename) return { ...descriptor, filename }
+    if (filename) favicons.push({ ...descriptor, filename })
   }
-  return null
+  return favicons
 }
 
 function getUrlHints (manifest, tagName, protocols) {

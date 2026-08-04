@@ -13,7 +13,7 @@ import { countFileChunksFromDb, deleteFileChunksFromDb } from '#services/idb/bro
 import { saveSiteManifestToDb, deleteSiteManifestFromDb } from '#services/idb/browser/queries/site-manifest.js'
 import mime from 'mime'
 import { setWebStorageItem } from '#hooks/use-web-storage.js'
-import { getIcon, getName, getDescription } from './get-metadata.js'
+import { getIcon, getNextIcon, getName, getDescription } from './get-metadata.js'
 import { ASSET_BUDGET_BACKGROUND_DENIED } from '#services/app-asset-budget/index.js'
 import { registerManifestInstanceReplaceHandler } from './manifest-instance-cache.js'
 
@@ -23,7 +23,23 @@ export function cacheAppMetadata (appId, metadata) {
   ['name', 'description', 'icon'].forEach(key => {
     let value = metadata[key]
     switch (key) {
-      case 'icon': value = value?.fx && value?.url && { fx: value.fx, url: value.url }; break
+      case 'icon': {
+        if (!value?.url) {
+          value = null
+          break
+        }
+        const candidates = Array.isArray(value.candidates)
+          ? value.candidates.filter(candidate => candidate?.url).map(candidate => ({
+            fx: candidate.fx || null,
+            url: candidate.url
+          }))
+          : []
+        value = { fx: value.fx || null, url: value.url }
+        // Presence of this array distinguishes fully discovered icon chains
+        // from legacy single-icon cache entries.
+        if (candidates.length) value.candidates = candidates
+        break
+      }
       case 'description': value = (value?.length ?? 0) > 255 ? `${value.slice(0, 252)}...` : value; break
       case 'name': value = (value?.length ?? 0) > 100 ? `${value.slice(0, 97)}...` : value; break
     }
@@ -136,6 +152,10 @@ export default class AppFileManager {
 
   async getIcon (staleWhileRevalidate = false) {
     return getIcon(this, staleWhileRevalidate)
+  }
+
+  async getNextIcon (options) {
+    return getNextIcon(this, options)
   }
 
   async getName (staleWhileRevalidate = false) {

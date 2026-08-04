@@ -1,66 +1,208 @@
-import { f, useComputed, useSignal, useTask } from '#f'
+import { f, useMemo, useStore, useTask } from '#f'
 import useWebStorage from '#hooks/use-web-storage.js'
 import { cssVars } from '#assets/styles/theme.js'
 import AppFileManager from '#services/app-file-manager/index.js'
-import { debounce } from '#helpers/function.js'
+import connectivityRetry from '#services/connectivity-retry.js'
+import {
+  getAppIconLayerState,
+  normalizeAppIconCandidates,
+  reconcileAppIconCandidates,
+  shouldShowAppIconShimmer
+} from '#helpers/app-icon.js'
 import { getT } from '#i18n/index.js'
 
 export const appIconLocales = getLocales()
 const t = getT(appIconLocales)
 
-async function addIconToCache (appId) {
-  const appFiles = await AppFileManager.create(appId)
-  await appFiles.getIcon() // this adds it to the cache
+// Rejects late load/error events from a candidate that is no longer current.
+function imageMatchesCandidate (image, candidate) {
+  const loadedUrl = image.currentSrc || image.src
+  try {
+    return new URL(loadedUrl, document.baseURI).href === new URL(candidate.url, document.baseURI).href
+  } catch (_) {
+    return loadedUrl === candidate.url
+  }
 }
-const debouncedAddIconToCache = debounce(addIconToCache, 1000)
 
-f('appIcon', function () {
+f('app-icon', ({ h, props }) => {
   const storage = useWebStorage(localStorage)
-  const appId$ = useComputed(() => this.props.app$().id)
-  const appIndex$ = useComputed(() => this.props.app$().index ?? '?')
-  const style$ = useComputed(() => this.props.style$?.() ?? this.props.style ?? '')
+  // Native objects with internal slots must stay outside useStore's proxies.
+  const runtime = useMemo(() => ({
+    currentAppId: null,
+    imageElement: null,
+    retryRelease: null,
+    rejectedByUrl: new Map(),
+    abortController: new AbortController()
+  }))
+  const store = useStore(() => ({
+    appId$ () { return props.app$().id },
+    appIndex$ () { return props.app$().index ?? '?' },
+    style$ () { return props.style$?.() ?? props.style ?? '' },
+    cachedIcon$: null,
+    iconCandidates$: [],
+    iconIndex$: 0,
+    candidatesKey$: null,
+    exhausted$: false,
+    isLoading$: false,
+    isResolutionPending$: true,
+    displayedIcon$: null,
+    currentIcon$ () { return this.iconCandidates$()[this.iconIndex$()] ?? null },
+    resetForApp (appId) {
+      if (runtime.currentAppId === appId) return
+      this.finishRetry()
+      runtime.abortController.abort()
+      runtime.abortController = new AbortController()
+      runtime.currentAppId = appId
+      runtime.imageElement = null
+      runtime.rejectedByUrl = new Map()
+      this.isLoading$(false)
+      this.isResolutionPending$(true)
+      this.displayedIcon$(null)
+      this.exhausted$(false)
+    },
+    useCandidates (candidates) {
+      const reconciled = reconcileAppIconCandidates(
+        candidates,
+        this.displayedIcon$(),
+        new Set(runtime.rejectedByUrl.keys())
+      )
+      this.iconCandidates$(reconciled.candidates)
+      this.iconIndex$(reconciled.index)
+      if (this.currentIcon$()) this.isResolutionPending$(false)
+    },
+    rejectedCandidates () {
+      return [...runtime.rejectedByUrl.values()]
+    },
+    finishRetry () {
+      runtime.retryRelease?.()
+      runtime.retryRelease = null
+    },
+    setImageElement (element) {
+      runtime.imageElement = element
+    },
+    markIconLoaded (event) {
+      if (Number(event.currentTarget.dataset.iconIndex) !== this.iconIndex$()) return
+      const icon = this.currentIcon$()
+      if (!icon || !imageMatchesCandidate(event.currentTarget, icon)) return
+      this.displayedIcon$(icon)
+      this.finishRetry()
+    },
+    async waitAndRetry () {
+      try {
+        await connectivityRetry.waitUntilOnline({ signal: runtime.abortController.signal })
+        if (runtime.abortController.signal.aborted) return
+        if (this.currentIcon$()) {
+          await connectivityRetry.run(() => new Promise(resolve => {
+            runtime.retryRelease = resolve
+            const image = runtime.imageElement
+            const candidate = this.currentIcon$()
+            if (!image || !candidate) return this.finishRetry()
+            image.removeAttribute('src')
+            queueMicrotask(() => {
+              if (runtime.abortController.signal.aborted || runtime.imageElement !== image) {
+                return this.finishRetry()
+              }
+              image.src = candidate.url
+            })
+          }), { signal: runtime.abortController.signal })
+        } else {
+          this.isLoading$(false)
+          await this.loadNextIcon()
+        }
+      } catch (error) {
+        if (error?.name !== 'AbortError') console.error('Failed to resume app icon:', error)
+      }
+    },
+    async loadNextIcon () {
+      if (this.isLoading$() || runtime.abortController.signal.aborted) return
+      const appId = this.appId$()
+      const signal = runtime.abortController.signal
+      this.isLoading$(true)
+      try {
+        const icon = await connectivityRetry.run(async () => {
+          const appFiles = await AppFileManager.create(appId)
+          return appFiles.getNextIcon({ rejected: this.rejectedCandidates() })
+        }, { signal })
+        if (signal.aborted || this.appId$() !== appId) return
+        if (icon) {
+          const candidates = this.iconCandidates$().slice()
+          if (!candidates.some(candidate => candidate.url === icon.url)) candidates.push(icon)
+          this.useCandidates(candidates)
+        } else {
+          this.exhausted$(true)
+          this.isResolutionPending$(false)
+        }
+      } catch (error) {
+        if (error?.name === 'AbortError' || signal.aborted || this.appId$() !== appId) return
+        let online = false
+        try { online = await connectivityRetry.confirmOnline({ force: true }) } catch (_) {}
+        if (!online) await this.waitAndRetry()
+        else {
+          this.exhausted$(true)
+          this.isResolutionPending$(false)
+          console.error('Failed to load app icon:', error)
+        }
+      } finally {
+        if (!signal.aborted && runtime.abortController.signal === signal) this.isLoading$(false)
+      }
+    },
+    async showNextIcon (event) {
+      this.finishRetry()
+      const renderedIndex = Number(event.currentTarget.dataset.iconIndex)
+      if (renderedIndex !== this.iconIndex$()) return
+      const candidate = this.currentIcon$()
+      if (!candidate) return
+      if (!imageMatchesCandidate(event.currentTarget, candidate)) return
 
-  const iconUrl$ = useSignal(null)
-  const hasIcon$ = useComputed(() => !!iconUrl$())
-  const previousCachedIconFx$ = useSignal(null)
+      if (!candidate.url.startsWith('data:')) {
+        let online = false
+        try { online = await connectivityRetry.confirmOnline({ force: true }) } catch (_) {}
+        if (!online) return this.waitAndRetry()
+      }
 
-  // Check for cached icon first, then load if needed
-  useTask(async ({ track }) => {
-    const [, cachedIcon] = track(() => [appId$(), storage[`session_appById_${appId$()}_icon$`]()])
-    if (cachedIcon?.fx && previousCachedIconFx$() === cachedIcon.fx) {
-      return
+      runtime.rejectedByUrl.set(candidate.url, candidate)
+      const nextIndex = this.iconCandidates$().findIndex((next, index) =>
+        index > renderedIndex && !runtime.rejectedByUrl.has(next.url)
+      )
+      if (nextIndex >= 0) this.iconIndex$(nextIndex)
+      else await this.loadNextIcon()
     }
-    previousCachedIconFx$(cachedIcon?.fx || null)
+  }))
 
-    // Check if icon is already cached in storage
-    if (cachedIcon?.url) {
-      iconUrl$(cachedIcon.url)
-      return
-    }
-
-    // If no cached icon, reset the icon URL
-    iconUrl$(null)
+  useTask(({ track }) => {
+    const [appId, cachedIcon] = track(() => [
+      store.appId$(),
+      storage[`session_appById_${store.appId$()}_icon$`]()
+    ])
+    store.resetForApp(appId)
+    const candidates = normalizeAppIconCandidates(cachedIcon)
+    const key = JSON.stringify([appId, candidates])
+    if (store.candidatesKey$() === key) return
+    store.candidatesKey$(key)
+    store.cachedIcon$(cachedIcon)
+    store.useCandidates(candidates)
   })
 
-  const isLoading$ = useSignal(false)
   useTask(async ({ track }) => {
-    const appId = track(() => appId$())
-    if (!appId || hasIcon$()) return
-
-    isLoading$(true)
-    try {
-      // shared by other <app-icon> instances
-      await debouncedAddIconToCache(appId)
-    } catch (err) {
-      console.error('Failed to load app icon for appId:', appId, err)
-    } finally {
-      // after the other task sets the icon url
-      Promise.resolve().then(() => isLoading$(false))
-    }
+    const [appId, candidatesKey] = track(() => [store.appId$(), store.candidatesKey$()])
+    if (!appId || !candidatesKey || store.currentIcon$() || store.exhausted$()) return
+    await store.loadNextIcon()
   })
 
-  if (isLoading$()) {
-    return this.h`<div
+  useTask(({ cleanup }) => {
+    cleanup(() => {
+      store.finishRetry()
+      runtime.abortController.abort()
+    })
+  })
+
+  if (shouldShowAppIconShimmer({
+    resolutionPending: store.isResolutionPending$(),
+    isLoading: store.isLoading$(),
+    candidateIcon: store.currentIcon$(),
+    displayedIcon: store.displayedIcon$()
+  })) {
+    return h`<div
       style=${`
         width: 100%;
         height: 100%;
@@ -72,9 +214,7 @@ f('appIcon', function () {
     >
       <style>${`
         @keyframes pulse {
-          50% {
-            opacity: .5;
-          }
+          50% { opacity: .5; }
         }
         .animate-background {
           animation: pulse 2s cubic-bezier(.4,0,.6,1) infinite;
@@ -87,31 +227,91 @@ f('appIcon', function () {
     </div>`
   }
 
-  return hasIcon$()
-    ? this.h`
-      <img
-        src=${iconUrl$()}
-        alt=${t('App icon')}
+  const icon = store.currentIcon$()
+  const displayedIcon = store.displayedIcon$()
+  if (displayedIcon || (icon && !store.exhausted$())) {
+    const layerState = getAppIconLayerState(displayedIcon, icon)
+
+    return h`
+      <style>
+        @keyframes iconPulse {
+          0% { opacity: 0.1; }
+          50% { opacity: 0.25; }
+          100% { opacity: 0.1; }
+        }
+      </style>
+      <span
+        role='img'
+        aria-label=${t('App icon')}
         style=${`
-          width: 100%;
-          height: 100%;
-          object-fit: cover;
-          ${style$()}
-        `}
-      />
-    `
-    : this.h`
-      <span style=${`
-        font-weight: bold;
-        font-size: 14px;
-        display: flex;
-        justify-content: center;
-        align-items: center;
+        display: block;
+        position: relative;
         width: 100%;
         height: 100%;
-        ${style$()}
-      `}>${appIndex$()}</span>
+        overflow: hidden;
+      `}>
+        <span
+          aria-hidden='true'
+          style=${`
+            position: absolute;
+            inset: 0;
+            border-radius: inherit;
+            background: currentColor;
+            opacity: 0.1;
+            visibility: ${layerState.isShimmerVisible ? 'visible' : 'hidden'};
+            animation: ${layerState.isShimmerVisible ? 'iconPulse 1.4s ease-in-out infinite' : 'none'};
+          `}
+        />
+        <img
+          src=${displayedIcon?.url ?? null}
+          alt=''
+          aria-hidden='true'
+          style=${`
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            visibility: ${layerState.isDisplayedLayerVisible ? 'visible' : 'hidden'};
+            ${store.style$()}
+          `}
+        />
+        <img
+          ref=${store.setImageElement}
+          src=${icon?.url ?? null}
+          loading='lazy'
+          data-icon-index=${icon ? store.iconIndex$() : -1}
+          onload=${store.markIconLoaded}
+          onerror=${store.showNextIcon}
+          alt=''
+          aria-hidden='true'
+          style=${`
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            opacity: ${layerState.isCandidateLayerVisible ? 1 : 0};
+            pointer-events: none;
+            ${store.style$()}
+          `}
+        />
+      </span>
     `
+  }
+
+  return h`
+    <span style=${`
+      font-weight: bold;
+      font-size: 14px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      width: 100%;
+      height: 100%;
+      ${store.style$()}
+    `}>${store.appIndex$()}</span>
+  `
 })
 
 function getLocales () {

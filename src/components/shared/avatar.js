@@ -10,7 +10,7 @@ import { getT } from '#i18n/index.js'
 export const avatarLocales = getLocales()
 const t = getT(avatarLocales)
 
-f('aAvatar', function () {
+f('a-avatar', function () {
   const storage = useWebStorage(localStorage)
   const { props } = this
   const store = useStore({
@@ -75,7 +75,17 @@ f('aAvatar', function () {
       : this.h`<icon-user-circle props=${this.props} />`
   }
 
-  return this.h`<a-svg props=${{ ...this.props, svg: store.svg$() }} />`
+  return this.h`<a-svg props=${{
+    ...this.props,
+    svg: store.svg$(),
+    style: `
+      @media (prefers-color-scheme: light) {
+        svg {
+          filter: invert(1) hue-rotate(180deg) !important;
+        }
+      }
+    `
+  }} />`
 })
 
 function getLocales () {

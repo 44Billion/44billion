@@ -18,8 +18,6 @@ export const isValidAvatarPicture = function (picture) {
 
   const isDataImage = /^data:image\/[a-z0-9.+-]+(?:;[a-z0-9=.+-]+)*(?:;base64)?,/i.test(picture)
   const isHttpImageUrl = /^(https?:\/\/)[^\s?#]+\.(png|jpe?g|gif|webp|avif|bmp|ico|svg)(?:[?#].*)?$/i.test(picture)
-  const isRelativeImageUrl = /^(?:\.{0,2}\/)?[^\s?#]+\.(png|jpe?g|gif|webp|avif|bmp|ico|svg)(?:[?#].*)?$/i.test(picture)
 
-  // Don't let relative URLs through
-  return isDataImage || isHttpImageUrl || !isRelativeImageUrl
+  return isDataImage || isHttpImageUrl
 }
