@@ -712,7 +712,7 @@ f('napp-update-card', function () {
     `}</style>
     <div class='card-8d6gfgwh3wl'>
       <div class="icon-wrapper">
-        <app-icon props=${{ app$: () => ({ id: appId }) }} />
+        <app-icon props=${{ app$: () => ({ id: appId, name: appName$() }) }} />
       </div>
       <div class="info">
         <div class="name-row">

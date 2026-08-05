@@ -5,6 +5,7 @@ import AppFileManager from '#services/app-file-manager/index.js'
 import connectivityRetry from '#services/connectivity-retry.js'
 import {
   getAppIconLayerState,
+  getAppIconMonogram,
   normalizeAppIconCandidates,
   reconcileAppIconCandidates,
   shouldShowAppIconShimmer
@@ -36,7 +37,13 @@ f('app-icon', ({ h, props }) => {
   }))
   const store = useStore(() => ({
     appId$ () { return props.app$().id },
-    appIndex$ () { return props.app$().index ?? '?' },
+    appName$ () {
+      const app = props.app$()
+      const cachedName = storage[`session_appById_${app.id}_name$`]()
+      return [app.name, cachedName]
+        .find(name => typeof name === 'string' && name.trim())
+        ?.trim() || ''
+    },
     style$ () { return props.style$?.() ?? props.style ?? '' },
     cachedIcon$: null,
     iconCandidates$: [],
@@ -300,17 +307,38 @@ f('app-icon', ({ h, props }) => {
     `
   }
 
+  const monogram = getAppIconMonogram(store.appId$(), store.appName$())
   return h`
-    <span style=${`
-      font-weight: bold;
-      font-size: 14px;
+    <span
+      class='hue-revert'
+      role='img'
+      aria-label=${t('App icon')}
+      style=${`
+      color-scheme: light dark;
+      container-type: inline-size;
       display: flex;
       justify-content: center;
       align-items: center;
       width: 100%;
       height: 100%;
+      overflow: hidden;
+      background-color: light-dark(${monogram.lightBg}, ${monogram.darkBg});
+      color: light-dark(${monogram.lightFg}, ${monogram.darkFg});
       ${store.style$()}
-    `}>${store.appIndex$()}</span>
+    `}
+    >
+      <span
+        aria-hidden='true'
+        style=${`
+          font-size: 14rem;
+          font-size: clamp(14rem, 42cqi, 24rem);
+          font-weight: 700;
+          line-height: 1;
+          letter-spacing: -0.04em;
+          user-select: none;
+        `}
+      >${monogram.label}</span>
+    </span>
   `
 })
 

@@ -297,7 +297,7 @@ f('permissionDialogCard', function () {
   const appIconProps = useStore(() => ({
     app$: () => ({
       id: store.req$().app.id,
-      index: '?'
+      name: store.appName$()
     })
   }))
   return this.h`
