@@ -1,6 +1,6 @@
 import { appIdToAddressObj } from '#helpers/app.js'
 import { getUserRelays, getEventsByStrategy } from '#helpers/nostr-queries.js'
-import { nappRelays } from '#config/relays.js'
+import { nappRelays } from 'libp2r2p/relay'
 import {
   saveFileChunksToDB,
   countFileChunksFromDb,

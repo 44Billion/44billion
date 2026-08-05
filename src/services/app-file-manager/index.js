@@ -8,7 +8,7 @@ import {
 import getSiteManifestEvent from './get-site-manifest-event.js'
 import AppFileDownloader from '#services/app-file-downloader/index.js'
 import { getUserRelays } from '#helpers/nostr-queries.js'
-import { nappRelays } from '#config/relays.js'
+import { nappRelays } from 'libp2r2p/relay'
 import { countFileChunksFromDb, deleteFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
 import { saveSiteManifestToDb, deleteSiteManifestFromDb } from '#services/idb/browser/queries/site-manifest.js'
 import mime from 'mime'

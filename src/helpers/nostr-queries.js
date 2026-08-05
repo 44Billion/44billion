@@ -1,5 +1,4 @@
-import { relayPool as nostrRelays, seedRelays } from 'libp2r2p/relay'
-import { nappRelays } from '#config/relays.js'
+import { nappRelays, relayPool as nostrRelays, seedRelays } from 'libp2r2p/relay'
 import { shouldIncludeNappRelays } from '#helpers/app.js'
 import { isValidPublicRelayUrl, normalizeRelayUrl } from 'libp2r2p/url'
 
