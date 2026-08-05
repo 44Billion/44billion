@@ -16,6 +16,10 @@ f('a-avatar', function () {
   const store = useStore({
     usePlaceholder$: props.usePlaceholder$ ?? props.usePlaceholder ?? false,
     pk$: props.pk$ ?? props.pk,
+    isDefaultUser$ () {
+      const pk = this.pk$()
+      return Boolean(pk) && pk === storage.session_defaultUserPk$()
+    },
     picture$ () {
       const picture = props.picture$?.() ?? props.picture ?? storage[`session_accountByUserPk_${this.pk$()}_profile$`]()?.picture
       if (!picture) return null
@@ -24,10 +28,14 @@ f('a-avatar', function () {
     },
     svg$ () {
       const seed = this.pk$()
-      if (!seed) return
+      if (!seed || this.isDefaultUser$()) return
       return getSvgAvatar(base62ToBase16(seed, { mode: 'integer', byteLength: 32 }))
     }
   })
+
+  if (store.isDefaultUser$()) {
+    return this.h`<icon-user-circle props=${this.props} />`
+  }
 
   if (store.picture$()) {
     return this.h`<img
