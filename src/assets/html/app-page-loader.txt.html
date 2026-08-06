@@ -5,38 +5,7 @@
   <meta name="color-scheme" content="light dark">
   <title>Loading...</title>
   <style>
-    :root {
-      --bg-color: #F8F8F8;
-      --text-color: #333;
-      --accent-color: #7A3AD3;
-      --accent-darker-color: #8242D9;
-      --icon-bg-color: #E9E9E9;
-      --progress-bar-bg: #E9E9E9;
-      /* Pixel art colors */
-      --pixel-ostrich-body: var(--accent-color);
-      --pixel-ostrich-beak: #FFA500; /* Orange */
-      --pixel-ostrich-leg: #8B4513; /* SaddleBrown */
-      --pixel-ostrich-eye: #000000; /* Black */
-      --pixel-ostrich-accent: var(--accent-darker-color);
-      --pulse-bg-1: #f0f0f0;
-      --pulse-bg-2: #999999;
-    }
-
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --bg-color: #1E1E1E;
-        --text-color: #EAEAEA;
-        --accent-color: #B589F9;
-        --accent-darker-color: #A069F6;
-        --icon-bg-color: #3A3A3A;
-        --progress-bar-bg: #3A3A3A;
-        --pixel-ostrich-beak: #FFC966;
-        --pixel-ostrich-leg: #A0522D;
-        --pixel-ostrich-eye: #FFFFFF;
-        --pulse-bg-1: #000000;
-        --pulse-bg-2: #1E1E1E;
-      }
-    }
+    /* APP_PAGE_LOADER_THEME */
 
     html, body {
       height: 100%;
@@ -233,10 +202,10 @@
         <div id="icon-clipper">
             <svg id="default-icon" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
                 <g id="shape-rotator">
-                    <circle cx="11" cy="11" r="7" fill="#FF6B6B"/>
-                    <polygon points="29,4.94 22,17.06 36,17.06" fill="#4ECDC4"/>
-                    <rect x="4" y="22" width="14" height="14" rx="2" fill="#45B7D1"/>
-                    <path d="M28 22 H 30 V 28 H 36 V 30 H 30 V 36 H 28 V 30 H 22 V 28 H 28 Z" fill="#F9D423"/>
+                    <circle cx="11" cy="11" r="7" fill="var(--shape-circle)"/>
+                    <polygon points="29,4.94 22,17.06 36,17.06" fill="var(--shape-triangle)"/>
+                    <rect x="4" y="22" width="14" height="14" rx="2" fill="var(--shape-square)"/>
+                    <path d="M28 22 H 30 V 28 H 36 V 30 H 30 V 36 H 28 V 30 H 22 V 28 H 28 Z" fill="var(--shape-plus)"/>
                 </g>
             </svg>
         </div>

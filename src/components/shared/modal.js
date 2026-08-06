@@ -1,5 +1,5 @@
 import { f, useStore, useTask } from '#f'
-import { jsVars } from '#assets/styles/theme.js'
+import { cssVars, jsVars } from '#assets/styles/theme.js'
 
 export const Modal = f('aModal', function () {
   const store = useStore({
@@ -82,7 +82,7 @@ export const Modal = f('aModal', function () {
             backdrop-filter: blur(0px);
             position: absolute;
             inset: 0;
-            background-color: black;
+            background-color: ${cssVars.colors.modalBackdrop};
             transition:
               opacity var(--duration) ease-in-out,
               backdrop-filter var(--duration) ease-in-out,
@@ -143,17 +143,8 @@ export const Modal = f('aModal', function () {
             ${`.scope_j3k1h2 {
               & {
                 overflow-y: auto;
-                /*
-                  https://gist.github.com/adamcbrewer/5859738
-                  https://stackoverflow.com/questions/5736503/how-to-make-css3-rounded-corners-hide-overflow-in-chrome-opera
-                  the scroll without this ignores border-radius
-                  but it will blur content
-                  mask-image: -webkit-radial-gradient(circle, white, black);
-                */
-
                 display: flex;
                 flex-direction: column;
-                /* background-color: white; */
                 min-height: 50px; /* when there is loading (dynamic content) */
 
                 @media ${jsVars.breakpoints.desktop} {

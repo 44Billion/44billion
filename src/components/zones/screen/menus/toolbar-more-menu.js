@@ -56,7 +56,7 @@ f('toolbar-more-menu', function () {
         min-width: 120px;
         display: flex;
         flex-direction: column;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        box-shadow: 0 4px 12px ${cssVars.colors.shadowStrong};
       `
 
       const anchorCSS = CSS.supports('position-anchor', '--test') ? modernCSS : fallbackCSS
@@ -218,18 +218,18 @@ f('toolbar-restore-button', function () {
       <svg viewBox="0 0 100 100" width="50%" height="50%" style="display: block; position: absolute; bottom: 0; right: 0;">
         <defs>
           <linearGradient id="gemGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#d8b4fe" />
-            <stop offset="50%" stop-color="#a855f7" />
-            <stop offset="100%" stop-color="#581c87" />
+            <stop offset="0%" stop-color=${cssVars.colors.artworkPurpleStart} />
+            <stop offset="50%" stop-color=${cssVars.colors.artworkPurpleMiddle} />
+            <stop offset="100%" stop-color=${cssVars.colors.artworkPurpleEnd} />
           </linearGradient>
         </defs>
 
         <path d="M100 0 L100 100 L0 100 Z" fill="url(#gemGradient)" />
 
-        <path d="M100 0 L100 100 L60 60 Z" fill="rgba(255,255,255,0.15)" />
-        <path d="M0 100 L100 100 L60 60 Z" fill="rgba(0,0,0,0.2)" />
+        <path d="M100 0 L100 100 L60 60 Z" fill=${cssVars.colors.artworkHighlight} />
+        <path d="M0 100 L100 100 L60 60 Z" fill=${cssVars.colors.artworkShade} />
 
-        <path d="M85 85 L95 15 L15 95 Z" fill="none" stroke="rgba(255,255,255,0.3)" stroke-width="1" />
+        <path d="M85 85 L95 15 L15 95 Z" fill="none" stroke=${cssVars.colors.artworkStroke} stroke-width="1" />
       </svg>
 
       <div class="gem-glow" style=${`
@@ -238,7 +238,7 @@ f('toolbar-restore-button', function () {
         right: 0;
         bottom: 0;
         left: 10px;
-        background: radial-gradient(circle at 80% 80%, rgba(168, 85, 247, 0.8), transparent 70%);
+        background: radial-gradient(circle at 80% 80%, ${cssVars.colors.artworkGlow}, transparent 70%);
         opacity: 0;
         pointer-events: none;
         mix-blend-mode: screen;

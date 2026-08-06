@@ -17,9 +17,9 @@ f('mainLayout', function () {
       </div>)}
     </div>
     <div class='footer' style={{
-      borderTop: '1px solid #111',
-      backgroundColor: '#333',
-      color: '#999'
+      borderTop: '1px solid var(--mg2)',
+      backgroundColor: 'var(--bg2)',
+      color: 'var(--fg2)'
     }}>
       <div>App 1</div>
       <div>App 2</div>

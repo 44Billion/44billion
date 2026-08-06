@@ -1,6 +1,7 @@
 import { f, useComputed, useStore, useTask } from '#f'
 import '#f/components/f-slot.js'
 import '#shared/icons/icon-x.js'
+import { cssVars } from '#assets/styles/theme.js'
 
 let nextDialogId = 0
 
@@ -210,7 +211,7 @@ f('a-dialog', ({ h, props }) => {
             display: flex;
             align-items: center;
             justify-content: center;
-            background-color: rgb(0 0 0 / 60%);
+            background-color: ${cssVars.colors.modalBackdrop};
             opacity: 0;
             transition: opacity var(--a-dialog-motion-fast, 0.2s) ease;
           }
@@ -248,9 +249,9 @@ f('a-dialog', ({ h, props }) => {
             overflow: auto;
             max-block-size: 90dvh;
             padding: var(--a-dialog-padding, 24px);
-            color: var(--a-dialog-text, #111);
-            background: var(--a-dialog-background, #fff);
-            border: 1px solid var(--a-dialog-border-color, #ccc);
+            color: var(--a-dialog-text, ${cssVars.colors.fg});
+            background: var(--a-dialog-background, ${cssVars.colors.bg2Lighter});
+            border: 1px solid var(--a-dialog-border-color, ${cssVars.colors.mg2});
             border-radius: var(--a-dialog-radius, 8px);
           }
 
@@ -307,13 +308,13 @@ f('a-dialog', ({ h, props }) => {
             border: 0;
             border-radius: 50%;
             color: var(--a-dialog-close-text, currentColor);
-            background: var(--a-dialog-close-background, rgb(255 255 255 / 90%));
-            box-shadow: 0 2px 8px rgb(0 0 0 / 25%);
+            background: var(--a-dialog-close-background, ${cssVars.colors.bg2Lighter});
+            box-shadow: 0 2px 8px ${cssVars.colors.shadow};
             cursor: pointer;
           }
 
           & .a-dialog__close:focus-visible {
-            outline: 2px solid var(--a-dialog-focus-ring, #2563eb);
+            outline: 2px solid var(--a-dialog-focus-ring, ${cssVars.colors.bgPrimary});
             outline-offset: 2px;
           }
 
@@ -428,13 +429,13 @@ f('a-dialog', ({ h, props }) => {
             padding: 4px;
             border-radius: 0;
             box-shadow: none;
-            filter: drop-shadow(0 2px 4px rgb(0 0 0 / 25%));
+            filter: drop-shadow(0 2px 4px ${cssVars.colors.shadow});
           }
 
           &[data-drawer-position='start'] .a-dialog__close:focus-visible,
           &[data-drawer-position='end'] .a-dialog__close:focus-visible {
             outline: 0;
-            box-shadow: inset 0 0 0 2px var(--a-dialog-focus-ring, #2563eb);
+            box-shadow: inset 0 0 0 2px var(--a-dialog-focus-ring, ${cssVars.colors.bgPrimary});
           }
 
           &[data-drawer-position='start'] .a-dialog__close {

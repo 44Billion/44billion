@@ -237,7 +237,7 @@ f('permissionDialogStack', function () {
         background-color: ${cssVars.colors.bg2Lighter};
         color: ${cssVars.colors.fg2};
         border-radius: 8px;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        box-shadow: 0 4px 12px ${cssVars.colors.shadow};
         overflow: hidden;
 
         @media ${jsVars.breakpoints.mobile} {
@@ -310,7 +310,7 @@ f('permissionDialogCard', function () {
         transition: background-color 0.2s;
 
         &:hover {
-          background-color: rgba(255, 255, 255, 0.05);
+          background-color: ${cssVars.colors.overlayHover};
         }
 
         .app-icon {
@@ -344,7 +344,7 @@ f('permissionDialogCard', function () {
         .permission-text {
           font-size: 16rem;
           line-height: 1.3;
-          color: rgba(255, 255, 255, 0.7);
+          color: ${cssVars.colors.fgMuted};
           margin-top: 2px;
           display: -webkit-box;
           -webkit-box-orient: vertical;
@@ -397,7 +397,7 @@ f('permissionDialogCard', function () {
         }
 
         .deny-button:hover:not(:disabled) {
-          background-color: rgba(255, 255, 255, 0.1);
+          background-color: ${cssVars.colors.overlaySelected};
         }
 
         .deny-button svg {

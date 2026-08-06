@@ -15,6 +15,8 @@ import {
   jsVars
 } from '#assets/styles/theme.js'
 import windowsBackgroundImage from '#assets/media/bg-ostrich-stained-glass.webp'
+import windowsBackgroundLightImage from '#assets/media/bg-ostrich-stained-glass-light.webp'
+import windowsBackgroundLightPattern from '#assets/media/bg-stone-wall-light-pattern.webp'
 import useAppRouter from './use-app-router.js'
 import useSystemRouter from './use-system-router.js'
 import {
@@ -206,14 +208,9 @@ f('aWindows', function () {
 f('windowsBackground', function () {
   return this.h`
     <div
-      class='hue-revert'
       id='windows-background'
       style=${`
         background-color: ${cssVars.colors.bg};
-        background-image: url(${windowsBackgroundImage});
-        background-position: center;
-        background-repeat: no-repeat;
-        background-size: contain;
         display: flex;
         align-items: flex-end;
         justify-content: center;
@@ -227,12 +224,49 @@ f('windowsBackground', function () {
     >
       <style>${`
         #windows-background {
+          background-image: url(${windowsBackgroundImage});
+          background-position: center;
+          background-repeat: no-repeat;
+          background-size: contain;
+
           @media ${jsVars.breakpoints.desktop} {
             background-origin: content-box;
           }
+
+          #windows-background-light-art {
+            display: none;
+          }
+
+          #windows-background-message {
+            position: relative;
+            z-index: 2;
+          }
+
+          @media (prefers-color-scheme: light) {
+            background-image: url(${windowsBackgroundLightPattern});
+            background-origin: border-box;
+            background-repeat: repeat;
+            background-size: clamp(220px, 65vmin, 560px);
+
+            #windows-background-light-art {
+              display: block;
+              position: absolute;
+              inset: 0;
+              margin: auto;
+              width: min(calc(100% - 32px), 560px);
+              height: min(calc(100% - 32px), 800px);
+              background-image: url(${windowsBackgroundLightImage});
+              background-position: center;
+              background-repeat: no-repeat;
+              background-size: contain;
+              filter: drop-shadow(0 8px 18px ${cssVars.colors.shadow});
+              pointer-events: none;
+            }
+          }
         }
       `}</style>
-      ${t('Please open an app')}
+      <div id='windows-background-light-art' aria-hidden='true'></div>
+      <span id='windows-background-message'>${t('Please open an app')}</span>
     </div>
   `
 })
@@ -647,10 +681,10 @@ f('unifiedToolbar', function () {
           ${scrollbar$.get(false).hasOverlay
             ? ''
             : /* css */`
-            scrollbar-color: rgba(255 255 255 / 0.2) transparent; /* thumb track */
+            scrollbar-color: ${cssVars.colors.scrollbarThumb} transparent; /* thumb track */
             transition: scrollbar-color .3s;
             &:hover {
-              scrollbar-color: rgba(255 255 255 / 0.5) transparent;
+              scrollbar-color: ${cssVars.colors.scrollbarThumbHover} transparent;
             }
 
             scrollbar-width: thin;
@@ -836,7 +870,7 @@ f('toolbarMenu', function () {
             background-color: ${cssVars.colors.bg2};
             color: ${cssVars.colors.fg2};
             border-radius: 6px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            box-shadow: 0 4px 12px ${cssVars.colors.shadow};
             overflow: hidden;
 
             .user-item {
@@ -848,10 +882,10 @@ f('toolbarMenu', function () {
               transition: background-color 0.2s;
             }
             .user-item.active {
-              background-color: rgba(255, 255, 255, 0.05);
+              background-color: ${cssVars.colors.overlayHover};
             }
             .user-item:hover {
-              background-color: rgba(255, 255, 255, 0.1);
+              background-color: ${cssVars.colors.overlaySelected};
             }
             .user-avatar {
               margin-right: 12px;
@@ -870,7 +904,7 @@ f('toolbarMenu', function () {
             .user-unlock-hint {
               font-size: 12rem;
               font-style: italic;
-              color: rgba(255, 255, 255, 0.6);
+              color: ${cssVars.colors.fgMuted};
               margin-top: 2px;
             }
             .user-unlock-error {
@@ -883,9 +917,9 @@ f('toolbarMenu', function () {
               animation: pulsate 2s ease-in-out infinite;
             }
             @keyframes pulsate {
-              0% { background-color: rgba(255, 255, 255, 0.05); }
-              50% { background-color: rgba(255, 255, 255, 0.15); }
-              100% { background-color: rgba(255, 255, 255, 0.05); }
+              0% { background-color: ${cssVars.colors.overlayHover}; }
+              50% { background-color: ${cssVars.colors.overlaySelected}; }
+              100% { background-color: ${cssVars.colors.overlayHover}; }
             }
             .user-index-badge {
               position: absolute;
@@ -898,7 +932,7 @@ f('toolbarMenu', function () {
               display: flex;
               justify-content: center;
               align-items: center;
-              color: white;
+              color: ${cssVars.colors.fgAccent};
               font-size: 10px;
               font-weight: bold;
             }
@@ -913,7 +947,7 @@ f('toolbarMenu', function () {
               display: flex;
               justify-content: center;
               align-items: center;
-              color: white;
+              color: ${cssVars.colors.fgAccent};
             }
             .lock-icon svg {
               width: 10px;
@@ -928,10 +962,10 @@ f('toolbarMenu', function () {
               cursor: pointer;
               transition: background-color 0.2s;
               margin-top: 4px;
-              background-color: rgba(255, 255, 255, 0.05);
+              background-color: ${cssVars.colors.overlayHover};
             }
             .add-user-button:hover {
-              background-color: rgba(255, 255, 255, 0.1);
+              background-color: ${cssVars.colors.overlaySelected};
             }
             .add-user-icon {
               width: 20px;
@@ -940,7 +974,7 @@ f('toolbarMenu', function () {
               justify-content: center;
               align-items: center;
               border-radius: 50%;
-              border: 2px solid ${cssVars.colors.fg2};
+              border: 2px solid ${cssVars.colors.fg3};
               color: ${cssVars.colors.fg2};
               flex-shrink: 0;
             }
@@ -986,7 +1020,7 @@ f('toolbarMenu', function () {
         })}
         <div class="add-user-button" onclick=${handleAddUserClick}>
           <div class="add-user-icon">
-            <svg class="do-hue-invert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <line x1="12" y1="5" x2="12" y2="19"></line>
               <line x1="5" y1="12" x2="19" y2="12"></line>
             </svg>
@@ -1103,7 +1137,7 @@ f('toolbarAvatar', function () {
           display: flex;
           justify-content: center;
           align-items: center;
-          color: white;
+          color: ${cssVars.colors.fgAccent};
           font-size: 10px;
           font-weight: bold;
         `}>
@@ -1122,7 +1156,7 @@ f('toolbarAvatar', function () {
           display: flex;
           justify-content: center;
           align-items: center;
-          color: white;
+          color: ${cssVars.colors.fgAccent};
         `}>
           <icon-lock props=${{ size: '10px' }} />
         </div>`

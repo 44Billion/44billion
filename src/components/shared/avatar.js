@@ -46,10 +46,7 @@ f('a-avatar', function () {
         height: 100%;
         object-fit: cover;
         border-radius: 50%;
-        background-color: light-dark(
-          oklch(from ${cssVars.colors.bgAvatar} calc(1 - l) c calc(h + 180)),
-          ${cssVars.colors.bgAvatar}
-        );
+        background-color: ${cssVars.colors.bgAvatar};
       `}
     />`
   }
@@ -83,17 +80,7 @@ f('a-avatar', function () {
       : this.h`<icon-user-circle props=${this.props} />`
   }
 
-  return this.h`<a-svg props=${{
-    ...this.props,
-    svg: store.svg$(),
-    style: `
-      @media (prefers-color-scheme: light) {
-        svg {
-          filter: invert(1) hue-rotate(180deg) !important;
-        }
-      }
-    `
-  }} />`
+  return this.h`<a-svg props=${{ ...this.props, svg: store.svg$() }} />`
 })
 
 function getLocales () {

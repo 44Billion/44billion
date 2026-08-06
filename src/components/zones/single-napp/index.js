@@ -14,6 +14,7 @@ import { useConfirmationDialogStore } from '#zones/confirmation-dialog/index.js'
 import '#shared/napp-assets-caching-progress-bar.js'
 import { getAssetBudgetConfirmation } from '#i18n/asset-budget.js'
 import { getT } from '#i18n/index.js'
+import { cssVars } from '#assets/styles/theme.js'
 
 export const singleNappLocales = getLocales()
 const t = getT(singleNappLocales)
@@ -187,8 +188,8 @@ f('singleNappLauncher', function () {
           display: grid;
           place-items: center;
           padding: 24px;
-          color: rgb(219, 226, 241);
-          background: rgb(18, 21, 30);
+          color: ${cssVars.colors.fg};
+          background: ${cssVars.colors.bg};
           font-size: 14rem;
           line-height: 1.45;
           text-align: center;

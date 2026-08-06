@@ -125,7 +125,7 @@ f('confirmation-dialog-card', function () {
         border-radius: 8px;
         background-color: ${cssVars.colors.bg2Lighter};
         color: ${cssVars.colors.fg2};
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        box-shadow: 0 4px 12px ${cssVars.colors.shadow};
 
         @media ${jsVars.breakpoints.desktop} {
           margin: 0 auto;
@@ -170,7 +170,7 @@ f('confirmation-dialog-card', function () {
         .message {
           font-size: 16rem;
           line-height: 1.3;
-          color: rgba(255, 255, 255, 0.7);
+          color: ${cssVars.colors.fgMuted};
           margin-top: 2px;
           white-space: normal;
           overflow-wrap: anywhere;
@@ -219,7 +219,7 @@ f('confirmation-dialog-card', function () {
         }
 
         .deny-button:hover:not(:disabled) {
-          background-color: rgba(255, 255, 255, 0.08);
+          background-color: ${cssVars.colors.overlayHover};
         }
 
         icon-check,

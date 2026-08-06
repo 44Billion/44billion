@@ -1,4 +1,5 @@
 import { f, useClosestStore, useComputed } from '#f'
+import { cssVars } from '#assets/styles/theme.js'
 
 f('nappAssetsCachingProgressBar', function () {
   let cachingProgress$
@@ -38,10 +39,10 @@ f('nappAssetsCachingProgressBar', function () {
 
   const barStyle$ = useComputed(() => `
     background: linear-gradient(90deg,
-      oklch(0.62 0.22 297.62 / 0.9) 0%,
-      oklch(0.62 0.22 297.1 / 0.9) ${progressSummary$().overallProgress}%,
-      rgba(0, 0, 0, 0.7) ${progressSummary$().overallProgress}%,
-      rgba(0, 0, 0, 0.7) 100%
+      ${cssVars.colors.cachingProgressAccent} 0%,
+      ${cssVars.colors.cachingProgressAccent} ${progressSummary$().overallProgress}%,
+      ${cssVars.colors.cachingProgressTrack} ${progressSummary$().overallProgress}%,
+      ${cssVars.colors.cachingProgressTrack} 100%
     );
     height: 4px;
     width: 100%;
@@ -57,8 +58,8 @@ f('nappAssetsCachingProgressBar', function () {
     right: 8px;
     box-sizing: border-box;
     max-width: calc(100% - 16px);
-    background: rgba(0, 0, 0, 0.8);
-    color: white;
+    background: ${cssVars.colors.cachingOverlay};
+    color: ${cssVars.colors.fgOnMedia};
     font-size: 12rem;
     padding: 4px 8px;
     border-radius: 4px;

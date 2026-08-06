@@ -2,43 +2,24 @@
   color-scheme: light dark;
 }
 
-@media (prefers-color-scheme: light) {
-  /* dialog lives on top-layer */
-  html, dialog {
-    filter: invert(1) hue-rotate(180deg);
-  }
-  img,
-  video,
-  svg,
-  iframe,
-  .hue-revert {
-    /* inverts it back */
-    filter: invert(1) hue-rotate(180deg);
-  }
-  /* add to img, video, svg that you do want to invert, usually all non-ugc */
-  .do-hue-invert, a-svg svg, .squircle {
-    filter: invert(0) hue-rotate(0deg);
-  }
-}
-
 select,
 select::picker(select) {
-  appearance: base-select; /* Opt-into customizable select layouts so that invert(1) works */
+  appearance: base-select; /* Opt into customizable select styling. */
   field-sizing: fixed; /* Prevents the dropdown width from changing dynamically */
 }
 
 select::picker(select) {
-  background-color: Canvas;
-  color: CanvasText;
-  border: 1px solid light-dark(rgba(0,0,0,0.15), currentColor);
+  background-color: var(--control-canvas);
+  color: var(--control-text);
+  border: 1px solid var(--control-border);
 }
 
 select option {
-  background-color: Canvas;
-  color: CanvasText;
+  background-color: var(--control-canvas);
+  color: var(--control-text);
 }
 
 select option:checked {
-  background-color: Highlight;
-  color: HighlightText;
+  background-color: var(--control-highlight);
+  color: var(--control-highlight-text);
 }

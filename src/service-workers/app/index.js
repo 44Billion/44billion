@@ -8,7 +8,11 @@ import _appPageLoader from '../../assets/html/app-page-loader.txt.html'
 import appPageLoaderScriptContent from '#scripts/app-page-loader.txt.js'
 import _trustedAppPage from '../../assets/html/trusted-app-page.txt.html'
 import trustedAppPageScriptContent from '#scripts/trusted-app-page.txt.js'
-const appPageLoader = injectIntoTheHeadTag(_appPageLoader, `<script>${appPageLoaderScriptContent}</script>`)
+import { cssStrings } from '#assets/styles/theme.js'
+const appPageLoader = injectIntoTheHeadTag(
+  _appPageLoader.replace('/* APP_PAGE_LOADER_THEME */', cssStrings.appPageLoaderTheme),
+  `<script>${appPageLoaderScriptContent}</script>`
+)
 const trustedAppPage = injectIntoTheHeadTag(_trustedAppPage, `<script>${trustedAppPageScriptContent}</script>`)
 
 const getErrorHtml = (e, err) => /* html */`
