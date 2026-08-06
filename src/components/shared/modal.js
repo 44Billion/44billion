@@ -38,7 +38,7 @@ export const Modal = f('aModal', function () {
       onclose=${store.close /* popover may close by light-dismiss (ESC or backdrop click) */}
       class="scope_g7h2g1"
     >
-      <style>
+      <style>${`
         .scope_g7h2g1 {
           & /* &:modal are those opened with showModal() instead of show() */ {
             container-type: normal;
@@ -90,7 +90,7 @@ export const Modal = f('aModal', function () {
               display var(--duration) ease-in-out allow-discrete;
           }
         }
-      </style>
+      `}</style>
       <div
         data-name='modalContentContainer'
         class="scope_f82h1k"

@@ -101,6 +101,25 @@ describe('native color themes', () => {
       }
     }
   })
+
+  it('wraps every interpolated style body in one uhtml interpolation', async () => {
+    const files = (await listSourceFiles(sourceRoot))
+      .filter(file => file.endsWith('.js'))
+    const styleTag = /<style(?:\s[^>]*)?>([\s\S]*?)<\/style>/g
+
+    for (const file of files) {
+      const source = await readFile(file, 'utf8')
+      for (const match of source.matchAll(styleTag)) {
+        const body = match[1]
+        if (!body.includes('${')) continue
+
+        const line = source.slice(0, match.index).split('\n').length
+        const message = `${path.relative(sourceRoot, file)}:${line}`
+        assert.match(body.trimStart(), /^\$\{/, message)
+        assert.match(body.trimEnd(), /\}$/, message)
+      }
+    }
+  })
 })
 
 async function listSourceFiles (directory) {

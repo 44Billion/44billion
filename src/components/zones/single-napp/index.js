@@ -163,7 +163,7 @@ f('singleNappLauncher', function () {
   )
 
   return this.h`
-      <style>
+      <style>${`
         single-napp-launcher {
           position: relative;
           display: block;
@@ -194,7 +194,7 @@ f('singleNappLauncher', function () {
           line-height: 1.45;
           text-align: center;
         }
-      </style>
+      `}</style>
       ${launchError$()
         ? this.h`<div class='embedded-load-error'>${launchError$()}</div>`
         : this.h`
