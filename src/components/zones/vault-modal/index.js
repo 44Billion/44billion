@@ -670,6 +670,7 @@ function initMessageListener ({
           break
         }
         case 'CLOSE_VAULT_VIEW': {
+          if (e.data.reqId) reply(e, { payload: true }, { to: vaultPort })
           vaultModalStore.close()
           break
         }
