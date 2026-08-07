@@ -20,7 +20,12 @@ f('a-avatar', function () {
       const pk = this.pk$()
       return Boolean(pk) && pk === storage.session_defaultUserPk$()
     },
+    pictureFailed$: false,
+    onPictureError () {
+      this.pictureFailed$(true)
+    },
     picture$ () {
+      if (this.pictureFailed$()) return null
       const picture = props.picture$?.() ?? props.picture ?? storage[`session_accountByUserPk_${this.pk$()}_profile$`]()?.picture
       if (!picture) return null
 
@@ -40,6 +45,7 @@ f('a-avatar', function () {
   if (store.picture$()) {
     return this.h`<img
       src=${store.picture$()}
+      onerror=${store.onPictureError}
       alt=${t('User avatar')}
       style=${`
         width: 100%;

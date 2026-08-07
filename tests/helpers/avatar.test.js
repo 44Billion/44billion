@@ -35,15 +35,19 @@ describe('avatar picture validation', () => {
   it('accepts supported data and HTTP image sources', () => {
     assert.equal(isValidAvatarPicture('data:image/svg+xml,%3Csvg%3E'), true)
     assert.equal(isValidAvatarPicture('https://example.test/avatar.webp?size=64'), true)
+    assert.equal(isValidAvatarPicture('https://example.test/profile'), true)
+    assert.equal(isValidAvatarPicture('https://example.test/64-character-content-hash'), true)
+    assert.equal(isValidAvatarPicture('http://example.test/avatar.png'), true)
   })
 
-  it('rejects relative, non-image and unsafe-looking values', () => {
+  it('rejects relative, credential-bearing and unsafe-looking values', () => {
     assert.equal(isValidAvatarPicture('/images/avatar.png'), false)
     assert.equal(isValidAvatarPicture('../images/avatar.svg#face'), false)
     assert.equal(isValidAvatarPicture('avatar.png'), false)
     assert.equal(isValidAvatarPicture('javascript:alert(1)'), false)
-    assert.equal(isValidAvatarPicture('https://example.test/profile'), false)
+    assert.equal(isValidAvatarPicture('https://user:pass@example.test/avatar.png'), false)
     assert.equal(isValidAvatarPicture(' avatar.png'), false)
+    assert.equal(isValidAvatarPicture('https://example.test/a b.png'), false)
     assert.equal(isValidAvatarPicture({ src: 'avatar.png' }), false)
   })
 })

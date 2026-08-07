@@ -14,10 +14,20 @@ export const getSvgAvatar = function (seed = getRandomId()) {
 }
 
 export const isValidAvatarPicture = function (picture) {
-  if (typeof picture !== 'string' || picture.length === 0 || picture.trim() !== picture) return false
+  if (
+    typeof picture !== 'string' ||
+    picture.length === 0 ||
+    picture.trim() !== picture ||
+    /\s/.test(picture)
+  ) return false
 
   const isDataImage = /^data:image\/[a-z0-9.+-]+(?:;[a-z0-9=.+-]+)*(?:;base64)?,/i.test(picture)
-  const isHttpImageUrl = /^(https?:\/\/)[^\s?#]+\.(png|jpe?g|gif|webp|avif|bmp|ico|svg)(?:[?#].*)?$/i.test(picture)
+  if (isDataImage) return true
 
-  return isDataImage || isHttpImageUrl
+  try {
+    const url = new URL(picture)
+    return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password
+  } catch (_) {
+    return false
+  }
 }
