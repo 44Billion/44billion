@@ -1,5 +1,5 @@
 import { f, useGlobalStore, useStore, useCallback, useTask } from '#f'
-import { cssStrings, cssClasses, cssVars, jsVars } from '#assets/styles/theme.js'
+import { cssVars, jsVars } from '#assets/styles/theme.js'
 import '#shared/modal.js'
 import '#shared/icons/icon-x.js'
 import '#shared/icons/icon-reload.js'
@@ -100,8 +100,6 @@ f('fileNotCachedDialogCard', function () {
   return this.h`
     <style>${/* css */`
       #file-not-cached-dialog-card {
-        &${cssStrings.defaultTheme}
-
         display: flex;
         align-items: center;
         padding: 6px 10px;
@@ -209,7 +207,7 @@ f('fileNotCachedDialogCard', function () {
         }
       }
     `}</style>
-    <div id='file-not-cached-dialog-card' class=${cssClasses.defaultTheme}>
+    <div id='file-not-cached-dialog-card'>
       <div class='icon-area'>
         <icon-exclamation-mark props=${{ width: '33px', height: '36px' }} />
       </div>

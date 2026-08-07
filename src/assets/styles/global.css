@@ -8,18 +8,19 @@ select::picker(select) {
   field-sizing: fixed; /* Prevents the dropdown width from changing dynamically */
 }
 
+select,
 select::picker(select) {
-  background-color: var(--control-canvas);
-  color: var(--control-text);
-  border: 1px solid var(--control-border);
+  background-color: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--bg3);
 }
 
 select option {
-  background-color: var(--control-canvas);
-  color: var(--control-text);
+  background-color: var(--bg);
+  color: var(--fg);
 }
 
 select option:checked {
-  background-color: var(--control-highlight);
-  color: var(--control-highlight-text);
+  background-color: var(--bgAccentPrimary);
+  color: var(--fgAccent);
 }

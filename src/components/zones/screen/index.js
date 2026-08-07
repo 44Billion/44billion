@@ -9,8 +9,6 @@ import useScrollbarConfig from '#hooks/use-scrollbar-config.js'
 import '#shared/menu.js'
 import '#shared/avatar.js'
 import {
-  cssStrings,
-  cssClasses,
   cssVars,
   jsVars
 } from '#assets/styles/theme.js'
@@ -88,8 +86,6 @@ f('aScreen', function () {
   const style$ = useComputed(() => /* css */`
     /* @scope { */
     #screen {
-      &${cssStrings.defaultTheme}
-
       & {
         display: flex;
         width: 100dvw;
@@ -159,8 +155,7 @@ f('aScreen', function () {
 
   return this.h`
     <div id="screen" class=${{
-      'multi-window': !isSingleWindow$(),
-      [cssClasses.defaultTheme]: true
+      'multi-window': !isSingleWindow$()
     }}>
       <style>${style$()}</style>
       <div id='workspaces'>

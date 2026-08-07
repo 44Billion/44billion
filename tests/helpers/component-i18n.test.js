@@ -40,7 +40,7 @@ mock.module('#services/idb/browser/queries/permission.js', {
   namedExports: { hasPermission: async () => false, createOrUpdatePermission: async () => {} }
 })
 mock.module('#assets/styles/theme.js', {
-  namedExports: { cssStrings: {}, cssClasses: {}, cssVars: { colors: {} }, jsVars: { breakpoints: {} } }
+  namedExports: { cssVars: { colors: {} }, jsVars: { breakpoints: {} } }
 })
 mock.module('#hooks/use-web-storage.js', { defaultExport: () => ({}) })
 

@@ -9,15 +9,16 @@
  *
  * A { light, dark } value becomes light-dark(light, dark), with
  * `color-scheme: light dark` in global.css allowing the browser to follow
- * prefers-color-scheme natively. Every default token is emitted twice: on the
- * generated theme class for the existing component-scoping API, and on :root
- * so dialogs, popovers and their ::backdrop boxes in the top layer can resolve
- * the same variables even when their rendering context differs from an app
- * card's themed subtree.
+ * prefers-color-scheme natively. Each theme is emitted once, as a class with
+ * a stable, deterministic name, applied to document.documentElement. Because
+ * <html> is the root of the DOM tree, the whole document — including dialogs,
+ * popovers and their ::backdrop boxes in the top layer — inherits the same
+ * variables through the normal inheritance chain. Adding another theme means
+ * registering another class here and swapping the class on <html>.
  *
- * System colors stay wrapped in named tokens. The isolated app-page loader,
- * deterministic app-icon monograms and decorative artwork also keep their
- * palettes here, even though they expose purpose-specific representations.
+ * The isolated app-page loader, deterministic app-icon monograms and
+ * decorative artwork also keep their palettes here, even though they expose
+ * purpose-specific representations.
  */
 const colorPair = (light, dark) => Object.freeze({ light, dark })
 
@@ -57,11 +58,6 @@ export const defaultThemeColorValues = Object.freeze({
   cachingOverlay: colorPair('rgb(0 0 0 / 0.80)', 'rgb(0 0 0 / 0.80)'),
   cachingProgressTrack: colorPair('rgb(0 0 0 / 0.70)', 'rgb(0 0 0 / 0.70)'),
   cachingProgressAccent: colorPair('oklch(0.62 0.22 297.62 / 0.9)', 'oklch(0.62 0.22 297.62 / 0.9)'),
-  controlCanvas: 'Canvas',
-  controlText: 'CanvasText',
-  controlHighlight: 'Highlight',
-  controlHighlightText: 'HighlightText',
-  controlBorder: colorPair('rgb(0 0 0 / 0.15)', 'currentcolor'),
 
   artworkPurpleStart: colorPair('#d8b4fe', '#d8b4fe'),
   artworkPurpleMiddle: colorPair('#a855f7', '#a855f7'),
@@ -122,23 +118,33 @@ function createCssDeclarations (colors, cssVars = {}) {
   }).join('\n')
 }
 
-function createTheme (colors) {
-  const themeCssClass = `theme-${Math.random().toString(36).slice(2)}`
+function createThemeClass (name, colors) {
   const cssVars = {}
   const declarations = createCssDeclarations(colors, cssVars)
-  return {
-    cssClass: themeCssClass,
+  return Object.freeze({
+    name,
+    cssClass: name,
     cssVars,
-    classCss: `.${themeCssClass} {\n${declarations}\n}`,
-    rootCss: `:root {\n${declarations}\n}`
-  }
+    css: `.${name} {\n${declarations}\n}`
+  })
 }
 
-const defaultTheme = createTheme(defaultThemeColorValues)
+const defaultTheme = createThemeClass('theme-default', defaultThemeColorValues)
+
+export const themes = Object.freeze({
+  default: defaultTheme
+})
+
+const themesByContract = new Map([
+  [defaultThemeColorValues, defaultTheme]
+])
+
+export function getThemeByContract (colors) {
+  return themesByContract.get(colors) ?? null
+}
 
 export const cssStrings = {
-  defaultTheme: defaultTheme.classCss,
-  defaultThemeRoot: defaultTheme.rootCss,
+  defaultTheme: defaultTheme.css,
   appPageLoaderTheme: `:root {\n${createCssDeclarations(appPageLoaderColorValues)}\n}`
 }
 

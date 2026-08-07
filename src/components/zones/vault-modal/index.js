@@ -12,7 +12,7 @@ import {
 import { flushVaultAcceptedMessageQueue } from '#helpers/window-message/browser/vault-accepted-message-queue.js'
 import { isNostrDbAppInstalledForOwner } from '#zones/screen/helpers/nostrdb-app-lifecycle.js'
 import { getEffectiveLocale, getT, subscribeLocaleChanged } from '#i18n/index.js'
-import { cssClasses, cssStrings, cssVars } from '#assets/styles/theme.js'
+import { cssVars } from '#assets/styles/theme.js'
 import '#shared/modal.js'
 import '#shared/dialog.js'
 import {
@@ -53,7 +53,6 @@ f('vault-modal', ({ h }) => {
     drawerShowCloseButton$: true,
     drawerHeading$: '',
     drawerDescription$: '',
-    drawerThemeClass$: cssClasses.defaultTheme,
     drawerStyle$: `
       --a-drawer-width: min(360px, calc(100dvw - 32px));
       --a-dialog-background: ${cssVars.colors.bg};
@@ -128,7 +127,6 @@ f('vault-modal', ({ h }) => {
   }))
 
   return h`
-    <style>${cssStrings.defaultTheme}</style>
     ${isLegacy$()
       ? h`<a-modal props=${modalProps} />`
       : h`
@@ -142,7 +140,6 @@ f('vault-modal', ({ h }) => {
               showCloseButton$: presentation.drawerShowCloseButton$,
               drawerPosition$: presentation.drawerPosition$,
               closeLabel$: drawerCloseLabel$,
-              themeClass$: presentation.drawerThemeClass$,
               style$: presentation.drawerStyle$,
               onDialogClose: upstreamStore.close.bind(upstreamStore),
               onDialogCancel: upstreamStore.close.bind(upstreamStore),
@@ -249,7 +246,6 @@ f('vault-migration-dialog', ({ h, props }) => {
     showCloseButton$: false,
     drawerPosition$: '',
     description$: '',
-    themeClass$: cssClasses.defaultTheme,
     dialogStyle$: `
       --a-dialog-background: ${cssVars.colors.bg2Lighter};
       --a-dialog-border-color: ${cssVars.colors.mg2};
@@ -315,7 +311,6 @@ f('vault-migration-dialog', ({ h, props }) => {
         noCloseOnBackdrop$: s.noCloseOnBackdrop$,
         showCloseButton$: s.showCloseButton$,
         drawerPosition$: s.drawerPosition$,
-        themeClass$: s.themeClass$,
         style$: s.dialogStyle$,
         children: {
           default: h`

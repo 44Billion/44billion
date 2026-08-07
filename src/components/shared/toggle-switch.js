@@ -44,6 +44,7 @@ f('toggle-switch', function () {
       }
       input:checked + .slider:before {
         transform: translateX(16px);
+        background-color: ${cssVars.colors.fgAccent};
       }
     `}</style>
     <label class="switch">

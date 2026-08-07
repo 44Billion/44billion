@@ -92,115 +92,116 @@ f('a-settings', function () {
         height: 100%;
         background-color: ${cssVars.colors.bg};
         color: ${cssVars.colors.fg};
-      }
-      .header {
-        height: 55px;
-        display: flex;
-        align-items: center;
-        padding: 0 10px;
-        flex-shrink: 0;
-        border-bottom: 1px solid ${cssVars.colors.bg2};
-      }
-      .title {
-        flex-grow: 1;
-        font-weight: 500;
-        font-size: 18rem;
-        margin-left: 10px;
-      }
-      .content {
-        padding: 20px;
-        overflow-y: auto;
-        display: flex;
-        flex-direction: column;
-        gap: 20px;
-      }
-      .section {
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-      }
-      .section-title {
-        font-size: 14rem;
-        color: ${cssVars.colors.fgAccent};
-        font-weight: 500;
-        text-transform: uppercase;
-      }
-      .item {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 15px;
-        background-color: ${cssVars.colors.bg2};
-        border-radius: 8px;
-        cursor: pointer;
-      }
-      .app-updates-item {
-        overflow: hidden;
-        max-height: 200px;
-        margin-top: 0;
-        transition: max-height 0.3s ease, opacity 0.3s ease, padding 0.3s ease, margin-top 0.3s ease;
-      }
-      .app-updates-item.collapsed {
-        max-height: 0;
-        opacity: 0;
-        padding-top: 0;
-        padding-bottom: 0;
-        margin-top: -10px; /* absorbs the .section's row gap so siblings don't get a phantom gap */
-        pointer-events: none;
-      }
-      .item-content {
-        display: flex;
-        flex-direction: column;
-      }
-      .item-title {
-        font-size: 16rem;
-        font-weight: 500;
-      }
-      .item-subtitle {
-        font-size: 14rem;
-        color: ${cssVars.colors.fg2};
-        margin-top: 4px;
-      }
-      .badge {
-        background-color: ${cssVars.colors.bgAccentPrimary};
-        color: ${cssVars.colors.fgAccent};
-        padding: 4px 8px 2px;
-        border-radius: 12px;
-        font-size: 12rem;
-        font-weight: bold;
-      }
-      .input-group {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-      }
-      input[type="text"] {
-        padding: 10px;
-        border-radius: 4px;
-        border: 1px solid ${cssVars.colors.bg3};
-        background-color: ${cssVars.colors.bg};
-        color: ${cssVars.colors.fg};
-        font-size: 16rem;
-      }
-      .update-mode-select-wrapper {
-        position: relative;
-        display: inline-flex;
-        align-items: center;
-      }
-      .update-mode-select {
-        appearance: none;
-        padding: 8px 32px 8px 10px;
-        border-radius: 4px;
-        border: 1px solid ${cssVars.colors.bg3};
-        background-color: ${cssVars.colors.bg};
-        color: ${cssVars.colors.fg};
-        font-size: 14rem;
-        cursor: pointer;
-      }
-      .update-mode-select-chevron svg {
-        position: absolute;
-        right: 8px;
-        pointer-events: none !important;
+
+        .header {
+          height: 55px;
+          display: flex;
+          align-items: center;
+          padding: 0 10px;
+          flex-shrink: 0;
+          border-bottom: 1px solid ${cssVars.colors.bg2};
+        }
+        .title {
+          flex-grow: 1;
+          font-weight: 500;
+          font-size: 18rem;
+          margin-left: 10px;
+        }
+        .content {
+          padding: 20px;
+          overflow-y: auto;
+          display: flex;
+          flex-direction: column;
+          gap: 20px;
+        }
+        .section {
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+        }
+        .section-title {
+          font-size: 14rem;
+          color: ${cssVars.colors.fg2};
+          font-weight: 500;
+          text-transform: uppercase;
+        }
+        .item {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 15px;
+          background-color: ${cssVars.colors.bg2};
+          border-radius: 8px;
+          cursor: pointer;
+        }
+        .app-updates-item {
+          overflow: hidden;
+          max-height: 200px;
+          margin-top: 0;
+          transition: max-height 0.3s ease, opacity 0.3s ease, padding 0.3s ease, margin-top 0.3s ease;
+        }
+        .app-updates-item.collapsed {
+          max-height: 0;
+          opacity: 0;
+          padding-top: 0;
+          padding-bottom: 0;
+          margin-top: -10px; /* absorbs the .section's row gap so siblings don't get a phantom gap */
+          pointer-events: none;
+        }
+        .item-content {
+          display: flex;
+          flex-direction: column;
+        }
+        .item-title {
+          font-size: 16rem;
+          font-weight: 500;
+        }
+        .item-subtitle {
+          font-size: 14rem;
+          color: ${cssVars.colors.fg2};
+          margin-top: 4px;
+        }
+        .badge {
+          background-color: ${cssVars.colors.bgAccentPrimary};
+          color: ${cssVars.colors.fgAccent};
+          padding: 4px 8px 2px;
+          border-radius: 12px;
+          font-size: 12rem;
+          font-weight: bold;
+        }
+        .input-group {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+        input[type="text"] {
+          padding: 10px;
+          border-radius: 4px;
+          border: 1px solid ${cssVars.colors.bg3};
+          background-color: ${cssVars.colors.bg};
+          color: ${cssVars.colors.fg};
+          font-size: 16rem;
+        }
+        .update-mode-select-wrapper {
+          position: relative;
+          display: inline-flex;
+          align-items: center;
+        }
+        .update-mode-select {
+          appearance: none;
+          padding: 8px 32px 8px 10px;
+          border-radius: 4px;
+          border: 1px solid ${cssVars.colors.bg3};
+          background-color: ${cssVars.colors.bg};
+          color: ${cssVars.colors.fg};
+          font-size: 14rem;
+          cursor: pointer;
+        }
+        .update-mode-select-chevron svg {
+          position: absolute;
+          right: 8px;
+          pointer-events: none !important;
+        }
       }
     `}</style>
 

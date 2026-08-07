@@ -1,5 +1,5 @@
 import { f, useGlobalStore, useStore, useCallback, useTask } from '#f'
-import { cssStrings, cssClasses, cssVars, jsVars } from '#assets/styles/theme.js'
+import { cssVars, jsVars } from '#assets/styles/theme.js'
 import '#shared/modal.js'
 import '#shared/icons/icon-x.js'
 import '#shared/icons/icon-check.js'
@@ -116,8 +116,6 @@ f('confirmation-dialog-card', function () {
   return this.h`
     <style>${/* css */`
       #confirmation-dialog-card {
-        &${cssStrings.defaultTheme}
-
         display: flex;
         align-items: center;
         padding: 6px 10px;
@@ -228,7 +226,7 @@ f('confirmation-dialog-card', function () {
         }
       }
     `}</style>
-    <div id='confirmation-dialog-card' class=${cssClasses.defaultTheme}>
+    <div id='confirmation-dialog-card'>
       <div class='icon-area'>
         <icon-help-hexagon-filled props=${{ width: '33px', height: '36px' }} />
       </div>

@@ -1,7 +1,7 @@
 import '#config/polyfills.js'
 import resetCssString from '#assets/styles/reset.css'
 import globalCssString from '#assets/styles/global.css'
-import { cssStrings } from '#assets/styles/theme.js'
+import { cssClasses, cssStrings } from '#assets/styles/theme.js'
 import { f, useSignal, useTask } from '#f'
 import { appEncode, NAPP_ENTITY_REGEX } from 'libp2r2p/nip19'
 import { appIdToAddressObj } from '#helpers/app.js'
@@ -42,7 +42,8 @@ if (_subdomainParam) {
   }
 }
 
-document.head.insertAdjacentHTML('beforeend', `<style>${resetCssString}${globalCssString}${cssStrings.defaultThemeRoot}</style>`)
+document.documentElement.classList.add(cssClasses.defaultTheme)
+document.head.insertAdjacentHTML('beforeend', `<style>${resetCssString}${globalCssString}${cssStrings.defaultTheme}</style>`)
 
 if (IS_DEVELOPMENT) {
   // https://esbuild.github.io/api/#live-reload

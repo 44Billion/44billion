@@ -4,9 +4,12 @@ import { readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
 
 import {
+  cssClasses,
   cssStrings,
   cssVars,
-  defaultThemeColorValues
+  defaultThemeColorValues,
+  getThemeByContract,
+  themes
 } from '../../src/assets/styles/theme.js'
 
 const sourceRoot = path.resolve(import.meta.dirname, '../../src')
@@ -22,6 +25,7 @@ const normalTextPairs = [
   ['fgAccent', 'bgAccentSecondary'],
   ['fgAccent', 'bgPrimary'],
   ['fg2AccentPrimary', 'bg2'],
+  ['fg2', 'bg'],
   ['fgSuccess', 'bg'],
   ['fgError', 'bg']
 ]
@@ -33,15 +37,37 @@ const graphicalPairs = [
 ]
 
 describe('native color themes', () => {
-  it('keeps the established CSS-variable API and emits root and class themes', () => {
+  it('keeps the established CSS-variable API and emits a single stable theme class', () => {
     for (const key of Object.keys(defaultThemeColorValues)) {
       assert.equal(cssVars.colors[key], `var(--${toKebabCase(key)})`)
     }
 
-    assert.match(cssStrings.defaultTheme, /^\.theme-/)
-    assert.match(cssStrings.defaultThemeRoot, /^:root/)
-    assert.match(cssStrings.defaultThemeRoot, /--bg: light-dark\(/)
-    assert.match(cssStrings.defaultThemeRoot, /--control-highlight: Highlight;/)
+    assert.equal(cssClasses.defaultTheme, 'theme-default')
+    assert.equal(themes.default.name, 'theme-default')
+    assert.equal(getThemeByContract(defaultThemeColorValues), themes.default)
+    assert.match(cssStrings.defaultTheme, /^\.theme-default/)
+    assert.match(cssStrings.defaultTheme, /--bg: light-dark\(/)
+    assert.doesNotMatch(cssStrings.defaultTheme, /:root/)
+  })
+
+  it('applies the theme class once on documentElement instead of embedding it', async () => {
+    const appSource = await readFile(path.join(sourceRoot, 'components/app.js'), 'utf8')
+    assert.match(appSource, /document\.documentElement\.classList\.add\(cssClasses\.defaultTheme\)/)
+    assert.doesNotMatch(appSource, /defaultThemeRoot/)
+
+    const consumers = [
+      'components/zones/screen/index.js',
+      'components/zones/confirmation-dialog/index.js',
+      'components/zones/permission-dialog/index.js',
+      'components/zones/file-not-cached-dialog/index.js',
+      'components/zones/vault-modal/index.js',
+      'components/shared/dialog.js'
+    ]
+    for (const consumer of consumers) {
+      const source = await readFile(path.join(sourceRoot, consumer), 'utf8')
+      assert.doesNotMatch(source, /cssStrings\.defaultTheme|cssClasses\.defaultTheme/, consumer)
+      assert.doesNotMatch(source, /defaultThemeRoot/, consumer)
+    }
   })
 
   it('keeps every used text pair at WCAG AA contrast in both schemes', () => {

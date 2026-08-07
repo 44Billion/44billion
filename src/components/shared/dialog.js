@@ -13,7 +13,6 @@ f('a-dialog', ({ h, props }) => {
     fallbackText$: '',
     fallbackFlag$: false,
     fallbackDrawerPosition$: '',
-    fallbackThemeClass$: '',
     fallbackStyle$: '',
     renderedOpen$: false,
     renderedDrawerPosition$: '',
@@ -30,7 +29,6 @@ f('a-dialog', ({ h, props }) => {
   const showCloseButton$ = props.showCloseButton$ ?? s.fallbackFlag$
   const drawerPosition$ = props.drawerPosition$ ?? s.fallbackDrawerPosition$
   const closeLabel$ = props.closeLabel$ ?? s.fallbackText$
-  const themeClass$ = props.themeClass$ ?? s.fallbackThemeClass$
   const style$ = props.style$ ?? s.fallbackStyle$
 
   // Drawer position and open state can change in separate reactive passes.
@@ -184,7 +182,7 @@ f('a-dialog', ({ h, props }) => {
 
   return h`
     <div
-      class=${`scope_a_dialog ${themeClass$()}`.trim()}
+      class='scope_a_dialog'
       style=${style$()}
       data-open=${s.renderedOpen$() ? 'true' : 'false'}
       data-drawer-position=${s.renderedDrawerPosition$()}

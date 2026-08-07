@@ -3,7 +3,7 @@ import '#f/components/f-to-signals.js'
 import '#shared/modal.js'
 import { hasPermission, createOrUpdatePermission } from '#services/idb/browser/queries/permission.js'
 import { BROAD_EVENT_KIND, EVENT_ACCESS_PERMISSION, EVENT_ACCESS_PERSONAL_PERMISSION, ONE_TIME_DELETE_PERMISSION } from '#helpers/window-message/browser/event-permissions.js'
-import { cssStrings, cssClasses, cssVars, jsVars } from '#assets/styles/theme.js'
+import { cssVars, jsVars } from '#assets/styles/theme.js'
 import '#shared/app-icon.js'
 import '#shared/icons/icon-x.js'
 import useWebStorage from '#hooks/use-web-storage.js'
@@ -224,8 +224,6 @@ f('permissionDialogStack', function () {
   return this.h`
     <style>${/* css */`
       #permission-dialog-stack {
-        &${cssStrings.defaultTheme}
-
         display: flex;
         flex-direction: column;
         padding: 4px;
@@ -246,7 +244,7 @@ f('permissionDialogStack', function () {
       }
       /* this fixes syntax highlight */
     `}</style>
-    <div id='permission-dialog-stack' class=${cssClasses.defaultTheme}>
+    <div id='permission-dialog-stack'>
       ${store.permissionRequests$().map((req, index) => this.h({ key: req.id })`
         <f-to-signals
           props=${{
