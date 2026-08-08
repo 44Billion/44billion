@@ -553,7 +553,8 @@ f('vault-messenger', function () {
     <iframe
       allow='clipboard-write;
              publickey-credentials-create;
-             publickey-credentials-get'
+             publickey-credentials-get;
+             camera'
       style=${{
         height: isLegacyVaultUrl(vaultUrl$())
           ? `${widgetHeight$()}px`
