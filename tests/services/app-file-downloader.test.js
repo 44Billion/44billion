@@ -196,7 +196,8 @@ describe('AppFileDownloader', () => {
       assert.deepEqual(capturedOptions, {
         mimeType: null,
         size: null,
-        servers: ['https://manifest-blossom.test']
+        servers: ['https://manifest-blossom.test'],
+        signal: null
       })
     })
 

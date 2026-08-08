@@ -22,7 +22,7 @@ export default class AppFileDownloader {
    * @param {string[]} [options.blossomServers=[]] - signed server hints from the manifest
    */
   constructor (appId, fileHash, writeRelays, {
-    service = 'blossom', mimeType = null, size = null, blossomServers = []
+    service = 'blossom', mimeType = null, size = null, blossomServers = [], signal
   } = {}) {
     if (!writeRelays || writeRelays.length === 0) throw new Error('Write relays cannot be empty')
     this.appId = appId
@@ -32,6 +32,7 @@ export default class AppFileDownloader {
     this.mimeType = mimeType
     this.size = size
     this.blossomServers = [...new Set(Array.isArray(blossomServers) ? blossomServers : [])]
+    this.signal = signal ?? null
   }
 
   static async getSiteManifestEvents (appIds, {
@@ -177,7 +178,7 @@ export default class AppFileDownloader {
         trackOperation(op)
         await op
       },
-      { mimeType: this.mimeType, size: this.size, servers: this.blossomServers }
+      { mimeType: this.mimeType, size: this.size, servers: this.blossomServers, signal: this.signal }
     )
 
     downloader.run().finally(async () => {
@@ -278,7 +279,8 @@ export default class AppFileDownloader {
         downloadedCount: dbInfo.count ?? 0,
         loadDownloadedChunkIndexes,
         abortOnFailure: true,
-        size: this.size
+        size: this.size,
+        signal: this.signal
       }
     )
 

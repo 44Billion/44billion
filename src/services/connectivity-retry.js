@@ -8,6 +8,12 @@ function abortError () {
   return error
 }
 
+function timeoutError (timeoutMs) {
+  const error = new Error(`Task timed out after ${timeoutMs}ms`)
+  error.name = 'TimeoutError'
+  return error
+}
+
 // Coordinates connectivity checks and resumed work across every mounted icon.
 export class ConnectivityRetryCoordinator {
   constructor ({
@@ -65,10 +71,10 @@ export class ConnectivityRetryCoordinator {
     })
   }
 
-  run (task, { signal } = {}) {
+  run (task, { signal, timeoutMs } = {}) {
     if (signal?.aborted) return Promise.reject(abortError())
     return new Promise((resolve, reject) => {
-      this.queue.push({ task, signal, resolve, reject })
+      this.queue.push({ task, signal, resolve, reject, timeoutMs })
       this.#drainQueue()
     })
   }
@@ -124,10 +130,24 @@ export class ConnectivityRetryCoordinator {
         continue
       }
       this.running++
+      let timedOut = false
+      let timer = null
+      if (item.timeoutMs != null && item.timeoutMs > 0) {
+        timer = setTimeout(() => {
+          // Free the slot even though the task itself may keep running in the
+          // background: one stuck network task must not block the whole queue.
+          timedOut = true
+          item.reject(timeoutError(item.timeoutMs))
+          this.running--
+          this.#drainQueue()
+        }, item.timeoutMs)
+      }
       Promise.resolve()
         .then(item.task)
         .then(item.resolve, item.reject)
         .finally(() => {
+          if (timer) clearTimeout(timer)
+          if (timedOut) return
           this.running--
           this.#drainQueue()
         })

@@ -124,7 +124,7 @@ export default class AppFileManager {
     return instance
   }
 
-  static async create (appId, addressObj, { cacheMetadata = cacheAppMetadata, getCachedMetadata = getCachedAppMetadata } = {}) {
+  static async create (appId, addressObj, { cacheMetadata = cacheAppMetadata, getCachedMetadata = getCachedAppMetadata, signal } = {}) {
     if (this.#instancePromisesByAppId[appId]) return this.#instancePromisesByAppId[appId]
     const p = Promise.withResolvers()
     this.#instancePromisesByAppId[appId] = p.promise
@@ -132,18 +132,27 @@ export default class AppFileManager {
     addressObj ??= appIdToAddressObj(appId)
     let siteManifest
     let attempts = 0
-    do {
-      siteManifest = await getSiteManifestEvent(appId, addressObj)
-      if (!siteManifest) {
-        attempts++
-        console.log('Retrying site manifest fetching')
-        await new Promise(resolve => setTimeout(resolve, Math.pow(2, Math.min(10, attempts)) * 1000))
-      }
-    } while (!siteManifest && attempts < 2)
+    try {
+      do {
+        siteManifest = await getSiteManifestEvent(appId, addressObj, { signal })
+        if (!siteManifest) {
+          attempts++
+          console.log('Retrying site manifest fetching')
+          await new Promise(resolve => setTimeout(resolve, Math.pow(2, Math.min(10, attempts)) * 1000))
+        }
+      } while (!siteManifest && attempts < 2)
+    } catch (error) {
+      // Never leave a rejected (or aborted) instance promise cached, or every
+      // later create(appId) would fail until reload.
+      delete this.#instancePromisesByAppId[appId]
+      p.reject(error)
+      return p.promise
+    }
 
     if (!siteManifest) {
       delete this.#instancePromisesByAppId[appId]
       p.reject(new Error(`Couldn't find site manifest after ${attempts} attempts`))
+      return p.promise
     }
     const ret = new this(createToken, { appId, addressObj, siteManifest, cacheMetadata, getCachedMetadata })
     p.resolve(ret)
@@ -275,7 +284,8 @@ export default class AppFileManager {
   // !navigator.connection?.metered is true if user is on cheap internet
   async cacheFile (pathname, asset, progressCallback, {
     shouldCacheMissingFiles = !navigator.connection?.metered,
-    assetBudget = {}
+    assetBudget = {},
+    signal
   } = {}) {
     asset = normalizeAssetArgument(asset, this.siteManifest, pathname)
     if (!asset) throw new Error(`No matching manifest asset found for path: ${pathname}`)
@@ -296,7 +306,7 @@ export default class AppFileManager {
         this.cacheMissingAppFiles(filename) // does nothing if already running
       } else if (error) p.reject(error)
     })
-    this.#cacheFileInBackground(filename, asset, assetBudget)
+    this.#cacheFileInBackground(filename, asset, assetBudget, signal)
     return p.promise
   }
 
@@ -334,7 +344,7 @@ export default class AppFileManager {
   }
 
   #isCacheFileInBackgroundRunning = {} // { [filename]: true }
-  async #cacheFileInBackground (filename, asset, assetBudget = {}) {
+  async #cacheFileInBackground (filename, asset, assetBudget = {}, signal) {
     if (this.#isCacheFileInBackgroundRunning[filename]) return
 
     this.#isCacheFileInBackgroundRunning[filename] = true
@@ -354,7 +364,8 @@ export default class AppFileManager {
         service: asset.service,
         mimeType,
         size: asset.size,
-        blossomServers: sourceHints.blossomServers
+        blossomServers: sourceHints.blossomServers,
+        signal
       })
 
       for await (const report of downloader.run({ assetBudget: { ...assetBudget, filename } })) {

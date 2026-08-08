@@ -2,7 +2,7 @@ import { nappRelays, relayPool as nostrRelays, seedRelays } from 'libp2r2p/relay
 import { shouldIncludeNappRelays } from '#helpers/app.js'
 import { isValidPublicRelayUrl, normalizeRelayUrl } from 'libp2r2p/url'
 
-export async function getSiteManifest (appIdObj, userRelays) {
+export async function getSiteManifest (appIdObj, userRelays, { signal } = {}) {
   if (!appIdObj.pubkey || !appIdObj.kind || !appIdObj.dTag) throw new Error('Missing args')
 
   userRelays ??= (await getUserRelays(appIdObj.pubkey))[appIdObj.pubkey]
@@ -12,7 +12,7 @@ export async function getSiteManifest (appIdObj, userRelays) {
   const response = await nostrRelays.getEvents(
     { authors: [appIdObj.pubkey], kinds: [appIdObj.kind], '#d': [appIdObj.dTag], limit: 1 },
     relays,
-    { timeoutAfterFirstEose: null }
+    { timeoutAfterFirstEose: null, signal }
   )
   if (!response.success) {
     throw response.errors?.[0]?.reason ||

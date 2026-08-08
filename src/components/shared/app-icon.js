@@ -15,6 +15,11 @@ import { getT } from '#i18n/index.js'
 export const appIconLocales = getLocales()
 const t = getT(appIconLocales)
 
+// Upper bound for a single icon resolution (manifest + candidate fetch).
+// The retry coordinator frees its slot when this elapses, so a hung network
+// task can never leave every icon stuck in the loading state.
+const ICON_LOAD_TIMEOUT_MS = 15000
+
 // Rejects late load/error events from a candidate that is no longer current.
 function imageMatchesCandidate (image, candidate) {
   const loadedUrl = image.currentSrc || image.src
@@ -127,9 +132,9 @@ f('app-icon', ({ h, props }) => {
       this.isLoading$(true)
       try {
         const icon = await connectivityRetry.run(async () => {
-          const appFiles = await AppFileManager.create(appId)
-          return appFiles.getNextIcon({ rejected: this.rejectedCandidates() })
-        }, { signal })
+          const appFiles = await AppFileManager.create(appId, undefined, { signal })
+          return appFiles.getNextIcon({ rejected: this.rejectedCandidates(), signal })
+        }, { signal, timeoutMs: ICON_LOAD_TIMEOUT_MS })
         if (signal.aborted || this.appId$() !== appId) return
         if (icon) {
           const candidates = this.iconCandidates$().slice()
