@@ -196,6 +196,19 @@ f('app-icon', ({ h, props }) => {
     await store.loadNextIcon()
   })
 
+  // A reused keyed node keeps its already-loaded <img> with the same src, so
+  // no new `load`/`error` event fires on re-attach and displayedIcon would
+  // never flip, leaving the candidate-layer shimmer visible forever.
+  // Reconcile the image's completion state explicitly after each render.
+  useTask(({ track }) => {
+    const icon = track(() => store.currentIcon$())
+    const image = runtime.imageElement
+    if (!icon || !image || !image.isConnected) return
+    if (!image.complete || !imageMatchesCandidate(image, icon)) return
+    if (image.naturalWidth > 0) store.markIconLoaded({ currentTarget: image })
+    else store.showNextIcon({ currentTarget: image })
+  }, { after: 'rendering' })
+
   useTask(({ cleanup }) => {
     cleanup(() => {
       store.finishRetry()
