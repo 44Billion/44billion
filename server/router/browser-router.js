@@ -9,30 +9,30 @@ const isProduction = process.env.NODE_ENV === 'production'
 const domainRouter = IttyRouter()
 
 if (isProduction) {
+  const serveIndex = getServeBuilt('index.html', 'text/html')
   domainRouter
-    .get('/app.js', async (req, res) => {
-      res.setHeader('content-type', 'text/javascript')
-      res.writeHead(200)
-      await pipeline(
-        (await getBuiltFileRstream('app.js')).result,
-        res
-      )
-      return res
-    })
+    .get('/app.js', getServeBuilt('app.js', 'text/javascript'))
     .get('/chunks/:name', getChunk)
     .get('/', serveIndex)
     .get('/\\+{1,3}:nappIdWithRoute+', serveIndex)
     .get('/app-updates', serveIndex)
     .get('/settings', serveIndex)
+    .get('/favicon.png', getServeBuilt('favicon.png', 'image/png'))
+    .get('/apple-touch-icon.png', getServeBuilt('apple-touch-icon.png', 'image/png'))
+    .get('/icon-192.png', getServeBuilt('icon-192.png', 'image/png'))
+    .get('/icon-512.png', getServeBuilt('icon-512.png', 'image/png'))
+    .get('/site.webmanifest', getServeBuilt('site.webmanifest', 'application/manifest+json'))
 
-  async function serveIndex (req, res) {
-    res.setHeader('content-type', 'text/html')
-    res.writeHead(200)
-    await pipeline(
-      (await getBuiltFileRstream('index.html')).result,
-      res
-    )
-    return res
+  function getServeBuilt (filename, contentType) {
+    return async (req, res) => {
+      res.setHeader('content-type', contentType)
+      res.writeHead(200)
+      await pipeline(
+        (await getBuiltFileRstream(filename)).result,
+        res
+      )
+      return res
+    }
   }
 }
 

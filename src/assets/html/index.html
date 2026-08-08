@@ -5,7 +5,13 @@
     <meta name="description" content="One login, many apps" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light dark">
-    <link rel="icon" href="favicon.ico" />
+    <!-- Favicon and home-screen icons derived from src/assets/media/44b.png.
+         These are real files (not data URLs): the launcher lives on the root
+         domain without a service worker, so the browser fetches them normally
+         (routes: server/router/browser-router.js). -->
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
     <script type="module" defer src="/app.js"></script>
   </head>
   <body>

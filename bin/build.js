@@ -17,6 +17,7 @@ const ctx = await esbuild.context({
   plugins: [jsTextPlugin, cssTextPlugin, htmlTextPlugin, swModulePlugin],
   loader: {
     '.html': 'copy', '.ico': 'copy',
+    '.png': 'copy', '.webmanifest': 'copy',
     '.svg': 'text',
     '.webp': 'dataurl'
   },
@@ -24,7 +25,13 @@ const ctx = await esbuild.context({
   entryPoints: [
     `${dirname}/../src/components/app.js`,
     `${dirname}/../src/assets/html/index.html`, // will use "copy" loader
-    // `${dirname}/../src/assets/media/favicon.ico` // will use "copy" loader
+    // Favicon, home-screen icons and web app manifest — copied verbatim to the
+    // output root so the launcher can serve them on the root domain.
+    `${dirname}/../src/assets/media/favicon.png`,
+    `${dirname}/../src/assets/media/apple-touch-icon.png`,
+    `${dirname}/../src/assets/media/icon-192.png`,
+    `${dirname}/../src/assets/media/icon-512.png`,
+    `${dirname}/../src/assets/media/site.webmanifest`,
     // service worker is handled by sw-module plugin
     { in: `${dirname}/../src/service-workers/app/index.js`, out: 'app-sw' } // app-sw.js
   ],
