@@ -555,10 +555,15 @@ f('appWindow', function () {
     <style>
       .scope_khjha3 {
         & {
-          display: none; /* minimized or closed */
+          /* Hidden windows keep their box (absolute + visibility:hidden) so
+             the app iframe keeps a non-zero viewport. display:none would
+             collapse the app document to zero height and clamp its scroll to
+             the top when the window is shown again. */
+          position: absolute;
+          inset: 0;
+          visibility: hidden;
           z-index: 1;
           flex: 0 1 100%;
-          position: relative;
           overflow: hidden;
 
           @media (orientation: portrait) {
@@ -589,22 +594,26 @@ f('appWindow', function () {
         &.mru-rank-3-2 { order: 7; }
         &.mru-rank-3-3 { order: 8; }
         &.mru-rank-1-1.open, &.mru-rank-2-1.open, &.mru-rank-3-1.open {
-          display: block;
+          position: relative;
+          visibility: visible;
         }
         #screen.multi-window &.open {
           &.mru-rank-1-2, &.mru-rank-2-2, &.mru-rank-3-2 {
-            display: block;
+            position: relative;
+            visibility: visible;
           }
           /* thin or thinner (shrinking number) */
           @media (max-aspect-ratio: 8/16) {
             &.mru-rank-1-3, &.mru-rank-2-3, &.mru-rank-3-3 {
-              display: block;
+              position: relative;
+              visibility: visible;
             }
           }
           /* short or shorter (growing number) */
           @media (min-aspect-ratio: 16/8) {
             &.mru-rank-1-3, &.mru-rank-2-3, &.mru-rank-3-3 {
-              display: block;
+              position: relative;
+              visibility: visible;
             }
           }
         }
