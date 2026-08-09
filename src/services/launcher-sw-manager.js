@@ -64,12 +64,17 @@ export async function initLauncherSw () {
 
 export function applyLauncherUpdate () {
   const registration = registrationRef
-  if (!registration?.waiting) return
-  // Hide the dialog and keep the menu entry + toggle badge visible until the
-  // reload applies the new version (controllerchange below).
-  launcherUpdateState$('dismissed')
-  reloadOnControllerChange = true
-  registration.waiting.postMessage({ code: 'SKIP_WAITING' })
+  if (registration?.waiting) {
+    // Hide the dialog and keep the menu entry + toggle badge visible until
+    // the reload applies the new version (controllerchange below).
+    launcherUpdateState$('dismissed')
+    reloadOnControllerChange = true
+    registration.waiting.postMessage({ code: 'SKIP_WAITING' })
+    return
+  }
+  // No waiting worker to skip (e.g. it activated between detection and the
+  // click): a plain reload still delivers the new version via network-first.
+  window.location.reload()
 }
 
 export function dismissLauncherUpdate () {
