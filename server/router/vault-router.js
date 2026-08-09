@@ -8,6 +8,20 @@ import mime from 'mime'
 
 const isDev = process.env.NODE_ENV === 'development'
 
+// Cache-Control strategy for the generated ez-vault/docs output:
+// - hashed chunks (chunks/*-<hash>.js) are immutable — long TTL, never
+//   revalidated (same rationale as the launcher's getChunk);
+// - sw.js must be re-checked on every load so a new worker is detected;
+// - everything else (index.html, app.js, styles) has stable names and is
+//   mutable — a short revalidate TTL + ETag keeps deploys fresh on the next
+//   load while still allowing brief client caching.
+function cacheControlFor (pathname) {
+  if (isDev) return 'no-cache'
+  if (pathname.startsWith('/chunks/')) return 'public, max-age=31536000, immutable'
+  if (pathname === '/sw.js') return 'no-cache'
+  return 'must-revalidate, max-age=30'
+}
+
 async function getFileModificationTime (filePath) {
   try {
     const stats = await fs.promises.stat(filePath)
@@ -113,7 +127,7 @@ const vaultRouter = IttyRouter()
           const ts = await getFileModificationTime(indexPath)
 
           // Set cache-control header
-          const cacheControl = isDev ? 'no-cache' : 'must-revalidate, max-age=30'
+          const cacheControl = cacheControlFor(filePath)
           res.setHeader('cache-control', cacheControl)
           res.setHeader('content-type', contentType)
 
@@ -140,7 +154,7 @@ const vaultRouter = IttyRouter()
       const contentType = mime.getType(path.extname(vaultDocsPath)) || 'application/octet-stream'
       const ts = await getFileModificationTime(vaultDocsPath)
 
-      const cacheControl = isDev ? 'no-cache' : 'must-revalidate, max-age=30'
+      const cacheControl = cacheControlFor(filePath)
       res.setHeader('cache-control', cacheControl)
       res.setHeader('content-type', contentType)
 

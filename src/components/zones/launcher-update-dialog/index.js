@@ -9,7 +9,7 @@ import {
   applyLauncherUpdate,
   dismissLauncherUpdate,
   launcherUpdateState$
-} from '#helpers/launcher-sw-manager.js'
+} from '#services/launcher-sw-manager.js'
 
 const t = getT(launcherUpdateLocales)
 

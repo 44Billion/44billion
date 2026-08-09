@@ -10,7 +10,7 @@ import useLocation from '#hooks/use-location.js'
 import useWebStorage from '#hooks/use-web-storage.js'
 import { getT } from '#i18n/index.js'
 import { launcherUpdateLocales } from '#i18n/launcher-update.js'
-import { applyLauncherUpdate, launcherUpdateState$ } from '#helpers/launcher-sw-manager.js'
+import { applyLauncherUpdate, launcherUpdateState$ } from '#services/launcher-sw-manager.js'
 
 export const toolbarMoreMenuLocales = getLocales()
 const t = getT({ ...toolbarMoreMenuLocales, ...launcherUpdateLocales })

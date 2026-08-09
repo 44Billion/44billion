@@ -16,7 +16,8 @@ export default [
         ...globals.serviceworker,
         IS_DEVELOPMENT: 'readonly',
         IS_PRODUCTION: 'readonly',
-        LAUNCHER_SW_VERSION: 'readonly'
+        LAUNCHER_SW_VERSION: 'readonly',
+        LAUNCHER_DEPLOY_HASH: 'readonly'
       }
     },
     rules: {

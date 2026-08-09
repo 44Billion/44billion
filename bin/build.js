@@ -1,16 +1,40 @@
 import esbuild from 'esbuild'
 import path from 'node:path'
 import fs from 'node:fs'
+import { createHash } from 'node:crypto'
+import { readdir, readFile } from 'node:fs/promises'
 import jsTextPlugin from './plugins/js-text.js'
 import cssTextPlugin from './plugins/css-text.js'
 import htmlTextPlugin from './plugins/html-text.js'
 import swModulePlugin from './plugins/sw-module.js'
 
-const isDev = process.env.NODE_ENV === 'development'
-export const esbuildDefineConfig = isDev
-  ? { IS_DEVELOPMENT: JSON.stringify(true), IS_PRODUCTION: JSON.stringify(false) } //, 'globalThis._F_SHOULD_RESTORE_STATE_ON_TAB_RELOAD': JSON.stringify(true) }
-  : { IS_DEVELOPMENT: JSON.stringify(false), IS_PRODUCTION: JSON.stringify(true) }
 const { dirname } = import.meta
+const isDev = process.env.NODE_ENV === 'development'
+
+async function hashTree (dir, hash) {
+  const entries = (await readdir(dir, { withFileTypes: true }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+  for (const entry of entries) {
+    hash.update(entry.name)
+    const fullPath = path.join(dir, entry.name)
+    if (entry.isDirectory()) await hashTree(fullPath, hash)
+    else hash.update(await readFile(fullPath))
+  }
+}
+
+// Content hash of the app sources, injected into the launcher service worker
+// as LAUNCHER_DEPLOY_HASH: it changes the worker's bytes on every deploy so
+// the browser detects a new worker (and shows the update banner) even when
+// only app.js/chunks/index.html changed — important for installed PWAs that
+// stay open for days. The worker's cache name is NOT derived from this hash,
+// so deploys don't churn the runtime cache (immutable chunks stay cached).
+const deployHash = createHash('sha256')
+await hashTree(path.join(dirname, '..', 'src'), deployHash)
+const launcherDeployHash = deployHash.digest('hex').slice(0, 10)
+
+export const esbuildDefineConfig = isDev
+  ? { IS_DEVELOPMENT: JSON.stringify(true), IS_PRODUCTION: JSON.stringify(false), LAUNCHER_DEPLOY_HASH: JSON.stringify(launcherDeployHash) } //, 'globalThis._F_SHOULD_RESTORE_STATE_ON_TAB_RELOAD': JSON.stringify(true) }
+  : { IS_DEVELOPMENT: JSON.stringify(false), IS_PRODUCTION: JSON.stringify(true), LAUNCHER_DEPLOY_HASH: JSON.stringify(launcherDeployHash) }
 const prodOutdir = `${dirname}/../dist/${dirname.split('/').slice(-2, -1)}` // dist/<root dir>
 // same as esbuild.build, but reusable
 const ctx = await esbuild.context({

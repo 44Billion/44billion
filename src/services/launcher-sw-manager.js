@@ -1,5 +1,5 @@
 import { toSignal } from '#f'
-import { checkForSwUpdatesFrequently } from './service-worker.js'
+import { checkForSwUpdatesFrequently } from '../helpers/service-worker.js'
 
 // Reactive state of the launcher update flow, shared with the toolbar more
 // menu and the launcher-update-dialog component: 'none' (no pending update),

@@ -11,12 +11,31 @@
 // SKIP_WAITING. The script itself must be served with Cache-Control: no-cache
 // and registered with updateViaCache: 'none', or browsers/CDNs may keep an
 // old worker for up to 24h.
+//
+// Reload vs. manual update: while the old worker is still controlling (the
+// new one is waiting), any online reload already delivers the new version —
+// entries are network-first (fresh index.html/app.js through Cloudflare
+// revalidation) and new chunks are new URLs. The banner flow exists for the
+// cases where a reload doesn't happen (an installed PWA left open for days)
+// and to apply the new worker's own logic without waiting for natural
+// activation (which only occurs once every tab of the old worker closes).
+// Caveat: after a deploy that changes this worker's logic, a plain reload is
+// still served by the old worker until the new one activates — the app files
+// are already the new ones either way.
 
 // VERSION is injected by the build (bin/plugins/sw-module.js) as a content
 // hash of this worker's logic, so the cache name changes exactly when the
 // worker/precache strategy changes — and the activate step drops stale
 // caches. Normal feature deploys don't touch this file and keep the cache.
 const VERSION = LAUNCHER_SW_VERSION
+
+// DEPLOY_VERSION is injected per build (bin/build.js) as a content hash of
+// the app sources. Its only job is to change this script's bytes on every
+// deploy, so the browser detects a new worker and shows the update banner
+// even when only app.js/chunks/index.html changed — important for installed
+// PWAs that stay open for days. The cache name stays tied to VERSION above,
+// so deploys never churn the runtime cache (immutable chunks stay cached).
+const DEPLOY_VERSION = LAUNCHER_DEPLOY_HASH
 const APP_PREFIX = '44billion-launcher'
 const CACHE_KEY = `${APP_PREFIX}:${VERSION}`
 const PRECACHE_URLS = ['/', '/app.js']
@@ -94,6 +113,7 @@ async function staleWhileRevalidate (request) {
 }
 
 self.addEventListener('install', e => {
+  console.info('[launcher-sw] installing', CACHE_KEY, DEPLOY_VERSION)
   e.waitUntil((async () => {
     const cache = await caches.open(CACHE_KEY)
     await Promise.all(PRECACHE_URLS.map(url =>

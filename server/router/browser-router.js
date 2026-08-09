@@ -57,7 +57,4 @@ if (isProduction) {
   }
 }
 
-// // We need this to make the platform work offline
-// domainRouter.get('/sw.js', (req, res) => { return res })
-
 export default domainRouter
