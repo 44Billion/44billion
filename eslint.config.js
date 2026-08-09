@@ -15,7 +15,8 @@ export default [
         ...globals.browser,
         ...globals.serviceworker,
         IS_DEVELOPMENT: 'readonly',
-        IS_PRODUCTION: 'readonly'
+        IS_PRODUCTION: 'readonly',
+        LAUNCHER_SW_VERSION: 'readonly'
       }
     },
     rules: {

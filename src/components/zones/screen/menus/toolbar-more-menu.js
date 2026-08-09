@@ -5,12 +5,15 @@ import '#shared/icons/icon-dots.js'
 import '#shared/icons/icon-eye-closed.js'
 import '#shared/icons/icon-settings.js'
 import '#shared/icons/icon-shopping-bag.js'
+import '#shared/icons/icon-reload.js'
 import useLocation from '#hooks/use-location.js'
 import useWebStorage from '#hooks/use-web-storage.js'
 import { getT } from '#i18n/index.js'
+import { launcherUpdateLocales } from '#i18n/launcher-update.js'
+import { applyLauncherUpdate, launcherUpdateState$ } from '#helpers/launcher-sw-manager.js'
 
 export const toolbarMoreMenuLocales = getLocales()
-const t = getT(toolbarMoreMenuLocales)
+const t = getT({ ...toolbarMoreMenuLocales, ...launcherUpdateLocales })
 
 f('toolbar-more-menu', function () {
   const { isHidden$ } = useGlobalStore('toolbarState', { isHidden$: false })
@@ -26,6 +29,9 @@ f('toolbar-more-menu', function () {
   } = useWebStorage(localStorage)
   const showUpdateIndicator$ = useComputed(() =>
     (appUpdateMode$() ?? 'always') === 'manual' && (appUpdateCount$() ?? 0) > 0
+  )
+  const launcherUpdatePending$ = useComputed(() =>
+    launcherUpdateState$() === 'dismissed'
   )
 
   const menuProps = useStore({
@@ -93,6 +99,18 @@ f('toolbar-more-menu', function () {
             }
           }
         `}</style>
+        ${launcherUpdatePending$()
+          ? this.h`
+          <div onclick=${() => {
+            applyLauncherUpdate()
+            isOpen$.set(false)
+          }}>
+            <div class='icon-wrapper'><icon-reload props=${{ size: '16px' }} /></div>
+            <div class='menu-label'>${t('Update')}</div>
+            <div class='badge-dot'></div>
+          </div>
+        `
+          : ''}
         <div onclick=${() => {
           isHidden$.set(true)
           isOpen$.set(false)
@@ -168,7 +186,7 @@ f('toolbar-more-menu', function () {
         }
       `}</style>
       <icon-dots props=${{ size: '24px' }} />
-      ${showUpdateIndicator$() ? this.h`<div class='more-menu-badge'></div>` : ''}
+      ${showUpdateIndicator$() || launcherUpdatePending$() ? this.h`<div class='more-menu-badge'></div>` : ''}
     </div>
     <a-menu props=${menuProps} />
   `

@@ -33,7 +33,8 @@ const ctx = await esbuild.context({
     `${dirname}/../src/assets/media/icon-512.png`,
     `${dirname}/../src/assets/media/site.webmanifest`,
     // service worker is handled by sw-module plugin
-    { in: `${dirname}/../src/service-workers/app/index.js`, out: 'app-sw' } // app-sw.js
+    { in: `${dirname}/../src/service-workers/app/index.js`, out: 'app-sw' }, // app-sw.js (app subdomains)
+    { in: `${dirname}/../src/service-workers/launcher/index.js`, out: 'launcher-sw' } // launcher-sw.js (root domain)
   ],
   outdir: isDev
     // .serve({ servedir: `${dirname}/../src/assets/html` }) will serve app.js from memory as if it was there

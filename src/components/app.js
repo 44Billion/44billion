@@ -5,6 +5,7 @@ import { cssClasses, cssStrings } from '#assets/styles/theme.js'
 import { f, useSignal, useTask } from '#f'
 import { appEncode, NAPP_ENTITY_REGEX } from 'libp2r2p/nip19'
 import { appIdToAddressObj } from '#helpers/app.js'
+import { initLauncherSw } from '#helpers/launcher-sw-manager.js'
 import { useInitI18n } from '#i18n/index.js'
 
 // Clear old localStorage data from pre-v2 schema (bundle→siteManifest migration)
@@ -48,6 +49,13 @@ document.head.insertAdjacentHTML('beforeend', `<style>${resetCssString}${globalC
 if (IS_DEVELOPMENT) {
   // https://esbuild.github.io/api/#live-reload
   new EventSource('/esbuild').addEventListener('change', () => location.reload())
+} else {
+  // Offline shell + manual update flow for the launcher (root domain).
+  // Only the top-level shell owns the service worker lifecycle: embedded
+  // single-napp documents (the launcher inside another app) must not
+  // register the same worker or surface the update dialog again.
+  // Skipped in development so esbuild live-reload stays unaffected.
+  if (window === window.top) initLauncherSw()
 }
 
 f('aApp', function () {

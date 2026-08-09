@@ -9,6 +9,7 @@ import '#zones/permission-dialog/index.js'
 import { useConfirmationDialogStore } from '#zones/confirmation-dialog/index.js'
 import { getAssetBudgetConfirmation } from '#i18n/asset-budget.js'
 import '#zones/file-not-cached-dialog/index.js'
+import '#zones/launcher-update-dialog/index.js'
 
 f('multi-napp', function () {
   const { requestConfirmation } = useConfirmationDialogStore()
@@ -39,6 +40,7 @@ f('multi-napp', function () {
     <permission-dialog />
     <confirmation-dialog />
     <file-not-cached-dialog />
+    <launcher-update-dialog />
     <a-screen />
   `
 })
