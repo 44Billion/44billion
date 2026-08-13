@@ -47,6 +47,10 @@ import '#shared/icons/icon-lock.js'
 import { getAssetBudgetConfirmation } from '#i18n/asset-budget.js'
 import { getT } from '#i18n/index.js'
 import './menus/toolbar-more-menu.js'
+import {
+  FIRST_ACCOUNT_ATTENTION_SIGNAL,
+  shouldShowFirstAccountAttention
+} from './account-attention.js'
 
 export const screenLocales = getLocales()
 
@@ -1055,7 +1059,13 @@ f('toolbarMenu', function () {
 })
 f('toolbarAvatar', function () {
   const storage = useWebStorage(localStorage)
-  const { session_openWorkspaceKeys$: openWorkspaceKeys$, session_workspaceKeys$: workspaceKeys$ } = storage
+  const {
+    session_accountUserPks$: accountUserPks$,
+    session_defaultUserPk$: defaultUserPk$,
+    session_openWorkspaceKeys$: openWorkspaceKeys$,
+    session_workspaceKeys$: workspaceKeys$
+  } = storage
+  const firstAccountAttention$ = useGlobalSignal(FIRST_ACCOUNT_ATTENTION_SIGNAL, null)
 
   const userPk$ = useComputed(() => {
     const wsKey = openWorkspaceKeys$()[0]
@@ -1065,6 +1075,26 @@ f('toolbarAvatar', function () {
   const isLocked$ = useComputed(() => {
     const userPk = userPk$()
     return userPk ? storage[`session_accountByUserPk_${userPk}_isLocked$`]() : false
+  })
+
+  const showFirstAccountAttention$ = useComputed(() => shouldShowFirstAccountAttention({
+    attention: firstAccountAttention$(),
+    activeUserPk: userPk$(),
+    accountUserPks: accountUserPks$(),
+    defaultUserPk: defaultUserPk$()
+  }))
+
+  // The payload expires even if this component is temporarily unmounted, so
+  // a later render cannot replay an old first-account confirmation.
+  useTask(({ track, cleanup }) => {
+    const attention = track(() => firstAccountAttention$())
+    if (!attention) return
+    const timeout = setTimeout(() => {
+      if (firstAccountAttention$()?.id === attention.id) {
+        firstAccountAttention$(null)
+      }
+    }, Math.max(0, attention.expiresAt - Date.now()))
+    cleanup(() => clearTimeout(timeout))
   })
 
   // Calculate the user index and total count for the active user
@@ -1117,6 +1147,8 @@ f('toolbarAvatar', function () {
   })
 
   return this.h`<div
+    id='toolbar-active-avatar-button'
+    class=${{ 'first-account-attention': showFirstAccountAttention$() }}
     ref=${anchorRef$}
     onclick=${onClick}
     style=${`
@@ -1128,6 +1160,58 @@ f('toolbarAvatar', function () {
       cursor: pointer;
     `}
   >
+    <style>${`
+      #toolbar-active-avatar-button.first-account-attention::before,
+      #toolbar-active-avatar-button.first-account-attention::after {
+        content: '';
+        position: absolute;
+        inset: 4px;
+        border: 2px solid ${cssVars.colors.bgAccentPrimary};
+        border-radius: 50%;
+        opacity: 0;
+        pointer-events: none;
+        animation: toolbar-first-account-halo 1.4s ease-out both;
+      }
+
+      #toolbar-active-avatar-button.first-account-attention::after {
+        animation-delay: 550ms;
+      }
+
+      @keyframes toolbar-first-account-halo {
+        0% {
+          opacity: 0;
+          transform: scale(.94);
+        }
+        15% {
+          opacity: .75;
+        }
+        100% {
+          opacity: 0;
+          transform: scale(1.45);
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        #toolbar-active-avatar-button.first-account-attention::before {
+          animation: toolbar-first-account-outline 1.95s ease-out both;
+        }
+        #toolbar-active-avatar-button.first-account-attention::after {
+          display: none;
+          animation: none;
+        }
+      }
+
+      @keyframes toolbar-first-account-outline {
+        0%, 70% {
+          opacity: .75;
+          transform: scale(1);
+        }
+        100% {
+          opacity: 0;
+          transform: scale(1);
+        }
+      }
+    `}</style>
     <a-avatar props=${{ pk$: userPk$, size: '32px', weight$: 'duotone', strokeWidth$: 1 }} />
     ${userIndex$().showBadge
       ? this.h`<div style=${`

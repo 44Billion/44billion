@@ -1,4 +1,4 @@
-import { f, useGlobalStore, useClosestStore, useStore, useTask, useCallback, useComputed, useSignal } from '#f'
+import { f, useGlobalStore, useGlobalSignal, useClosestStore, useStore, useTask, useCallback, useComputed, useSignal } from '#f'
 import useWebStorage from '#hooks/use-web-storage.js'
 import { tell, ask, reply } from '#helpers/window-message/index.js'
 import { setAccountsState } from '#zones/screen/use-init-or-reset-screen.js'
@@ -23,6 +23,11 @@ import {
   shouldShowVaultMigration
 } from './presentation.js'
 import { vaultModalLocales } from './locales.js'
+import { createAccountStateCoordinator } from './account-state-coordinator.js'
+import {
+  FIRST_ACCOUNT_ATTENTION_MS,
+  FIRST_ACCOUNT_ATTENTION_SIGNAL
+} from '#zones/screen/account-attention.js'
 
 export { isLegacyVaultUrl } from './presentation.js'
 
@@ -451,6 +456,7 @@ f('vault-messenger', function () {
 
   const storage = useWebStorage(localStorage)
   const tabStorage = useWebStorage(sessionStorage)
+  const firstAccountAttention$ = useGlobalSignal(FIRST_ACCOUNT_ATTENTION_SIGNAL, null)
   const {
     config_vaultUrl$: vaultUrl$
   } = storage
@@ -527,6 +533,7 @@ f('vault-messenger', function () {
       tabStorage,
       stopRenderHandshake,
       vaultModalStore,
+      firstAccountAttention$,
       connectedVaultUrl$,
       connectedVaultUrl: vaultUrl$()
     })
@@ -571,6 +578,7 @@ f('vault-messenger', function () {
 // Module-level reference to the active vault port, kept in sync by initMessageListener.
 // Allows non-hook code (e.g. async tracking functions) to fire-and-forget messages to the vault.
 let _activeVaultPort = null
+let firstAccountAttentionSequence = 0
 const _pendingVaultMessages = []
 const MAX_PENDING_VAULT_MESSAGES = 50
 
@@ -599,6 +607,7 @@ function initMessageListener ({
   tabStorage,
   stopRenderHandshake,
   vaultModalStore,
+  firstAccountAttention$,
   connectedVaultUrl$,
   connectedVaultUrl
 }) {
@@ -660,10 +669,24 @@ function initMessageListener ({
     } catch (err) {
       console.warn('Failed to prune stale NostrDB databases', err)
     }
-    setAccountsState(accounts, storage, tabStorage)
+    return setAccountsState(accounts, storage, tabStorage)
   }
 
   function listenToVaultMessages ({ vaultPort, signal }) {
+    const accountState = createAccountStateCoordinator({
+      applyAccountsState: applyVaultAccountsState,
+      closeVault: () => vaultModalStore.close(),
+      isVaultOpen: () => vaultModalStore.isOpen$(),
+      emitFirstAccountAttention: ({ userPk }) => {
+        const attention = {
+          id: ++firstAccountAttentionSequence,
+          userPk,
+          expiresAt: Date.now() + FIRST_ACCOUNT_ATTENTION_MS
+        }
+        firstAccountAttention$(attention)
+      }
+    })
+
     vaultPort.addEventListener('message', async e => {
       switch (e.data.code) {
         case 'CHANGE_DIMENSIONS': {
@@ -672,7 +695,7 @@ function initMessageListener ({
         }
         case 'CLOSE_VAULT_VIEW': {
           if (e.data.reqId) reply(e, { payload: true }, { to: vaultPort })
-          vaultModalStore.close()
+          await accountState.close()
           break
         }
         case 'SET_ACCOUNTS_STATE': {
@@ -680,7 +703,7 @@ function initMessageListener ({
             console.log('Missing account data on vault message')
             break
           }
-          await applyVaultAccountsState(e.data.payload.accounts)
+          await accountState.apply(e.data.payload.accounts, { allowAttention: true })
           break
         }
         case 'NOSTRDB': {

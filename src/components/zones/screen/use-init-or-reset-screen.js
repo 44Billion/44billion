@@ -7,6 +7,7 @@ import { base16ToBase62, base62ToBase16 } from 'libp2r2p/base62'
 import AppUpdater from '#services/app-updater/index.js'
 import { cleanupNostrDbAppForWorkspace } from './helpers/nostrdb-app-lifecycle.js'
 import { requestNostrDbAppBackfillsForWorkspace } from './helpers/nostrdb-app-backfill.js'
+import { firstAccountActivationMetadata } from './account-attention.js'
 
 // the screen has
 // 1 active (active as in last clicked) user (pk) at all times (defaultUserPk is the default user pk)
@@ -172,10 +173,17 @@ export async function setAccountsState (nextAccountState, storage, tabStorage) {
     })
 
   // No change needed
-  if (nextAccountState.length === 0 && hasOnlyDefaultUser) return
+  if (nextAccountState.length === 0 && hasOnlyDefaultUser) {
+    return { activatedFirstAccount: false, userPk: null }
+  }
 
   const currentAccountUserPks = storage.session_accountUserPks$() || []
   const nextUserPks = nextAccountState.map(account => base16ToBase62(account.pubkey))
+  const activationMetadata = firstAccountActivationMetadata({
+    hasOnlyDefaultUser,
+    defaultUserPk,
+    nextUserPks
+  })
 
   let isReadOnly // true when vault has just the pk, without the sk pair
   // Add/update account data for all users in nextAccountState
@@ -354,4 +362,6 @@ export async function setAccountsState (nextAccountState, storage, tabStorage) {
       storage[`session_accountByUserPk_${userPk}_profile$`](undefined)
       storage[`session_accountByUserPk_${userPk}_relays$`](undefined)
     })
+
+  return activationMetadata
 }
