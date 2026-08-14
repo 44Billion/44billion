@@ -18,6 +18,7 @@ mock.module('#f', {
 })
 mock.module('#helpers/avatar.js', {
   namedExports: {
+    getAvatarImageLoadStatus: () => 'pending',
     getSvgAvatar: () => {
       generatedAvatars++
       return '<svg />'

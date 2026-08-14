@@ -1,5 +1,10 @@
 import { f, useStore, useTask } from '#f'
-import { getSvgAvatar, isDataAvatarPicture, isValidAvatarPicture } from '#helpers/avatar.js'
+import {
+  getAvatarImageLoadStatus,
+  getSvgAvatar,
+  isDataAvatarPicture,
+  isValidAvatarPicture
+} from '#helpers/avatar.js'
 import '#shared/icons/icon-user-circle.js'
 import '#shared/svg.js'
 import { base62ToBase16 } from 'libp2r2p/base62'
@@ -16,6 +21,7 @@ f('a-avatar', ({ h, props }) => {
   const store = useStore(() => ({
     usePlaceholder$: props.usePlaceholder$ ?? props.usePlaceholder ?? false,
     pk$: props.pk$ ?? props.pk,
+    imageElement$: null,
     loadedPicture$: null,
     rejectedPicture$: null,
     isDefaultUser$ () {
@@ -85,6 +91,19 @@ f('a-avatar', ({ h, props }) => {
     cleanup(() => clearTimeout(timeoutId))
   })
 
+  useTask(({ track }) => {
+    const { picture, isLoaded, image } = track(() => ({
+      picture: store.pictureToRender$(),
+      isLoaded: store.isPictureLoaded$(),
+      image: store.imageElement$()
+    }))
+    if (!picture || isLoaded) return
+
+    const status = getAvatarImageLoadStatus(image, picture)
+    if (status === 'loaded') store.markPictureLoaded({ currentTarget: image })
+    else if (status === 'failed') store.rejectPicture({ currentTarget: image })
+  }, { after: 'rendering' })
+
   if (store.isDefaultUser$()) {
     return h`<icon-user-circle props=${props} />`
   }
@@ -121,6 +140,7 @@ f('a-avatar', ({ h, props }) => {
           `}
         />
         <img
+          ref=${store.imageElement$}
           src=${picture}
           decoding='async'
           onload=${store.markPictureLoaded}
