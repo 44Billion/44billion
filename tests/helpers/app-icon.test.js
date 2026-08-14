@@ -4,6 +4,7 @@ import {
   appIconMonogramPalettes,
   getAppIconLayerState,
   getAppIconMonogram,
+  isDataAppIconUrl,
   normalizeAppIconCandidates,
   reconcileAppIconCandidates,
   shouldShowAppIconShimmer
@@ -27,6 +28,12 @@ function getContrastRatio (first, second) {
 }
 
 describe('app icon candidates', () => {
+  it('identifies data image icons without depending on scheme casing', () => {
+    assert.equal(isDataAppIconUrl('data:image/svg+xml,%3Csvg%2F%3E'), true)
+    assert.equal(isDataAppIconUrl('DATA:image/png;base64,AAAA'), true)
+    assert.equal(isDataAppIconUrl('https://example.test/icon.png'), false)
+  })
+
   it('builds Unicode-aware monograms from names', () => {
     assert.equal(getAppIconMonogram('app-one', 'OpenDork').label, 'OD')
     assert.equal(getAppIconMonogram('app-two', '  Radio   Garden  ').label, 'RG')

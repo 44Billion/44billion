@@ -3,10 +3,9 @@ import { decode } from 'libp2r2p/base93'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToBase16 } from 'libp2r2p/base16'
 import {
-  findFaviconAssetDescriptors,
-  findMarkedAssetDescriptors,
   findRouteAssetDescriptor,
-  getManifestMetadata
+  getManifestMetadata,
+  getPreferredManifestIconDescriptors
 } from '#helpers/site-manifest.js'
 import {
   extractHtmlMetadata,
@@ -37,20 +36,7 @@ export async function getNextIcon (appFileManager, { rejected = [], cachedIcon, 
   )
   if (cached) return cached
 
-  const seenRoots = new Set()
-  const manifestAssets = []
-  for (const asset of findMarkedAssetDescriptors('icon', appFileManager.siteManifest)) {
-    if (!seenRoots.has(asset.root)) {
-      seenRoots.add(asset.root)
-      manifestAssets.push(asset)
-    }
-  }
-  for (const favicon of findFaviconAssetDescriptors(appFileManager.siteManifest)) {
-    if (!seenRoots.has(favicon.root)) {
-      seenRoots.add(favicon.root)
-      manifestAssets.push(favicon)
-    }
-  }
+  const manifestAssets = getPreferredManifestIconDescriptors(appFileManager.siteManifest)
 
   const manifestIcon = await resolveNextEntry(
     appFileManager,

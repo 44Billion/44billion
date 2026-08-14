@@ -72,6 +72,20 @@ describe('BlossomFileDownloader pseudo chunks', () => {
     assert.ok(requestedUrls.every(url => url.startsWith('https://manifest-blossom.test/')))
   })
 
+  it('ignores insecure, local and non-origin server hints', async () => {
+    const { reports, requestedUrls } = await runDownload(Uint8Array.of(1, 2, 3), {
+      publishedServers: [],
+      serverHints: [
+        'http://blossom.test',
+        'https://localhost:3000',
+        'https://manifest-blossom.test/path',
+        'https://manifest-blossom.test/'
+      ]
+    })
+    assert.equal(reports.at(-1).progress, 100)
+    assert.ok(requestedUrls.every(url => url.startsWith('https://manifest-blossom.test/')))
+  })
+
   it('creates unsigned local kind 34601 events using derived d and empty proof', async () => {
     const bytes = new Uint8Array(51003).fill(7)
     const fileHash = hash(bytes)

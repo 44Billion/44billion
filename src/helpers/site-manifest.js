@@ -1,9 +1,15 @@
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToBase16 } from 'libp2r2p/base16'
+import {
+  isValidPublicBlossomServerUrl,
+  isValidPublicRelayUrl,
+  normalizeBlossomServerUrl,
+  normalizeRelayUrl
+} from 'libp2r2p/url'
 
 const ROOT_HASH = /^[0-9a-f]{64}$/
 const RECOGNIZED_MARKS = new Set(['icon', 'key_art', 'screenshot'])
-const FAVICON_BASENAME = /^favicon\.(?:ico|svg|webp|png|jpe?g|gif|avif)$/i
+const FAVICON_BASENAME = /^(?:favicon(?:[-_.]\w+)*|apple-touch-icon(?:-precomposed|[-_.]\w+)*)\.(?:ico|svg|webp|png|jpe?g|gif|avif)$/i
 const MAX_SOURCE_HINTS_PER_TYPE = 20
 
 export function normalizeManifestPath (value) {
@@ -185,15 +191,63 @@ export function findFaviconAssetDescriptors (manifest) {
   return favicons
 }
 
-function getUrlHints (manifest, tagName, protocols) {
+function iconPathQuality (path) {
+  const filename = path.split('/').pop()
+  if (/\.svg$/i.test(filename)) return 1000000
+  const dimensions = [...filename.matchAll(/(?:^|[-_.])(\d{2,5})x(\d{2,5})(?=[-_.]|$)/gi)]
+    .map(match => Math.min(Number(match[1]), Number(match[2])))
+  if (dimensions.length) return Math.max(...dimensions)
+  if (/^apple-touch-icon/i.test(filename)) return 180
+  if (/\.ico$/i.test(filename)) return 32
+  return 1
+}
+
+// Keeps explicit publisher ordering, except when nappup marked an automatic icon.
+export function getPreferredManifestIconDescriptors (manifest) {
+  const descriptors = getManifestAssetDescriptors(manifest)
+  const pathsByRoot = new Map()
+  for (const descriptor of descriptors) {
+    const paths = pathsByRoot.get(descriptor.root) || []
+    for (const path of descriptor.paths) {
+      if (!paths.includes(path)) paths.push(path)
+    }
+    pathsByRoot.set(descriptor.root, paths)
+  }
+  const entries = []
+  const seenRoots = new Set()
+  const add = descriptor => {
+    if (!descriptor || seenRoots.has(descriptor.root)) return
+    seenRoots.add(descriptor.root)
+    entries.push({
+      ...descriptor,
+      paths: [...new Set([...descriptor.paths, ...(pathsByRoot.get(descriptor.root) || [])])]
+    })
+  }
+  for (const descriptor of descriptors.filter(asset => asset.marks.includes('icon'))) add(descriptor)
+  for (const descriptor of descriptors) {
+    if (descriptor.paths.some(path => FAVICON_BASENAME.test(path.split('/').pop()))) add(descriptor)
+  }
+  const isAutoIcon = manifest?.tags?.some(tag =>
+    Array.isArray(tag) && tag[0] === 'auto' && tag[1] === 'icon'
+  )
+  if (!isAutoIcon) return entries
+  return entries
+    .map((descriptor, index) => ({
+      descriptor,
+      index,
+      quality: Math.max(0, ...descriptor.paths.map(iconPathQuality))
+    }))
+    .sort((left, right) => right.quality - left.quality || left.index - right.index)
+    .map(entry => entry.descriptor)
+}
+
+function getUrlHints (manifest, tagName, isValid, normalize) {
   const hints = []
   for (const tag of Array.isArray(manifest?.tags) ? manifest.tags : []) {
     if (!Array.isArray(tag) || tag[0] !== tagName || typeof tag[1] !== 'string') continue
     try {
-      const url = new URL(tag[1].trim())
-      if (!protocols.has(url.protocol)) continue
-      url.hash = ''
-      const hint = url.toString().replace(/\/$/, '')
+      if (!isValid(tag[1])) continue
+      const hint = normalize(tag[1])
       if (!hints.includes(hint)) hints.push(hint)
       if (hints.length >= MAX_SOURCE_HINTS_PER_TYPE) break
     } catch (_) {}
@@ -203,8 +257,13 @@ function getUrlHints (manifest, tagName, protocols) {
 
 export function getManifestFileSourceHints (manifest) {
   return {
-    relays: getUrlHints(manifest, 'relay', new Set(['ws:', 'wss:'])),
-    blossomServers: getUrlHints(manifest, 'server', new Set(['http:', 'https:']))
+    relays: getUrlHints(manifest, 'relay', isValidPublicRelayUrl, normalizeRelayUrl),
+    blossomServers: getUrlHints(
+      manifest,
+      'server',
+      isValidPublicBlossomServerUrl,
+      normalizeBlossomServerUrl
+    )
   }
 }
 

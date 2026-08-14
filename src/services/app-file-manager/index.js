@@ -3,7 +3,8 @@ import {
   findFaviconAssetDescriptor,
   findRouteAssetDescriptor,
   getManifestAssetDescriptors,
-  getManifestFileSourceHints
+  getManifestFileSourceHints,
+  getPreferredManifestIconDescriptors
 } from '#helpers/site-manifest.js'
 import getSiteManifestEvent from './get-site-manifest-event.js'
 import AppFileDownloader from '#services/app-file-downloader/index.js'
@@ -225,9 +226,10 @@ export default class AppFileManager {
   #faviconMetadata
   getFaviconMetadata () {
     if (this.#faviconMetadata) return this.#faviconMetadata
-    const asset = findFaviconAssetDescriptor(this.siteManifest)
+    const asset = getPreferredManifestIconDescriptors(this.siteManifest)[0] ||
+      findFaviconAssetDescriptor(this.siteManifest)
     if (!asset) return
-    const filename = asset.filename
+    const filename = asset.filename || asset.paths[0]
     const mimeType = asset.mimeType || mime.getType(filename)
     if (!(mimeType || '').startsWith('image/')) return
 

@@ -12,7 +12,8 @@ globalThis.localStorage = {}
 mock.module('#f', {
   namedExports: {
     f: (_name, render) => { renderAvatar = render },
-    useStore: toTestStore
+    useStore: toTestStore,
+    useTask: () => {}
   }
 })
 mock.module('#helpers/avatar.js', {
@@ -21,7 +22,8 @@ mock.module('#helpers/avatar.js', {
       generatedAvatars++
       return '<svg />'
     },
-    isValidAvatarPicture: picture => picture === '/profile/avatar.png'
+    isDataAvatarPicture: picture => picture?.startsWith('data:image/'),
+    isValidAvatarPicture: picture => picture === '/profile/avatar.png' || picture?.startsWith('data:image/')
   }
 })
 mock.module('#shared/icons/icon-user-circle.js', { namedExports: {} })
@@ -52,8 +54,27 @@ describe('a-avatar fallback generation', () => {
       h: () => ({})
     }
 
-    renderAvatar.call(context)
+    renderAvatar(context)
 
+    assert.equal(generatedAvatars, 0)
+  })
+
+  it('renders a self-contained picture as already loaded', () => {
+    generatedAvatars = 0
+    defaultUserPk = undefined
+    const renderedStyles = []
+    const context = {
+      props: { pk: 'publisher', picture: 'data:image/svg+xml,%3Csvg%2F%3E' },
+      h: (_strings, ...values) => {
+        renderedStyles.push(...values.filter(value => typeof value === 'string'))
+        return {}
+      }
+    }
+
+    renderAvatar(context)
+
+    const imageStyle = renderedStyles.find(value => value.includes('object-fit: cover'))
+    assert.match(imageStyle, /visibility: visible/)
     assert.equal(generatedAvatars, 0)
   })
 
@@ -65,7 +86,7 @@ describe('a-avatar fallback generation', () => {
       h: () => ({})
     }
 
-    renderAvatar.call(context)
+    renderAvatar(context)
 
     assert.ok(generatedAvatars > 0)
   })
@@ -75,16 +96,41 @@ describe('a-avatar fallback generation', () => {
     defaultUserPk = 'default-user'
     let template
     const context = {
-      props: { pk: defaultUserPk },
+      props: {
+        pk: defaultUserPk,
+        picture: '/profile/avatar.png',
+        profilePending: true,
+        usePlaceholder: true
+      },
       h: strings => {
         template = strings.join('')
         return {}
       }
     }
 
-    renderAvatar.call(context)
+    renderAvatar(context)
 
     assert.match(template, /<icon-user-circle/)
+    assert.doesNotMatch(template, /<img|animate-background|a-svg/)
+    assert.equal(generatedAvatars, 0)
+  })
+
+  it('uses the loading placeholder while a regular profile is pending', () => {
+    generatedAvatars = 0
+    defaultUserPk = undefined
+    let template
+    const context = {
+      props: { pk: 'publisher', profilePending: true, usePlaceholder: true },
+      h: strings => {
+        template = strings.join('')
+        return {}
+      }
+    }
+
+    renderAvatar(context)
+
+    assert.match(template, /animate-background/)
+    assert.doesNotMatch(template, /<img|a-svg/)
     assert.equal(generatedAvatars, 0)
   })
 })

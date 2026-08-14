@@ -6,6 +6,7 @@ import connectivityRetry from '#services/connectivity-retry.js'
 import {
   getAppIconLayerState,
   getAppIconMonogram,
+  isDataAppIconUrl,
   normalizeAppIconCandidates,
   reconcileAppIconCandidates,
   shouldShowAppIconShimmer
@@ -166,7 +167,7 @@ f('app-icon', ({ h, props }) => {
       if (!candidate) return
       if (!imageMatchesCandidate(event.currentTarget, candidate)) return
 
-      if (!candidate.url.startsWith('data:')) {
+      if (!isDataAppIconUrl(candidate.url)) {
         let online = false
         try { online = await connectivityRetry.confirmOnline({ force: true }) } catch (_) {}
         if (!online) return this.waitAndRetry()

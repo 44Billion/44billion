@@ -2,6 +2,12 @@ import { appIconMonogramPalettes } from '#assets/styles/theme.js'
 
 export { appIconMonogramPalettes }
 
+// Identifies self-contained app icons that require no network request.
+export function isDataAppIconUrl (value) {
+  return typeof value === 'string' &&
+    /^data:image\/[a-z0-9.+-]+(?:;[^,]*)?,/i.test(value)
+}
+
 // Splits text by user-perceived characters when the platform supports it.
 function getGraphemes (value) {
   if (typeof Intl.Segmenter === 'function') {
@@ -54,7 +60,7 @@ export function isRenderableAppIconUrl (value) {
     /\s/.test(value)
   ) return false
 
-  if (/^data:image\/[a-z0-9.+-]+(?:;[^,]*)?,/i.test(value)) return true
+  if (isDataAppIconUrl(value)) return true
 
   try {
     const url = new URL(value)

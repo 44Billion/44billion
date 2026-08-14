@@ -4,6 +4,7 @@ import { Base93Encoder } from 'libp2r2p/base93'
 import NMMR from 'nmmr'
 import { bytesToBase16 } from 'libp2r2p/base16'
 import { relayPool as nostrRelays } from 'libp2r2p/relay'
+import { isValidPublicBlossomServerUrl, normalizeBlossomServerUrl } from 'libp2r2p/url'
 import { APP_FILE_CHUNK_BYTES } from '#constants/app-file.js'
 import { warnAssetSizeMismatch } from '#helpers/asset-size.js'
 
@@ -53,10 +54,8 @@ export default class BlossomFileDownloader {
     this.mimeType = options.mimeType ?? null
     this.size = options.size ?? null
     this.serverHints = [...new Set((Array.isArray(options.servers) ? options.servers : [])
-      .filter(server => typeof server === 'string')
-      .map(server => server.trim().replace(/\/$/, ''))
-      .filter(server => /^https?:\/\//.test(server))
-      .filter(Boolean))]
+      .filter(isValidPublicBlossomServerUrl)
+      .map(normalizeBlossomServerUrl))]
     this.isRunning = false
   }
 
@@ -388,9 +387,8 @@ export default class BlossomFileDownloader {
     const best = events[0]
 
     const publishedServers = (best?.tags ?? [])
-      .filter(t => Array.isArray(t) && t[0] === 'server' && /^https?:\/\//.test(t[1]))
-      .map(t => t[1].trim().replace(/\/$/, ''))
-      .filter(Boolean)
+      .filter(tag => Array.isArray(tag) && tag[0] === 'server' && isValidPublicBlossomServerUrl(tag[1]))
+      .map(tag => normalizeBlossomServerUrl(tag[1]))
     return [...new Set([...this.serverHints, ...publishedServers])]
   }
 }

@@ -11,6 +11,7 @@ import {
   getManifestFileSourceHints,
   getManifestMetadata,
   getManifestPublishedAt,
+  getPreferredManifestIconDescriptors,
   normalizeManifestPath
 } from '#helpers/site-manifest.js'
 
@@ -54,20 +55,38 @@ describe('site manifest descriptors', () => {
     assert.equal(favicon.filename, 'assets/Favicon.SVG')
   })
 
+  it('prefers a larger conventional icon when nappup marked the choice automatic', () => {
+    const manifest = {
+      tags: [
+        ['service', 'blossom'],
+        ['path', 'favicon-16x16.png', A],
+        ['path', 'apple-touch-icon.png', B],
+        ['r', A, 'mark icon', 'm image/png'],
+        ['auto', 'icon']
+      ]
+    }
+    assert.deepEqual(
+      getPreferredManifestIconDescriptors(manifest).map(asset => asset.root),
+      [B, A]
+    )
+  })
+
   it('normalizes signed relay and Blossom server hints', () => {
     const hints = getManifestFileSourceHints({
       tags: [
         ['relay', 'wss://relay.test/'],
         ['relay', 'wss://relay.test'],
-        ['relay', 'https://not-a-relay.test'],
+        ['relay', 'ws://insecure-relay.test'],
         ['server', 'https://blossom.test/'],
         ['server', 'http://localhost:3000/'],
+        ['server', 'https://blossom.test/path'],
+        ['server', 'https://user:secret@blossom.test'],
         ['server', 'ftp://invalid.test']
       ]
     })
     assert.deepEqual(hints, {
       relays: ['wss://relay.test'],
-      blossomServers: ['https://blossom.test', 'http://localhost:3000']
+      blossomServers: ['https://blossom.test']
     })
   })
 

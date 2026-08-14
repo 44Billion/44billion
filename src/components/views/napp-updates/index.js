@@ -57,6 +57,7 @@ f('napp-updates', function () {
   })
 
   const publisherProfiles$ = useSignal({})
+  const publisherProfilesPending$ = useSignal(true)
   const availableUpdates$ = useSignal({})
   const updateStates$ = useSignal({}) // { [appId]: { status: 'idle'|'pending'|'updating'|'done'|'error', progress: 0, error: null } }
   const isUpdatingAll$ = useSignal(false)
@@ -124,23 +125,23 @@ f('napp-updates', function () {
   }
 
   useTask(async () => {
-    await performSearch()
+    try {
+      await performSearch()
 
-    // 2. Fetch profiles
-    const appIds = allAppIds$()
-    const managers = await Promise.all(appIds.map(id => AppFileManager.create(id).catch(() => null)))
-    const pubkeys = new Set()
-    managers.forEach(m => {
-      if (m?.siteManifest?.pubkey) pubkeys.add(m.siteManifest.pubkey)
-    })
+      // 2. Fetch profiles
+      const appIds = allAppIds$()
+      const managers = await Promise.all(appIds.map(id => AppFileManager.create(id).catch(() => null)))
+      const pubkeys = new Set()
+      managers.forEach(m => {
+        if (m?.siteManifest?.pubkey) pubkeys.add(m.siteManifest.pubkey)
+      })
 
-    // Add pubkeys from updates
-    Object.values(availableUpdates$()).forEach(u => {
-      if (u.event?.pubkey) pubkeys.add(u.event.pubkey)
-    })
+      // Add pubkeys from updates
+      Object.values(availableUpdates$()).forEach(u => {
+        if (u.event?.pubkey) pubkeys.add(u.event.pubkey)
+      })
 
-    if (pubkeys.size > 0) {
-      try {
+      if (pubkeys.size > 0) {
         const events = await getEventsByStrategy(
           { kinds: [0], authors: Array.from(pubkeys) },
           { code: 'WRITE_RELAYS' }
@@ -150,9 +151,11 @@ f('napp-updates', function () {
           try { profiles[e.pubkey] = JSON.parse(e.content) } catch {}
         })
         publisherProfiles$(profiles)
-      } catch (e) {
-        console.error('Bulk fetch failed', e)
       }
+    } catch (e) {
+      console.error('Bulk fetch failed', e)
+    } finally {
+      publisherProfilesPending$(false)
     }
   })
 
@@ -446,6 +449,7 @@ f('napp-updates', function () {
             updateState: updateStates$()[appId],
             appId,
             publisherProfiles$,
+            publisherProfilesPending$,
             onUpdate: () => handleUpdateSingle(appId),
             render ({ h, props }) {
               return h`<napp-update-card props=${props} />`
@@ -460,7 +464,7 @@ f('napp-updates', function () {
 
 f('napp-update-card', function () {
   const storage = useWebStorage(localStorage)
-  const { appId, publisherProfiles$, updateInfo$, updateState$, onUpdate } = this.props
+  const { appId, publisherProfiles$, publisherProfilesPending$, updateInfo$, updateState$, onUpdate } = this.props
 
   const appName$ = useComputed(() => {
     return storage[`session_appById_${appId}_name$`]()
@@ -716,7 +720,7 @@ f('napp-update-card', function () {
       </div>
       <div class="info">
         <div class="name-row">
-          ${publisherPk$() ? this.h`<div class="publisher-avatar"><a-avatar props=${{ usePlaceholder: true, pk$: publisherPk$, picture$: publisherPicture$ }} /></div>` : ''}
+          ${publisherPk$() ? this.h`<div class="publisher-avatar"><a-avatar props=${{ usePlaceholder: true, profilePending$: publisherProfilesPending$, pk$: publisherPk$, picture$: publisherPicture$ }} /></div>` : ''}
           ${appName$()
             ? this.h`<div class="name">${appName$()}</div>`
             : this.h`<div class="name-placeholder animate-background"></div>`
