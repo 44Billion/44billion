@@ -29,11 +29,27 @@ import {
   ASSET_BUDGET_DENIED_BY_USER
 } from '#services/app-asset-budget/index.js'
 import { APP_FILE_CHUNK_BYTES } from '#constants/app-file.js'
+import { PROGRESS_VISIBLE_AFTER_COMPLETE_MS, stampProgressEntry } from '#helpers/caching-progress.js'
 import NFileDownloader from '#services/nfile-downloader/index.js'
 import { getEffectiveLocale, subscribeLocaleChanged } from '#i18n/index.js'
 
 function isAssetBudgetError (error) {
   return [ASSET_BUDGET_BACKGROUND_DENIED, ASSET_BUDGET_DENIED_BY_USER].includes(error?.code)
+}
+
+// Guard against a stuck foreground asset download: after this long without
+// progress reaching 100, the stream errors out (isLast) so the app can retry
+// instead of leaving the progress UI at 100% forever.
+const CACHE_FILE_TIMEOUT_MS = 180000
+
+function withCacheFileTimeout (promise, timeoutMs) {
+  let timeoutId
+  const timeoutPromise = new Promise((_resolve, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(Object.assign(new Error('Caching file timed out'), { code: 'CACHE_FILE_TIMEOUT' }))
+    }, timeoutMs)
+  })
+  return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId))
 }
 
 // Update icon storage with data URL from streamed chunks
@@ -292,6 +308,15 @@ export async function initMessageListener (
                 let hasErrored = false
                 let hasSentLast = false
                 let isStreaming = false
+                const progressCompletionTimers = new Map()
+
+                const clearProgressCompletionTimer = filename => {
+                  const timer = progressCompletionTimers.get(filename)
+                  if (timer) {
+                    clearTimeout(timer)
+                    progressCompletionTimers.delete(filename)
+                  }
+                }
 
                 const tryStream = async () => {
                   if (hasErrored || hasSentLast || isStreaming) return
@@ -335,11 +360,13 @@ export async function initMessageListener (
 
                 const progressCallback = async ({ progress: cachingProgress, chunkIndex, total, error }) => {
                   if (hasErrored || hasSentLast) return
+                  const filename = e.data.payload.pathname
                   if (error) {
                     hasErrored = true
+                    clearProgressCompletionTimer(filename)
                     // Clear progress for this file
                     const currentProgress = cachingProgress$()
-                    const { [e.data.payload.pathname]: _, ...remaining } = currentProgress
+                    const { [filename]: _, ...remaining } = currentProgress
                     cachingProgress$(remaining)
                     return handleStreamError(error)
                   }
@@ -347,23 +374,29 @@ export async function initMessageListener (
                   if (total && totalChunks === null) totalChunks = total
 
                   // Update caching progress in the signal
-                  const filename = e.data.payload.pathname
                   const currentProgress = cachingProgress$()
                   cachingProgress$({
                     ...currentProgress,
-                    [filename]: {
+                    [filename]: stampProgressEntry({
                       progress: cachingProgress,
                       totalByteSizeEstimate: totalChunks ? totalChunks * APP_FILE_CHUNK_BYTES : 0
-                    }
+                    })
                   })
 
-                  // Remove from progress when completed
+                  // Remove from progress when completed. Idempotent: a late
+                  // duplicate progress report restarts the short visibility
+                  // window instead of stacking timers; the progress bar's
+                  // periodic sweep catches any entry that never reaches this
+                  // path.
                   if (cachingProgress >= 100) {
-                    setTimeout(() => {
+                    clearProgressCompletionTimer(filename)
+                    const timer = setTimeout(() => {
+                      progressCompletionTimers.delete(filename)
                       const latestProgress = cachingProgress$()
                       const { [filename]: _, ...remaining } = latestProgress
                       cachingProgress$(remaining)
-                    }, 1000) // Keep visible for 1 second after completion
+                    }, PROGRESS_VISIBLE_AFTER_COMPLETE_MS) // Keep visible for 1 second after completion
+                    progressCompletionTimers.set(filename, timer)
                   }
 
                   if (typeof chunkIndex === 'number') {
@@ -377,12 +410,13 @@ export async function initMessageListener (
                 try {
                   await tryStream()
                   if (!hasSentLast && !hasErrored) {
-                    return appFiles.cacheFile(e.data.payload.pathname, cacheStatus.pathTag, progressCallback, {
+                    const cachePromise = appFiles.cacheFile(e.data.payload.pathname, cacheStatus.pathTag, progressCallback, {
                       assetBudget: {
                         mode: 'foreground',
                         requestConfirmation: requestAssetBudgetConfirmation
                       }
                     })
+                    return await withCacheFileTimeout(cachePromise, CACHE_FILE_TIMEOUT_MS)
                   }
                 } catch (err) {
                   return handleStreamError(err)

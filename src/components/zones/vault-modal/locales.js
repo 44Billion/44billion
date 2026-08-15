@@ -76,5 +76,70 @@ export const vaultModalLocales = {
     'zh-TW': '關閉保管庫',
     ja: 'Vault を閉じる',
     ko: 'Vault 닫기'
+  },
+  Vault: {
+    en: 'Vault',
+    fr: 'Coffre',
+    it: 'Vault',
+    de: 'Vault',
+    es: 'Vault',
+    'pt-BR': 'Vault',
+    ru: 'Хранилище',
+    'zh-CN': '保管库',
+    'zh-TW': '保管庫',
+    ja: 'Vault',
+    ko: 'Vault'
+  },
+  'Vault failed to start. Retry?': {
+    en: 'Vault failed to start. Retry?',
+    fr: 'Échec du démarrage du coffre. Réessayer ?',
+    it: 'Impossibile avviare il vault. Riprovare?',
+    de: 'Vault konnte nicht gestartet werden. Erneut versuchen?',
+    es: 'No se pudo iniciar el vault. ¿Reintentar?',
+    'pt-BR': 'Falha ao iniciar o vault. Tentar novamente?',
+    ru: 'Не удалось запустить хранилище. Повторить?',
+    'zh-CN': '无法启动保管库。重试？',
+    'zh-TW': '無法啟動保管庫。重試？',
+    ja: 'Vault を起動できませんでした。再試行しますか？',
+    ko: 'Vault를 시작하지 못했습니다. 다시 시도할까요?'
+  },
+  'Vault unreachable. Retry?': {
+    en: 'Vault unreachable. Retry?',
+    fr: 'Coffre inaccessible. Réessayer ?',
+    it: 'Vault non raggiungibile. Riprovare?',
+    de: 'Vault nicht erreichbar. Erneut versuchen?',
+    es: 'Vault inaccesible. ¿Reintentar?',
+    'pt-BR': 'Vault inacessível. Tentar novamente?',
+    ru: 'Хранилище недоступно. Повторить?',
+    'zh-CN': '无法访问保管库。重试？',
+    'zh-TW': '無法存取保管庫。重試？',
+    ja: 'Vault に接続できません。再試行しますか？',
+    ko: 'Vault에 연결할 수 없습니다. 다시 시도할까요?'
+  },
+  'Connecting to vault...': {
+    en: 'Connecting to vault...',
+    fr: 'Connexion au coffre...',
+    it: 'Connessione al vault...',
+    de: 'Verbindung zum Vault wird hergestellt...',
+    es: 'Conectando con vault...',
+    'pt-BR': 'Conectando ao vault...',
+    ru: 'Подключение к хранилищу...',
+    'zh-CN': '正在连接保管库...',
+    'zh-TW': '正在連線保管庫...',
+    ja: 'Vault に接続中...',
+    ko: 'Vault에 연결하는 중...'
+  },
+  Retry: {
+    en: 'Retry',
+    fr: 'Réessayer',
+    it: 'Riprova',
+    de: 'Erneut versuchen',
+    es: 'Reintentar',
+    'pt-BR': 'Tentar novamente',
+    ru: 'Повторить',
+    'zh-CN': '重试',
+    'zh-TW': '重試',
+    ja: '再試行',
+    ko: '다시 시도'
   }
 }

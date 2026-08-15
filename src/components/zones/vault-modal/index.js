@@ -15,6 +15,7 @@ import { getEffectiveLocale, getT, subscribeLocaleChanged } from '#i18n/index.js
 import { cssVars } from '#assets/styles/theme.js'
 import '#shared/modal.js'
 import '#shared/dialog.js'
+import '#shared/icons/icon-hourglass-high.js'
 import {
   EZ_VAULT_URL,
   drawerPositionAtOpen,
@@ -23,6 +24,7 @@ import {
   shouldShowVaultMigration
 } from './presentation.js'
 import { vaultModalLocales } from './locales.js'
+import { useVaultRecoveryStore } from './recovery.js'
 import { createAccountStateCoordinator } from './account-state-coordinator.js'
 import {
   FIRST_ACCOUNT_ATTENTION_MS,
@@ -32,6 +34,16 @@ import {
 export { isLegacyVaultUrl } from './presentation.js'
 
 const t = getT(vaultModalLocales)
+
+// Vault boot recovery: when the iframe loads but VAULT_READY never arrives
+// within this window, try one automatic reload and then offer a manual retry.
+export const VAULT_READY_TIMEOUT_MS = 12000
+// The render handshake pings for at most this long before stopping silently.
+export const HANDSHAKE_MAX_MS = 10000
+// Show the unreachable dialog after this many consecutive fetch failures or
+// after this much total time without success, whichever comes first.
+export const VAULT_UNREACHABLE_FAILURES = 5
+export const VAULT_UNREACHABLE_MAX_MS = 60000
 
 export function useVaultModalStore (init) {
   if (init) return useVaultModalInit(init)
@@ -177,6 +189,7 @@ f('vault-modal', ({ h }) => {
       open$: migrationOpen$,
       onUseEzVault: useEzVault
     }} />
+    <vault-reload-dialog />
   `
 })
 
@@ -185,6 +198,7 @@ f('vault-messenger-wrapper', function () {
   const {
     config_vaultUrl$: vaultUrl$
   } = storage
+  const vaultRecovery = useVaultRecoveryStore()
 
   useTask(() => {
     if (vaultUrl$() !== undefined) return
@@ -210,6 +224,9 @@ f('vault-messenger-wrapper', function () {
 
     isReachable$(false)
     let attempt = 0
+    let consecutiveFailures = 0
+    let firstFailureAt = null
+    let recoveryRequested = false
     let timeoutId
     const ac = new AbortController()
     cleanup(() => {
@@ -222,18 +239,83 @@ f('vault-messenger-wrapper', function () {
         await fetch(url, { mode: 'no-cors', signal: ac.signal })
         if (ac.signal.aborted) return
         isReachable$(true)
+        attempt = 0
+        consecutiveFailures = 0
+        firstFailureAt = null
+        recoveryRequested = false
       } catch (_err) {
         if (ac.signal.aborted) return
         attempt++
+        consecutiveFailures++
+        firstFailureAt ??= Date.now()
         const delay = Math.min(30000, 500 * (2 ** attempt))
-        console.warn(`Vault unreachable, retrying in ${delay}ms`)
+        console.warn(`Vault unreachable, retrying in ${delay}ms (${consecutiveFailures} consecutive failures)`)
+        if (!recoveryRequested && (consecutiveFailures >= VAULT_UNREACHABLE_FAILURES || Date.now() - firstFailureAt >= VAULT_UNREACHABLE_MAX_MS)) {
+          recoveryRequested = true
+          vaultRecovery.requestAction({
+            title: t('Vault'),
+            message: t('Vault unreachable. Retry?')
+          }).then(() => {
+            // Manual retry: check right away and restart the backoff. Keep the
+            // request flag so a still-failing vault can show the dialog again.
+            recoveryRequested = false
+            consecutiveFailures = 0
+            firstFailureAt = null
+            attempt = 0
+            clearTimeout(timeoutId)
+            timeoutId = undefined
+            check()
+          }).catch(() => {
+            // Dismissed: keep the background backoff but don't re-ask during
+            // this same unreachable episode (the flag stays set).
+          })
+        }
         timeoutId = setTimeout(check, delay)
       }
     }
     check()
   }, { after: 'rendering' })
 
-  if (!vaultUrl$() || !isReachable$()) return this.h``
+  if (!vaultUrl$()) return this.h``
+
+  if (!isReachable$()) {
+    // The vault has not answered the reachability probe yet (or is retrying
+    // with backoff): keep the drawer from looking broken, following the
+    // hourglass "pending" convention used elsewhere in the launcher.
+    return this.h`
+      <style>${/* css */`
+        @keyframes vaultConnectPulse {
+          50% { opacity: .5; }
+        }
+
+        .vault-connect-placeholder {
+          width: 100%;
+          height: 100%;
+          min-height: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 10px;
+          padding: 16px;
+          box-sizing: border-box;
+          color: ${cssVars.colors.fg2};
+          font-size: 14rem;
+        }
+
+        .vault-connect-placeholder icon-hourglass-high {
+          flex-shrink: 0;
+        }
+
+        .vault-connect-placeholder .vault-connect-label {
+          animation: vaultConnectPulse 2s cubic-bezier(.4,0,.6,1) infinite;
+        }
+      `}</style>
+      <div class="vault-connect-placeholder">
+        <icon-hourglass-high props=${{ size: '20px', style: 'color:' + cssVars.colors.bgAccentSecondary }} />
+        <span class="vault-connect-label">${t('Connecting to vault...')}</span>
+      </div>
+    `
+  }
 
   return this.h`${this.h({ key: vaultUrl$() })`<vault-messenger />`}`
 })
@@ -464,6 +546,36 @@ f('vault-messenger', function () {
   const { cancelPreviousRequests, tellVault } = useVaultActor()
   const vaultModalStore = useVaultModalStore()
   const { isOpen$ } = vaultModalStore
+  const vaultRecovery = useVaultRecoveryStore()
+  let recoveryTimerId
+  let autoReloadAttempted = false
+  const clearRecoveryTimer = () => {
+    if (recoveryTimerId) {
+      clearTimeout(recoveryTimerId)
+      recoveryTimerId = null
+    }
+  }
+  const reloadVaultIframe = () => {
+    const url = vaultUrl$()
+    vaultIframeSrc$('about:blank')
+    setTimeout(() => {
+      if (!isSameVaultUrl(vaultUrl$(), url)) return
+      vaultIframeSrc$(url)
+    }, 0)
+  }
+  const offerVaultRecovery = async () => {
+    try {
+      await vaultRecovery.requestAction({
+        title: t('Vault'),
+        message: t('Vault failed to start. Retry?')
+      })
+      // Manual retry: reload once; the next timeout shows the dialog again.
+      autoReloadAttempted = false
+      reloadVaultIframe()
+    } catch {
+      // Dismissed, or VAULT_READY arrived while the dialog was open.
+    }
+  }
   useTask(({ track }) => {
     const isOpen = track(() => isOpen$())
     if (isFirstRun$() || isOpen) return
@@ -494,10 +606,25 @@ f('vault-messenger', function () {
 
   useTask(() => { isFirstRun$(false) })
 
+  // VAULT_READY arriving (or the vault page reloading on its own) clears the
+  // boot recovery state and closes the dialog if it's still open.
+  useTask(({ track }) => {
+    const port = track(() => vaultPort$())
+    if (!port) return
+    clearRecoveryTimer()
+    autoReloadAttempted = false
+    vaultRecovery.dismiss()
+  })
+
   useTask(async ({ track, cleanup }) => {
     track(() => vaultUrl$())
+    clearRecoveryTimer()
+    autoReloadAttempted = false
     const ac = new AbortController()
-    cleanup(() => { ac.abort() })
+    cleanup(() => {
+      clearRecoveryTimer()
+      ac.abort()
+    })
 
     const vaultOrigin = new URL(vaultUrl$()).origin
     let renderHandshakeController
@@ -513,6 +640,10 @@ f('vault-messenger', function () {
       }, { once: true })
     }
     vaultIframeRef$().addEventListener('load', () => {
+      // about:blank is used as the reload trampoline; don't arm the handshake
+      // or the boot timer for it.
+      if (vaultIframeSrc$() === 'about:blank') return
+
       setTimeout(() => {
         stopRenderHandshake()
         const controller = startRenderHandshake({
@@ -522,6 +653,22 @@ f('vault-messenger', function () {
         })
         trackRenderHandshakeController(controller)
       }, 100) // give the iframe some time for its js to init
+
+      clearRecoveryTimer()
+      recoveryTimerId = setTimeout(() => {
+        recoveryTimerId = null
+        if (vaultPort$()) return
+        console.warn(
+          `[vault] VAULT_READY not received within ${VAULT_READY_TIMEOUT_MS}ms (auto-reload ${autoReloadAttempted ? 'already attempted' : 'pending'})`,
+          { url: vaultUrl$(), now: new Date().toISOString() }
+        )
+        if (!autoReloadAttempted) {
+          autoReloadAttempted = true
+          reloadVaultIframe()
+          return
+        }
+        offerVaultRecovery()
+      }, VAULT_READY_TIMEOUT_MS)
     }, { signal: ac.signal })
     initMessageListener({
       vaultIframe: vaultIframeRef$(),
@@ -788,7 +935,7 @@ function startRenderHandshake ({
     if (retryId) clearTimeout(retryId)
   }, { once: true })
 
-  const MAX_ATTEMPTS = 40
+  const startedAt = Date.now()
   let attempts = 0
   const sendRender = () => {
     if (signal.aborted) return
@@ -807,7 +954,7 @@ function startRenderHandshake ({
       stop()
       return
     }
-    if (attempts >= MAX_ATTEMPTS) {
+    if (Date.now() - startedAt >= HANDSHAKE_MAX_MS) {
       stop()
       return
     }

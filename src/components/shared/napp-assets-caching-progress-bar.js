@@ -1,5 +1,6 @@
-import { f, useClosestStore, useComputed } from '#f'
+import { f, useClosestStore, useComputed, useTask } from '#f'
 import { cssVars } from '#assets/styles/theme.js'
+import { STALE_PROGRESS_MAX_AGE_MS, pruneStaleProgressEntries } from '#helpers/caching-progress.js'
 
 f('nappAssetsCachingProgressBar', function () {
   let cachingProgress$
@@ -10,6 +11,35 @@ f('nappAssetsCachingProgressBar', function () {
     console.warn('No cachingProgress$ store found', err)
     return
   }
+
+  // Self-heal: remove entries that reached 100% but whose normal removal
+  // path (progressCallback's setTimeout) never fired — e.g. the stream
+  // stalled right after the final progress report. This should never be
+  // necessary; each prune is logged so the stuck path can be investigated.
+  useTask(({ cleanup }) => {
+    const intervalId = setInterval(() => {
+      const current = cachingProgress$()
+      const pruned = pruneStaleProgressEntries(current)
+      if (Object.keys(pruned).length !== Object.keys(current).length) {
+        const now = Date.now()
+        for (const [key, entry] of Object.entries(current)) {
+          if (key.startsWith('_') || key in pruned) continue
+          console.warn(
+            '[caching-progress] pruned a stuck 100% entry; the normal completion path did not clean it up',
+            {
+              path: key,
+              updatedAt: entry.updatedAt,
+              ageMs: now - (entry.updatedAt ?? now),
+              progress: entry.progress,
+              totalByteSizeEstimate: entry.totalByteSizeEstimate
+            }
+          )
+        }
+        cachingProgress$(pruned)
+      }
+    }, STALE_PROGRESS_MAX_AGE_MS)
+    cleanup(() => clearInterval(intervalId))
+  })
 
   const progressEntries$ = useComputed(() =>
     Object.entries(cachingProgress$()).filter(([key]) =>
