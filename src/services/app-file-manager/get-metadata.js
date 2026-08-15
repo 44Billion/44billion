@@ -18,6 +18,16 @@ import { warnAssetSizeMismatch } from '#helpers/asset-size.js'
 import connectivityRetry from '#services/connectivity-retry.js'
 
 const iconDiscoveryByManager = new WeakMap()
+const preferredIconByManager = new WeakMap()
+
+// Identifies the manifest version used to reconcile a cached icon.
+function getManifestSelectionId (manifest) {
+  if (typeof manifest?.id === 'string' && manifest.id) return manifest.id
+  const dTag = manifest?.tags?.find(tag => tag[0] === 'd')?.[1] || ''
+  return [manifest?.kind, manifest?.pubkey, dTag, manifest?.created_at]
+    .map(value => String(value ?? ''))
+    .join(':')
+}
 
 export async function getIcon (appFileManager, _staleWhileRevalidate = false) {
   const cachedIcon = appFileManager.getCachedMetadata(appFileManager.appId, ['icon'])?.icon
@@ -50,7 +60,8 @@ export async function getNextIcon (appFileManager, { rejected = [], cachedIcon, 
 
   let htmlEntries
   try {
-    htmlEntries = await discoverHtmlIconEntries(appFileManager, signal)
+    const discovery = await discoverHtmlIconEntries(appFileManager, signal)
+    htmlEntries = discovery.entries
   } catch (error) {
     if (signal?.aborted) throw error
     if (!await connectivityRetry.confirmOnline({ force: true })) {
@@ -68,6 +79,62 @@ export async function getNextIcon (appFileManager, { rejected = [], cachedIcon, 
     cachedIcon,
     signal
   )
+}
+
+// Resolves the metadata-preferred icon independently from the cached primary choice.
+export function getPreferredIcon (appFileManager, {
+  manifest = appFileManager.siteManifest,
+  cachedIcon,
+  signal
+} = {}) {
+  const manifestId = getManifestSelectionId(manifest)
+  let byManifest = preferredIconByManager.get(appFileManager)
+  if (!byManifest) {
+    byManifest = new Map()
+    preferredIconByManager.set(appFileManager, byManifest)
+  }
+  if (byManifest.has(manifestId)) return byManifest.get(manifestId)
+
+  const request = (async () => {
+    cachedIcon ??= appFileManager.getCachedMetadata(appFileManager.appId, ['icon'])?.icon
+    const rejectedRoots = new Set()
+    const rejectedUrls = new Set()
+    const resolutionState = { complete: true }
+    const manifestAssets = getPreferredManifestIconDescriptors(manifest)
+    let icon = await resolveNextEntry(
+      appFileManager,
+      manifestAssets.map(asset => ({ asset })),
+      rejectedRoots,
+      rejectedUrls,
+      cachedIcon,
+      signal,
+      { cacheCandidate: false, resolutionState }
+    )
+    if (!icon) {
+      const discovery = await discoverHtmlIconEntries(appFileManager, signal, manifest)
+      if (!discovery.complete) resolutionState.complete = false
+      icon = await resolveNextEntry(
+        appFileManager,
+        discovery.entries,
+        rejectedRoots,
+        rejectedUrls,
+        cachedIcon,
+        signal,
+        { cacheCandidate: false, resolutionState }
+      )
+    }
+    return { icon, manifestId, selectionComplete: resolutionState.complete }
+  })()
+  byManifest.set(manifestId, request)
+  request.then(
+    result => {
+      // Share successful work for this manifest, but let a future component
+      // retry if no candidate could be resolved during a transient outage.
+      if (!result.icon || !result.selectionComplete) byManifest.delete(manifestId)
+    },
+    () => byManifest.delete(manifestId)
+  )
+  return request
 }
 
 export async function getName (appFileManager, staleWhileRevalidate = false) {
@@ -178,32 +245,36 @@ function addUrlEntry (entries, seenUrls, url) {
   entries.push({ url })
 }
 
-function addHtmlImageSource (entries, seenAssets, seenUrls, appFileManager, source, htmlMetadata, basePath) {
+function addHtmlImageSource (entries, seenAssets, seenUrls, manifest, source, htmlMetadata, basePath) {
   const path = resolveAppPath(source.href, basePath, htmlMetadata.baseHref)
   if (path) {
     addAssetEntry(
       entries,
       seenAssets,
-      findRouteAssetDescriptor(`/${path}`, appFileManager.siteManifest)
+      findRouteAssetDescriptor(`/${path}`, manifest)
     )
   }
   addUrlEntry(entries, seenUrls, resolveExternalImageUrl(source.href, htmlMetadata.baseHref))
 }
 
-async function addWebManifestIcons (entries, seenAssets, seenUrls, appFileManager, source, htmlMetadata, basePath, signal) {
+async function addWebManifestIcons (entries, seenAssets, seenUrls, appFileManager, manifest, source, htmlMetadata, basePath, signal, resolutionState) {
   const manifestPath = resolveAppPath(source.href, basePath, htmlMetadata.baseHref)
-  const manifestAsset = manifestPath && findRouteAssetDescriptor(`/${manifestPath}`, appFileManager.siteManifest)
+  const manifestAsset = manifestPath && findRouteAssetDescriptor(`/${manifestPath}`, manifest)
   if (!manifestAsset) return
 
   try {
     const manifestContent = await assetToText(appFileManager, null, manifestAsset, signal)
+    if (manifestContent === null) {
+      resolutionState.complete = false
+      return
+    }
     for (const icon of extractWebManifestIcons(manifestContent)) {
       const iconPath = resolveAppPath(icon.href, manifestAsset.filename || manifestPath)
       if (iconPath) {
         addAssetEntry(
           entries,
           seenAssets,
-          findRouteAssetDescriptor(`/${iconPath}`, appFileManager.siteManifest)
+          findRouteAssetDescriptor(`/${iconPath}`, manifest)
         )
       }
       addUrlEntry(entries, seenUrls, resolveExternalImageUrl(icon.href))
@@ -211,29 +282,41 @@ async function addWebManifestIcons (entries, seenAssets, seenUrls, appFileManage
   } catch (error) {
     if (signal?.aborted) throw error
     if (!await connectivityRetry.confirmOnline({ force: true })) throw error
+    resolutionState.complete = false
     console.log('Failed to read web app manifest icons:', error)
   }
 }
 
-async function fetchRootHtmlMetadata (appFileManager, signal) {
-  const indexAsset = findRouteAssetDescriptor('/', appFileManager.siteManifest)
+async function fetchRootHtmlMetadata (appFileManager, signal, manifest = appFileManager.siteManifest, resolutionState) {
+  const indexAsset = findRouteAssetDescriptor('/', manifest)
   if (!indexAsset) return { metadata: extractHtmlMetadata(''), basePath: 'index.html' }
   const htmlContent = await assetToText(appFileManager, '/', indexAsset, signal)
+  if (htmlContent === null && resolutionState) resolutionState.complete = false
   return {
     metadata: extractHtmlMetadata(htmlContent || ''),
     basePath: indexAsset.filename || 'index.html'
   }
 }
 
-async function discoverHtmlIconEntries (appFileManager, signal) {
-  const manifestKey = appFileManager.siteManifest?.id || appFileManager.siteManifest?.created_at || appFileManager.siteManifest
-  const cached = iconDiscoveryByManager.get(appFileManager)
-  if (cached?.manifestKey === manifestKey) return cached.entries
+async function discoverHtmlIconEntries (appFileManager, signal, manifest = appFileManager.siteManifest) {
+  const manifestKey = getManifestSelectionId(manifest)
+  let byManifest = iconDiscoveryByManager.get(appFileManager)
+  if (!byManifest) {
+    byManifest = new Map()
+    iconDiscoveryByManager.set(appFileManager, byManifest)
+  }
+  if (byManifest.has(manifestKey)) return byManifest.get(manifestKey)
 
   const entries = []
   const seenAssets = new Set()
   const seenUrls = new Set()
-  const { metadata: htmlMetadata, basePath } = await fetchRootHtmlMetadata(appFileManager, signal)
+  const resolutionState = { complete: true }
+  const { metadata: htmlMetadata, basePath } = await fetchRootHtmlMetadata(
+    appFileManager,
+    signal,
+    manifest,
+    resolutionState
+  )
   const browserSources = htmlMetadata.iconSources.filter(source =>
     ['icon', 'apple-touch-icon', 'mask-icon'].includes(source.kind)
   )
@@ -243,32 +326,63 @@ async function discoverHtmlIconEntries (appFileManager, signal) {
   )
 
   for (const source of browserSources) {
-    addHtmlImageSource(entries, seenAssets, seenUrls, appFileManager, source, htmlMetadata, basePath)
+    addHtmlImageSource(entries, seenAssets, seenUrls, manifest, source, htmlMetadata, basePath)
   }
   for (const source of manifestSources) {
-    await addWebManifestIcons(entries, seenAssets, seenUrls, appFileManager, source, htmlMetadata, basePath, signal)
+    await addWebManifestIcons(
+      entries,
+      seenAssets,
+      seenUrls,
+      appFileManager,
+      manifest,
+      source,
+      htmlMetadata,
+      basePath,
+      signal,
+      resolutionState
+    )
   }
   for (const source of socialSources) {
-    addHtmlImageSource(entries, seenAssets, seenUrls, appFileManager, source, htmlMetadata, basePath)
+    addHtmlImageSource(entries, seenAssets, seenUrls, manifest, source, htmlMetadata, basePath)
   }
 
-  iconDiscoveryByManager.set(appFileManager, { manifestKey, entries })
-  return entries
+  const discovery = { entries, complete: resolutionState.complete }
+  // An incomplete discovery may have skipped a temporarily unavailable HTML
+  // or web-manifest asset, so only definitive results are reusable.
+  if (discovery.complete) byManifest.set(manifestKey, discovery)
+  return discovery
 }
 
-async function resolveNextEntry (appFileManager, entries, rejectedRoots, rejectedUrls, cachedIcon, signal) {
+async function resolveNextEntry (
+  appFileManager,
+  entries,
+  rejectedRoots,
+  rejectedUrls,
+  cachedIcon,
+  signal,
+  { cacheCandidate = true, resolutionState } = {}
+) {
+  const cachedCandidates = normalizeAppIconCandidates(cachedIcon)
   for (const entry of entries) {
     if (entry.url) {
       if (rejectedUrls.has(entry.url)) continue
-      cacheIconCandidate(appFileManager, { fx: null, url: entry.url }, cachedIcon)
+      if (cacheCandidate) cacheIconCandidate(appFileManager, { fx: null, url: entry.url }, cachedIcon)
       return { fx: null, url: entry.url }
     }
     if (rejectedRoots.has(entry.asset.root)) continue
+    const cached = cachedCandidates.find(candidate =>
+      candidate.fx === entry.asset.root && !rejectedUrls.has(candidate.url)
+    )
+    if (cached) return cached
     try {
       const url = await assetToDataUrl(appFileManager, entry.asset, signal)
-      if (!url || rejectedUrls.has(url)) continue
+      if (!url) {
+        if (resolutionState) resolutionState.complete = false
+        continue
+      }
+      if (rejectedUrls.has(url)) continue
       const icon = { fx: entry.asset.root, url }
-      cacheIconCandidate(appFileManager, icon, cachedIcon)
+      if (cacheCandidate) cacheIconCandidate(appFileManager, icon, cachedIcon)
       return icon
     } catch (error) {
       if (signal?.aborted) throw error
@@ -276,6 +390,7 @@ async function resolveNextEntry (appFileManager, entries, rejectedRoots, rejecte
         error.code = 'OFFLINE'
         throw error
       }
+      if (resolutionState) resolutionState.complete = false
       console.log(`Failed to resolve icon asset ${entry.asset.root}:`, error)
     }
   }

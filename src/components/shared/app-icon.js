@@ -7,7 +7,9 @@ import {
   getAppIconLayerState,
   getAppIconMonogram,
   isDataAppIconUrl,
+  markAppIconSelectionCurrent,
   normalizeAppIconCandidates,
+  promoteAppIconCandidate,
   reconcileAppIconCandidates,
   shouldShowAppIconShimmer
 } from '#helpers/app-icon.js'
@@ -31,14 +33,29 @@ function imageMatchesCandidate (image, candidate) {
   }
 }
 
+function getManifestIdentity (manifest) {
+  if (typeof manifest?.id === 'string' && manifest.id) return manifest.id
+  const dTag = manifest?.tags?.find(tag => tag[0] === 'd')?.[1] || ''
+  return [manifest?.kind, manifest?.pubkey, dTag, manifest?.created_at]
+    .map(value => String(value ?? ''))
+    .join(':')
+}
+
 f('app-icon', ({ h, props }) => {
   const storage = useWebStorage(localStorage)
   // Native objects with internal slots must stay outside useStore's proxies.
   const runtime = useMemo(() => ({
     currentAppId: null,
+    appFileManager: null,
     imageElement: null,
     retryRelease: null,
     rejectedByUrl: new Map(),
+    reconciledManifestIds: new Set(),
+    isReconcilingPreferred: false,
+    upgradeAttempted: false,
+    upgradeCandidateUrl: null,
+    upgradeManifestId: null,
+    persistUpgrade: false,
     abortController: new AbortController()
   }))
   const store = useStore(() => ({
@@ -51,6 +68,8 @@ f('app-icon', ({ h, props }) => {
         ?.trim() || ''
     },
     style$ () { return props.style$?.() ?? props.style ?? '' },
+    preferredManifest$ () { return props.preferredManifest$?.() ?? null },
+    preferredManifestPending$ () { return props.preferredManifestPending$?.() === true },
     cachedIcon$: null,
     iconCandidates$: [],
     iconIndex$: 0,
@@ -66,8 +85,15 @@ f('app-icon', ({ h, props }) => {
       runtime.abortController.abort()
       runtime.abortController = new AbortController()
       runtime.currentAppId = appId
+      runtime.appFileManager = null
       runtime.imageElement = null
       runtime.rejectedByUrl = new Map()
+      runtime.reconciledManifestIds = new Set()
+      runtime.isReconcilingPreferred = false
+      runtime.upgradeAttempted = false
+      runtime.upgradeCandidateUrl = null
+      runtime.upgradeManifestId = null
+      runtime.persistUpgrade = false
       this.isLoading$(false)
       this.isResolutionPending$(true)
       this.displayedIcon$(null)
@@ -99,6 +125,97 @@ f('app-icon', ({ h, props }) => {
       if (!icon || !imageMatchesCandidate(event.currentTarget, icon)) return
       this.displayedIcon$(icon)
       this.finishRetry()
+      if (icon.url !== runtime.upgradeCandidateUrl) return
+
+      runtime.upgradeCandidateUrl = null
+      if (!runtime.persistUpgrade) return
+      const promoted = promoteAppIconCandidate(
+        this.cachedIcon$() || {
+          ...icon,
+          candidates: this.iconCandidates$()
+        },
+        icon,
+        runtime.upgradeManifestId
+      )
+      this.cachedIcon$(promoted)
+      runtime.appFileManager?.cacheMetadata(this.appId$(), { icon: promoted })
+    },
+    async reconcilePreferredIcon () {
+      if (
+        !this.displayedIcon$() ||
+        this.preferredManifestPending$() ||
+        runtime.isReconcilingPreferred ||
+        runtime.upgradeAttempted ||
+        runtime.abortController.signal.aborted
+      ) return
+
+      const appId = this.appId$()
+      const signal = runtime.abortController.signal
+      const preferredManifest = this.preferredManifest$()
+      const persistSelection = !preferredManifest
+      runtime.isReconcilingPreferred = true
+      try {
+        const appFileManager = runtime.appFileManager || await AppFileManager.create(appId, undefined, { signal })
+        if (signal.aborted || this.appId$() !== appId) return
+        runtime.appFileManager = appFileManager
+        const manifest = preferredManifest || appFileManager.siteManifest
+        const requestedManifestId = getManifestIdentity(manifest)
+        if (runtime.reconciledManifestIds.has(requestedManifestId)) return
+        if (persistSelection && this.cachedIcon$()?.selectionManifestId === requestedManifestId) {
+          runtime.reconciledManifestIds.add(requestedManifestId)
+          return
+        }
+
+        const { icon, manifestId, selectionComplete } = await connectivityRetry.run(
+          () => appFileManager.getPreferredIcon({
+            manifest,
+            cachedIcon: this.cachedIcon$(),
+            signal
+          }),
+          { signal, timeoutMs: ICON_LOAD_TIMEOUT_MS }
+        )
+        if (signal.aborted || this.appId$() !== appId) return
+        runtime.reconciledManifestIds.add(manifestId)
+
+        const displayed = this.displayedIcon$()
+        if (!icon) return
+        const isAlreadyDisplayed = icon.url === displayed?.url || (
+          icon.fx && displayed?.fx === icon.fx
+        )
+        if (isAlreadyDisplayed) {
+          if (persistSelection && selectionComplete && displayed?.url) {
+            const current = markAppIconSelectionCurrent(
+              this.cachedIcon$() || {
+                ...displayed,
+                candidates: this.iconCandidates$()
+              },
+              manifestId
+            )
+            this.cachedIcon$(current)
+            appFileManager.cacheMetadata(appId, { icon: current })
+          }
+          return
+        }
+
+        runtime.upgradeAttempted = true
+        runtime.upgradeCandidateUrl = icon.url
+        runtime.upgradeManifestId = selectionComplete ? manifestId : null
+        runtime.persistUpgrade = persistSelection
+        const candidates = this.iconCandidates$().slice()
+        let index = candidates.findIndex(candidate => candidate.url === icon.url)
+        if (index < 0) {
+          candidates.push(icon)
+          index = candidates.length - 1
+        }
+        this.iconCandidates$(candidates)
+        this.iconIndex$(index)
+      } catch (error) {
+        if (error?.name !== 'AbortError' && !signal.aborted && this.appId$() === appId) {
+          console.error(`[app-icon ${appId}] Failed to reconcile the preferred icon:`, error)
+        }
+      } finally {
+        runtime.isReconcilingPreferred = false
+      }
     },
     async waitAndRetry () {
       try {
@@ -133,7 +250,8 @@ f('app-icon', ({ h, props }) => {
       this.isLoading$(true)
       try {
         const icon = await connectivityRetry.run(async () => {
-          const appFiles = await AppFileManager.create(appId, undefined, { signal })
+          const appFiles = runtime.appFileManager || await AppFileManager.create(appId, undefined, { signal })
+          runtime.appFileManager = appFiles
           return appFiles.getNextIcon({ rejected: this.rejectedCandidates(), signal })
         }, { signal, timeoutMs: ICON_LOAD_TIMEOUT_MS })
         if (signal.aborted || this.appId$() !== appId) return
@@ -166,6 +284,15 @@ f('app-icon', ({ h, props }) => {
       const candidate = this.currentIcon$()
       if (!candidate) return
       if (!imageMatchesCandidate(event.currentTarget, candidate)) return
+
+      if (candidate.url === runtime.upgradeCandidateUrl && this.displayedIcon$()) {
+        runtime.rejectedByUrl.set(candidate.url, candidate)
+        runtime.upgradeCandidateUrl = null
+        // Keep the confirmed image layer visible. The preferred candidate gets
+        // one attempt and a failure never restarts the shimmer or fallback chain.
+        this.iconIndex$(this.iconCandidates$().length)
+        return
+      }
 
       if (!isDataAppIconUrl(candidate.url)) {
         let online = false
@@ -200,6 +327,16 @@ f('app-icon', ({ h, props }) => {
     const [appId, candidatesKey] = track(() => [store.appId$(), store.candidatesKey$()])
     if (!appId || !candidatesKey || store.currentIcon$() || store.exhausted$()) return
     await store.loadNextIcon()
+  })
+
+  useTask(async ({ track }) => {
+    track(() => [
+      store.appId$(),
+      store.displayedIcon$(),
+      store.preferredManifest$(),
+      store.preferredManifestPending$()
+    ])
+    await store.reconcilePreferredIcon()
   })
 
   // A reused keyed node keeps its already-loaded <img> with the same src, so

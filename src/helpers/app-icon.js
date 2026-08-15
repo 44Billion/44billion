@@ -84,6 +84,33 @@ export function normalizeAppIconCandidates (icon) {
   })
 }
 
+// Makes a confirmed candidate the durable first choice for one manifest.
+export function promoteAppIconCandidate (icon, candidate, manifestId) {
+  if (!candidate || !isRenderableAppIconUrl(candidate.url)) return icon
+  const { selectionManifestId: _, ...cachedIcon } =
+    icon && typeof icon === 'object' ? icon : {}
+  const promoted = {
+    fx: typeof candidate.fx === 'string' ? candidate.fx : null,
+    url: candidate.url
+  }
+  const candidates = [
+    promoted,
+    ...normalizeAppIconCandidates(icon).filter(entry => entry.url !== promoted.url)
+  ]
+  return {
+    ...cachedIcon,
+    ...promoted,
+    candidates,
+    ...(typeof manifestId === 'string' && manifestId ? { selectionManifestId: manifestId } : {})
+  }
+}
+
+// Records that the cached choice was reconciled without changing its primary URL.
+export function markAppIconSelectionCurrent (icon, manifestId) {
+  if (!icon?.url || typeof manifestId !== 'string' || !manifestId) return icon
+  return { ...icon, selectionManifestId: manifestId }
+}
+
 // Keeps a confirmed image selected while refreshed candidates still represent it.
 export function reconcileAppIconCandidates (candidates, displayedIcon, rejectedUrls) {
   const index = candidates.findIndex(candidate => !rejectedUrls.has(candidate.url))

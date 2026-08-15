@@ -444,9 +444,10 @@ f('napp-updates', function () {
       ${allAppIds$().map(appId => this.h({ key: appId })`
         <f-to-signals
           props=${{
-            from: ['updateInfo', 'updateState'],
+            from: ['updateInfo', 'updateState', 'updatesPending'],
             updateInfo: availableUpdates$()[appId],
             updateState: updateStates$()[appId],
+            updatesPending: isSearching$() || isLoading$(),
             appId,
             publisherProfiles$,
             publisherProfilesPending$,
@@ -464,7 +465,15 @@ f('napp-updates', function () {
 
 f('napp-update-card', function () {
   const storage = useWebStorage(localStorage)
-  const { appId, publisherProfiles$, publisherProfilesPending$, updateInfo$, updateState$, onUpdate } = this.props
+  const {
+    appId,
+    publisherProfiles$,
+    publisherProfilesPending$,
+    updateInfo$,
+    updateState$,
+    updatesPending$,
+    onUpdate
+  } = this.props
 
   const appName$ = useComputed(() => {
     return storage[`session_appById_${appId}_name$`]()
@@ -503,8 +512,10 @@ f('napp-update-card', function () {
   })
 
   useTask(({ track }) => {
-    const updateInfo = track(() => updateInfo$())
+    const [updateInfo, updateState] = track(() => [updateInfo$(), updateState$()])
     if (!updateInfo?.event) {
+      const installedVersion = nextVersion$()
+      if (updateState?.status === 'done' && installedVersion) version$(installedVersion)
       nextVersion$(null)
       return
     }
@@ -716,7 +727,11 @@ f('napp-update-card', function () {
     `}</style>
     <div class='card-8d6gfgwh3wl'>
       <div class="icon-wrapper">
-        <app-icon props=${{ app$: () => ({ id: appId, name: appName$() }) }} />
+        <app-icon props=${{
+          app$: () => ({ id: appId, name: appName$() }),
+          preferredManifest$: () => updateInfo$()?.event ?? null,
+          preferredManifestPending$: () => updatesPending$() && !updateInfo$()?.event
+        }} />
       </div>
       <div class="info">
         <div class="name-row">

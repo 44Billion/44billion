@@ -28,6 +28,7 @@ mock.module('#services/connectivity-retry.js', {
 })
 
 let getNextIcon
+let getPreferredIcon
 
 before(async () => {
   class TestFileReader {
@@ -50,11 +51,12 @@ before(async () => {
     }
   }
   globalThis.FileReader = TestFileReader
-  ;({ getNextIcon } = await import('#services/app-file-manager/get-metadata.js'))
+  ;({ getNextIcon, getPreferredIcon } = await import('#services/app-file-manager/get-metadata.js'))
 })
 
 function createManager () {
   const reads = []
+  const writes = []
   const manager = {
     appId: 'app',
     siteManifest: {
@@ -82,9 +84,9 @@ function createManager () {
     getCachedMetadata () {
       return null
     },
-    cacheMetadata () {}
+    cacheMetadata (...args) { writes.push(args) }
   }
-  return { manager, reads }
+  return { manager, reads, writes }
 }
 
 describe('lazy AppFileManager icon metadata', () => {
@@ -122,5 +124,93 @@ describe('lazy AppFileManager icon metadata', () => {
     const cached = { fx: A, url: 'data:image/png;base64,A' }
     assert.deepEqual(await getNextIcon(manager, { cachedIcon: cached }), cached)
     assert.deepEqual(reads, [])
+  })
+
+  it('reconciles a legacy cached icon against automatic manifest quality metadata', async () => {
+    const { manager, reads, writes } = createManager()
+    manager.siteManifest = {
+      ...manager.siteManifest,
+      id: 'automatic-manifest',
+      tags: [
+        ['service', 'irfs'],
+        ['r', A, 'mark icon', 'path favicon-16x16.png', 'm image/png'],
+        ['r', B, 'path apple-touch-icon.png', 'm image/png'],
+        ['auto', 'icon']
+      ]
+    }
+    const cachedIcon = { fx: A, url: 'data:image/png;base64,OLD' }
+
+    const first = getPreferredIcon(manager, { cachedIcon })
+    const second = getPreferredIcon(manager, { cachedIcon })
+    const [firstResult, secondResult] = await Promise.all([first, second])
+
+    assert.equal(first, second)
+    assert.equal(firstResult.icon.fx, B)
+    assert.equal(firstResult.manifestId, 'automatic-manifest')
+    assert.equal(firstResult.selectionComplete, true)
+    assert.deepEqual(secondResult, firstResult)
+    assert.deepEqual(reads, [B])
+    assert.deepEqual(writes, [])
+  })
+
+  it('can prefer an update manifest without replacing the installed manifest', async () => {
+    const { manager, reads, writes } = createManager()
+    const installedManifest = manager.siteManifest
+    const updateManifest = {
+      id: 'remote-update',
+      tags: [
+        ['service', 'irfs'],
+        ['r', C, 'mark icon', 'm image/png']
+      ]
+    }
+
+    const result = await getPreferredIcon(manager, { manifest: updateManifest })
+
+    assert.equal(result.icon.fx, C)
+    assert.equal(result.manifestId, 'remote-update')
+    assert.equal(result.selectionComplete, true)
+    assert.equal(manager.siteManifest, installedManifest)
+    assert.deepEqual(reads, [C])
+    assert.deepEqual(writes, [])
+  })
+
+  it('allows a later retry when no preferred candidate could be resolved', async () => {
+    const { manager } = createManager()
+    manager.siteManifest = { id: 'no-icon', tags: [] }
+
+    const first = getPreferredIcon(manager)
+    assert.equal((await first).icon, null)
+
+    const second = getPreferredIcon(manager)
+    assert.notEqual(second, first)
+    assert.equal((await second).icon, null)
+  })
+
+  it('does not finalize selection when a better asset was temporarily unavailable', async () => {
+    const { manager, reads } = createManager()
+    const getFileCacheStatus = manager.getFileCacheStatus
+    manager.siteManifest = {
+      id: 'transient-failure',
+      tags: [
+        ['service', 'irfs'],
+        ['r', A, 'mark icon', 'm image/png'],
+        ['r', B, 'mark icon', 'm image/png']
+      ]
+    }
+    manager.getFileCacheStatus = async (pathname, asset) => {
+      if (asset.root === A) {
+        reads.push(asset.root)
+        throw new Error('Temporarily unavailable')
+      }
+      return getFileCacheStatus(pathname, asset)
+    }
+
+    const first = getPreferredIcon(manager)
+    const result = await first
+
+    assert.equal(result.icon.fx, B)
+    assert.equal(result.selectionComplete, false)
+    assert.deepEqual(reads, [A, B])
+    assert.notEqual(getPreferredIcon(manager), first)
   })
 })

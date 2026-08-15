@@ -14,7 +14,7 @@ import { countFileChunksFromDb, deleteFileChunksFromDb } from '#services/idb/bro
 import { saveSiteManifestToDb, deleteSiteManifestFromDb } from '#services/idb/browser/queries/site-manifest.js'
 import mime from 'mime'
 import { setWebStorageItem } from '#hooks/use-web-storage.js'
-import { getIcon, getNextIcon, getName, getDescription } from './get-metadata.js'
+import { getIcon, getNextIcon, getPreferredIcon, getName, getDescription } from './get-metadata.js'
 import { ASSET_BUDGET_BACKGROUND_DENIED } from '#services/app-asset-budget/index.js'
 import { registerManifestInstanceReplaceHandler } from './manifest-instance-cache.js'
 
@@ -29,6 +29,9 @@ export function cacheAppMetadata (appId, metadata) {
           value = null
           break
         }
+        const selectionManifestId = typeof value.selectionManifestId === 'string'
+          ? value.selectionManifestId
+          : null
         const candidates = Array.isArray(value.candidates)
           ? value.candidates.filter(candidate => candidate?.url).map(candidate => ({
             fx: candidate.fx || null,
@@ -39,6 +42,7 @@ export function cacheAppMetadata (appId, metadata) {
         // Presence of this array distinguishes fully discovered icon chains
         // from legacy single-icon cache entries.
         if (candidates.length) value.candidates = candidates
+        if (selectionManifestId) value.selectionManifestId = selectionManifestId
         break
       }
       case 'description': value = (value?.length ?? 0) > 255 ? `${value.slice(0, 252)}...` : value; break
@@ -166,6 +170,10 @@ export default class AppFileManager {
 
   async getNextIcon (options) {
     return getNextIcon(this, options)
+  }
+
+  async getPreferredIcon (options) {
+    return getPreferredIcon(this, options)
   }
 
   async getName (staleWhileRevalidate = false) {

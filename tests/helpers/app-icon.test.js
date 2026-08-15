@@ -5,7 +5,9 @@ import {
   getAppIconLayerState,
   getAppIconMonogram,
   isDataAppIconUrl,
+  markAppIconSelectionCurrent,
   normalizeAppIconCandidates,
+  promoteAppIconCandidate,
   reconcileAppIconCandidates,
   shouldShowAppIconShimmer
 } from '#helpers/app-icon.js'
@@ -71,6 +73,54 @@ describe('app icon candidates', () => {
       { fx: 'first', url: 'https://cdn.test/first.png' },
       { fx: null, url: 'https://cdn.test/second.png' }
     ])
+  })
+
+  it('promotes one healthy candidate and records its manifest selection', () => {
+    const cached = {
+      fx: 'old',
+      url: 'data:image/png;base64,OLD',
+      candidates: [{ fx: 'fallback', url: 'https://cdn.test/fallback' }]
+    }
+    assert.deepEqual(
+      promoteAppIconCandidate(
+        cached,
+        { fx: 'best', url: 'data:image/png;base64,BEST' },
+        'manifest-2'
+      ),
+      {
+        fx: 'best',
+        url: 'data:image/png;base64,BEST',
+        candidates: [
+          { fx: 'best', url: 'data:image/png;base64,BEST' },
+          { fx: 'old', url: 'data:image/png;base64,OLD' },
+          { fx: 'fallback', url: 'https://cdn.test/fallback' }
+        ],
+        selectionManifestId: 'manifest-2'
+      }
+    )
+  })
+
+  it('marks a legacy cache as reconciled without changing candidate order', () => {
+    const cached = { fx: 'same', url: 'data:image/png;base64,SAME' }
+    assert.deepEqual(markAppIconSelectionCurrent(cached, 'manifest-1'), {
+      ...cached,
+      selectionManifestId: 'manifest-1'
+    })
+  })
+
+  it('removes a stale manifest marker when promoting a provisional fallback', () => {
+    const promoted = promoteAppIconCandidate(
+      {
+        fx: 'old',
+        url: 'data:image/png;base64,OLD',
+        selectionManifestId: 'old-manifest'
+      },
+      { fx: 'fallback', url: 'data:image/png;base64,FALLBACK' },
+      null
+    )
+
+    assert.equal(promoted.url, 'data:image/png;base64,FALLBACK')
+    assert.equal('selectionManifestId' in promoted, false)
   })
 
   it('rejects malformed cached values', () => {
