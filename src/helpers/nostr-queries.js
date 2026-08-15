@@ -1,11 +1,20 @@
-import { nappRelays, relayPool as nostrRelays, seedRelays } from 'libp2r2p/relay'
+import {
+  freeRelays,
+  getLatestEventsByPubkey,
+  getRelaysByPubkey as getUserRelays,
+  nappRelays,
+  relayPool as nostrRelays
+} from 'libp2r2p/relay'
 import { shouldIncludeNappRelays } from '#helpers/app.js'
-import { isValidPublicRelayUrl, normalizeRelayUrl } from 'libp2r2p/url'
+
+export { getUserRelays }
+
+const PROFILE_FALLBACK_RELAY_LIMIT = 3
 
 export async function getSiteManifest (appIdObj, userRelays, { signal } = {}) {
   if (!appIdObj.pubkey || !appIdObj.kind || !appIdObj.dTag) throw new Error('Missing args')
 
-  userRelays ??= (await getUserRelays(appIdObj.pubkey))[appIdObj.pubkey]
+  userRelays ??= (await getUserRelays([appIdObj.pubkey]))[appIdObj.pubkey]
   // if (userRelays.write.length === 0) return
   const relays = [...new Set([...userRelays.write, ...nappRelays])]
 
@@ -135,50 +144,21 @@ export async function getEventsByStrategy (filter, st /*, timeoutMs = 3000 */) {
   }
 }
 
-export async function getUserRelays (authors) {
-  if (!Array.isArray(authors)) authors = [authors]
-  const relayListsResponse = await nostrRelays.getEvents({ authors, kinds: [10002], limit: authors.length }, seedRelays)
-
-  if (!relayListsResponse.success) {
-    throw relayListsResponse.errors?.[0]?.reason ||
-      new Error('Failed to fetch relay lists')
-  }
-  const relayLists = relayListsResponse.result ?? []
-  const seenAuthorsObj = {}
-  const keyAllowList = { read: true, write: true }
-  const defaultRelayTypes = Object.keys(keyAllowList)
-  let keys
-
-  const ret = authors.reduce((r, v) => ({ ...r, [v]: { read: new Set(), write: new Set() } }), {})
-  const result = relayLists
-    // get most recent
-    .sort((a, b) => b.created_at - a.created_at)
-    // for each author
-    .filter(v => {
-      if (!seenAuthorsObj[v.pubkey] && authors.includes(v.pubkey)) seenAuthorsObj[v.pubkey] = true
-      return seenAuthorsObj[v.pubkey]
-    })
-    .reduce((r, v) => {
-      ;(v.tags ?? []).forEach((tag) => {
-        if (tag[0] !== 'r' || typeof tag[1] !== 'string') return
-        let url
-        try { url = normalizeRelayUrl(tag[1]) } catch { return }
-
-        if (isValidPublicRelayUrl(url)) {
-          keys = [tag[2]].filter(v2 => keyAllowList[v2])
-          if (keys.length === 0) keys = defaultRelayTypes
-          keys.forEach(k => r[v.pubkey][k].add(url))
-        }
-      })
-      return r
-    }, ret)
-
-  // sets to arrays
-  for (const pubkey in result) {
-    defaultRelayTypes.forEach(k => {
-      result[pubkey][k] = [...result[pubkey][k]]
-    })
-  }
-
-  return result
+/**
+ * Fetches publisher profiles in two batched stages.
+ * The second stage only queries unresolved authors on remaining write relays
+ * and a small, bounded set of public fallback relays.
+ */
+export async function getProfileEventsByPubkey (pubkeys, {
+  _getUserRelays = getUserRelays,
+  _nostrRelays = nostrRelays,
+  _freeRelays = freeRelays
+} = {}) {
+  const { events } = await getLatestEventsByPubkey(pubkeys, {
+    kinds: [0],
+    fallbackRelays: _freeRelays.slice(0, PROFILE_FALLBACK_RELAY_LIMIT),
+    _getRelaysByPubkey: _getUserRelays,
+    _getEvents: (filter, relays) => _nostrRelays.getEvents(filter, relays)
+  })
+  return events
 }

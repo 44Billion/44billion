@@ -13,7 +13,7 @@ import useWebStorage from '#hooks/use-web-storage.js'
 import AppFileManager from '#services/app-file-manager/index.js'
 import AppUpdater from '#services/app-updater/index.js'
 import { formatAssetBudgetBytes } from '#services/app-asset-budget/index.js'
-import { getEventsByStrategy } from '#helpers/nostr-queries.js'
+import { getProfileEventsByPubkey } from '#helpers/nostr-queries.js'
 import { base16ToBase62 } from 'libp2r2p/base62'
 import { useConfirmationDialogStore } from '#zones/confirmation-dialog/index.js'
 import { getAssetBudgetConfirmation } from '#i18n/asset-budget.js'
@@ -142,10 +142,7 @@ f('napp-updates', function () {
       })
 
       if (pubkeys.size > 0) {
-        const events = await getEventsByStrategy(
-          { kinds: [0], authors: Array.from(pubkeys) },
-          { code: 'WRITE_RELAYS' }
-        )
+        const events = await getProfileEventsByPubkey(Array.from(pubkeys))
         const profiles = {}
         events.forEach(e => {
           try { profiles[e.pubkey] = JSON.parse(e.content) } catch {}
