@@ -4,7 +4,10 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import NMMR from 'nmmr'
 import { decode } from 'libp2r2p/base93'
 import { bytesToBase16 } from 'libp2r2p/base16'
-import BlossomFileDownloader, { isMimeTypeAccepted } from '#services/blossom-file-downloader/index.js'
+import BlossomFileDownloader, {
+  clearBlossomServersCache,
+  isMimeTypeAccepted
+} from '#services/blossom-file-downloader/index.js'
 import { relayPool as nostrRelays } from 'libp2r2p/relay'
 
 const PUBKEY = 'a'.repeat(64)
@@ -60,7 +63,10 @@ async function runDownload (bytes, {
   return { getCount, reports, requestedUrls }
 }
 
-afterEach(() => mock.restoreAll())
+afterEach(() => {
+  mock.restoreAll()
+  clearBlossomServersCache()
+})
 
 describe('BlossomFileDownloader pseudo chunks', () => {
   it('downloads from signed manifest hints when no kind 10063 event is found', async () => {
@@ -116,6 +122,113 @@ describe('BlossomFileDownloader pseudo chunks', () => {
       size: 3
     })
     assert.match(reports.find(report => report.error).error.message, /hash|length/)
+  })
+
+  it('retries once when a fetch fails with a CORS/network TypeError', async () => {
+    const bytes = Uint8Array.of(1, 2, 3)
+    const fileHash = hash(bytes)
+    let getAttempts = 0
+    const previousFetch = globalThis.fetch
+    mock.method(nostrRelays, 'getEvents', async () => ({ result: [] }))
+    globalThis.fetch = mock.fn(async (url, options = {}) => {
+      if (options.method === 'HEAD') {
+        return new Response(null, {
+          status: 200,
+          headers: { 'Content-Length': String(bytes.length) }
+        })
+      }
+      getAttempts++
+      if (getAttempts === 1) throw new TypeError('Failed to fetch')
+      return new Response(bytes, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': String(bytes.length)
+        }
+      })
+    })
+    const reports = []
+    mock.method(console, 'warn', () => {})
+    try {
+      await new BlossomFileDownloader(
+        fileHash,
+        PUBKEY,
+        ['wss://relay.test'],
+        report => reports.push(report),
+        { servers: ['https://blossom.test'] }
+      ).run()
+    } finally {
+      globalThis.fetch = previousFetch
+    }
+    assert.equal(getAttempts, 2)
+    assert.equal(reports.at(-1).progress, 100)
+  })
+
+  it('reports the download failure after retrying CORS-blocked servers', async () => {
+    const bytes = Uint8Array.of(1, 2, 3)
+    const fileHash = hash(bytes)
+    const previousFetch = globalThis.fetch
+    mock.method(nostrRelays, 'getEvents', async () => ({ result: [] }))
+    globalThis.fetch = mock.fn(async (url, options = {}) => {
+      if (options.method === 'HEAD') return new Response(null, { status: 200 })
+      throw new TypeError('Failed to fetch')
+    })
+    const reports = []
+    const warn = mock.method(console, 'warn', () => {})
+    try {
+      await new BlossomFileDownloader(
+        fileHash,
+        PUBKEY,
+        ['wss://relay.test'],
+        report => reports.push(report),
+        { servers: ['https://blossom.test', 'https://blossom2.test'] }
+      ).run()
+    } finally {
+      globalThis.fetch = previousFetch
+    }
+    assert.equal(reports.some(report => report.error), true)
+    assert.match(reports.find(report => report.error).error.message, /not found/i)
+    // One diagnostic warn per server (only on the first failed attempt).
+    assert.equal(warn.mock.callCount(), 2)
+  })
+
+  it('skips servers that answer HEAD with an error when trying GETs', async () => {
+    const bytes = Uint8Array.of(1, 2, 3)
+    const fileHash = hash(bytes)
+    const previousFetch = globalThis.fetch
+    mock.method(nostrRelays, 'getEvents', async () => ({ result: [] }))
+    const getUrls = []
+    globalThis.fetch = mock.fn(async (url, options = {}) => {
+      if (options.method === 'HEAD') {
+        return new Response(null, {
+          status: url.includes('down.test') ? 404 : 200,
+          headers: { 'Content-Length': String(bytes.length) }
+        })
+      }
+      getUrls.push(url)
+      if (url.includes('down.test')) throw new Error('must not be fetched')
+      return new Response(bytes, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': String(bytes.length)
+        }
+      })
+    })
+    const reports = []
+    try {
+      await new BlossomFileDownloader(
+        fileHash,
+        PUBKEY,
+        ['wss://relay.test'],
+        report => reports.push(report),
+        { servers: ['https://ok.test', 'https://down.test'] }
+      ).run()
+    } finally {
+      globalThis.fetch = previousFetch
+    }
+    assert.equal(reports.at(-1).progress, 100)
+    assert.ok(getUrls.every(url => url.startsWith('https://ok.test/')))
   })
 
   it('treats a wrong manifest size and same-range Content-Length as hints', async () => {

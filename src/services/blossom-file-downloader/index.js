@@ -9,6 +9,80 @@ import { APP_FILE_CHUNK_BYTES } from '#constants/app-file.js'
 import { warnAssetSizeMismatch } from '#helpers/asset-size.js'
 
 const HEAD_TIMEOUT_AFTER_FIRST_MS = 500
+const FETCH_RETRY_DELAY_MS = 750
+const HEAD_TIMEOUT_MS = 4000
+const FETCH_TIMEOUT_MS = 8000
+
+// Browser fetch failures (CORS blocks, DNS, dropped connections) surface as
+// TypeError with a "Failed to fetch" message; AbortError keeps its own name.
+// Headers from CDN redirect targets are edge/cache-dependent, so a TypeError
+// is worth one retry before the server is skipped.
+function isFetchTypeError (error) {
+  return error?.name === 'TypeError' && typeof error?.message === 'string' && error.message.length > 0
+}
+
+// Resolves the Blossom servers for a publisher: manifest `server` hints first,
+// then the author's newest kind 10063 event (queried on the given relays).
+// Shared by the downloader and the icon candidate resolution.
+export async function getBlossomServersForPubkey ({ pubkey, serverHints, relays, signal }) {
+  let events = []
+  try {
+    ({ result: events = [] } = await nostrRelays.getEvents(
+      { kinds: [10063], authors: [pubkey], limit: 1 },
+      relays,
+      { signal }
+    ))
+  } catch (error) {
+    if (!serverHints.length) throw error
+  }
+
+  events.sort((a, b) => b.created_at - a.created_at)
+  const best = events[0]
+  const publishedServers = (best?.tags ?? [])
+    .filter(tag => Array.isArray(tag) && tag[0] === 'server' && isValidPublicBlossomServerUrl(tag[1]))
+    .map(tag => normalizeBlossomServerUrl(tag[1]))
+  return [...new Set([...serverHints, ...publishedServers])]
+}
+
+const blossomServersByPubkey = new Map()
+const blossomServerRequestsByPubkey = new Map()
+const BLOSSOM_SERVERS_CACHE_MS = 5 * 60 * 1000
+
+// Returns the cached server list for a pubkey without triggering a query.
+export function peekBlossomServers (pubkey) {
+  const cached = blossomServersByPubkey.get(pubkey)
+  return cached && Date.now() - cached.at < BLOSSOM_SERVERS_CACHE_MS ? cached.servers : null
+}
+
+// Cached variant shared by the downloader and the icon candidate resolution:
+// the icon fallback reuses the servers the downloader already resolved instead
+// of querying kind 10063 again after a failed fetch.
+export async function getBlossomServers ({ pubkey, serverHints, relays, signal }) {
+  const cached = peekBlossomServers(pubkey)
+  if (cached) return cached
+  if (blossomServerRequestsByPubkey.has(pubkey)) {
+    return blossomServerRequestsByPubkey.get(pubkey)
+  }
+
+  const request = (async () => {
+    const servers = await getBlossomServersForPubkey({ pubkey, serverHints, relays, signal })
+    blossomServersByPubkey.set(pubkey, { at: Date.now(), servers })
+    return servers
+  })()
+  blossomServerRequestsByPubkey.set(pubkey, request)
+  request.finally(() => {
+    if (blossomServerRequestsByPubkey.get(pubkey) === request) {
+      blossomServerRequestsByPubkey.delete(pubkey)
+    }
+  })
+  return request
+}
+
+// Test helper: clears the per-pubkey server cache between test cases.
+export function clearBlossomServersCache () {
+  blossomServersByPubkey.clear()
+  blossomServerRequestsByPubkey.clear()
+}
 
 function parseContentLength (value) {
   const text = typeof value === 'string' ? value.trim() : ''
@@ -85,6 +159,23 @@ export default class BlossomFileDownloader {
     }
   }
 
+  // Fetches with a hard per-request timeout so a dead server (e.g. a blossom
+  // host that accepts TCP but never answers) cannot hang the whole download —
+  // or the caller's icon-resolution budget. The caller's own signal still
+  // aborts immediately; a timeout abort is reported as a server failure.
+  async #fetchWithTimeout (url, options, timeoutMs) {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    const onAbort = () => controller.abort()
+    this.signal?.addEventListener('abort', onAbort, { once: true })
+    try {
+      return await fetch(url, { ...options, signal: controller.signal })
+    } finally {
+      clearTimeout(timer)
+      this.signal?.removeEventListener('abort', onAbort)
+    }
+  }
+
   async #download () {
     const blossomServers = await this.#getBlossomServers()
     if (blossomServers.length === 0) {
@@ -94,14 +185,23 @@ export default class BlossomFileDownloader {
     // Query all servers for HEAD simultaneously.
     // Start a 500ms timeout after the first server responds with a valid Content-Length.
     // Pick the most common Content-Length (majority vote) or the first valid one.
-    const { chosenServer, headByteLengths } = await this.#queryHeadFromAllServers(blossomServers)
-    const serversToTry = [chosenServer, ...blossomServers.filter(s => s !== chosenServer)]
+    const { chosenServer, headByteLengths, unresponsiveServers } = await this.#queryHeadFromAllServers(blossomServers)
+    const serversToTry = [
+      chosenServer,
+      ...blossomServers.filter(s => s !== chosenServer && !unresponsiveServers.has(s))
+    ]
 
     for (const serverUrl of serversToTry) {
       if (this.signal?.aborted) throw new Error('Aborted')
-      const response = await this.#fetchFromServer(serverUrl)
-      if (!response) continue
-      await this.#downloadResponse(serverUrl, response, headByteLengths.get(serverUrl) ?? null)
+      let attempt = await this.#fetchFromServer(serverUrl)
+      if (!attempt.response && isFetchTypeError(attempt.error) && !this.signal?.aborted) {
+        console.warn(`[blossom] fetch failed for ${serverUrl}/${this.fileHash}; retrying once`, attempt.error)
+        await new Promise(resolve => setTimeout(resolve, FETCH_RETRY_DELAY_MS))
+        if (this.signal?.aborted) throw new Error('Aborted')
+        attempt = await this.#fetchFromServer(serverUrl)
+      }
+      if (!attempt.response) continue
+      await this.#downloadResponse(serverUrl, attempt.response, headByteLengths.get(serverUrl) ?? null)
       return
     }
 
@@ -110,16 +210,21 @@ export default class BlossomFileDownloader {
 
   async #fetchFromServer (serverUrl) {
     try {
-      const response = await fetch(`${serverUrl}/${this.fileHash}`, {
+      const response = await this.#fetchWithTimeout(`${serverUrl}/${this.fileHash}`, {
         method: 'GET',
         signal: this.signal
-      })
-      if (!response.ok || !response.body) return null
-      if (!isMimeTypeAccepted(this.mimeType, response.headers.get('Content-Type'))) return null
-      return response
+      }, FETCH_TIMEOUT_MS)
+      if (!response.ok || !response.body) return { response: null }
+      if (!isMimeTypeAccepted(this.mimeType, response.headers.get('Content-Type'))) return { response: null }
+      return { response }
     } catch (error) {
-      if (error.name === 'AbortError') throw error
-      return null
+      if (error.name === 'AbortError') {
+        if (this.signal?.aborted) throw error
+        const timeoutError = new Error(`Timed out fetching ${serverUrl}/${this.fileHash}`)
+        timeoutError.name = 'TimeoutError'
+        return { response: null, error: timeoutError }
+      }
+      return { response: null, error }
     }
   }
 
@@ -166,8 +271,8 @@ export default class BlossomFileDownloader {
     }
 
     const retry = await this.#fetchFromServer(serverUrl)
-    if (!retry) throw new Error('Failed to replay Blossom download with observed chunk total')
-    const second = await this.#consumeBody(retry.body, first.totalChunks)
+    if (!retry.response) throw new Error('Failed to replay Blossom download with observed chunk total')
+    const second = await this.#consumeBody(retry.response.body, first.totalChunks)
     if (second.hash !== this.fileHash || second.totalChunks !== first.totalChunks || second.byteLength !== first.byteLength) {
       throw new Error('Blossom content changed while replaying download')
     }
@@ -191,6 +296,7 @@ export default class BlossomFileDownloader {
    */
   async #queryHeadFromAllServers (blossomServers) {
     const results = [] // { serverUrl, byteLength }
+    const unresponsiveServers = new Set()
     let firstResolved = false
     let timeoutResolve = null
     const timeoutPromise = new Promise(resolve => { timeoutResolve = resolve })
@@ -200,10 +306,10 @@ export default class BlossomFileDownloader {
 
       try {
         const url = `${serverUrl}/${this.fileHash}`
-        const headRes = await fetch(url, {
+        const headRes = await this.#fetchWithTimeout(url, {
           method: 'HEAD',
           signal: this.signal
-        })
+        }, HEAD_TIMEOUT_MS)
         if (headRes.ok) {
           results.push({
             serverUrl,
@@ -214,12 +320,19 @@ export default class BlossomFileDownloader {
             // Give the remaining servers a short chance to provide metadata.
             setTimeout(timeoutResolve, HEAD_TIMEOUT_AFTER_FIRST_MS)
           }
+        } else {
+          // A server that answers HEAD with an error will not serve the file
+          // either; skip it in the GET phase to avoid wasting the budget.
+          unresponsiveServers.add(serverUrl)
         }
       } catch (err) {
+        if (this.signal?.aborted) return
         if (err.name === 'AbortError') {
-          // Swallow abort for individual HEAD requests - the overall abort is handled elsewhere
+          // Our own per-request timeout: the server never answered the HEAD.
+          unresponsiveServers.add(serverUrl)
         }
-        // Ignore errors from individual servers
+        // CORS/network errors are ignored here but the server stays in the GET
+        // phase: a CORS-blocked HEAD can still serve a CORS-enabled GET.
       }
     })
 
@@ -230,7 +343,7 @@ export default class BlossomFileDownloader {
     ])
 
     if (results.length === 0) {
-      return { chosenServer: blossomServers[0], headByteLengths: new Map() }
+      return { chosenServer: blossomServers[0], headByteLengths: new Map(), unresponsiveServers }
     }
 
     // Majority vote on Content-Length
@@ -254,7 +367,8 @@ export default class BlossomFileDownloader {
       : results.find(result => result.byteLength === bestByteLength)?.serverUrl ?? results[0].serverUrl
     return {
       chosenServer,
-      headByteLengths: new Map(results.map(result => [result.serverUrl, result.byteLength]))
+      headByteLengths: new Map(results.map(result => [result.serverUrl, result.byteLength])),
+      unresponsiveServers
     }
   }
 
@@ -371,24 +485,11 @@ export default class BlossomFileDownloader {
    * Fetches the publisher's blossom server list from their kind 10063 event.
    */
   async #getBlossomServers () {
-    const relays = [...new Set(this.writeRelays)]
-    let events = []
-    try {
-      ({ result: events = [] } = await nostrRelays.getEvents(
-        { kinds: [10063], authors: [this.pubkey], limit: 1 },
-        relays,
-        { signal: this.signal }
-      ))
-    } catch (error) {
-      if (this.serverHints.length === 0) throw error
-    }
-
-    events.sort((a, b) => b.created_at - a.created_at)
-    const best = events[0]
-
-    const publishedServers = (best?.tags ?? [])
-      .filter(tag => Array.isArray(tag) && tag[0] === 'server' && isValidPublicBlossomServerUrl(tag[1]))
-      .map(tag => normalizeBlossomServerUrl(tag[1]))
-    return [...new Set([...this.serverHints, ...publishedServers])]
+    return getBlossomServers({
+      pubkey: this.pubkey,
+      serverHints: this.serverHints,
+      relays: this.writeRelays,
+      signal: this.signal
+    })
   }
 }

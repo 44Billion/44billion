@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { before, describe, it, mock } from 'node:test'
 import { encode } from 'libp2r2p/base93'
+import { relayPool as nostrRelays } from 'libp2r2p/relay'
+import { clearBlossomServersCache } from '#services/blossom-file-downloader/index.js'
 
 const A = 'a'.repeat(64)
 const B = 'b'.repeat(64)
@@ -25,6 +27,11 @@ mock.module('#services/idb/browser/queries/file-chunk.js', {
 })
 mock.module('#services/connectivity-retry.js', {
   defaultExport: { confirmOnline: async () => true }
+})
+mock.module('#helpers/nostr-queries.js', {
+  namedExports: {
+    getUserRelays: async () => ({ [A]: { read: [], write: [] } })
+  }
 })
 
 let getNextIcon
@@ -89,6 +96,39 @@ function createManager () {
   return { manager, reads, writes }
 }
 
+function createBlossomManager () {
+  const writes = []
+  const manager = {
+    appId: 'app',
+    siteManifest: {
+      id: 'blossom-manifest',
+      pubkey: A,
+      tags: [
+        ['service', 'blossom'],
+        ['r', A, 'mark icon', 'm image/svg+xml', 'size 100'],
+        ['path', 'favicon.svg', A, 'm image/svg+xml']
+      ]
+    },
+    async getFileCacheStatus () {
+      return {
+        isCached: false,
+        fileRootHash: A,
+        mimeType: 'image/svg+xml',
+        contentType: 'image/svg+xml',
+        size: null,
+        service: 'blossom'
+      }
+    },
+    async cacheFile () {
+      // Mirrors the browser CORS block when fetching the blossom CDN.
+      throw new TypeError('Failed to fetch')
+    },
+    getCachedMetadata () { return null },
+    cacheMetadata (...args) { writes.push(args) }
+  }
+  return { manager, writes }
+}
+
 describe('lazy AppFileManager icon metadata', () => {
   it('reads only the first non-rejected manifest candidate', async () => {
     const { manager, reads } = createManager()
@@ -124,6 +164,28 @@ describe('lazy AppFileManager icon metadata', () => {
     const cached = { fx: A, url: 'data:image/png;base64,A' }
     assert.deepEqual(await getNextIcon(manager, { cachedIcon: cached }), cached)
     assert.deepEqual(reads, [])
+  })
+
+  it('falls back to direct blossom server URLs when the data URL fetch is CORS-blocked', async () => {
+    const getEvents = mock.method(nostrRelays, 'getEvents', async () => ({
+      result: [{ kind: 10063, created_at: 1, tags: [['server', 'https://blossom.test']] }]
+    }))
+    const previousFetch = globalThis.fetch
+    globalThis.fetch = mock.fn(async () => new Response(null, { status: 200 }))
+    const { manager, writes } = createBlossomManager()
+    try {
+      const icon = await getNextIcon(manager)
+      assert.equal(icon.fx, A)
+      assert.match(icon.url, /^https:\/\/blossom\.test\//)
+      assert.ok(icon.url.endsWith(A))
+      assert.equal(icon.persistable, false)
+      // The fallback URL must never be persisted as the cached icon choice.
+      assert.deepEqual(writes, [])
+    } finally {
+      getEvents.mock.restore()
+      globalThis.fetch = previousFetch
+      clearBlossomServersCache()
+    }
   })
 
   it('reconciles a legacy cached icon against automatic manifest quality metadata', async () => {

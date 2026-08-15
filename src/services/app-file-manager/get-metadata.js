@@ -2,11 +2,15 @@ import { streamFileChunksFromDb, deleteFileChunksFromDb } from '#services/idb/br
 import { decode } from 'libp2r2p/base93'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToBase16 } from 'libp2r2p/base16'
+import { nappRelays } from 'libp2r2p/relay'
+import { getUserRelays } from '#helpers/nostr-queries.js'
 import {
   findRouteAssetDescriptor,
   getManifestMetadata,
+  getManifestFileSourceHints,
   getPreferredManifestIconDescriptors
 } from '#helpers/site-manifest.js'
+import { getBlossomServers, peekBlossomServers } from '#services/blossom-file-downloader/index.js'
 import {
   extractHtmlMetadata,
   extractWebManifestIcons,
@@ -19,6 +23,65 @@ import connectivityRetry from '#services/connectivity-retry.js'
 
 const iconDiscoveryByManager = new WeakMap()
 const preferredIconByManager = new WeakMap()
+const blossomServerReachability = new Map()
+const BLOSSOM_REACHABILITY_TIMEOUT_MS = 3000
+const BLOSSOM_REACHABILITY_CACHE_MS = 60000
+
+// Probes a blossom server with a CORS-less HEAD request: a responsive server
+// resolves (even when it redirects to a CDN or lacks Access-Control-Allow-
+// Origin), while a dead server hangs until the timeout and rejects. The result
+// is cached briefly so the fallback doesn't re-probe the same dead host.
+async function isBlossomServerReachable (server, fileHash, signal) {
+  const cached = blossomServerReachability.get(server)
+  if (cached && Date.now() - cached.at < BLOSSOM_REACHABILITY_CACHE_MS) return cached.reachable
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), BLOSSOM_REACHABILITY_TIMEOUT_MS)
+  const onAbort = () => controller.abort()
+  signal?.addEventListener('abort', onAbort, { once: true })
+  let reachable = false
+  try {
+    await fetch(`${server}/${fileHash}`, {
+      method: 'HEAD',
+      mode: 'no-cors',
+      cache: 'no-store',
+      signal: controller.signal
+    })
+    reachable = true
+  } catch {
+    reachable = false
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', onAbort)
+  }
+  blossomServerReachability.set(server, { reachable, at: Date.now() })
+  return reachable
+}
+
+// Resolves the publisher's Blossom servers (manifest `server` hints + newest
+// kind 10063) for the CORS-free direct URL fallback of blossom icon assets.
+// The shared resolver caches per pubkey, so the fallback reuses the servers
+// the downloader already discovered instead of querying relays again.
+async function getIconBlossomServers (appFileManager, signal) {
+  const manifest = appFileManager.siteManifest
+  const pubkey = manifest?.pubkey
+  if (!pubkey) return []
+  const cached = peekBlossomServers(pubkey)
+  if (cached) return cached
+  const sourceHints = getManifestFileSourceHints(manifest)
+  const relaysByPubkey = await getUserRelays([pubkey])
+  const relays = [...new Set([
+    ...(sourceHints.relays || []),
+    ...(Array.from(relaysByPubkey[pubkey]?.write || [])),
+    ...nappRelays
+  ])]
+  return getBlossomServers({
+    pubkey,
+    serverHints: sourceHints.blossomServers,
+    relays,
+    signal
+  })
+}
 
 // Identifies the manifest version used to reconcile a cached icon.
 function getManifestSelectionId (manifest) {
@@ -376,14 +439,13 @@ async function resolveNextEntry (
     if (cached) return cached
     try {
       const url = await assetToDataUrl(appFileManager, entry.asset, signal)
-      if (!url) {
-        if (resolutionState) resolutionState.complete = false
-        continue
+      if (url) {
+        if (rejectedUrls.has(url)) continue
+        const icon = { fx: entry.asset.root, url }
+        if (cacheCandidate) cacheIconCandidate(appFileManager, icon, cachedIcon)
+        return icon
       }
-      if (rejectedUrls.has(url)) continue
-      const icon = { fx: entry.asset.root, url }
-      if (cacheCandidate) cacheIconCandidate(appFileManager, icon, cachedIcon)
-      return icon
+      if (resolutionState) resolutionState.complete = false
     } catch (error) {
       if (signal?.aborted) throw error
       if (!await connectivityRetry.confirmOnline({ force: true })) {
@@ -393,6 +455,32 @@ async function resolveNextEntry (
       if (resolutionState) resolutionState.complete = false
       console.log(`Failed to resolve icon asset ${entry.asset.root}:`, error)
     }
+
+    // Blossom assets can be rendered directly via <img> from the publisher's
+    // servers — immune to the CORS that blocks the fetch-based data URL
+    // conversion above (e.g. a CDN that omits Access-Control-Allow-Origin).
+    // These fallback URLs are never persisted (persistable: false), so a later
+    // session still prefers the verified data URL when it can be created.
+    if (entry.asset.service === 'blossom') {
+      let servers = []
+      try {
+        servers = await getIconBlossomServers(appFileManager, signal)
+      } catch (error) {
+        if (signal?.aborted) throw error
+        console.log(`Failed to resolve blossom servers for ${entry.asset.root}:`, error)
+      }
+      const reachable = await Promise.all(servers.map(async server => ({
+        server,
+        reachable: await isBlossomServerReachable(server, entry.asset.root, signal)
+      })))
+      for (const { server, reachable: isReachable } of reachable) {
+        if (!isReachable) continue
+        const url = `${server}/${entry.asset.root}`
+        if (rejectedUrls.has(url)) continue
+        return { fx: entry.asset.root, url, persistable: false }
+      }
+    }
+    continue
   }
   return null
 }
