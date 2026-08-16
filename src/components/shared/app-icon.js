@@ -324,13 +324,17 @@ f('app-icon', ({ h, props }) => {
     const [appId, name] = track(() => [store.appId$(), store.appName$()])
     if (!appId || name) return
     try {
-      const appFileManager = runtime.appFileManager || await AppFileManager.create(appId, undefined, {
-        signal: runtime.abortController.signal
-      })
+      // Deliberately no abort signal: runtime.abortController is rotated by
+      // resetForApp right after mount, so a signal here would abort the shared
+      // site-manifest fetch and poison the instance promise that icon
+      // resolution reuses. AppFileManager.create is cached per appId.
+      const appFileManager = await AppFileManager.create(appId)
       runtime.appFileManager = appFileManager
       await appFileManager.getName()
     } catch (error) {
-      if (error?.name !== 'AbortError') console.warn(`[app-icon ${appId}] Failed to resolve app name:`, error)
+      if (error?.name !== 'AbortError' && error?.message !== 'Aborted') {
+        console.warn(`[app-icon ${appId}] Failed to resolve app name:`, error)
+      }
     }
   })
 
