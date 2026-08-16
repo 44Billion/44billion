@@ -450,12 +450,15 @@ async function resolveNextEntry (
       if (resolutionState) resolutionState.complete = false
     } catch (error) {
       if (signal?.aborted) throw error
-      if (!await connectivityRetry.confirmOnline({ force: true })) {
+      if (resolutionState) resolutionState.complete = false
+      console.log(`Failed to resolve icon asset ${entry.asset.root}:`, error)
+      // For blossom assets the direct-URL fallback below runs before any
+      // connectivity check: the CORS-blocked-but-online case must not pay the
+      // (potentially slow) probe latency before the icon can render.
+      if (entry.asset.service !== 'blossom' && !await connectivityRetry.confirmOnline({ force: true })) {
         error.code = 'OFFLINE'
         throw error
       }
-      if (resolutionState) resolutionState.complete = false
-      console.log(`Failed to resolve icon asset ${entry.asset.root}:`, error)
     }
 
     // Blossom assets can be rendered directly via <img> from the publisher's
@@ -480,6 +483,13 @@ async function resolveNextEntry (
         const url = `${server}/${entry.asset.root}`
         if (rejectedUrls.has(url)) continue
         return { fx: entry.asset.root, url, persistable: false }
+      }
+      // Only when no server is reachable for the fallback do we defer to the
+      // original offline handling (retry instead of exhausting candidates).
+      if (!await connectivityRetry.confirmOnline({ force: true })) {
+        const error = new Error('Offline while resolving app icon')
+        error.code = 'OFFLINE'
+        throw error
       }
     }
     continue
