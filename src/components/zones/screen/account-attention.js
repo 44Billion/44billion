@@ -6,7 +6,9 @@ export function firstAccountActivationMetadata ({
   defaultUserPk,
   nextUserPks
 }) {
-  const userPk = Array.isArray(nextUserPks) && nextUserPks.length === 1
+  // The first incoming account is the one that replaces the default user,
+  // even when a batch (e.g. device sync) imports several accounts at once.
+  const userPk = Array.isArray(nextUserPks) && nextUserPks.length > 0
     ? nextUserPks[0]
     : null
   const activatedFirstAccount = Boolean(
@@ -32,8 +34,7 @@ export function shouldShowFirstAccountAttention ({
   return Boolean(
     attention?.userPk &&
     attention.expiresAt > now &&
-    userPks.length === 1 &&
-    userPks[0] === attention.userPk &&
+    userPks.includes(attention.userPk) &&
     activeUserPk === attention.userPk &&
     activeUserPk !== defaultUserPk
   )

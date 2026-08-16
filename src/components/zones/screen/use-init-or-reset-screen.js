@@ -143,6 +143,43 @@ function addUser ({ userPk, storage, tabStorage, isFirstTimeUser: _ }) {
   storage.session_openWorkspaceKeys$([wsKey]) // order of group of windows
 }
 
+// Seed a brand-new workspace for an account with the starter (core) apps.
+// Used for every account added after the first one, which instead inherits
+// the default user's existing workspace.
+function addWorkspaceForUser ({ userPk, storage, tabStorage }) {
+  const defaultPinnedApps = coreAppIds.map((id) => ({
+    id,
+    key: Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2),
+    visibility: 'closed', // All apps start closed for new users
+    isNew: false
+  }))
+
+  const wsKey = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
+
+  // Setup workspace with no open apps
+  tabStorage[`session_workspaceByKey_${wsKey}_openAppKeys$`]([])
+  storage[`session_workspaceByKey_${wsKey}_userPk$`](userPk)
+
+  // Setup pinned apps (all closed)
+  defaultPinnedApps.forEach(app => {
+    storage[`session_workspaceByKey_${wsKey}_appById_${app.id}_appKeys$`]([app.key])
+    storage[`session_appByKey_${app.key}_id$`](app.id)
+    tabStorage[`session_appByKey_${app.key}_visibility$`](app.visibility)
+    storage[`session_appByKey_${app.key}_route$`]('')
+  })
+
+  // Setup app lists
+  storage[`session_workspaceByKey_${wsKey}_unpinnedCoreAppIdsObj$`]({})
+  storage[`session_workspaceByKey_${wsKey}_pinnedAppIds$`](defaultPinnedApps.map(({ id }) => id))
+  storage[`session_workspaceByKey_${wsKey}_unpinnedAppIds$`]([])
+  requestNostrDbAppBackfillsForWorkspace({
+    storage,
+    wsKey,
+    appIds: defaultPinnedApps.map(({ id }) => id)
+  })
+  return wsKey
+}
+
 // nextAccountState: [
 //   {
 //     pubkey, // base16
@@ -195,10 +232,12 @@ export async function setAccountsState (nextAccountState, storage, tabStorage) {
     storage[`session_accountByUserPk_${userPk}_relays$`](account.relays)
   })
 
-  // Special case: moving from default-only to single user
-  if (hasOnlyDefaultUser && nextUserPks.length === 1) {
+  // Special case: moving from default-only to first account(s). The first
+  // incoming account inherits the default user's workspace (and its apps);
+  // any additional accounts get fresh workspaces with the starter apps.
+  if (hasOnlyDefaultUser && nextUserPks.length > 0) {
     const defaultWorkspaceKey = currentWorkspaceKeys[0]
-    const newUserPk = nextUserPks[0]
+    const inheritingUserPk = nextUserPks[0]
 
     // Close all open apps and schedule their re-opening
     const openAppKeys = tabStorage[`session_workspaceByKey_${defaultWorkspaceKey}_openAppKeys$`]() || []
@@ -215,8 +254,8 @@ export async function setAccountsState (nextAccountState, storage, tabStorage) {
     // Clear open apps list
     tabStorage[`session_workspaceByKey_${defaultWorkspaceKey}_openAppKeys$`]([])
 
-    // Transfer ownership of the workspace to the new user
-    storage[`session_workspaceByKey_${defaultWorkspaceKey}_userPk$`](newUserPk)
+    // Transfer ownership of the workspace to the first new user
+    storage[`session_workspaceByKey_${defaultWorkspaceKey}_userPk$`](inheritingUserPk)
 
     // Schedule re-opening apps on next tick
     await new Promise(resolve => setTimeout(resolve, 0))
@@ -231,6 +270,16 @@ export async function setAccountsState (nextAccountState, storage, tabStorage) {
       wsKey: defaultWorkspaceKey,
       appIds: storage[`session_workspaceByKey_${defaultWorkspaceKey}_pinnedAppIds$`]() || []
     })
+
+    // Remaining accounts get fresh workspaces seeded with the starter apps
+    const newWorkspaceKeys = nextUserPks.slice(1).map(userPk =>
+      addWorkspaceForUser({ userPk, storage, tabStorage })
+    )
+    if (newWorkspaceKeys.length > 0) {
+      const nextWorkspaceKeys = [defaultWorkspaceKey].concat(newWorkspaceKeys)
+      storage.session_openWorkspaceKeys$(nextWorkspaceKeys)
+      storage.session_workspaceKeys$(nextWorkspaceKeys)
+    }
   } else {
     // Regular case: handle multiple users or complex transitions
 
@@ -254,37 +303,7 @@ export async function setAccountsState (nextAccountState, storage, tabStorage) {
     const newWorkspaceKeys = []
     // Add new users
     for (const userPk of usersToAdd) {
-      const defaultPinnedApps = coreAppIds.map((id) => ({
-        id,
-        key: Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2),
-        visibility: 'closed', // All apps start closed for new users
-        isNew: false
-      }))
-
-      const wsKey = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
-      newWorkspaceKeys.push(wsKey)
-
-      // Setup workspace with no open apps
-      tabStorage[`session_workspaceByKey_${wsKey}_openAppKeys$`]([])
-      storage[`session_workspaceByKey_${wsKey}_userPk$`](userPk)
-
-      // Setup pinned apps (all closed)
-      defaultPinnedApps.forEach(app => {
-        storage[`session_workspaceByKey_${wsKey}_appById_${app.id}_appKeys$`]([app.key])
-        storage[`session_appByKey_${app.key}_id$`](app.id)
-        tabStorage[`session_appByKey_${app.key}_visibility$`](app.visibility)
-        storage[`session_appByKey_${app.key}_route$`]('')
-      })
-
-      // Setup app lists
-      storage[`session_workspaceByKey_${wsKey}_unpinnedCoreAppIdsObj$`]({})
-      storage[`session_workspaceByKey_${wsKey}_pinnedAppIds$`](defaultPinnedApps.map(({ id }) => id))
-      storage[`session_workspaceByKey_${wsKey}_unpinnedAppIds$`]([])
-      requestNostrDbAppBackfillsForWorkspace({
-        storage,
-        wsKey,
-        appIds: defaultPinnedApps.map(({ id }) => id)
-      })
+      newWorkspaceKeys.push(addWorkspaceForUser({ userPk, storage, tabStorage }))
     }
 
     const workspacesToRemoveSet = new Set(workspacesToRemove)

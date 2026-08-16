@@ -12,17 +12,23 @@ import {
 } from '../../src/components/zones/vault-modal/account-state-coordinator.js'
 
 describe('first vault account attention', () => {
-  it('identifies only a default-user to one-real-account transition', () => {
+  it('identifies the default-user to first-account transition, including batches', () => {
     assert.deepEqual(firstAccountActivationMetadata({
       hasOnlyDefaultUser: true,
       defaultUserPk: 'default',
       nextUserPks: ['real']
     }), { activatedFirstAccount: true, userPk: 'real' })
 
+    // A sync batch also replaces the default user with its first account.
+    assert.deepEqual(firstAccountActivationMetadata({
+      hasOnlyDefaultUser: true,
+      defaultUserPk: 'default',
+      nextUserPks: ['one', 'two']
+    }), { activatedFirstAccount: true, userPk: 'one' })
+
     for (const input of [
       { hasOnlyDefaultUser: false, defaultUserPk: 'default', nextUserPks: ['real'] },
       { hasOnlyDefaultUser: true, defaultUserPk: 'default', nextUserPks: [] },
-      { hasOnlyDefaultUser: true, defaultUserPk: 'default', nextUserPks: ['one', 'two'] },
       { hasOnlyDefaultUser: true, defaultUserPk: 'default', nextUserPks: ['default'] },
       { hasOnlyDefaultUser: true, defaultUserPk: null, nextUserPks: ['real'] }
     ]) {
@@ -33,7 +39,7 @@ describe('first vault account attention', () => {
     }
   })
 
-  it('shows only an unexpired signal for the sole active non-default account', () => {
+  it('shows only an unexpired signal for the active non-default first account', () => {
     const attention = { id: 1, userPk: 'real', expiresAt: 2000 }
     const base = {
       attention,
@@ -43,8 +49,17 @@ describe('first vault account attention', () => {
       now: 1000
     }
     assert.equal(shouldShowFirstAccountAttention(base), true)
+    // Also shows when the first account arrived inside a sync batch.
+    assert.equal(shouldShowFirstAccountAttention({
+      ...base,
+      accountUserPks: ['real', 'other']
+    }), true)
     assert.equal(shouldShowFirstAccountAttention({ ...base, activeUserPk: 'other' }), false)
-    assert.equal(shouldShowFirstAccountAttention({ ...base, accountUserPks: ['real', 'other'] }), false)
+    assert.equal(shouldShowFirstAccountAttention({
+      ...base,
+      activeUserPk: 'other',
+      accountUserPks: ['real', 'other']
+    }), false)
     assert.equal(shouldShowFirstAccountAttention({ ...base, defaultUserPk: 'real' }), false)
     assert.equal(shouldShowFirstAccountAttention({ ...base, now: 2000 }), false)
     assert.equal(shouldShowFirstAccountAttention({ ...base, attention: null }), false)
