@@ -316,6 +316,24 @@ f('app-icon', ({ h, props }) => {
     }
   }))
 
+  // The monogram needs the app name. Some consumers (e.g. the toolbar app
+  // launcher) don't provide it and may have no cached name yet, so resolve it
+  // lazily the same way napp-updates does — the cached manifest name feeds
+  // appName$() reactively.
+  useTask(async ({ track }) => {
+    const [appId, name] = track(() => [store.appId$(), store.appName$()])
+    if (!appId || name) return
+    try {
+      const appFileManager = runtime.appFileManager || await AppFileManager.create(appId, undefined, {
+        signal: runtime.abortController.signal
+      })
+      runtime.appFileManager = appFileManager
+      await appFileManager.getName()
+    } catch (error) {
+      if (error?.name !== 'AbortError') console.warn(`[app-icon ${appId}] Failed to resolve app name:`, error)
+    }
+  })
+
   useTask(({ track }) => {
     const [appId, cachedIcon] = track(() => [
       store.appId$(),
