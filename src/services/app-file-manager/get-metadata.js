@@ -10,7 +10,12 @@ import {
   getManifestFileSourceHints,
   getPreferredManifestIconDescriptors
 } from '#helpers/site-manifest.js'
-import { getBlossomServers, peekBlossomServers } from '#services/blossom-file-downloader/index.js'
+import {
+  getBlossomServers,
+  peekBlossomServerReachability,
+  peekBlossomServers,
+  setBlossomServerReachability
+} from '#services/blossom-file-downloader/index.js'
 import {
   extractHtmlMetadata,
   extractWebManifestIcons,
@@ -23,17 +28,14 @@ import connectivityRetry from '#services/connectivity-retry.js'
 
 const iconDiscoveryByManager = new WeakMap()
 const preferredIconByManager = new WeakMap()
-const blossomServerReachability = new Map()
 const BLOSSOM_REACHABILITY_TIMEOUT_MS = 3000
-const BLOSSOM_REACHABILITY_CACHE_MS = 60000
 
-// Probes a blossom server with a CORS-less HEAD request: a responsive server
-// resolves (even when it redirects to a CDN or lacks Access-Control-Allow-
-// Origin), while a dead server hangs until the timeout and rejects. The result
-// is cached briefly so the fallback doesn't re-probe the same dead host.
+// Reuses the downloader's reachability result when available; otherwise probes
+// the server with a CORS-less HEAD request (a responsive server resolves even
+// when it redirects to a CDN, while a dead server times out).
 async function isBlossomServerReachable (server, fileHash, signal) {
-  const cached = blossomServerReachability.get(server)
-  if (cached && Date.now() - cached.at < BLOSSOM_REACHABILITY_CACHE_MS) return cached.reachable
+  const cached = peekBlossomServerReachability(server)
+  if (cached !== null) return cached
 
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), BLOSSOM_REACHABILITY_TIMEOUT_MS)
@@ -54,7 +56,7 @@ async function isBlossomServerReachable (server, fileHash, signal) {
     clearTimeout(timer)
     signal?.removeEventListener('abort', onAbort)
   }
-  blossomServerReachability.set(server, { reachable, at: Date.now() })
+  setBlossomServerReachability(server, reachable)
   return reachable
 }
 

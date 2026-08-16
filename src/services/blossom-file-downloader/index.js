@@ -47,6 +47,8 @@ export async function getBlossomServersForPubkey ({ pubkey, serverHints, relays,
 const blossomServersByPubkey = new Map()
 const blossomServerRequestsByPubkey = new Map()
 const BLOSSOM_SERVERS_CACHE_MS = 5 * 60 * 1000
+const blossomServerReachability = new Map()
+const BLOSSOM_REACHABILITY_CACHE_MS = 60000
 
 // Returns the cached server list for a pubkey without triggering a query.
 export function peekBlossomServers (pubkey) {
@@ -78,10 +80,24 @@ export async function getBlossomServers ({ pubkey, serverHints, relays, signal }
   return request
 }
 
-// Test helper: clears the per-pubkey server cache between test cases.
+// Reachability is shared by the downloader (which HEAD-probes every server in
+// parallel) and the icon fallback (which needs to know which direct URLs are
+// worth trying in an <img>). The fallback reuses the downloader's result and
+// only probes servers that were left unknown (e.g. CORS-blocked HEADs).
+export function peekBlossomServerReachability (server) {
+  const cached = blossomServerReachability.get(server)
+  return cached && Date.now() - cached.at < BLOSSOM_REACHABILITY_CACHE_MS ? cached.reachable : null
+}
+
+export function setBlossomServerReachability (server, reachable) {
+  blossomServerReachability.set(server, { reachable, at: Date.now() })
+}
+
+// Test helper: clears the per-pubkey server and reachability caches.
 export function clearBlossomServersCache () {
   blossomServersByPubkey.clear()
   blossomServerRequestsByPubkey.clear()
+  blossomServerReachability.clear()
 }
 
 function parseContentLength (value) {
@@ -311,6 +327,7 @@ export default class BlossomFileDownloader {
           signal: this.signal
         }, HEAD_TIMEOUT_MS)
         if (headRes.ok) {
+          setBlossomServerReachability(serverUrl, true)
           results.push({
             serverUrl,
             byteLength: parseContentLength(headRes.headers.get('Content-Length'))
@@ -322,13 +339,16 @@ export default class BlossomFileDownloader {
           }
         } else {
           // A server that answers HEAD with an error will not serve the file
-          // either; skip it in the GET phase to avoid wasting the budget.
+          // either; skip it in the GET phase to avoid wasting the budget. It
+          // did respond, though, so it is reachable for an <img> direct URL.
+          setBlossomServerReachability(serverUrl, true)
           unresponsiveServers.add(serverUrl)
         }
       } catch (err) {
         if (this.signal?.aborted) return
         if (err.name === 'AbortError') {
           // Our own per-request timeout: the server never answered the HEAD.
+          setBlossomServerReachability(serverUrl, false)
           unresponsiveServers.add(serverUrl)
         }
         // CORS/network errors are ignored here but the server stays in the GET
