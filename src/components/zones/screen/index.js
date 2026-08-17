@@ -44,6 +44,7 @@ import '#shared/icons/icon-stack-front.js'
 import '#shared/icons/icon-remove.js'
 import '#shared/icons/icon-delete.js'
 import '#shared/icons/icon-lock.js'
+import '#shared/icons/icon-library-plus.js'
 import { getAssetBudgetConfirmation } from '#i18n/asset-budget.js'
 import { getT } from '#i18n/index.js'
 import './menus/toolbar-more-menu.js'
@@ -1361,6 +1362,7 @@ f('appLaunchersMenu', function () {
   const storage = useWebStorage(localStorage)
   const tabStorage = useWebStorage(sessionStorage)
   const { requestConfirmation } = useConfirmationDialogStore()
+  const { openNewAppInstance } = useGlobalStore('useAppRouter')
   const menuProps = useStore(() => ({
     ...store,
     openApp () {
@@ -1410,6 +1412,13 @@ f('appLaunchersMenu', function () {
         }
         return v
       })
+    },
+    newWindow () {
+      const { id: appId, visibility, workspaceKey } = this.app$()
+      if (visibility === 'closed') throw new Error('Can only open a new window for an open or minimized app')
+
+      this.close() // close menu
+      openNewAppInstance(appId, workspaceKey)
     },
     closeApp () {
       const { visibility, key: appKey, workspaceKey } = this.app$()
@@ -1534,6 +1543,7 @@ f('appLaunchersMenu', function () {
       const {
         openApp,
         bringToFirst,
+        newWindow,
         minimizeApp,
         closeApp,
         removeApp,
@@ -1575,6 +1585,10 @@ f('appLaunchersMenu', function () {
         <div class=${{ invisible: visibility !== 'open' || openAppKeys[0] === appKey }}>
           <div class='icon-wrapper-271yiduh'><icon-stack-front props=${{ size: '16px' }} /></div>
           <div class='menu-label' onclick=${bringToFirst}>${t('Bring to First')}</div>
+        </div>
+        <div class=${{ invisible: visibility === 'closed' }}>
+          <div class='icon-wrapper-271yiduh'><icon-library-plus props=${{ size: '16px' }} /></div>
+          <div class='menu-label' onclick=${newWindow}>${t('New Window')}</div>
         </div>
         <div class=${{ invisible: visibility !== 'open' }}>
           <div class='icon-wrapper-271yiduh'><icon-minimize props=${{ size: '16px' }} /></div>
@@ -1776,6 +1790,7 @@ function getLocales () {
     'Touch to unlock': { en: 'Touch to unlock', fr: 'Touchez pour déverrouiller', it: 'Tocca per sbloccare', de: 'Zum Entsperren berühren', es: 'Toca para desbloquear', 'pt-BR': 'Toque para desbloquear', ru: 'Нажмите, чтобы разблокировать', 'zh-CN': '轻触以解锁', 'zh-TW': '輕觸以解鎖', ja: 'タップしてロック解除', ko: '탭하여 잠금 해제' },
     'Please open an app': { en: 'Please open an app', fr: 'Veuillez ouvrir une application', it: 'Apri un’app', de: 'Bitte eine App öffnen', es: 'Abre una aplicación', 'pt-BR': 'Abra um app', ru: 'Откройте приложение', 'zh-CN': '请打开一个应用', 'zh-TW': '請開啟一個應用程式', ja: 'アプリを開いてください', ko: '앱을 열어 주세요' },
     Open: { en: 'Open', fr: 'Ouvrir', it: 'Apri', de: 'Öffnen', es: 'Abrir', 'pt-BR': 'Abrir', ru: 'Открыть', 'zh-CN': '打开', 'zh-TW': '開啟', ja: '開く', ko: '열기' },
+    'New Window': { en: 'New Window', fr: 'Nouvelle fenêtre', it: 'Nuova finestra', de: 'Neues Fenster', es: 'Nueva ventana', 'pt-BR': 'Nova Janela', ru: 'Новое окно', 'zh-CN': '新建窗口', 'zh-TW': '新視窗', ja: '新しいウィンドウ', ko: '새 창' },
     Maximize: { en: 'Maximize', fr: 'Agrandir', it: 'Ingrandisci', de: 'Maximieren', es: 'Maximizar', 'pt-BR': 'Maximizar', ru: 'Развернуть', 'zh-CN': '最大化', 'zh-TW': '最大化', ja: '最大化', ko: '최대화' },
     'Bring to First': { en: 'Bring to First', fr: 'Mettre au premier plan', it: 'Porta in primo piano', de: 'In den Vordergrund', es: 'Traer al frente', 'pt-BR': 'Trazer para frente', ru: 'На передний план', 'zh-CN': '置于最前', 'zh-TW': '移至最前', ja: '最前面に移動', ko: '맨 앞으로 가져오기' },
     Minimize: { en: 'Minimize', fr: 'Réduire', it: 'Riduci', de: 'Minimieren', es: 'Minimizar', 'pt-BR': 'Minimizar', ru: 'Свернуть', 'zh-CN': '最小化', 'zh-TW': '最小化', ja: '最小化', ko: '최소화' },

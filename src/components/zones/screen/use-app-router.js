@@ -73,22 +73,9 @@ export default function useAppRouter () {
     return { hasOpened: true, isInstalled: true }
   })
 
-  const openApp = useCallback((napp, appRoute, wsKey) => {
-    if (!openWorkspaceKeys$().length) throw new Error()
-    const decodedApp = appDecode(napp)
-    const appId = addressObjToAppId(decodedApp)
-    const decodedAppRelays = decodedApp.relays.slice(0, 4)
-      .map(value => {
-        try { return normalizeRelayUrl(value) } catch {}
-      })
-      .filter(isValidPublicRelayUrl)
-      .slice(0, 2)
-    if (decodedAppRelays.length > 0) {
-      storage[`session_appById_${appId}_relayHints$`](decodedAppRelays)
-    }
-    const { hasOpened, isInstalled } = maybeOpenInstalledApp(appId, appRoute, wsKey)
-
-    if (hasOpened) return
+  const createAppInstance = useCallback((appId, appRoute, wsKey) => {
+    wsKey ??= openWorkspaceKeys$()[0]
+    if (!wsKey) throw new Error('User n/a')
 
     const app = {
       id: appId,
@@ -97,9 +84,8 @@ export default function useAppRouter () {
       route: appRoute,
       isNew: false
     }
-    wsKey ??= openWorkspaceKeys$()[0]
     storage[`session_workspaceByKey_${wsKey}_appById_${app.id}_appKeys$`](v => {
-      if (!isInstalled) v = []
+      if (!Array.isArray(v)) v = []
       v.push(app.key)
       return v
     })
@@ -113,6 +99,27 @@ export default function useAppRouter () {
       v[eqKey] = Math.random()
       return v
     })
+    return app
+  })
+
+  const openApp = useCallback((napp, appRoute, wsKey) => {
+    if (!openWorkspaceKeys$().length) throw new Error()
+    const decodedApp = appDecode(napp)
+    const appId = addressObjToAppId(decodedApp)
+    const decodedAppRelays = decodedApp.relays.slice(0, 4)
+      .map(value => {
+        try { return normalizeRelayUrl(value) } catch { return undefined }
+      })
+      .filter(isValidPublicRelayUrl)
+      .slice(0, 2)
+    if (decodedAppRelays.length > 0) {
+      storage[`session_appById_${appId}_relayHints$`](decodedAppRelays)
+    }
+    const { hasOpened, isInstalled } = maybeOpenInstalledApp(appId, appRoute, wsKey)
+
+    if (hasOpened) return
+
+    const app = createAppInstance(appId, appRoute, wsKey)
 
     if (isInstalled) return
 
@@ -162,6 +169,9 @@ export default function useAppRouter () {
       } else appRoute = ''
 
       openApp(napp, appRoute, wsKey)
+    },
+    openNewAppInstance (appId, wsKey) {
+      return createAppInstance(appId, '', wsKey).key
     }
   }))
 }
