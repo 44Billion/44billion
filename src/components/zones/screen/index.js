@@ -1329,7 +1329,13 @@ f('toolbarPinnedApps', function () {
     }, [])
   })
 
-  return this.h`${appIdsdKeysIndexes$().map(v => this.h({ key: v.appKey })`<toolbar-app-launcher key=${v.appKey} props=${v} />`)}`
+  // Due to f/uhtml renderer limitation, inserting/removing new keyed children
+  // needs a static anchor node, that's why the invisible anchor
+  // `<div style="display: contents"></div>` was added
+  return this.h`
+    <div style="display: contents"></div>
+    ${appIdsdKeysIndexes$().map(v => this.h({ key: v.appKey })`<toolbar-app-launcher key=${v.appKey} props=${v} />`)}
+  `
 })
 f('toolbarUnpinnedApps', function () {
   const storage = useWebStorage(localStorage)
