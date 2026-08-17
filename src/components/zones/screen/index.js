@@ -184,13 +184,19 @@ f('aScreen', function () {
       }
       /**/
     }
+
+    #screen.system-route-active toolbar-app-launcher > div {
+      filter: grayscale(1);
+      opacity: .65;
+    }
   `)
 
   const unifiedToolbarRef$ = useClosestSignal('unifiedToolbarRef', null)
 
   return this.h`
     <div id="screen" class=${{
-      'multi-window': !isSingleWindow$()
+      'multi-window': !isSingleWindow$(),
+      'system-route-active': isSystemRoute$()
     }}>
       <style>${style$()}</style>
       <div id='workspaces'>
@@ -1614,6 +1620,7 @@ f('appLaunchersMenu', function () {
 f('toolbarAppLauncher', function () {
   const storage = useWebStorage(localStorage)
   const tabStorage = useWebStorage(sessionStorage)
+  const { isSystemRoute$, closeSystemViews } = useSystemRouter()
   const newAppIdsObj$ = useGlobalSignal('hardcoded_newAppIdsObj')
   const appIndex$ = useStateSignal(this.props.appIndex)
   const appRef$ = useSignal()
@@ -1632,7 +1639,14 @@ f('toolbarAppLauncher', function () {
   // const unifiedToolbarRef$ = useClosestSignal('unifiedToolbarRef')
   // useLongPress(unifiedToolbarRef$, appRef$)
   const { toggleMenu, app$: currApp$ } = useClosestStore('<a-menu>')
-  const onLongPress = () => toggleMenu({ ...app$() })
+  const handleClick = () => {
+    if (isSystemRoute$()) {
+      closeSystemViews()
+      return
+    }
+
+    toggleMenu({ ...app$() })
+  }
   const anchorName$ = useComputed(() => currApp$().key === app$().key ? '--app-launchers-menu' : 'none')
 
   // const onClick = useCallback(e => {
@@ -1700,7 +1714,7 @@ f('toolbarAppLauncher', function () {
   // @custom:longpress=${onLongPress}
   return this.h`<div
     ref=${appRef$}
-    onclick=${onLongPress}
+    onclick=${handleClick}
     id=${`scope_df81hd_${app$().key}`}
     style=${`
       anchor-name: ${anchorName$()};
