@@ -25,6 +25,10 @@ import {
 import { normalizeAppIconCandidates } from '#helpers/app-icon.js'
 import { warnAssetSizeMismatch } from '#helpers/asset-size.js'
 import connectivityRetry from '#services/connectivity-retry.js'
+import {
+  cacheDirectIconFallback,
+  getDirectIconFallback
+} from '#services/app-icon-session-cache.js'
 
 const iconDiscoveryByManager = new WeakMap()
 const preferredIconByManager = new WeakMap()
@@ -111,6 +115,12 @@ export async function getNextIcon (appFileManager, { rejected = [], cachedIcon, 
   )
   if (cached) return cached
 
+  const manifestId = getManifestSelectionId(appFileManager.siteManifest)
+  const sessionIcon = getDirectIconFallback({ appId: appFileManager.appId, manifestId })
+  if (sessionIcon && !rejectedUrls.has(sessionIcon.url) && (!sessionIcon.fx || !rejectedRoots.has(sessionIcon.fx))) {
+    return sessionIcon
+  }
+
   const manifestAssets = getPreferredManifestIconDescriptors(appFileManager.siteManifest)
 
   const manifestIcon = await resolveNextEntry(
@@ -121,7 +131,7 @@ export async function getNextIcon (appFileManager, { rejected = [], cachedIcon, 
     cachedIcon,
     signal
   )
-  if (manifestIcon) return manifestIcon
+  if (manifestIcon) return maybeCacheDirectIconFallback(appFileManager, manifestIcon)
 
   let htmlEntries
   try {
@@ -136,7 +146,7 @@ export async function getNextIcon (appFileManager, { rejected = [], cachedIcon, 
     console.log('Failed to discover icon sources from app HTML:', error)
     return null
   }
-  return resolveNextEntry(
+  const icon = await resolveNextEntry(
     appFileManager,
     htmlEntries,
     rejectedRoots,
@@ -144,6 +154,7 @@ export async function getNextIcon (appFileManager, { rejected = [], cachedIcon, 
     cachedIcon,
     signal
   )
+  return maybeCacheDirectIconFallback(appFileManager, icon)
 }
 
 // Resolves the metadata-preferred icon independently from the cached primary choice.
@@ -165,6 +176,10 @@ export function getPreferredIcon (appFileManager, {
     const rejectedRoots = new Set()
     const rejectedUrls = new Set()
     const resolutionState = { complete: true }
+
+    const sessionIcon = getDirectIconFallback({ appId: appFileManager.appId, manifestId })
+    if (sessionIcon) return { icon: sessionIcon, manifestId, selectionComplete: false }
+
     const manifestAssets = getPreferredManifestIconDescriptors(manifest)
     let icon = await resolveNextEntry(
       appFileManager,
@@ -188,6 +203,9 @@ export function getPreferredIcon (appFileManager, {
         { cacheCandidate: false, resolutionState }
       )
     }
+    if (icon?.persistable === false) {
+      cacheDirectIconFallback({ appId: appFileManager.appId, manifestId, icon })
+    }
     return { icon, manifestId, selectionComplete: resolutionState.complete }
   })()
   byManifest.set(manifestId, request)
@@ -200,6 +218,15 @@ export function getPreferredIcon (appFileManager, {
     () => byManifest.delete(manifestId)
   )
   return request
+}
+
+function maybeCacheDirectIconFallback (appFileManager, icon) {
+  if (icon?.persistable !== false) return icon
+  return cacheDirectIconFallback({
+    appId: appFileManager.appId,
+    manifestId: getManifestSelectionId(appFileManager.siteManifest),
+    icon
+  })
 }
 
 export async function getName (appFileManager, staleWhileRevalidate = false) {

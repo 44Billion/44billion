@@ -14,6 +14,7 @@ import {
   shouldShowAppIconShimmer
 } from '#helpers/app-icon.js'
 import { getT } from '#i18n/index.js'
+import { getDirectIconFallbackByAppId } from '#services/app-icon-session-cache.js'
 
 export const appIconLocales = getLocales()
 const t = getT(appIconLocales)
@@ -343,12 +344,14 @@ f('app-icon', ({ h, props }) => {
       store.appId$(),
       storage[`session_appById_${store.appId$()}_icon$`]()
     ])
+    const sessionIcon = cachedIcon ? null : getDirectIconFallbackByAppId(appId)
+    const resolvedCachedIcon = cachedIcon || sessionIcon
     store.resetForApp(appId)
-    const candidates = normalizeAppIconCandidates(cachedIcon)
+    const candidates = normalizeAppIconCandidates(resolvedCachedIcon)
     const key = JSON.stringify([appId, candidates])
     if (store.candidatesKey$() === key) return
     store.candidatesKey$(key)
-    store.cachedIcon$(cachedIcon)
+    store.cachedIcon$(resolvedCachedIcon)
     store.useCandidates(candidates)
   })
 
