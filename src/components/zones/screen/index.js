@@ -55,6 +55,7 @@ import {
 export const screenLocales = getLocales()
 
 const t = getT(screenLocales)
+const DEFAULT_DOCUMENT_TITLE = '44billion'
 
 f('aScreen', function () {
   useInitOrResetScreen()
@@ -63,6 +64,36 @@ f('aScreen', function () {
   const { isSystemRoute$ } = useSystemRouter()
 
   const storage = useWebStorage(localStorage)
+  const tabStorage = useWebStorage(sessionStorage)
+
+  // Keep the browser tab title in sync with the focused app. System routes
+  // always use the default launcher title, and the title only follows an app
+  // while it is actually open in the active workspace.
+  useTask(({ track }) => {
+    const focusedApp = track(() => {
+      if (isSystemRoute$()) return null
+
+      const wsKeys = storage.session_openWorkspaceKeys$() ?? []
+      const wsKey = wsKeys[0]
+      if (!wsKey) return null
+
+      const openAppKeys = tabStorage[`session_workspaceByKey_${wsKey}_openAppKeys$`]() ?? []
+      for (const appKey of openAppKeys) {
+        const visibility = tabStorage[`session_appByKey_${appKey}_visibility$`]()
+        if (visibility !== 'open') continue
+
+        const appId = storage[`session_appByKey_${appKey}_id$`]()
+        if (!appId) continue
+
+        const appName = storage[`session_appById_${appId}_name$`]()
+        return appName ? { appId, appName } : { appId, appName: '' }
+      }
+
+      return null
+    })
+
+    document.title = focusedApp?.appName || DEFAULT_DOCUMENT_TITLE
+  })
 
   // Listen for subdomain redirect requests from other tabs
   useTask(({ cleanup }) => {
