@@ -29,6 +29,9 @@ import '#shared/route.js'
 import { initMessageListener } from '#helpers/window-message/browser/index.js'
 import { isOnline } from '#helpers/network.js'
 import { bytesToBase36Nsite } from 'libp2r2p/base36'
+import { appEncode } from 'libp2r2p/nip19'
+import { appIdToAddressObj } from '#helpers/app.js'
+import { copyTextToClipboard } from '#helpers/copy-text.js'
 import { allocateAppSubdomain, releaseAppSubdomain } from '#helpers/subdomain-mapping.js'
 import { useVaultModalStore, useVaultActor } from '#zones/vault-modal/index.js'
 import { base62ToBase16, base62ToBytes } from 'libp2r2p/base62'
@@ -45,6 +48,8 @@ import '#shared/icons/icon-remove.js'
 import '#shared/icons/icon-delete.js'
 import '#shared/icons/icon-lock.js'
 import '#shared/icons/icon-library-plus.js'
+import '#shared/icons/icon-share-2.js'
+import '#shared/icons/icon-copy.js'
 import { getAssetBudgetConfirmation } from '#i18n/asset-budget.js'
 import { getT } from '#i18n/index.js'
 import './menus/toolbar-more-menu.js'
@@ -1365,6 +1370,7 @@ f('appLaunchersMenu', function () {
   const { openNewAppInstance } = useGlobalStore('useAppRouter')
   const menuProps = useStore(() => ({
     ...store,
+    copiedAppKey$: null,
     openApp () {
       const { visibility, key: appKey, workspaceKey } = this.app$()
       if (visibility === 'open') throw new Error('App is already open')
@@ -1419,6 +1425,40 @@ f('appLaunchersMenu', function () {
 
       this.close() // close menu
       openNewAppInstance(appId, workspaceKey)
+    },
+    shareApp () {
+      const { id: appId, key: appKey } = this.app$()
+      const appName = storage[`session_appById_${appId}_name$`]()
+      const napp = appEncode({ ...appIdToAddressObj(appId), relays: [] })
+      const url = new URL(`/${napp}`, window.location.origin).href
+      const shareData = { title: appName || '44billion', url }
+      const canShare = typeof navigator.share === 'function'
+
+      const share = async () => {
+        if (canShare) {
+          try {
+            await navigator.share(shareData)
+            this.close()
+            return
+          } catch (error) {
+            if (error?.name === 'AbortError') {
+              this.close()
+              return
+            }
+          }
+        }
+
+        await copyTextToClipboard(url)
+        this.copiedAppKey$(appKey)
+        setTimeout(() => {
+          if (this.copiedAppKey$() === appKey) this.copiedAppKey$(null)
+          this.close()
+        }, 1600)
+      }
+
+      share().catch(error => {
+        if (error?.name !== 'AbortError') console.error('Failed to share app:', error)
+      })
     },
     closeApp () {
       const { visibility, key: appKey, workspaceKey } = this.app$()
@@ -1548,6 +1588,8 @@ f('appLaunchersMenu', function () {
         closeApp,
         removeApp,
         deleteApp,
+        shareApp,
+        copiedAppKey$,
         app$
       } = menuProps
       const {
@@ -1558,6 +1600,8 @@ f('appLaunchersMenu', function () {
       } = app$()
       const openAppKeys = tabStorage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]() ?? []
       const appKeys = storage[`session_workspaceByKey_${workspaceKey}_appById_${appId}_appKeys$`]()
+      const canShare = typeof navigator.share === 'function'
+      const shareLabel = canShare ? t('Share') : t('Copy link')
       return this.h`<div id='scope_pfgf892'>
         <style>${`
           #scope_pfgf892 {
@@ -1575,6 +1619,16 @@ f('appLaunchersMenu', function () {
               flex: 1;
               min-height: 30px;
               padding: 10px 10px 10px 3px;
+            }
+            .share-label {
+              display: grid;
+              width: max-content;
+            }
+            .share-label > span {
+              grid-area: 1 / 1;
+            }
+            .share-label > .share-label-hidden {
+              visibility: hidden;
             }
           }
         `}</style>
@@ -1605,6 +1659,17 @@ f('appLaunchersMenu', function () {
         <div class=${{ invisible: appKeys.length !== 1 }}>
           <div class='icon-wrapper-271yiduh'><icon-delete props=${{ size: '16px' }} /></div>
           <div class='menu-label' onclick=${deleteApp}>${t('Delete')}</div>
+        </div>
+        <div>
+          <div class='icon-wrapper-271yiduh'>
+            ${canShare ? this.h`<icon-share-2 props=${{ size: '16px' }} />` : this.h`<icon-copy props=${{ size: '16px' }} />`}
+          </div>
+          <div class='menu-label' onclick=${shareApp}>
+            <span class='share-label'>
+              <span class=${copiedAppKey$() === appKey ? 'share-label-hidden' : ''}>${shareLabel}</span>
+              <span class=${copiedAppKey$() === appKey ? '' : 'share-label-hidden'}>${t('Copied!')}</span>
+            </span>
+          </div>
         </div>
       </div>`
     }),
@@ -1791,6 +1856,9 @@ function getLocales () {
     'Please open an app': { en: 'Please open an app', fr: 'Veuillez ouvrir une application', it: 'Apri un’app', de: 'Bitte eine App öffnen', es: 'Abre una aplicación', 'pt-BR': 'Abra um app', ru: 'Откройте приложение', 'zh-CN': '请打开一个应用', 'zh-TW': '請開啟一個應用程式', ja: 'アプリを開いてください', ko: '앱을 열어 주세요' },
     Open: { en: 'Open', fr: 'Ouvrir', it: 'Apri', de: 'Öffnen', es: 'Abrir', 'pt-BR': 'Abrir', ru: 'Открыть', 'zh-CN': '打开', 'zh-TW': '開啟', ja: '開く', ko: '열기' },
     'New Window': { en: 'New Window', fr: 'Nouvelle fenêtre', it: 'Nuova finestra', de: 'Neues Fenster', es: 'Nueva ventana', 'pt-BR': 'Nova Janela', ru: 'Новое окно', 'zh-CN': '新建窗口', 'zh-TW': '新視窗', ja: '新しいウィンドウ', ko: '새 창' },
+    Share: { en: 'Share', fr: 'Partager', it: 'Condividi', de: 'Teilen', es: 'Compartir', 'pt-BR': 'Compartilhar', ru: 'Поделиться', 'zh-CN': '分享', 'zh-TW': '分享', ja: '共有', ko: '공유' },
+    'Copy link': { en: 'Copy link', fr: 'Copier le lien', it: 'Copia link', de: 'Link kopieren', es: 'Copiar enlace', 'pt-BR': 'Copiar link', ru: 'Скопировать ссылку', 'zh-CN': '复制链接', 'zh-TW': '複製連結', ja: 'リンクをコピー', ko: '링크 복사' },
+    'Copied!': { en: 'Copied!', fr: 'Copié !', it: 'Copiato!', de: 'Kopiert!', es: '¡Copiado!', 'pt-BR': 'Copiado!', ru: 'Скопировано!', 'zh-CN': '已复制！', 'zh-TW': '已複製！', ja: 'コピーしました！', ko: '복사됨!' },
     Maximize: { en: 'Maximize', fr: 'Agrandir', it: 'Ingrandisci', de: 'Maximieren', es: 'Maximizar', 'pt-BR': 'Maximizar', ru: 'Развернуть', 'zh-CN': '最大化', 'zh-TW': '最大化', ja: '最大化', ko: '최대화' },
     'Bring to First': { en: 'Bring to First', fr: 'Mettre au premier plan', it: 'Porta in primo piano', de: 'In den Vordergrund', es: 'Traer al frente', 'pt-BR': 'Trazer para frente', ru: 'На передний план', 'zh-CN': '置于最前', 'zh-TW': '移至最前', ja: '最前面に移動', ko: '맨 앞으로 가져오기' },
     Minimize: { en: 'Minimize', fr: 'Réduire', it: 'Riduci', de: 'Minimieren', es: 'Minimizar', 'pt-BR': 'Minimizar', ru: 'Свернуть', 'zh-CN': '最小化', 'zh-TW': '最小化', ja: '最小化', ko: '최소화' },
