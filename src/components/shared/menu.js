@@ -82,6 +82,17 @@ f('aMenu', function () {
     else store.dialogRef$().hidePopover() // instead of .close()
   }, { after: 'rendering' })
 
+  // Clicks inside an app iframe (often cross-origin) never reach this
+  // document, so the popover's native light-dismiss never fires. When the
+  // iframe takes focus the top window blurs, so use that as the fallback
+  // signal to close the menu.
+  useTask(({ track, cleanup }) => {
+    if (!track(() => store.isOpen$.get())) return
+    const onWindowBlur = () => store.close()
+    window.addEventListener('blur', onWindowBlur)
+    cleanup(() => window.removeEventListener('blur', onWindowBlur))
+  })
+
   // The dialog tag gives us a dialog role for free
   return this.h`
     <dialog
