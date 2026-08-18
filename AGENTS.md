@@ -36,3 +36,14 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
 - Run `npm test` (Node built-in test runner) and keep the theme test
   (`tests/helpers/theme.test.js`) green — it enforces token format, WCAG contrast
   pairs, and the absence of authored color literals outside `theme.js`.
+
+## Persisted state
+
+- Every localStorage/sessionStorage key or IndexedDB store must be documented in
+  [`docs/storage-model.md`](docs/storage-model.md) and registered in
+  [`src/constants/storage-schema.js`](src/constants/storage-schema.js) in the
+  same change that introduces it.
+- The launcher runs a two-phase storage audit on load: the post-render pass
+  detects inconsistent workspace/app/account state and schedules a repair
+  reload; the pre-render pass applies the pending repair plan. Keep the audit
+  pure, prefer existing cleanup routines, and preserve unknown keys.

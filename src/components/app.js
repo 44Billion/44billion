@@ -6,6 +6,7 @@ import { f, useSignal, useTask } from '#f'
 import { appEncode, NAPP_ENTITY_REGEX } from 'libp2r2p/nip19'
 import { appIdToAddressObj } from '#helpers/app.js'
 import { initLauncherSw } from '#services/launcher-sw-manager.js'
+import { applyPendingStorageRepair } from '#services/storage-audit/bootstrap.js'
 import { useInitI18n } from '#i18n/index.js'
 
 // Clear old localStorage data from pre-v2 schema (bundle→siteManifest migration)
@@ -70,6 +71,10 @@ f('aApp', function () {
 
   const shouldLoadSingleNapp$ = useSignal(null)
   useTask(async () => {
+    await applyPendingStorageRepair().catch(error => {
+      console.error('[storage-audit] Failed to apply pending repair', error)
+    })
+
     const firstRoutePart = window.location.pathname.replace(/^\/|\/.*$/g, '')
     const isNappRoute = NAPP_ENTITY_REGEX.test(firstRoutePart)
 

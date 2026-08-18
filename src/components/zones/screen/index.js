@@ -37,6 +37,7 @@ import { useVaultModalStore, useVaultActor } from '#zones/vault-modal/index.js'
 import { base62ToBase16, base62ToBytes } from 'libp2r2p/base62'
 import { formatAssetBudgetBytes } from '#services/app-asset-budget/index.js'
 import { useConfirmationDialogStore } from '#zones/confirmation-dialog/index.js'
+import { scheduleStorageRepair } from '#services/storage-audit/bootstrap.js'
 import '#shared/napp-assets-caching-progress-bar.js'
 import '#shared/app-icon.js'
 import '#shared/svg.js'
@@ -71,6 +72,13 @@ f('aScreen', function () {
 
   const storage = useWebStorage(localStorage)
   const tabStorage = useWebStorage(sessionStorage)
+
+  useTask(({ track }) => {
+    if (!track(() => storage.session_workspaceKeys$()?.length)) return
+    scheduleStorageRepair().catch(error => {
+      console.error('[storage-audit] Failed to schedule repair', error)
+    })
+  })
 
   // Keep the browser tab title in sync with the focused app. System routes
   // always use the default launcher title, and the title only follows an app
