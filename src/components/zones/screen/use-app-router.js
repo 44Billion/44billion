@@ -73,7 +73,7 @@ export default function useAppRouter () {
     return { hasOpened: true, isInstalled: true }
   })
 
-  const createAppInstance = useCallback((appId, appRoute, wsKey) => {
+  const createAppInstance = useCallback((appId, appRoute, wsKey, { isInstalled = true } = {}) => {
     wsKey ??= openWorkspaceKeys$()[0]
     if (!wsKey) throw new Error('User n/a')
 
@@ -85,7 +85,11 @@ export default function useAppRouter () {
       isNew: false
     }
     storage[`session_workspaceByKey_${wsKey}_appById_${app.id}_appKeys$`](v => {
-      if (!Array.isArray(v)) v = []
+      // Keep this check explicit. Only a brand-new install may start from an
+      // undefined appKeys list; an additional instance must already have one.
+      // A generic `if (!Array.isArray(v)) v = []` would hide a regression in
+      // workspace initialization.
+      if (!isInstalled) v = []
       v.push(app.key)
       return v
     })
@@ -104,6 +108,7 @@ export default function useAppRouter () {
 
   const openApp = useCallback((napp, appRoute, wsKey) => {
     if (!openWorkspaceKeys$().length) throw new Error()
+    wsKey ??= openWorkspaceKeys$()[0]
     const decodedApp = appDecode(napp)
     const appId = addressObjToAppId(decodedApp)
     const decodedAppRelays = decodedApp.relays.slice(0, 4)
@@ -119,7 +124,7 @@ export default function useAppRouter () {
 
     if (hasOpened) return
 
-    const app = createAppInstance(appId, appRoute, wsKey)
+    const app = createAppInstance(appId, appRoute, wsKey, { isInstalled })
 
     if (isInstalled) return
 
@@ -171,7 +176,7 @@ export default function useAppRouter () {
       openApp(napp, appRoute, wsKey)
     },
     openNewAppInstance (appId, wsKey) {
-      return createAppInstance(appId, '', wsKey).key
+      return createAppInstance(appId, '', wsKey, { isInstalled: true }).key
     }
   }))
 }
