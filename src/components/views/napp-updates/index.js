@@ -550,176 +550,178 @@ f('napp-update-card', function () {
 
   return this.h`
     <style>${/* css */`
-      .card-8d6gfgwh3wl {
-        @media ${jsVars.breakpoints.mobile} {
-          margin: 0 10px;
-        }
-        margin: 0 20px;
+      napp-updates {
+        .card-8d6gfgwh3wl {
+          @media ${jsVars.breakpoints.mobile} {
+            margin: 0 10px;
+          }
+          margin: 0 20px;
 
-        padding: 16px;
-        background-color: ${cssVars.colors.bg2};
-        border-radius: 16px;
-        display: flex;
-        align-items: center;
-        gap: 16px;
-      }
-
-      .icon-wrapper {
-        width: 48px;
-        height: 48px;
-        border-radius: 10px;
-        overflow: hidden;
-        background-color: ${cssVars.colors.bgAvatar};
-        flex-shrink: 0;
-      }
-
-      .info {
-        flex-grow: 1;
-        min-width: 0;
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-      }
-
-      .name-row {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-      }
-
-      .name {
-        font-weight: 600;
-        font-size: 16rem;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        color: ${cssVars.colors.fg};
-      }
-
-      .name-placeholder {
-        height: 16rem;
-        width: 150px;
-        border-radius: 4px;
-        background-color: ${cssVars.colors.bg3};
-        margin-bottom: 4px;
-      }
-
-      @keyframes pulse {
-        50% { opacity: .5; }
-      }
-      .animate-background {
-        animation: pulse 2s cubic-bezier(.4,0,.6,1) infinite;
-      }
-
-      .version-info {
-        font-size: 13rem;
-        color: ${cssVars.colors.fg2};
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-      }
-
-      .current-ver {
-        opacity: 0.8;
-        display: flex;
-        align-items: center;
-        gap: 6px;
-      }
-
-      .publisher-avatar {
-        width: 16px;
-        height: 16px;
-        border-radius: 50%;
-        background-color: ${cssVars.colors.bgAvatar};
-        display: inline-block;
-        overflow: hidden;
-      }
-
-      .next-ver {
-        color: ${cssVars.colors.fg2AccentPrimary};
-        font-weight: 500;
-        display: flex;
-        align-items: center;
-        gap: 4px;
-      }
-
-      .update-btn {
-        padding: 8px 16px;
-        border-radius: 6px;
-        font-size: 14rem;
-        font-weight: 600;
-        cursor: pointer;
-        border: none;
-        background-color: ${cssVars.colors.bgAccentPrimary};
-        color: ${cssVars.colors.fgAccent};
-        transition: filter 0.2s;
-        white-space: nowrap;
-
-        &:hover {
-          filter: brightness(1.1);
+          padding: 16px;
+          background-color: ${cssVars.colors.bg2};
+          border-radius: 16px;
+          display: flex;
+          align-items: center;
+          gap: 16px;
         }
 
-        &:disabled {
-          opacity: 0.5;
-          cursor: not-allowed;
+        .icon-wrapper {
+          width: 48px;
+          height: 48px;
+          border-radius: 10px;
+          overflow: hidden;
+          background-color: ${cssVars.colors.bgAvatar};
+          flex-shrink: 0;
         }
-      }
 
-      .progress-circle-container {
-        position: relative;
-        width: 36px;
-        height: 36px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-      }
+        .info {
+          flex-grow: 1;
+          min-width: 0;
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+        }
 
-      .progress-circle-container.done-fadeout {
-        animation: done-fade-out 3.5s forwards;
-      }
+        .name-row {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
 
-      @keyframes done-fade-out {
-        0%, 85% { opacity: 1; }
-        100% { opacity: 0; }
-      }
+        .name {
+          font-weight: 600;
+          font-size: 16rem;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          color: ${cssVars.colors.fg};
+        }
 
-      .progress-circle-svg {
-        transform: rotate(-90deg);
-        width: 100%;
-        height: 100%;
-      }
+        .name-placeholder {
+          height: 16rem;
+          width: 150px;
+          border-radius: 4px;
+          background-color: ${cssVars.colors.bg3};
+          margin-bottom: 4px;
+        }
 
-      .progress-circle-bg {
-        stroke: ${cssVars.colors.mg2};
-      }
+        @keyframes pulse {
+          50% { opacity: .5; }
+        }
+        .animate-background {
+          animation: pulse 2s cubic-bezier(.4,0,.6,1) infinite;
+        }
 
-      .progress-circle-fg {
-        stroke: ${cssVars.colors.bgAccentPrimary};
-        transition: stroke-dashoffset 0.3s ease;
-      }
+        .version-info {
+          font-size: 13rem;
+          color: ${cssVars.colors.fg2};
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
 
-      .progress-circle-fg.done {
-        stroke: ${cssVars.colors.fgSuccess};
-      }
+        .current-ver {
+          opacity: 0.8;
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
 
-      .progress-circle-fg.error {
-        stroke: ${cssVars.colors.fgError};
-        animation: error-progress 7s linear forwards;
-      }
+        .publisher-avatar {
+          width: 16px;
+          height: 16px;
+          border-radius: 50%;
+          background-color: ${cssVars.colors.bgAvatar};
+          display: inline-block;
+          overflow: hidden;
+        }
 
-      @keyframes error-progress {
-        from { stroke-dashoffset: 100; }
-        to { stroke-dashoffset: 0; }
-      }
+        .next-ver {
+          color: ${cssVars.colors.fg2AccentPrimary};
+          font-weight: 500;
+          display: flex;
+          align-items: center;
+          gap: 4px;
+        }
 
-      .progress-content {
-        position: absolute;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 12rem;
-        font-weight: 600;
-        color: ${cssVars.colors.fg};
+        .update-btn {
+          padding: 8px 16px;
+          border-radius: 6px;
+          font-size: 14rem;
+          font-weight: 600;
+          cursor: pointer;
+          border: none;
+          background-color: ${cssVars.colors.bgAccentPrimary};
+          color: ${cssVars.colors.fgAccent};
+          transition: filter 0.2s;
+          white-space: nowrap;
+
+          &:hover {
+            filter: brightness(1.1);
+          }
+
+          &:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+          }
+        }
+
+        .progress-circle-container {
+          position: relative;
+          width: 36px;
+          height: 36px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+
+        .progress-circle-container.done-fadeout {
+          animation: done-fade-out 3.5s forwards;
+        }
+
+        @keyframes done-fade-out {
+          0%, 85% { opacity: 1; }
+          100% { opacity: 0; }
+        }
+
+        .progress-circle-svg {
+          transform: rotate(-90deg);
+          width: 100%;
+          height: 100%;
+        }
+
+        .progress-circle-bg {
+          stroke: ${cssVars.colors.mg2};
+        }
+
+        .progress-circle-fg {
+          stroke: ${cssVars.colors.bgAccentPrimary};
+          transition: stroke-dashoffset 0.3s ease;
+        }
+
+        .progress-circle-fg.done {
+          stroke: ${cssVars.colors.fgSuccess};
+        }
+
+        .progress-circle-fg.error {
+          stroke: ${cssVars.colors.fgError};
+          animation: error-progress 7s linear forwards;
+        }
+
+        @keyframes error-progress {
+          from { stroke-dashoffset: 100; }
+          to { stroke-dashoffset: 0; }
+        }
+
+        .progress-content {
+          position: absolute;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 12rem;
+          font-weight: 600;
+          color: ${cssVars.colors.fg};
+        }
       }
     `}</style>
     <div class='card-8d6gfgwh3wl'>
