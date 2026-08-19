@@ -139,13 +139,15 @@ f('other-users-app-groups', function () {
     isOpen$.set(true)
   }
 
-  // Close the popover automatically when the expanded group disappears
-  // (its last app was closed, or its user became the selected one).
+  // Close the popover automatically when the expanded group stops being a
+  // group: its last-but-one app was closed (single apps are shown directly in
+  // the toolbar, and the bubble drops its popover anchor-name), or its user
+  // became the selected one.
   useTask(({ track }) => {
     const expandedUserPk = track(() => expandedUserPk$())
     if (!expandedUserPk) return
     const group = track(() => groups$().find(g => g.userPk === expandedUserPk))
-    if (group) return
+    if (group && group.instances.length > 1) return
     expandedUserPk$(null)
     closeGroup()
   })
