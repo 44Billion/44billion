@@ -54,6 +54,8 @@ import '#shared/icons/icon-copy.js'
 import { getAssetBudgetConfirmation } from '#i18n/asset-budget.js'
 import { getT } from '#i18n/index.js'
 import './menus/toolbar-more-menu.js'
+import './menus/other-users-app-groups.js'
+import { otherUsersGroupPopoverOpen$ } from './menus/other-users-app-groups.js'
 import {
   FIRST_ACCOUNT_ATTENTION_SIGNAL,
   shouldShowFirstAccountAttention
@@ -1326,6 +1328,7 @@ f('toolbarAppList', function () {
   }), { isStatic: false })
 
   return this.h`
+    <other-users-app-groups />
     <toolbar-pinned-apps />
     <toolbar-unpinned-apps />
   `
@@ -1354,6 +1357,7 @@ f('toolbarPinnedApps', function () {
 f('toolbarUnpinnedApps', function () {
   const storage = useWebStorage(localStorage)
   const { session_openWorkspaceKeys$: openWorkspaceKeys$ } = storage
+  const isGroupPopoverOpen$ = useComputed(() => otherUsersGroupPopoverOpen$())
   const appIdsdKeysIndexes$ = useComputed(() => {
     const wsKey = openWorkspaceKeys$()[0]
     const pinnedAppIdsLength = (storage[`session_workspaceByKey_${wsKey}_pinnedAppIds$`]() || []).length
@@ -1366,7 +1370,7 @@ f('toolbarUnpinnedApps', function () {
   })
 
   return this.h`
-    <app-launchers-menu />
+    ${isGroupPopoverOpen$() ? '' : this.h`<app-launchers-menu />`}
     ${appIdsdKeysIndexes$().map(v => this.h({ key: v.appKey })`<toolbar-app-launcher key=${v.appKey} props=${v} />`)}
   `
 })
@@ -1717,11 +1721,12 @@ f('toolbarAppLauncher', function () {
   const newAppIdsObj$ = useGlobalSignal('hardcoded_newAppIdsObj')
   const appIndex$ = useStateSignal(this.props.appIndex)
   const appRef$ = useSignal()
+  const workspaceKey = this.props.workspaceKey || storage.session_openWorkspaceKeys$()[0]
 
   const app$ = useComputed(() => ({
     id: this.props.appId,
     key: this.props.appKey,
-    workspaceKey: storage.session_openWorkspaceKeys$()[0],
+    workspaceKey,
     index: appIndex$(),
     visibility: tabStorage[`session_appByKey_${this.props.appKey}_visibility$`]() ?? 'closed',
     icon: storage[`session_appByKey_${this.props.appKey}_icon$`](),
