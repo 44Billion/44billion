@@ -134,6 +134,10 @@ export async function scheduleStorageRepair ({
         }
         localStorageArea?.setItem?.(STORAGE_REPAIR_IN_PROGRESS_KEY, '1')
         localStorageArea?.setItem?.(STORAGE_REPAIR_ATTEMPTS_KEY, String(attempts + 1))
+        console.info('[storage-audit] Repair pending; reloading to apply', {
+          codeVersion,
+          issues: existingPlan.issues?.length ?? 0
+        })
         reload()
         scheduled = true
         return
@@ -158,6 +162,10 @@ export async function scheduleStorageRepair ({
     localStorageArea?.setItem?.(STORAGE_REPAIR_PLAN_KEY, JSON.stringify(plan))
     localStorageArea?.setItem?.(STORAGE_REPAIR_IN_PROGRESS_KEY, '1')
     localStorageArea?.setItem?.(STORAGE_REPAIR_ATTEMPTS_KEY, '1')
+    console.info('[storage-audit] Repair scheduled; reloading to apply', {
+      codeVersion,
+      issues: plan.issues?.length ?? 0
+    })
     reload()
     scheduled = true
   })

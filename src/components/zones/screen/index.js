@@ -75,8 +75,10 @@ f('aScreen', function () {
   const storage = useWebStorage(localStorage)
   const tabStorage = useWebStorage(sessionStorage)
 
-  useTask(({ track }) => {
-    if (!track(() => storage.session_workspaceKeys$()?.length)) return
+  // No track: the audit should run once, not react to workspace changes.
+  // useInitOrResetScreen is synchronous and registered before this task.
+  useTask(() => {
+    if (!storage.session_workspaceKeys$()?.length) return
     scheduleStorageRepair().catch(error => {
       console.error('[storage-audit] Failed to schedule repair', error)
     })
