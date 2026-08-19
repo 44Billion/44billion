@@ -1349,7 +1349,7 @@ f('toolbarAppList', function () {
         this.isOpen$(v => !v)
       } else {
         this.close()
-        Promise.resolve().then(() => {
+        window.queueMicrotask(() => {
           this.app$(nextApp)
           this.open()
         })
