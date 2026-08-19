@@ -1,4 +1,4 @@
-import { f, useStore, useGlobalStore, useComputed } from '#f'
+import { f, useStore, useGlobalStore, useComputed, useTask } from '#f'
 import { cssVars } from '#assets/styles/theme.js'
 import '#shared/menu.js'
 import '#shared/icons/icon-dots.js'
@@ -14,6 +14,33 @@ import { applyLauncherUpdate, launcherUpdateState$ } from '#services/launcher-sw
 
 export const toolbarMoreMenuLocales = getLocales()
 const t = getT({ ...toolbarMoreMenuLocales, ...launcherUpdateLocales })
+
+// Tracks whether the "Hide Toolbar" action entered browser fullscreen, so an
+// external exit (ESC, gesture) can reveal the toolbar again.
+let toolbarFullscreen = false
+
+function isDocumentFullscreen () {
+  return !!(document.fullscreenElement || document.webkitFullscreenElement)
+}
+
+function requestToolbarFullscreen () {
+  const root = document.documentElement
+  const request = root.requestFullscreen ?? root.webkitRequestFullscreen
+  if (!request || isDocumentFullscreen()) return
+  const promise = request.call(root)
+  if (promise?.then) {
+    promise.then(() => { toolbarFullscreen = true }).catch(() => {})
+  } else {
+    // Legacy webkit API without a promise: assume it entered fullscreen.
+    toolbarFullscreen = true
+  }
+}
+
+function exitToolbarFullscreen () {
+  if (!isDocumentFullscreen()) return
+  const exit = document.exitFullscreen ?? document.webkitExitFullscreen
+  exit?.call(document).catch?.(() => {})
+}
 
 f('toolbar-more-menu', function () {
   const { isHidden$ } = useGlobalStore('toolbarState', { isHidden$: false })
@@ -33,6 +60,21 @@ f('toolbar-more-menu', function () {
   const launcherUpdatePending$ = useComputed(() =>
     launcherUpdateState$() === 'dismissed'
   )
+
+  useTask(({ cleanup }) => {
+    const onFullscreenChange = () => {
+      if (toolbarFullscreen && !isDocumentFullscreen()) {
+        toolbarFullscreen = false
+        isHidden$.set(false)
+      }
+    }
+    document.addEventListener('fullscreenchange', onFullscreenChange)
+    document.addEventListener('webkitfullscreenchange', onFullscreenChange)
+    cleanup(() => {
+      document.removeEventListener('fullscreenchange', onFullscreenChange)
+      document.removeEventListener('webkitfullscreenchange', onFullscreenChange)
+    })
+  })
 
   const menuProps = useStore({
     isOpen$,
@@ -114,6 +156,7 @@ f('toolbar-more-menu', function () {
         <div onclick=${() => {
           isHidden$.set(true)
           isOpen$.set(false)
+          requestToolbarFullscreen()
         }}>
           <div class='icon-wrapper'><icon-eye-closed props=${{ size: '16px' }} /></div>
           <div class='menu-label'>${t('Hide Toolbar')}</div>
@@ -199,7 +242,10 @@ f('toolbar-restore-button', function () {
     <div
       id='toolbar-restore-button'
       class=${{ visible: isHidden$() }}
-      onclick=${() => isHidden$.set(false)}
+      onclick=${() => {
+        exitToolbarFullscreen()
+        isHidden$.set(false)
+      }}
       style=${`
         position: absolute;
         bottom: 0;
