@@ -714,11 +714,13 @@ f('unifiedToolbar', function () {
           display: flex !important;
 
           @media (orientation: portrait) {
-            padding-left: 7px; */
+            padding-left: 7px;
+            padding-right: 7px; /* owns the gap to the app list so the edge fade sits flush */
           }
           @media (orientation: landscape) {
             flex-direction: column;
-            padding-top: 7px; */
+            padding-top: 7px;
+            padding-bottom: 7px;
             /**/
           }
 
@@ -731,12 +733,38 @@ f('unifiedToolbar', function () {
           align-items: center;
           overflow: auto hidden;
           gap: 7px;
-          padding: 0 7px;
+          padding: 0;
+
+          &.fade-start {
+            -webkit-mask-image: linear-gradient(to right, transparent, black 14px, black 100%);
+            mask-image: linear-gradient(to right, transparent, black 14px, black 100%);
+          }
+          &.fade-end {
+            -webkit-mask-image: linear-gradient(to right, black calc(100% - 14px), transparent);
+            mask-image: linear-gradient(to right, black calc(100% - 14px), transparent);
+          }
+          &.fade-start.fade-end {
+            -webkit-mask-image: linear-gradient(to right, transparent, black 14px, black calc(100% - 14px), transparent);
+            mask-image: linear-gradient(to right, transparent, black 14px, black calc(100% - 14px), transparent);
+          }
 
           @media (orientation: landscape) {
             flex-direction: column;
             overflow: hidden auto;
-            padding: 7px 0;
+            padding: 0;
+
+            &.fade-start {
+              -webkit-mask-image: linear-gradient(to bottom, transparent, black 14px, black 100%);
+              mask-image: linear-gradient(to bottom, transparent, black 14px, black 100%);
+            }
+            &.fade-end {
+              -webkit-mask-image: linear-gradient(to top, transparent, black 14px, black 100%);
+              mask-image: linear-gradient(to top, transparent, black 14px, black 100%);
+            }
+            &.fade-start.fade-end {
+              -webkit-mask-image: linear-gradient(to bottom, transparent, black 14px, black calc(100% - 14px), transparent);
+              mask-image: linear-gradient(to bottom, transparent, black 14px, black calc(100% - 14px), transparent);
+            }
           }
 
           ${scrollbar$.get(false).hasOverlay
@@ -1326,6 +1354,32 @@ f('toolbarAppList', function () {
       }
     }
   }), { isStatic: false })
+
+  // Soften the hard clipping at the app list edges: while content is cut at
+  // the start or end edge, toggle a mask that fades those edges out. The
+  // mask is anchored to the container, so the fade stays put while scrolling.
+  useTask(({ cleanup }) => {
+    const el = this
+    const updateEdgeFades = () => {
+      const isLandscape = window.matchMedia('(orientation: landscape)').matches
+      const canScrollStart = isLandscape
+        ? el.scrollTop > 0
+        : el.scrollLeft > 0
+      const canScrollEnd = isLandscape
+        ? el.scrollTop + el.clientHeight < el.scrollHeight - 1
+        : el.scrollLeft + el.clientWidth < el.scrollWidth - 1
+      el.classList.toggle('fade-start', canScrollStart)
+      el.classList.toggle('fade-end', canScrollEnd)
+    }
+    updateEdgeFades()
+    el.addEventListener('scroll', updateEdgeFades, { passive: true })
+    const resizeObserver = new ResizeObserver(updateEdgeFades)
+    resizeObserver.observe(el)
+    cleanup(() => {
+      el.removeEventListener('scroll', updateEdgeFades)
+      resizeObserver.disconnect()
+    })
+  }, { after: 'rendering' })
 
   return this.h`
     <other-users-app-groups />
