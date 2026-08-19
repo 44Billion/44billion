@@ -1,4 +1,4 @@
-import { f, useStore, useGlobalStore, useComputed, useTask } from '#f'
+import { f, useStore, useGlobalStore, useComputed, useSignal, useTask } from '#f'
 import { cssVars } from '#assets/styles/theme.js'
 import '#shared/menu.js'
 import '#shared/icons/icon-dots.js'
@@ -18,6 +18,15 @@ const t = getT({ ...toolbarMoreMenuLocales, ...launcherUpdateLocales })
 // Tracks whether the "Hide Toolbar" action entered browser fullscreen, so an
 // external exit (ESC, gesture) can reveal the toolbar again.
 let toolbarFullscreen = false
+const WATERMARK_DELAY_MS = 3000
+// Translucent ice palette for the watermark state (like a TV channel logo
+// over content): desaturated, with the silhouette/contours still visible.
+const ICE_GRADIENT_START = 'oklch(0.97 0.02 245 / 0.42)'
+const ICE_GRADIENT_MIDDLE = 'oklch(0.9 0.04 235 / 0.36)'
+const ICE_GRADIENT_END = 'oklch(0.8 0.05 225 / 0.3)'
+const ICE_HIGHLIGHT = 'oklch(1 0 0 / 0.5)'
+const ICE_SHADE = 'oklch(0.72 0.04 235 / 0.34)'
+const ICE_STROKE = 'oklch(0.97 0.02 245 / 0.7)'
 
 function isDocumentFullscreen () {
   return !!(document.fullscreenElement || document.webkitFullscreenElement)
@@ -237,11 +246,26 @@ f('toolbar-more-menu', function () {
 
 f('toolbar-restore-button', function () {
   const { isHidden$ } = useGlobalStore('toolbarState')
+  const isWatermark$ = useSignal(false)
+
+  // After a few seconds the restore button fades into an ice watermark
+  // (translucent white-blue gradient with visible contours), so it does not
+  // draw attention away from an app behind it. It still reacts to hover/tap.
+  useTask(({ track, cleanup }) => {
+    const visible = track(() => isHidden$())
+    let timerId = null
+    cleanup(() => {
+      if (timerId) clearTimeout(timerId)
+      isWatermark$(false)
+    })
+    if (!visible) return
+    timerId = setTimeout(() => isWatermark$(true), WATERMARK_DELAY_MS)
+  })
 
   return this.h`
     <div
       id='toolbar-restore-button'
-      class=${{ visible: isHidden$() }}
+      class=${{ visible: isHidden$(), watermark: isWatermark$() }}
       onclick=${() => {
         exitToolbarFullscreen()
         isHidden$.set(false)
@@ -256,11 +280,11 @@ f('toolbar-restore-button', function () {
         cursor: pointer;
         pointer-events: none;
         opacity: 0;
-        transition: opacity 0.3s ease-in-out;
+        transition: opacity 0.3s ease-in-out, filter 0.6s ease-in-out;
         overflow: hidden;
       `}
     >
-      <style>
+      <style>${/* css */`
         @keyframes gem-glow-anim {
           0% { opacity: 0; }
           20% { opacity: 0.8; }
@@ -268,6 +292,10 @@ f('toolbar-restore-button', function () {
         }
 
         #toolbar-restore-button {
+          stop {
+            transition: stop-color 0.6s ease-in-out;
+          }
+
           &.visible {
             pointer-events: auto !important;
             opacity: 1 !important;
@@ -276,8 +304,28 @@ f('toolbar-restore-button', function () {
           &.visible .gem-glow {
             animation: gem-glow-anim 2s ease-out;
           }
+
+          &.watermark {
+            #gemGradient stop:nth-child(1) { stop-color: ${ICE_GRADIENT_START}; }
+            #gemGradient stop:nth-child(2) { stop-color: ${ICE_GRADIENT_MIDDLE}; }
+            #gemGradient stop:nth-child(3) { stop-color: ${ICE_GRADIENT_END}; }
+            .gem-highlight { fill: ${ICE_HIGHLIGHT}; }
+            .gem-shade { fill: ${ICE_SHADE}; }
+            .gem-stroke { stroke: ${ICE_STROKE}; }
+          }
+
+          &.visible:hover,
+          &:active {
+            opacity: 1 !important;
+            #gemGradient stop:nth-child(1) { stop-color: ${cssVars.colors.artworkPurpleStart}; }
+            #gemGradient stop:nth-child(2) { stop-color: ${cssVars.colors.artworkPurpleMiddle}; }
+            #gemGradient stop:nth-child(3) { stop-color: ${cssVars.colors.artworkPurpleEnd}; }
+            .gem-highlight { fill: ${cssVars.colors.artworkHighlight}; }
+            .gem-shade { fill: ${cssVars.colors.artworkShade}; }
+            .gem-stroke { stroke: ${cssVars.colors.artworkStroke}; }
+          }
         }
-      </style>
+      `}</style>
 
       <svg viewBox="0 0 100 100" width="50%" height="50%" style="display: block; position: absolute; bottom: 0; right: 0;">
         <defs>
@@ -290,10 +338,10 @@ f('toolbar-restore-button', function () {
 
         <path d="M100 0 L100 100 L0 100 Z" fill="url(#gemGradient)" />
 
-        <path d="M100 0 L100 100 L60 60 Z" fill=${cssVars.colors.artworkHighlight} />
-        <path d="M0 100 L100 100 L60 60 Z" fill=${cssVars.colors.artworkShade} />
+        <path class="gem-highlight" d="M100 0 L100 100 L60 60 Z" fill=${cssVars.colors.artworkHighlight} />
+        <path class="gem-shade" d="M0 100 L100 100 L60 60 Z" fill=${cssVars.colors.artworkShade} />
 
-        <path d="M85 85 L95 15 L15 95 Z" fill="none" stroke=${cssVars.colors.artworkStroke} stroke-width="1" />
+        <path class="gem-stroke" d="M85 85 L95 15 L15 95 Z" fill="none" stroke=${cssVars.colors.artworkStroke} stroke-width="1" />
       </svg>
 
       <div class="gem-glow" style=${`
