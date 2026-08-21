@@ -1,5 +1,5 @@
 import { useCallback, useGlobalSignal, useStore, useTask } from '#f'
-import useLocation from '#hooks/use-location.js'
+import { useLocation } from '#f'
 
 export default function useSystemRouter () {
   const loc = useLocation()

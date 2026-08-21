@@ -46,11 +46,11 @@
     "@dicebear/styles": "^10.3.0",
     "@leeoniya/ufuzzy": "^1.0.19",
     "@noble/hashes": "^2.0.1",
-    "libp2r2p": "^0.10.6",
+    "libp2r2p": "^0.10.7",
     "meilisearch": "^0.54.0",
     "mime": "^4.0.7",
     "nmmr": "^2.0.0",
-    "thenameisf": "^1.2.5",
+    "thenameisf": "^1.2.7",
     "url-router": "^13.0.0"
   }
 }

@@ -1,7 +1,7 @@
 import { f, useTask } from '#f'
 import AppUpdater from '#services/app-updater/index.js'
 import { formatAssetBudgetBytes } from '#services/app-asset-budget/index.js'
-import useLocation from '#hooks/use-location.js'
+import { useLocation } from '#f'
 import router from './router.js'
 import '#zones/screen/index.js'
 import { useVaultModalStore } from '#zones/vault-modal/index.js'

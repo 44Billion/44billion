@@ -1,6 +1,6 @@
 import { f, useSignal, useCallback, useComputed } from '#f'
 import useWebStorage from '#hooks/use-web-storage.js'
-import useLocation from '#hooks/use-location.js'
+import { useLocation } from '#f'
 import { cssVars } from '#assets/styles/theme.js'
 import '#shared/back-btn.js'
 import '#shared/toggle-switch.js'

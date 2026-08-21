@@ -3,8 +3,10 @@ import resetCssString from '#assets/styles/reset.css'
 import globalCssString from '#assets/styles/global.css'
 import { cssClasses, cssStrings } from '#assets/styles/theme.js'
 import { f, useSignal, useTask } from '#f'
-import { appEncode, NAPP_ENTITY_REGEX } from 'libp2r2p/nip19'
+import { appEncode } from 'libp2r2p/nip19'
+import { decodeAppUrl } from 'libp2r2p/url'
 import { appIdToAddressObj } from '#helpers/app.js'
+import { isAppUrl, resolveAppUrl } from '#helpers/resolve-app-url.js'
 import { initLauncherSw } from '#services/launcher-sw-manager.js'
 import { applyPendingStorageRepair } from '#services/storage-audit/bootstrap.js'
 import { useInitI18n } from '#i18n/index.js'
@@ -76,13 +78,31 @@ f('aApp', function () {
     })
 
     const firstRoutePart = window.location.pathname.replace(/^\/|\/.*$/g, '')
-    const isNappRoute = NAPP_ENTITY_REGEX.test(firstRoutePart)
+    if (!isAppUrl(firstRoutePart)) {
+      shouldLoadSingleNapp$(false)
+      await import('#zones/multi-napp/index.js')
+      return
+    }
 
-    shouldLoadSingleNapp$(
-      window !== window.top &&
-      isNappRoute // TODO: or also if @<valid nip05expanded or npub>
-    )
-    await (shouldLoadSingleNapp$() ? import('#zones/single-napp/index.js') : import('#zones/multi-napp/index.js'))
+    if (window === window.top || decodeAppUrl(firstRoutePart)?.type === 'entity') {
+      shouldLoadSingleNapp$(window !== window.top)
+      await (shouldLoadSingleNapp$() ? import('#zones/single-napp/index.js') : import('#zones/multi-napp/index.js'))
+      return
+    }
+
+    // Embedded named URL: resolve it and normalize to the canonical entity
+    // before mounting the single-napp zone.
+    const resolvedEntity = await resolveAppUrl(firstRoutePart)
+    if (!resolvedEntity) {
+      shouldLoadSingleNapp$(false)
+      await import('#zones/multi-napp/index.js')
+      return
+    }
+    const restPath = window.location.pathname.slice(firstRoutePart.length + 1)
+    const canonicalHref = `/${resolvedEntity}${restPath}${window.location.search}${window.location.hash}`
+    history.replaceState(null, '', canonicalHref)
+    await import('#zones/single-napp/index.js')
+    shouldLoadSingleNapp$(true)
   })
   if (shouldLoadSingleNapp$() === null) return
 

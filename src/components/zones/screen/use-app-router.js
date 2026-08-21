@@ -1,9 +1,10 @@
 import { useTask, useCallback, useGlobalStore } from '#f'
-import useLocation from '#hooks/use-location.js'
+import { useLocation } from '#f'
 import useWebStorage from '#hooks/use-web-storage.js'
-import { NAPP_ENTITY_REGEX, appDecode } from 'libp2r2p/nip19'
-import { isValidPublicRelayUrl, normalizeRelayUrl } from 'libp2r2p/url'
+import { appDecode } from 'libp2r2p/nip19'
+import { decodeAppUrl, isValidPublicRelayUrl, normalizeRelayUrl } from 'libp2r2p/url'
 import { addressObjToAppId } from '#helpers/app.js'
+import { isAppUrl, resolveAppUrl } from '#helpers/resolve-app-url.js'
 import router from '#zones/multi-napp/router.js'
 import { requestNostrDbAppBackfillForWorkspace } from './helpers/nostrdb-app-backfill.js'
 
@@ -135,12 +136,26 @@ export default function useAppRouter () {
     requestNostrDbAppBackfillForWorkspace({ storage, wsKey, appId: app.id })
   })
 
-  useTask(({ track }) => {
+  useTask(async ({ track }) => {
     const route = track(() => loc.route$())
-    if (!NAPP_ENTITY_REGEX.test(route.url.pathname.split('/')[1])) return
+    const firstPart = route.url.pathname.split('/')[1]
+    if (!isAppUrl(firstPart)) return
+
+    let napp
+    if (decodeAppUrl(firstPart)?.type === 'entity') {
+      napp = firstPart
+    } else {
+      napp = await resolveAppUrl(firstPart)
+      if (!napp) {
+        loc.replaceState(history.state, '', '/')
+        return
+      }
+      // The user may have navigated away while the NIP-05/manifest lookup ran.
+      if (loc.route$().url.pathname.split('/')[1] !== firstPart) return
+    }
 
     let appRoute
-    let { napp, appPath } = route.params
+    let { appPath } = route.params
     appPath = appPath.replace(/^\/{0,}/, '/')
     const { search, hash } = route.url
     if (appPath !== '/' || search || hash) {
@@ -163,10 +178,19 @@ export default function useAppRouter () {
   })
 
   useGlobalStore('useAppRouter', () => ({
-    openApp (href, wsKey) {
+    async openApp (href, wsKey) {
       const url = new URL(href, window.location.origin)
+      const firstPart = url.pathname.split('/')[1]
+      let napp
+      if (decodeAppUrl(firstPart)?.type === 'entity') {
+        napp = firstPart
+      } else {
+        napp = await resolveAppUrl(firstPart)
+        if (!napp) throw new Error('Could not resolve app URL')
+      }
+
       let appRoute
-      let { napp, appPath } = router.find(url.pathname.replace(/\/+$/, '')).params
+      let { appPath } = router.find(url.pathname.replace(/\/+$/, '')).params
       appPath = appPath.replace(/^\/{0,}/, '/')
       const { search, hash } = url
       if (appPath !== '/' || search || hash) {

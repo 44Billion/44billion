@@ -1,5 +1,5 @@
 import { useCallback } from '#f'
-import useLocation from '#hooks/use-location.js'
+import { useLocation } from '#f'
 
 export default function useGoBackOrToRoot () {
   const loc = useLocation()
