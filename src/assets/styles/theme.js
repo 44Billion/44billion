@@ -65,7 +65,13 @@ export const defaultThemeColorValues = Object.freeze({
   artworkHighlight: colorPair('rgb(255 255 255 / 0.15)', 'rgb(255 255 255 / 0.15)'),
   artworkShade: colorPair('rgb(0 0 0 / 0.20)', 'rgb(0 0 0 / 0.20)'),
   artworkStroke: colorPair('rgb(255 255 255 / 0.30)', 'rgb(255 255 255 / 0.30)'),
-  artworkGlow: colorPair('rgb(168 85 247 / 0.80)', 'rgb(168 85 247 / 0.80)')
+  artworkGlow: colorPair('rgb(168 85 247 / 0.80)', 'rgb(168 85 247 / 0.80)'),
+  artworkIceStart: colorPair('oklch(0.97 0.02 245 / 0.42)', 'oklch(0.97 0.02 245 / 0.42)'),
+  artworkIceMiddle: colorPair('oklch(0.9 0.04 235 / 0.36)', 'oklch(0.9 0.04 235 / 0.36)'),
+  artworkIceEnd: colorPair('oklch(0.8 0.05 225 / 0.3)', 'oklch(0.8 0.05 225 / 0.3)'),
+  artworkIceHighlight: colorPair('oklch(1 0 0 / 0.5)', 'oklch(1 0 0 / 0.5)'),
+  artworkIceShade: colorPair('oklch(0.72 0.04 235 / 0.34)', 'oklch(0.72 0.04 235 / 0.34)'),
+  artworkIceStroke: colorPair('oklch(0.97 0.02 245 / 0.7)', 'oklch(0.97 0.02 245 / 0.7)')
 })
 
 export const appIconMonogramPalettes = Object.freeze([

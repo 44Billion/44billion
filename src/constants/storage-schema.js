@@ -3,6 +3,11 @@
 // Every key/template listed here must also be explained in docs/storage-model.md.
 // Before introducing a new persisted field, add its definition here and update
 // the storage audit + documentation in the same change.
+//
+// appId is global and shared across users/workspaces; appKey identifies one
+// app instance. App metadata/caches are keyed by appId; per-instance keys are
+// id/route/visibility only. In-memory app-bridge registry keys are not
+// persisted and must not be listed here.
 
 export const STORAGE_AREA = {
   LOCAL: 'local',

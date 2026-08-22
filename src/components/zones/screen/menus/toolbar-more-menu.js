@@ -19,15 +19,6 @@ const t = getT({ ...toolbarMoreMenuLocales, ...launcherUpdateLocales })
 // external exit (ESC, gesture) can reveal the toolbar again.
 let toolbarFullscreen = false
 const WATERMARK_DELAY_MS = 3000
-// Translucent ice palette for the watermark state (like a TV channel logo
-// over content): desaturated, with the silhouette/contours still visible.
-const ICE_GRADIENT_START = 'oklch(0.97 0.02 245 / 0.42)'
-const ICE_GRADIENT_MIDDLE = 'oklch(0.9 0.04 235 / 0.36)'
-const ICE_GRADIENT_END = 'oklch(0.8 0.05 225 / 0.3)'
-const ICE_HIGHLIGHT = 'oklch(1 0 0 / 0.5)'
-const ICE_SHADE = 'oklch(0.72 0.04 235 / 0.34)'
-const ICE_STROKE = 'oklch(0.97 0.02 245 / 0.7)'
-
 function isDocumentFullscreen () {
   return !!(document.fullscreenElement || document.webkitFullscreenElement)
 }
@@ -306,12 +297,12 @@ f('toolbar-restore-button', function () {
           }
 
           &.watermark {
-            #gemGradient stop:nth-child(1) { stop-color: ${ICE_GRADIENT_START}; }
-            #gemGradient stop:nth-child(2) { stop-color: ${ICE_GRADIENT_MIDDLE}; }
-            #gemGradient stop:nth-child(3) { stop-color: ${ICE_GRADIENT_END}; }
-            .gem-highlight { fill: ${ICE_HIGHLIGHT}; }
-            .gem-shade { fill: ${ICE_SHADE}; }
-            .gem-stroke { stroke: ${ICE_STROKE}; }
+            #gemGradient stop:nth-child(1) { stop-color: ${cssVars.colors.artworkIceStart}; }
+            #gemGradient stop:nth-child(2) { stop-color: ${cssVars.colors.artworkIceMiddle}; }
+            #gemGradient stop:nth-child(3) { stop-color: ${cssVars.colors.artworkIceEnd}; }
+            .gem-highlight { fill: ${cssVars.colors.artworkIceHighlight}; }
+            .gem-shade { fill: ${cssVars.colors.artworkIceShade}; }
+            .gem-stroke { stroke: ${cssVars.colors.artworkIceStroke}; }
           }
 
           &.visible:hover,

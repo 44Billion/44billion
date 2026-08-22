@@ -4,7 +4,10 @@ import assert from 'node:assert/strict'
 globalThis.IS_DEVELOPMENT = true
 globalThis.window = { location: { origin: 'https://1.44billion.net' } }
 
-const { clearAppData } = await import('../../src/helpers/window-message/trusted-app-page/index.js')
+const {
+  clearAppData,
+  tellSwImReady
+} = await import('../../src/helpers/window-message/trusted-app-page/index.js')
 
 function indexedDbMock ({ failDelete = false } = {}) {
   const deleted = []
@@ -148,5 +151,56 @@ describe('trusted app page clearAppData', () => {
     assert.equal(tells[0].code, 'DATA_CLEAR_ERROR')
     assert.equal(tells[0].error.errors.length, 1)
     assert.deepEqual(tells[0].payload.failures.map(failure => failure.step), ['localStorage'])
+  })
+
+  it('tellSwImReady returns a promise for the service worker registration', async () => {
+    class FakePort {
+      constructor () {
+        this.listeners = []
+        this.started = false
+      }
+
+      addEventListener (type, listener, options) {
+        this.listeners.push({ type, listener, options })
+      }
+
+      start () {
+        this.started = true
+      }
+    }
+
+    globalThis.MessageChannel = class {
+      constructor () {
+        this.port1 = new FakePort()
+        this.port2 = new FakePort()
+      }
+    }
+    globalThis.window.location = {
+      origin: 'https://0.44billion.net',
+      href: 'https://0.44billion.net/~~napp?windowId=0'
+    }
+    const controller = { postMessage: mock.fn() }
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: { serviceWorker: { controller } }
+    })
+
+    const registration = tellSwImReady()
+
+    assert.equal(typeof registration.then, 'function')
+    await registration
+    assert.equal(controller.postMessage.mock.callCount(), 1)
+  })
+
+  it('tellSwImReady returns a rejected promise when the service worker is unavailable', async () => {
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: {}
+    })
+
+    const registration = tellSwImReady()
+
+    assert.equal(typeof registration.then, 'function')
+    await assert.rejects(registration)
   })
 })

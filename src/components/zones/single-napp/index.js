@@ -1,11 +1,19 @@
-import { f, useClosestStore, useSignal, useTask, useComputed } from '#f'
+import { f, useClosestStore, useSignal, useTask, useComputed, useMemo } from '#f'
 import useWebStorage from '#hooks/use-web-storage.js'
 import { appDecode } from 'libp2r2p/nip19'
-import { bytesToBase36Nsite } from 'libp2r2p/base36'
-import { base62ToBytes } from 'libp2r2p/base62'
 import { addressObjToAppId } from '#helpers/app.js'
-import { initMessageListener } from '#helpers/window-message/browser/index.js'
+import {
+  APP_PENDING_INDICATOR_DELAY_MS,
+  APP_PAGE_READY_TIMEOUT_MS,
+  initAppWindow
+} from '#helpers/window-message/app-bridge.js'
+import { APP_BRIDGE_ERROR_KIND } from '#helpers/window-message/app-bridge-error.js'
+import {
+  ensureAppBridgeState,
+  registerAppBridgeWindow
+} from '#helpers/window-message/app-bridge-registry.js'
 import { allocateAppSubdomain } from '#helpers/subdomain-mapping.js'
+import { getRandomId } from '#helpers/misc.js'
 import { resetDraftAppRuntimeData } from '#zones/screen/helpers/draft-app-runtime-reset.js'
 import AppUpdater from '#services/app-updater/index.js'
 import { formatAssetBudgetBytes } from '#services/app-asset-budget/index.js'
@@ -15,11 +23,19 @@ import '#shared/napp-assets-caching-progress-bar.js'
 import { getAssetBudgetConfirmation } from '#i18n/asset-budget.js'
 import { getT } from '#i18n/index.js'
 import { cssVars } from '#assets/styles/theme.js'
+import { getFileNotCachedText } from '#zones/file-not-cached-dialog/index.js'
+import '#zones/file-not-cached-dialog/index.js'
+import '#zones/app-bridge-host.js'
+import '#shared/pending-indicator.js'
 
 export const singleNappLocales = getLocales()
 const t = getT(singleNappLocales)
 
 f('singleNapp', function () {
+  // This zone runs in its own same-origin iframe, not inside the top-level
+  // multi-napp component tree. The top document is usually the multi-window
+  // launcher, but its stores, dialogs and DOM are in a separate Window/JS
+  // realm, so providers needed by this embedded launcher must be mounted here.
   const storage = useWebStorage(localStorage)
   const {
     session_openWorkspaceKeys$: openWorkspaceKeys$
@@ -57,6 +73,8 @@ f('singleNapp', function () {
   return this.h`
     <vault-modal />
     <confirmation-dialog />
+    <file-not-cached-dialog />
+    <app-bridge-host />
     <single-napp-launcher />
   `
 })
@@ -68,19 +86,16 @@ f('singleNappLauncher', function () {
   const {
     [`session_workspaceByKey_${wsKey}_userPk$`]: userPk$
   } = storage
-  const userPkB36$ = useComputed(() => bytesToBase36Nsite(
-    base62ToBytes(userPk$(), { mode: 'integer', byteLength: 32 })
-  ))
   const appSubdomain$ = useComputed(() => {
     const userPk = userPk$()
     if (!userPk) return null
     return storage[`session_subdomainByUserAndApp_${userPk}_${appId}$`]()
   })
-  const trustedAppIframeRef$ = useSignal()
-  const trustedAppIframeSrc$ = useSignal('about:blank')
   const appIframeRef$ = useSignal()
   const appIframeSrc$ = useSignal('about:blank')
   const launchError$ = useSignal(null)
+  const appReady$ = useSignal(false)
+  const showPending$ = useSignal(false)
   const { cachingProgress$ } = useClosestStore('<napp-assets-caching-progress-bar>', {
     cachingProgress$: {
       // [filename]: {
@@ -91,9 +106,17 @@ f('singleNappLauncher', function () {
   })
   const { askVault } = useVaultActor()
   const { requestConfirmation } = useConfirmationDialogStore()
+  const runtime = useMemo(() => ({
+    startedGeneration: null,
+    appReady: false,
+    autoRetried: false,
+    appCleanup: null,
+    initialRoute: null
+  }))
+  const windowId = useMemo(() => getRandomId())
 
   useTask(
-    async ({ cleanup }) => {
+    async ({ track, cleanup }) => {
       launchError$(null)
       const activeSession = AppUpdater.tryMarkSingleNappOpen(appId)
       if (!activeSession.accepted) {
@@ -101,38 +124,68 @@ f('singleNappLauncher', function () {
         return
       }
       cleanup(() => activeSession.release())
+      if (runtime.initialRoute == null) runtime.initialRoute = initialRoute || ''
+      const currentRoute = runtime.initialRoute
 
       // Allocate numeric subdomain if needed
-      if (appSubdomain$() == null) {
+      const [subdomain, userPk, iframeRef] = track(() => [
+        appSubdomain$(),
+        userPk$(),
+        appIframeRef$()
+      ])
+      if (subdomain == null && (!userPk || !appId)) return
+      // `after: 'rendering'` applies only to the first run. If this task reruns
+      // before a later render populates the iframe ref, return and wait for the
+      // ref signal instead of wiring `initAppWindow` to a stale contentWindow.
+      if (subdomain == null || !iframeRef) {
         allocateAppSubdomain(storage, { userPk: userPk$(), appId })
+        return
       }
 
       const ac = new AbortController()
       cleanup(() => {
         ac.abort()
       })
+      showPending$(false)
+      const bridgeState = ensureAppBridgeState(subdomain, { userPk, appId })
+      const appKey = `single-napp:${appId}:${userPk}:${windowId}`
+      const unregisterBridgeWindow = registerAppBridgeWindow(bridgeState, {
+        appKey,
+        cachingProgress$,
+        onClose () {
+          launchError$(getFileNotCachedText('Failed to load app. Retry or close it?'))
+        }
+      })
+      cleanup(unregisterBridgeWindow)
 
       let isDraftReloading = false
       const offDraftUpdate = AppUpdater.onDraftAppUpdated(async ({ appId: updatedAppId }) => {
         if (ac.signal.aborted || updatedAppId !== appId || isDraftReloading) return
-        const appSubdomain = appSubdomain$()
-        if (appSubdomain == null) return
+        if (subdomain == null) return
 
         isDraftReloading = true
         try {
           await resetDraftAppRuntimeData({
             appId: updatedAppId,
-            userPk: userPk$(),
-            appSubdomain
+            userPk,
+            appSubdomain: subdomain
           })
           if (ac.signal.aborted) return
 
           try {
             appIframeRef$()?.contentWindow?.location?.reload()
-          } catch (_err) {
+          } catch (err) {
+            console.warn('[single-napp] Direct reload failed; restoring previous iframe URL', err)
+            const currentSrc = appIframeSrc$()
             appIframeSrc$('about:blank')
             await new Promise(resolve => setTimeout(resolve, 0))
-            if (!ac.signal.aborted) appIframeSrc$(`//${appSubdomain}.${window.location.host}/`)
+            if (!ac.signal.aborted) {
+              appIframeSrc$(
+                currentSrc && currentSrc !== 'about:blank'
+                  ? currentSrc
+                  : `//${subdomain}.${window.location.host}${currentRoute || '/'}`
+              )
+            }
           }
         } finally {
           isDraftReloading = false
@@ -140,24 +193,107 @@ f('singleNappLauncher', function () {
       })
       cleanup(offDraftUpdate)
 
-      await initMessageListener(
-        userPkB36$(), appId, appSubdomain$(), initialRoute,
-        trustedAppIframeRef$(), appIframeRef$(), appIframeSrc$,
-        cachingProgress$, askVault, function requestPermission () {
+      const [bridgeReady, bridgeError, bridgeRetryCount] = track(() => [
+        bridgeState.ready$(),
+        bridgeState.error$(),
+        bridgeState.retryCount$()
+      ])
+      if (bridgeError) {
+        showPending$(false)
+        launchError$(getFileNotCachedText('Failed to load app. Retry or close it?'))
+        return
+      }
+      if (!bridgeReady) {
+        let pendingTimer = null
+        const schedulePending = () => {
+          clearTimeout(pendingTimer)
+          showPending$(false)
+          pendingTimer = setTimeout(() => {
+            if (ac.signal.aborted || bridgeReady || runtime.appReady) return
+            showPending$(true)
+          }, APP_PENDING_INDICATOR_DELAY_MS)
+        }
+        cleanup(() => clearTimeout(pendingTimer))
+        schedulePending()
+        appReady$(false)
+        runtime.startedGeneration = null
+        runtime.appReady = false
+        runtime.autoRetried = false
+        runtime.appCleanup = null
+        return
+      }
+      if (runtime.startedGeneration === bridgeRetryCount && runtime.appReady) return
+
+      runtime.appCleanup?.()
+      runtime.appCleanup = null
+      runtime.startedGeneration = bridgeRetryCount
+      runtime.appReady = false
+      runtime.autoRetried = false
+      appReady$(false)
+
+      const reloadAppFrame = async () => {
+        const currentSrc = appIframeSrc$()
+        try {
+          appIframeRef$()?.contentWindow?.location?.reload()
+        } catch (err) {
+          console.warn('[single-napp] Retry reload failed; restoring previous iframe URL', err)
+          appIframeSrc$('about:blank')
+          await new Promise(resolve => setTimeout(resolve, 0))
+          if (!ac.signal.aborted) {
+            appIframeSrc$(
+              currentSrc && currentSrc !== 'about:blank'
+                ? currentSrc
+                : `//${subdomain}.${window.location.host}${currentRoute || '/'}`
+            )
+          }
+        }
+      }
+
+      let appPageTimeout = null
+      const onAppReady = () => {
+        clearTimeout(appPageTimeout)
+        showPending$(false)
+        runtime.appReady = true
+        appReady$(true)
+      }
+      const cleanupApp = initAppWindow(bridgeState, {
+        appKey,
+        initialRoute: currentRoute,
+        appIframeRef$,
+        appIframeSrc$,
+        cachingProgress$,
+        askVault,
+        requestPermission () {
           throw new Error('Permission request not available in single napp mode yet')
-        }, function openApp () {
+        },
+        openApp () {
           throw new Error('Open app not available in single napp mode yet')
         },
-        {
-          signal: ac.signal,
-          isSingleNapp: true,
-          requestAssetBudgetConfirmation: details => requestConfirmation(getAssetBudgetConfirmation({
-            ...details,
-            formatBytes: formatAssetBudgetBytes
-          }))
+        onFileNotCached: details => bridgeState.bridgeErrorHandler?.(details),
+        requestAssetBudgetConfirmation: details => requestConfirmation(getAssetBudgetConfirmation({
+          ...details,
+          formatBytes: formatAssetBudgetBytes
+        })),
+        onAppReady,
+        signal: ac.signal
+      })
+      runtime.appCleanup = cleanupApp
+      cleanup(cleanupApp)
+
+      appPageTimeout = setTimeout(() => {
+        if (ac.signal.aborted || runtime.appReady) return
+        if (!runtime.autoRetried) {
+          runtime.autoRetried = true
+          reloadAppFrame()
+          return
         }
-      )
-      trustedAppIframeSrc$(`//${appSubdomain$()}.${window.location.host}/~~napp`)
+        bridgeState.bridgeErrorHandler?.({
+          pathname: 'index.html',
+          message: getFileNotCachedText('Failed to load app. Retry or close it?'),
+          kind: APP_BRIDGE_ERROR_KIND.APP_PAGE
+        })
+      }, APP_PAGE_READY_TIMEOUT_MS)
+      cleanup(() => clearTimeout(appPageTimeout))
     },
     { after: 'rendering' }
   )
@@ -173,14 +309,19 @@ f('singleNappLauncher', function () {
         }
 
         iframe {
-          &.tilde-tilde-napp-page { display: none; }
-
           &.napp-page {
             border: none;
             width: 100%;
             height: 100%;
             display: block; /* ensure it's not inline */
           }
+        }
+
+        .embedded-pending {
+          position: absolute;
+          inset: 0;
+          z-index: 1;
+          background-color: ${cssVars.colors.bg};
         }
 
         .embedded-load-error {
@@ -212,17 +353,22 @@ f('singleNappLauncher', function () {
             ref=${appIframeRef$}
             src=${appIframeSrc$()}
           />
-          <iframe
-            class='tilde-tilde-napp-page'
-            ref=${trustedAppIframeRef$}
-            src=${trustedAppIframeSrc$()}
-          />
+          ${showPending$()
+            ? this.h`
+                <div class='embedded-pending'>
+                  <pending-indicator props=${{ text: t('Opening app...') }} />
+                </div>
+              `
+            : ''}
         `}
   `
 })
 
 function getLocales () {
   return {
+    'Opening app...': {
+      en: 'Opening app...', fr: 'Ouverture de l’application...', it: 'Apertura dell’app...', de: 'App wird geöffnet...', es: 'Abriendo la aplicación...', 'pt-BR': 'Abrindo o app...', ru: 'Открытие приложения...', 'zh-CN': '正在打开应用...', 'zh-TW': '正在開啟應用程式...', ja: 'アプリを開いています…', ko: '앱을 여는 중...'
+    },
     'Too many embedded apps are open. Close one and try again.': {
       en: 'Too many embedded apps are open. Close one and try again.', fr: 'Trop d’applications intégrées sont ouvertes. Fermez-en une et réessayez.', it: 'Sono aperte troppe app incorporate. Chiudine una e riprova.', de: 'Zu viele eingebettete Apps sind geöffnet. Schließen Sie eine und versuchen Sie es erneut.', es: 'Hay demasiadas aplicaciones integradas abiertas. Cierra una y vuelve a intentarlo.', 'pt-BR': 'Há apps incorporados demais abertos. Feche um deles e tente novamente.', ru: 'Открыто слишком много встроенных приложений. Закройте одно и повторите попытку.', 'zh-CN': '打开的嵌入式应用过多。请关闭一个后重试。', 'zh-TW': '開啟的嵌入式應用程式過多。請關閉一個後重試。', ja: '埋め込みアプリが多すぎます。1つ閉じてからもう一度お試しください。', ko: '열려 있는 임베디드 앱이 너무 많습니다. 하나를 닫고 다시 시도하세요.'
     }

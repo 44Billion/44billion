@@ -1,5 +1,4 @@
-import { f, useCallback, useComputed, useStore, useGlobalStore, useGlobalSignal, useStateSignal, useSignal, useClosestSignal, useClosestStore, useTask } from '#f'
-import AppFileManager from '#services/app-file-manager/index.js'
+import { f, useCallback, useComputed, useStore, useGlobalStore, useGlobalSignal, useStateSignal, useSignal, useClosestSignal, useClosestStore, useTask, useMemo } from '#f'
 import AppUpdater from '#services/app-updater/index.js'
 import useInitOrResetScreen from './use-init-or-reset-screen.js'
 import useTrackAccountEvents from './use-track-account-events.js'
@@ -18,28 +17,38 @@ import windowsBackgroundLightPattern from '#assets/media/bg-stone-wall-light-pat
 import useAppRouter from './use-app-router.js'
 import useSystemRouter from './use-system-router.js'
 import {
-  cleanupNostrDbAppForWorkspace,
-  hasAnyRecentSingleNappOpen,
-  hasRecentSingleNappOpenForOwner
+  hasAnyRecentSingleNappOpen
 } from './helpers/nostrdb-app-lifecycle.js'
-import { askAppToClearData, resetDraftAppRuntimeData } from './helpers/draft-app-runtime-reset.js'
+import {
+  removeAppFromWorkspace,
+  uninstallAppFromWorkspace
+} from './helpers/app-lifecycle.js'
+import { resetDraftAppRuntimeData } from './helpers/draft-app-runtime-reset.js'
 import { usePermissionDialogStore } from '#zones/permission-dialog/index.js'
-import { getFileNotCachedText, useFileNotCachedDialogStore } from '#zones/file-not-cached-dialog/index.js'
+import { getFileNotCachedText } from '#zones/file-not-cached-dialog/index.js'
 import '#shared/route.js'
-import { initMessageListener } from '#helpers/window-message/browser/index.js'
-import { isOnline } from '#helpers/network.js'
-import { bytesToBase36Nsite } from 'libp2r2p/base36'
+import {
+  APP_PENDING_INDICATOR_DELAY_MS,
+  APP_PAGE_READY_TIMEOUT_MS,
+  initAppWindow
+} from '#helpers/window-message/app-bridge.js'
+import { APP_BRIDGE_ERROR_KIND } from '#helpers/window-message/app-bridge-error.js'
+import {
+  ensureAppBridgeState,
+  registerAppBridgeWindow
+} from '#helpers/window-message/app-bridge-registry.js'
 import { appEncode } from 'libp2r2p/nip19'
 import { appIdToAddressObj } from '#helpers/app.js'
 import { copyTextToClipboard } from '#helpers/copy-text.js'
-import { allocateAppSubdomain, releaseAppSubdomain } from '#helpers/subdomain-mapping.js'
+import { allocateAppSubdomain } from '#helpers/subdomain-mapping.js'
 import { useVaultModalStore, useVaultActor } from '#zones/vault-modal/index.js'
-import { base62ToBase16, base62ToBytes } from 'libp2r2p/base62'
+import { base62ToBase16 } from 'libp2r2p/base62'
 import { formatAssetBudgetBytes } from '#services/app-asset-budget/index.js'
 import { useConfirmationDialogStore } from '#zones/confirmation-dialog/index.js'
 import { scheduleStorageRepair } from '#services/storage-audit/bootstrap.js'
 import '#shared/napp-assets-caching-progress-bar.js'
 import '#shared/app-icon.js'
+import '#shared/pending-indicator.js'
 import '#shared/svg.js'
 import '#shared/icons/icon-close.js'
 import '#shared/icons/icon-minimize.js'
@@ -367,9 +376,6 @@ f('appWindow', function () {
   const {
     [`session_appByKey_${this.props.appKey}_visibility$`]: appVisibility$
   } = tabStorage
-  const userPkB36$ = useComputed(() => (userPk$() || '') && bytesToBase36Nsite(
-    base62ToBytes(userPk$(), { mode: 'integer', byteLength: 32 })
-  ))
   const appSubdomain$ = useComputed(() => {
     const userPk = userPk$()
     const appId = appId$()
@@ -377,10 +383,11 @@ f('appWindow', function () {
     return storage[`session_subdomainByUserAndApp_${userPk}_${appId}$`]()
   })
   const isClosed$ = useComputed(() => appVisibility$() === 'closed')
-  const trustedAppIframeRef$ = useSignal(null)
-  const trustedAppIframeSrc$ = useSignal('about:blank')
   const appIframeRef$ = useSignal(null)
   const appIframeSrc$ = useSignal('about:blank')
+  const appReady$ = useSignal(false)
+  const showPending$ = useSignal(false)
+  const launchError$ = useSignal(null)
   const { cachingProgress$ } = useClosestStore('<napp-assets-caching-progress-bar>', {
     cachingProgress$: {
       // [filename]: {
@@ -393,63 +400,138 @@ f('appWindow', function () {
   const pdStore = usePermissionDialogStore()
   const { requestPermission } = pdStore
   const { openApp } = useGlobalStore('useAppRouter')
-  const { requestAction: requestFileNotCachedAction } = useFileNotCachedDialogStore()
   const { requestConfirmation } = useConfirmationDialogStore()
   const appKey = this.props.appKey
   const wsKey = this.props.wsKey
+  const runtime = useMemo(() => ({
+    startedGeneration: null,
+    appReady: false,
+    autoRetried: false,
+    appCleanup: null,
+    initialRoute: null
+  }))
+  const removeCurrentApp = async () => {
+    const currentAppId = appId$()
+    const currentUserPk = userPk$()
+    const currentAppSubdomain = appSubdomain$()
+    if (!currentAppId || !currentUserPk) return
+    const appKeys = storage[`session_workspaceByKey_${wsKey}_appById_${currentAppId}_appKeys$`]()
+    if (!appKeys || !appKeys.includes(appKey)) return
+    if (appKeys.length === 1) {
+      const preserveAppMetadata = await hasAnyRecentSingleNappOpen({ appId: currentAppId })
+      await uninstallAppFromWorkspace({
+        storage,
+        tabStorage,
+        wsKey,
+        appKey,
+        appId: currentAppId,
+        userPk: currentUserPk,
+        appSubdomain: currentAppSubdomain,
+        preserveAppMetadata
+      })
+      return
+    }
+    removeAppFromWorkspace({
+      storage,
+      tabStorage,
+      wsKey,
+      appKey,
+      appId: currentAppId,
+      userPk: currentUserPk,
+      appSubdomain: currentAppSubdomain
+    })
+  }
 
   useTask(
     async ({ track, cleanup }) => {
-      const [isClosed, iframeRef] = track(() => [isClosed$(), trustedAppIframeRef$()])
-      // This component won't load when app starts closed
-      // because stableDomOrderAppKeys$ initially is populated
-      // by open (or minimized) apps
-      // but will be reused on re-opening: open->closed->open
+      const [isClosed, iframeRef, appSubdomain, appId, userPk] = track(() => [
+        isClosed$(),
+        appIframeRef$(),
+        appSubdomain$(),
+        appId$(),
+        userPk$()
+      ])
+      launchError$(null)
+      // This component is reused on open -> closed -> open: stableDomOrderAppKeys$
+      // retains the app key, while the render returns nothing while closed. The
+      // refs/signals must be reset here so the next open starts from a clean iframe.
       if (isClosed) {
-        cachingProgress$({}) // reset
-        trustedAppIframeRef$(null)
+        cachingProgress$({})
         appIframeSrc$('about:blank')
         appIframeRef$(null)
-        trustedAppIframeSrc$('about:blank')
+        appReady$(false)
+        showPending$(false)
+        launchError$(null)
+        runtime.startedGeneration = null
+        runtime.appReady = false
+        runtime.autoRetried = false
+        runtime.appCleanup = null
+        runtime.initialRoute = null
         return
       }
-      // without this check, `e.source !== trustedAppPageIframe.contentWindow`
-      // may be true after closing then re-opening the app, because useTask
-      // runs before rendering on subsequent calls ({ after: 'rendering' }
-      // useTask's config is just for the first call)
+      // `after: 'rendering'` applies only to the first run. On a subsequent
+      // reopen, useTask runs before rendering, so `iframeRef` may still be null
+      // from the closed state. Return here and wait for the ref signal to be
+      // repopulated; otherwise initAppWindow could compare `e.source` against
+      // the previous iframe's contentWindow and miss APP_IFRAME_READY.
       if (!iframeRef) return
 
-      // Allocate numeric subdomain if needed
-      if (appSubdomain$() == null) {
-        allocateAppSubdomain(storage, { userPk: userPk$(), appId: appId$() })
+      if (appSubdomain == null && (!appId || !userPk)) return
+      if (appSubdomain == null) {
+        allocateAppSubdomain(storage, { userPk, appId })
+        return
       }
 
-      const initialRoute = initialRoute$() || ''
-      if (initialRoute) initialRoute$('') // reset
+      if (runtime.initialRoute == null) {
+        runtime.initialRoute = initialRoute$() || ''
+        if (runtime.initialRoute) initialRoute$('')
+      }
+      const initialRoute = runtime.initialRoute
       const ac = new AbortController()
       cleanup(() => ac.abort())
+      showPending$(false)
+      const bridgeState = ensureAppBridgeState(appSubdomain, { userPk, appId })
+      const unregisterBridgeWindow = registerAppBridgeWindow(bridgeState, {
+        appKey,
+        cachingProgress$,
+        onClose () {
+          tabStorage[`session_appByKey_${appKey}_visibility$`]('closed')
+          tabStorage[`session_workspaceByKey_${wsKey}_openAppKeys$`]((v = [], eqKey) => {
+            const i = v.indexOf(appKey)
+            if (i !== -1) { v.splice(i, 1); v[eqKey] = Math.random() }
+            return v
+          })
+        },
+        onRemove: removeCurrentApp
+      })
+      cleanup(unregisterBridgeWindow)
 
       let isDraftReloading = false
       const offDraftUpdate = AppUpdater.onDraftAppUpdated(async ({ appId: updatedAppId }) => {
-        if (ac.signal.aborted || updatedAppId !== appId$() || isClosed$() || isDraftReloading) return
-        const appSubdomain = appSubdomain$()
+        if (ac.signal.aborted || updatedAppId !== appId || isClosed$() || isDraftReloading) return
         if (appSubdomain == null) return
-
         isDraftReloading = true
         try {
           await resetDraftAppRuntimeData({
             appId: updatedAppId,
-            userPk: userPk$(),
+            userPk,
             appSubdomain
           })
           if (ac.signal.aborted) return
-
           try {
             appIframeRef$()?.contentWindow?.location?.reload()
-          } catch (_err) {
+          } catch (err) {
+            console.warn('[app-window] Direct reload failed; restoring previous iframe URL', err)
+            const currentSrc = appIframeSrc$()
             appIframeSrc$('about:blank')
             await new Promise(resolve => setTimeout(resolve, 0))
-            if (!ac.signal.aborted) appIframeSrc$(`//${appSubdomain}.${window.location.host}/`)
+            if (!ac.signal.aborted) {
+              appIframeSrc$(
+                currentSrc && currentSrc !== 'about:blank'
+                  ? currentSrc
+                  : `//${appSubdomain}.${window.location.host}${runtime.initialRoute || '/'}`
+              )
+            }
           }
         } finally {
           isDraftReloading = false
@@ -457,143 +539,110 @@ f('appWindow', function () {
       })
       cleanup(offDraftUpdate)
 
-      let hasShownFileNotCachedError = false
-      const onFileNotCached = async (pathname) => {
-        if (ac.signal.aborted || hasShownFileNotCachedError) return
-        hasShownFileNotCachedError = true
-
-        const appId = appId$()
-        if (!appId) return
-        const appName = storage[`session_appById_${appId}_name$`]() || getFileNotCachedText('App Download')
-
-        // pathname === undefined means the site manifest failed to download.
-        // A bare filename without leading slash is the canonical form in manifest path tags,
-        // but accept a leading slash too just in case.
-        const isCriticalFile = pathname === undefined || /^\/?index\.html?$/.test(pathname)
-        // Start connectivity check in parallel while the user reads the dialog
-        const onlinePromise = isCriticalFile ? isOnline() : Promise.resolve(false)
-
-        const message = isCriticalFile
-          ? getFileNotCachedText('Failed to load app. Retry or remove it?')
-          : getFileNotCachedText('Failed to load app. Retry or close it?')
-
-        let shouldRetry = false
-        try {
-          await requestFileNotCachedAction({ appName, message })
-          shouldRetry = true
-        } catch { /* cancel */ }
-
-        if (shouldRetry) {
-          if (isCriticalFile) {
-            // Critical (manifest or index.html): restart initMessageListener completely
-            tabStorage[`session_appByKey_${appKey}_visibility$`]('closed')
-            await new Promise(resolve => setTimeout(resolve, 0))
-            tabStorage[`session_appByKey_${appKey}_visibility$`]('open')
-            tabStorage[`session_workspaceByKey_${wsKey}_openAppKeys$`]((v = [], eqKey) => {
-              if (!v.includes(appKey)) { v.unshift(appKey); v[eqKey] = Math.random() }
-              return v
-            })
-          } else {
-            // Non-critical asset: trusted page and message ports are fine, just reload the
-            // app iframe so it re-requests the failed asset. Reset the flag so the dialog
-            // can show again if the retry also fails.
-            hasShownFileNotCachedError = false
-            appIframeSrc$('about:blank')
-            await new Promise(resolve => setTimeout(resolve, 0))
-            appIframeSrc$(`//${appSubdomain$()}.${window.location.host}/`)
-          }
-          return
+      const [bridgeReady, bridgeError, bridgeRetryCount] = track(() => [
+        bridgeState.ready$(),
+        bridgeState.error$(),
+        bridgeState.retryCount$()
+      ])
+      if (bridgeError) {
+        showPending$(false)
+        launchError$(getFileNotCachedText('Failed to load app. Retry or remove it?'))
+        runtime.startedGeneration = null
+        runtime.appReady = false
+        appReady$(false)
+        return
+      }
+      if (!bridgeReady) {
+        let pendingTimer = null
+        // Wait briefly before covering the window. If the bridge comes up fast,
+        // the real app-page-loader (inside the iframe) is already visible and is
+        // a better waiting UI than our generic hourglass.
+        const schedulePending = () => {
+          clearTimeout(pendingTimer)
+          showPending$(false)
+          pendingTimer = setTimeout(() => {
+            if (ac.signal.aborted || bridgeReady || runtime.appReady) return
+            showPending$(true)
+          }, APP_PENDING_INDICATOR_DELAY_MS)
         }
+        cleanup(() => clearTimeout(pendingTimer))
+        schedulePending()
+        runtime.startedGeneration = null
+        runtime.appReady = false
+        runtime.autoRetried = false
+        runtime.appCleanup = null
+        appReady$(false)
+        return
+      }
+      if (runtime.startedGeneration === bridgeRetryCount && runtime.appReady) return
 
-        const online = await onlinePromise
+      runtime.appCleanup?.()
+      runtime.appCleanup = null
+      runtime.startedGeneration = bridgeRetryCount
+      runtime.appReady = false
+      runtime.autoRetried = false
+      appReady$(false)
+      launchError$(null)
 
-        if (online) {
-          // Online + critical file failed: the file is genuinely missing on the publisher's
-          // servers, so remove the app entirely. (mirrors _deleteApp + simplified maybeClearAppStorage)
-          const appSubdomain = appSubdomain$()
-          const userPk = userPk$()
-
-          await cleanupNostrDbAppForWorkspace({
-            storage,
-            wsKey,
-            appId,
-            excludeWorkspaceKeys: [wsKey]
-          })
-
-          tabStorage[`session_workspaceByKey_${wsKey}_openAppKeys$`]((v, eqKey) => {
-            if (!v) return v
-            const i = v.indexOf(appKey)
-            if (i !== -1) { v.splice(i, 1); v[eqKey] = Math.random() }
-            return v
-          })
-          storage[`session_appByKey_${appKey}_id$`](undefined)
-          tabStorage[`session_appByKey_${appKey}_visibility$`](undefined)
-          storage[`session_appByKey_${appKey}_route$`](undefined)
-          storage[`session_workspaceByKey_${wsKey}_pinnedAppIds$`](v => (v ?? []).filter(v2 => v2 !== appId))
-          storage[`session_workspaceByKey_${wsKey}_unpinnedAppIds$`](v => (v ?? []).filter(v2 => v2 !== appId))
-          storage[`session_workspaceByKey_${wsKey}_appById_${appId}_appKeys$`](undefined)
-
-          let hasOtherInstances = false
-          for (const k of storage.session_workspaceKeys$()) {
-            if (k === wsKey) continue
-            hasOtherInstances = (storage[`session_workspaceByKey_${k}_appById_${appId}_appKeys$`]() ?? []).length > 0
-            if (hasOtherInstances) break
+      const reloadAppFrame = async () => {
+        const currentSrc = appIframeSrc$()
+        try {
+          appIframeRef$()?.contentWindow?.location?.reload()
+        } catch (err) {
+          console.warn('[app-window] Retry reload failed; restoring previous iframe URL', err)
+          appIframeSrc$('about:blank')
+          await new Promise(resolve => setTimeout(resolve, 0))
+          if (!ac.signal.aborted) {
+            appIframeSrc$(
+              currentSrc && currentSrc !== 'about:blank'
+                ? currentSrc
+                : `//${appSubdomain}.${window.location.host}${runtime.initialRoute || '/'}`
+            )
           }
-
-          let ownerPubkey = ''
-          try {
-            ownerPubkey = base62ToBase16(userPk, { mode: 'integer', byteLength: 32 }).toLowerCase()
-          } catch (_err) {
-            ownerPubkey = ''
-          }
-          const recentForOwner = await hasRecentSingleNappOpenForOwner({ appId, ownerPubkey })
-          const anyRecentSingleNapp = recentForOwner || await hasAnyRecentSingleNappOpen({ appId })
-
-          if (!hasOtherInstances && !anyRecentSingleNapp) {
-            storage[`session_appById_${appId}_icon$`](undefined)
-            storage[`session_appById_${appId}_name$`](undefined)
-            storage[`session_appById_${appId}_description$`](undefined)
-            storage[`session_appById_${appId}_relayHints$`](undefined)
-            try {
-              await AppFileManager.clearCachedFilesById(appId)
-            } catch (err) {
-              console.error('Failed to clear app files:', err)
-            }
-          }
-
-          if (!hasOtherInstances && !recentForOwner) {
-            if (appSubdomain != null) {
-              releaseAppSubdomain(storage, { userPk, appId, subdomain: appSubdomain })
-            }
-          }
-        } else {
-          // Offline, or a non-critical secondary asset failed: just close the window so
-          // the user can retry by opening the app again later.
-          tabStorage[`session_appByKey_${appKey}_visibility$`]('closed')
-          tabStorage[`session_workspaceByKey_${wsKey}_openAppKeys$`]((v, eqKey) => {
-            if (!v) return v
-            const i = v.indexOf(appKey)
-            if (i !== -1) { v.splice(i, 1); v[eqKey] = Math.random() }
-            return v
-          })
         }
       }
 
-      await initMessageListener(
-        userPkB36$(), appId$(), appSubdomain$(), initialRoute,
-        trustedAppIframeRef$(), appIframeRef$(), appIframeSrc$,
-        cachingProgress$, askVault, requestPermission, openApp,
-        {
-          signal: ac.signal,
-          isSingleNapp: false,
-          onFileNotCached,
-          requestAssetBudgetConfirmation: details => requestConfirmation(getAssetBudgetConfirmation({
-            ...details,
-            formatBytes: formatAssetBudgetBytes
-          }))
+      let appPageTimeout = null
+      const onAppReady = () => {
+        clearTimeout(appPageTimeout)
+        showPending$(false)
+        runtime.appReady = true
+        appReady$(true)
+      }
+      const cleanupApp = initAppWindow(bridgeState, {
+        appKey,
+        initialRoute,
+        appIframeRef$,
+        appIframeSrc$,
+        cachingProgress$,
+        askVault,
+        requestPermission,
+        openApp,
+        onFileNotCached: details => bridgeState.bridgeErrorHandler?.(details),
+        requestAssetBudgetConfirmation: details => requestConfirmation(getAssetBudgetConfirmation({
+          ...details,
+          formatBytes: formatAssetBudgetBytes
+        })),
+        onAppReady,
+        signal: ac.signal
+      })
+      runtime.appCleanup = cleanupApp
+      cleanup(cleanupApp)
+
+      appPageTimeout = setTimeout(() => {
+        if (ac.signal.aborted || runtime.appReady) return
+        if (!runtime.autoRetried) {
+          runtime.autoRetried = true
+          reloadAppFrame()
+          return
         }
-      )
-      trustedAppIframeSrc$(`//${appSubdomain$()}.${window.location.host}/~~napp`)
+        bridgeState.bridgeErrorHandler?.({
+          pathname: 'index.html',
+          message: getFileNotCachedText('Failed to load app. Retry or close it?'),
+          kind: APP_BRIDGE_ERROR_KIND.APP_PAGE
+        })
+      }, APP_PAGE_READY_TIMEOUT_MS)
+      cleanup(() => clearTimeout(appPageTimeout))
     },
     { after: 'rendering' }
   )
@@ -611,7 +660,7 @@ f('appWindow', function () {
         [`mru-rank-${this.props.mruRank ?? 'none'}`]: !!this.props.mruRank
       }}
     >
-    <style>
+    <style>${/* css */`
       .scope_khjha3 {
         & {
           /* Hidden windows keep their box (absolute + visibility:hidden) so
@@ -633,14 +682,33 @@ f('appWindow', function () {
           }
           /**/
           iframe {
-            &.tilde-tilde-napp-page { display: none; }
-
             &.napp-page {
               border: none;
               width: 100%;
               height: 100%;
               display: block; /* ensure it's not inline */
             }
+          }
+
+          .app-window-pending {
+            position: absolute;
+            inset: 0;
+            z-index: 1;
+            background-color: ${cssVars.colors.bg};
+          }
+
+          .app-window-error {
+            position: absolute;
+            inset: 0;
+            z-index: 1;
+            display: grid;
+            place-items: center;
+            padding: 24px;
+            background-color: ${cssVars.colors.bg};
+            color: ${cssVars.colors.fg};
+            font-size: 14rem;
+            text-align: center;
+            text-wrap: balance;
           }
         }
         &.mru-rank-1-1 { order: 0; }
@@ -677,26 +745,32 @@ f('appWindow', function () {
           }
         }
       }
-    </style>
+    `}</style>
     <napp-assets-caching-progress-bar />
-    <iframe
-      class='napp-page'
-      allow='fullscreen; screen-wake-lock; ambient-light-sensor;
-             autoplay; midi; encrypted-media;
-             accelerometer; gyroscope; magnetometer; xr-spatial-tracking;
-             clipboard-read; clipboard-write; web-share;
-             camera; microphone;
-             geolocation;
-             bluetooth;
-             payment'
-      ref=${appIframeRef$}
-      src=${appIframeSrc$()}
-    />
-    <iframe
-      class='tilde-tilde-napp-page'
-      ref=${trustedAppIframeRef$}
-      src=${trustedAppIframeSrc$()}
-    />
+    ${launchError$()
+      ? this.h`<div class='app-window-error'>${launchError$()}</div>`
+      : this.h`
+        <iframe
+          class='napp-page'
+          allow='fullscreen; screen-wake-lock; ambient-light-sensor;
+                 autoplay; midi; encrypted-media;
+                 accelerometer; gyroscope; magnetometer; xr-spatial-tracking;
+                 clipboard-read; clipboard-write; web-share;
+                 camera; microphone;
+                 geolocation;
+                 bluetooth;
+                 payment'
+          ref=${appIframeRef$}
+          src=${appIframeSrc$()}
+        />
+        ${showPending$()
+          ? this.h`
+              <div class='app-window-pending'>
+                <pending-indicator props=${{ text: t('Opening app...') }} />
+              </div>
+            `
+          : ''}
+      `}
     </div>
   `
 })
@@ -1543,82 +1617,20 @@ f('appLaunchersMenu', function () {
         return v
       })
     },
-    removeApp ({ isDeleteStep = false, preserveAppMetadata = false } = {}) {
+    removeApp () {
       const { id: appId, key: appKey, workspaceKey } = this.app$()
       const appKeys = storage[`session_workspaceByKey_${workspaceKey}_appById_${appId}_appKeys$`]()
-      if (!isDeleteStep && appKeys.length <= 1) throw new Error('Cannot remove the last instance of an app')
-      if (!isDeleteStep) this.close() // close menu
-
-      tabStorage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]((v, eqKey) => {
-        if (!v) return v
-        const i = v.indexOf(appKey)
-        if (i !== -1) {
-          v.splice(i, 1) // remove
-          v[eqKey] = Math.random()
-        }
-        return v
+      if (!appKeys) throw new Error('Cannot remove app instance: app state is missing')
+      if (appKeys.length <= 1) throw new Error('Cannot remove the last instance of an app')
+      this.close() // close menu
+      return removeAppFromWorkspace({
+        storage,
+        tabStorage,
+        wsKey: workspaceKey,
+        appKey,
+        appId,
+        userPk: storage[`session_workspaceByKey_${workspaceKey}_userPk$`]()
       })
-      const newAppKeys = appKeys.filter(v => v !== appKey)
-      storage[`session_workspaceByKey_${workspaceKey}_appById_${appId}_appKeys$`](newAppKeys)
-      storage[`session_appByKey_${appKey}_id$`](undefined)
-      tabStorage[`session_appByKey_${appKey}_visibility$`](undefined)
-      storage[`session_appByKey_${appKey}_route$`](undefined)
-
-      let hasOtherInstances = false
-      for (const wsKey of storage.session_workspaceKeys$()) {
-        hasOtherInstances = (storage[`session_workspaceByKey_${wsKey}_appById_${appId}_appKeys$`]() ?? [])
-          .some(v => v !== appKey)
-        if (hasOtherInstances) break
-      }
-      if (hasOtherInstances) return
-      if (preserveAppMetadata) return
-
-      storage[`session_appById_${appId}_icon$`](undefined)
-      storage[`session_appById_${appId}_name$`](undefined)
-      storage[`session_appById_${appId}_description$`](undefined)
-      storage[`session_appById_${appId}_relayHints$`](undefined)
-    },
-    // open iframe at /~~napp#clear to let it clear its idb/localStorage
-    // and listen for postMessage to close it and remove site manifest and file chunks
-    async maybeClearAppStorage () {
-      const { id: appId, workspaceKey } = this.app$()
-      const userPk = storage[`session_workspaceByKey_${workspaceKey}_userPk$`]()
-
-      let ownerPubkey = ''
-      try {
-        ownerPubkey = base62ToBase16(userPk, { mode: 'integer', byteLength: 32 }).toLowerCase()
-      } catch (_err) {
-        ownerPubkey = ''
-      }
-      const recentForOwner = await hasRecentSingleNappOpenForOwner({ appId, ownerPubkey })
-      const anyRecentSingleNapp = recentForOwner || await hasAnyRecentSingleNappOpen({ appId })
-
-      const otherWorkspaces = storage.session_workspaceKeys$().filter(wsKey => wsKey !== workspaceKey)
-      let shouldClearAppData = !recentForOwner
-      let shouldClearAppFiles = !anyRecentSingleNapp
-      for (const wsKey of otherWorkspaces) {
-        const hasApp = storage[`session_workspaceByKey_${wsKey}_appById_${appId}_appKeys$`]()?.length > 0
-        if (hasApp) {
-          shouldClearAppFiles = false // app exists in another workspace (same or other user)
-          const wsUserPk = storage[`session_workspaceByKey_${wsKey}_userPk$`]()
-          if (wsUserPk === userPk) {
-            shouldClearAppData = false // same user has app in another workspace
-            break // both conditions found
-          }
-        }
-      }
-
-      if (shouldClearAppData) {
-        const appSubdomain = storage[`session_subdomainByUserAndApp_${userPk}_${appId}$`]()
-        if (appSubdomain != null) {
-          await askAppToClearData(appSubdomain)
-          releaseAppSubdomain(storage, { userPk, appId, subdomain: appSubdomain })
-        }
-      }
-      if (shouldClearAppFiles) {
-        const appFiles = await AppFileManager.create(appId)
-        await appFiles.clearAppFiles()
-      }
     },
     async deleteApp () {
       try {
@@ -1631,21 +1643,21 @@ f('appLaunchersMenu', function () {
     async _deleteApp () {
       const { id: appId, workspaceKey } = this.app$()
       const appKeys = storage[`session_workspaceByKey_${workspaceKey}_appById_${appId}_appKeys$`]()
+      if (!appKeys) throw new Error('Cannot delete app: app state is missing')
       if (appKeys.length !== 1) throw new Error('Can only delete an app that has a single instance')
+      const appKey = appKeys[0]
       const preserveAppMetadata = await hasAnyRecentSingleNappOpen({ appId })
-      await cleanupNostrDbAppForWorkspace({
+      await uninstallAppFromWorkspace({
         storage,
+        tabStorage,
         wsKey: workspaceKey,
+        appKey,
         appId,
-        excludeWorkspaceKeys: [workspaceKey]
+        userPk: storage[`session_workspaceByKey_${workspaceKey}_userPk$`](),
+        preserveAppMetadata
       })
-      this.removeApp({ isDeleteStep: true, preserveAppMetadata }) // may throw
 
       this.close() // close menu
-      storage[`session_workspaceByKey_${workspaceKey}_pinnedAppIds$`](v => (v ?? []).filter(v2 => v2 !== appId))
-      storage[`session_workspaceByKey_${workspaceKey}_unpinnedAppIds$`](v => (v ?? []).filter(v2 => v2 !== appId))
-      storage[`session_workspaceByKey_${workspaceKey}_appById_${appId}_appKeys$`](undefined)
-      await this.maybeClearAppStorage()
     },
     render: useCallback(function () {
       const {
@@ -1785,7 +1797,7 @@ f('toolbarAppLauncher', function () {
     workspaceKey,
     index: appIndex$(),
     visibility: tabStorage[`session_appByKey_${this.props.appKey}_visibility$`]() ?? 'closed',
-    icon: storage[`session_appByKey_${this.props.appKey}_icon$`](),
+    icon: storage[`session_appById_${this.props.appId}_icon$`](),
     isNew: !!newAppIdsObj$()[this.props.appId],
     ref: appRef$()
   }))
@@ -1923,6 +1935,7 @@ function getLocales () {
     'Error unlocking': { en: 'Error unlocking', fr: 'Erreur de déverrouillage', it: 'Errore durante lo sblocco', de: 'Fehler beim Entsperren', es: 'Error al desbloquear', 'pt-BR': 'Erro ao desbloquear', ru: 'Ошибка разблокировки', 'zh-CN': '解锁时出错', 'zh-TW': '解鎖時發生錯誤', ja: 'ロック解除エラー', ko: '잠금 해제 오류' },
     'Touch to unlock': { en: 'Touch to unlock', fr: 'Touchez pour déverrouiller', it: 'Tocca per sbloccare', de: 'Zum Entsperren berühren', es: 'Toca para desbloquear', 'pt-BR': 'Toque para desbloquear', ru: 'Нажмите, чтобы разблокировать', 'zh-CN': '轻触以解锁', 'zh-TW': '輕觸以解鎖', ja: 'タップしてロック解除', ko: '탭하여 잠금 해제' },
     'Please open an app': { en: 'Please open an app', fr: 'Veuillez ouvrir une application', it: 'Apri un’app', de: 'Bitte eine App öffnen', es: 'Abre una aplicación', 'pt-BR': 'Abra um app', ru: 'Откройте приложение', 'zh-CN': '请打开一个应用', 'zh-TW': '請開啟一個應用程式', ja: 'アプリを開いてください', ko: '앱을 열어 주세요' },
+    'Opening app...': { en: 'Opening app...', fr: 'Ouverture de l’application...', it: 'Apertura dell’app...', de: 'App wird geöffnet...', es: 'Abriendo la aplicación...', 'pt-BR': 'Abrindo o app...', ru: 'Открытие приложения...', 'zh-CN': '正在打开应用...', 'zh-TW': '正在開啟應用程式...', ja: 'アプリを開いています…', ko: '앱을 여는 중...' },
     Open: { en: 'Open', fr: 'Ouvrir', it: 'Apri', de: 'Öffnen', es: 'Abrir', 'pt-BR': 'Abrir', ru: 'Открыть', 'zh-CN': '打开', 'zh-TW': '開啟', ja: '開く', ko: '열기' },
     'New Window': { en: 'New Window', fr: 'Nouvelle fenêtre', it: 'Nuova finestra', de: 'Neues Fenster', es: 'Nueva ventana', 'pt-BR': 'Nova Janela', ru: 'Новое окно', 'zh-CN': '新建窗口', 'zh-TW': '新視窗', ja: '新しいウィンドウ', ko: '새 창' },
     Share: { en: 'Share', fr: 'Partager', it: 'Condividi', de: 'Teilen', es: 'Compartir', 'pt-BR': 'Compartilhar', ru: 'Поделиться', 'zh-CN': '分享', 'zh-TW': '分享', ja: '共有', ko: '공유' },

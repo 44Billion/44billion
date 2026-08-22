@@ -15,7 +15,7 @@ import { getEffectiveLocale, getT, subscribeLocaleChanged } from '#i18n/index.js
 import { cssVars } from '#assets/styles/theme.js'
 import '#shared/modal.js'
 import '#shared/dialog.js'
-import '#shared/icons/icon-hourglass-high.js'
+import '#shared/pending-indicator.js'
 import {
   EZ_VAULT_URL,
   drawerPositionAtOpen,
@@ -282,39 +282,7 @@ f('vault-messenger-wrapper', function () {
     // The vault has not answered the reachability probe yet (or is retrying
     // with backoff): keep the drawer from looking broken, following the
     // hourglass "pending" convention used elsewhere in the launcher.
-    return this.h`
-      <style>${/* css */`
-        @keyframes vaultConnectPulse {
-          50% { opacity: .5; }
-        }
-
-        .vault-connect-placeholder {
-          width: 100%;
-          height: 100%;
-          min-height: 0;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          gap: 10px;
-          padding: 16px;
-          box-sizing: border-box;
-          color: ${cssVars.colors.fg2};
-          font-size: 14rem;
-        }
-
-        .vault-connect-placeholder icon-hourglass-high {
-          flex-shrink: 0;
-        }
-
-        .vault-connect-placeholder .vault-connect-label {
-          animation: vaultConnectPulse 2s cubic-bezier(.4,0,.6,1) infinite;
-        }
-      `}</style>
-      <div class="vault-connect-placeholder">
-        <icon-hourglass-high props=${{ size: '20px', style: 'color:' + cssVars.colors.bgAccentSecondary }} />
-        <span class="vault-connect-label">${t('Connecting to vault...')}</span>
-      </div>
-    `
+    return this.h`<pending-indicator props=${{ text: t('Connecting to vault...') }} />`
   }
 
   return this.h`${this.h({ key: vaultUrl$() })`<vault-messenger />`}`

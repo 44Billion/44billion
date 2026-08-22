@@ -10,6 +10,7 @@ import { useConfirmationDialogStore } from '#zones/confirmation-dialog/index.js'
 import { getAssetBudgetConfirmation } from '#i18n/asset-budget.js'
 import '#zones/file-not-cached-dialog/index.js'
 import '#zones/launcher-update-dialog/index.js'
+import '#zones/app-bridge-host.js'
 
 f('multi-napp', function () {
   const { requestConfirmation } = useConfirmationDialogStore()
@@ -41,6 +42,7 @@ f('multi-napp', function () {
     <confirmation-dialog />
     <file-not-cached-dialog />
     <launcher-update-dialog />
+    <app-bridge-host />
     <a-screen />
   `
 })

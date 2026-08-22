@@ -129,7 +129,7 @@ export default class AppFileManager {
     return instance
   }
 
-  static async create (appId, addressObj, { cacheMetadata = cacheAppMetadata, getCachedMetadata = getCachedAppMetadata, signal } = {}) {
+  static async create (appId, addressObj, { cacheMetadata = cacheAppMetadata, getCachedMetadata = getCachedAppMetadata } = {}) {
     if (this.#instancePromisesByAppId[appId]) return this.#instancePromisesByAppId[appId]
     const p = Promise.withResolvers()
     this.#instancePromisesByAppId[appId] = p.promise
@@ -139,7 +139,11 @@ export default class AppFileManager {
     let attempts = 0
     try {
       do {
-        siteManifest = await getSiteManifestEvent(appId, addressObj, { signal })
+        // The shared site-manifest fetch deliberately ignores a caller's abort
+        // signal. A window closing while the launch is still initializing must
+        // cancel only its own wait; it cannot reject or poison the singleton
+        // promise reused by the app bridge and other callers.
+        siteManifest = await getSiteManifestEvent(appId, addressObj)
         if (!siteManifest) {
           attempts++
           console.log('Retrying site manifest fetching')
@@ -147,7 +151,7 @@ export default class AppFileManager {
         }
       } while (!siteManifest && attempts < 2)
     } catch (error) {
-      // Never leave a rejected (or aborted) instance promise cached, or every
+      // Never leave a rejected instance promise cached, or every
       // later create(appId) would fail until reload.
       delete this.#instancePromisesByAppId[appId]
       p.reject(error)
@@ -162,6 +166,12 @@ export default class AppFileManager {
     const ret = new this(createToken, { appId, addressObj, siteManifest, cacheMetadata, getCachedMetadata })
     p.resolve(ret)
     return p.promise
+  }
+
+  static invalidateCachedInstance (appId) {
+    const pending = this.#instancePromisesByAppId[appId]
+    delete this.#instancePromisesByAppId[appId]
+    return pending?.catch(() => null) ?? Promise.resolve(null)
   }
 
   async getIcon (staleWhileRevalidate = false) {

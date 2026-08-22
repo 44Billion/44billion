@@ -43,6 +43,12 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   [`docs/storage-model.md`](docs/storage-model.md) and registered in
   [`src/constants/storage-schema.js`](src/constants/storage-schema.js) in the
   same change that introduces it.
+- When changing storage or lifecycle behavior, check all three in the same
+  change: `docs/storage-model.md`, `src/constants/storage-schema.js`, and
+  `src/services/storage-audit/audit.js` (plus `repair.js` if cleanup changes).
+  Update them whenever a persisted key/template, an IndexedDB store, or an
+  audit invariant changes. In-memory registry keys are not persisted and do
+  not need registration.
 - The launcher runs a two-phase storage audit on load: the post-render pass
   detects inconsistent workspace/app/account state and schedules a repair
   reload; the pre-render pass applies the pending repair plan. Keep the audit

@@ -9,6 +9,10 @@ import appPageLoaderScriptContent from '#scripts/app-page-loader.txt.js'
 import _trustedAppPage from '../../assets/html/trusted-app-page.txt.html'
 import trustedAppPageScriptContent from '#scripts/trusted-app-page.txt.js'
 import { cssStrings } from '#assets/styles/theme.js'
+import {
+  findReadyBridgeClient,
+  pruneReadyClients
+} from '#helpers/service-worker-bridge-router.js'
 const appPageLoader = injectIntoTheHeadTag(
   _appPageLoader.replace('/* APP_PAGE_LOADER_THEME */', cssStrings.appPageLoaderTheme),
   `<script>${appPageLoaderScriptContent}</script>`
@@ -102,8 +106,40 @@ self.addEventListener('fetch', e => {
   })())
 })
 
-async function handleNfileRequest (request, url) {
-  const toPort = await selectClientToPostMessagesTo()
+const MAX_SW_ROUTE_ATTEMPTS = 3
+const SW_FIRST_REPLY_TIMEOUT_MS = 8000
+const SW_STREAM_IDLE_TIMEOUT_MS = 60000
+const APP_BRIDGE_UNAVAILABLE = 'APP_BRIDGE_UNAVAILABLE'
+
+function retryableBridgeError (error) {
+  return Object.assign(new Error('App bridge retry'), {
+    code: 'APP_BRIDGE_RETRY',
+    cause: error
+  })
+}
+
+function isRetryableBridgeError (error) {
+  return error?.code === 'APP_BRIDGE_UNAVAILABLE' ||
+    error?.code === 'STREAM_TIMEOUT' ||
+    error?.code === 'APP_BRIDGE_RETRY'
+}
+
+async function runWithBridgeRetry (task) {
+  let lastError
+  for (let attempt = 0; attempt < MAX_SW_ROUTE_ATTEMPTS; attempt++) {
+    try {
+      return await task(attempt)
+    } catch (error) {
+      if (!isRetryableBridgeError(error)) throw error
+      lastError = error
+    }
+  }
+  throw lastError
+}
+
+async function tryHandleNfileRequest (request, url) {
+  const selected = await selectClientToPostMessagesTo({ clientId: request.clientId })
+  const toPort = selected.port
   const requestToken = globalThis.crypto?.randomUUID?.() || `${Date.now()}:${Math.random()}`
   let cancelSent = false
   const cancel = () => {
@@ -122,14 +158,24 @@ async function handleNfileRequest (request, url) {
       method: request.method,
       range: request.headers.get('range'),
       localOnly: url.searchParams.get('localOnly') === '1',
-      requestToken
+      requestToken,
+      requestClientId: request.clientId
     }
-  }, { targetOrigin: self.location.origin || '*' })
+  }, {
+    targetOrigin: self.location.origin || '*',
+    timeoutMs: SW_FIRST_REPLY_TIMEOUT_MS,
+    idleTimeoutMs: SW_STREAM_IDLE_TIMEOUT_MS
+  })
 
   const first = await iterator.next()
   if (first.done || first.value?.error) {
     cancel()
     request.signal?.removeEventListener('abort', cancel)
+    if (first.value?.error?.code === 'STREAM_TIMEOUT') {
+      await iterator.return?.()
+      readyClients.delete(selected.clientId)
+      throw retryableBridgeError(first.value.error)
+    }
     throw first.value?.error || new Error('Nfile request ended without a response')
   }
   const { status, headers } = first.value.payload
@@ -177,14 +223,32 @@ async function handleNfileRequest (request, url) {
   return new Response(body, { status, headers })
 }
 
-// TODO: add timeout to askStream, catch error and if it's a timeout one
-// call selectClientToPostMessagesTo again by recursively retrying handleRequest
-async function handleRequest (request) {
+async function handleNfileRequest (request, url) {
+  return runWithBridgeRetry(() => tryHandleNfileRequest(request, url))
+}
+
+async function tryHandleRequest (request) {
   const pathname = request.pathname ?? new URL(request.url).pathname
-  const toPort = await selectClientToPostMessagesTo()
-  const msg = { code: 'STREAM_APP_FILE', payload: { pathname } }
-  const iterator = askStream(toPort, msg, { targetOrigin: self.location.origin || '*' })
+  const selected = await selectClientToPostMessagesTo({ clientId: request.clientId })
+  const msg = {
+    code: 'STREAM_APP_FILE',
+    payload: {
+      pathname,
+      requestClientId: request.clientId
+    }
+  }
+  const iterator = askStream(selected.port, msg, {
+    targetOrigin: self.location.origin || '*',
+    timeoutMs: SW_FIRST_REPLY_TIMEOUT_MS,
+    idleTimeoutMs: SW_STREAM_IDLE_TIMEOUT_MS
+  })
   const firstReplyMsg = (await iterator.next()).value
+
+  if (firstReplyMsg === undefined || firstReplyMsg.error?.code === 'STREAM_TIMEOUT') {
+    await iterator.return?.()
+    readyClients.delete(selected.clientId)
+    throw retryableBridgeError(firstReplyMsg?.error || new Error('App bridge timed out'))
+  }
 
   if (firstReplyMsg.error) {
     switch (firstReplyMsg.error.message) {
@@ -234,13 +298,17 @@ async function handleRequest (request) {
   }
 }
 
+async function handleRequest (request) {
+  return runWithBridgeRetry(() => tryHandleRequest(request))
+}
+
 // Stores clientId to MessagePort map.
 // A MessageChannel initiated at the client,
 // sending the port to the sw which would
 // then use it to do port.postMessage, was
 // the way that worked for sw to talk to clients
 // because client.postMessage didn't work.
-const readyClients = new Map()
+const readyClients = new Map() // clientId -> { port, readyAt, windowId }
 
 // Clean up dead clients periodically, although
 // sw tends to be short lived
@@ -262,9 +330,14 @@ self.addEventListener('message', async e => {
     // Handle ready signals from clients
     case 'TRUSTED_IFRAME_READY': {
       if (pathname !== '/~~napp') return
-      readyClients.set(e.source.id, e.ports[0])
-      while (resolvers.length) {
-        resolvers.shift()(e.ports[0])
+      readyClients.set(e.source.id, {
+        port: e.ports[0],
+        readyAt: Date.now(),
+        windowId: e.data.payload?.windowId || ''
+      })
+      for (const resolver of resolvers.splice(0)) {
+        if (resolver.timer) clearTimeout(resolver.timer)
+        resolver.resolve({ port: e.ports[0], clientId: e.source.id })
       }
       break
     }
@@ -272,45 +345,48 @@ self.addEventListener('message', async e => {
 })
 
 let bc
-async function selectClientToPostMessagesTo () {
-  let targetPort
-  while (!targetPort) {
-    // Spec already puts most recently focused first
+function requestBridgeReady () {
+  return new Promise((resolve, reject) => {
+    const resolver = { resolve, reject, timer: null }
+    resolvers.push(resolver)
+
+    if (resolvers.length === 1) {
+      bc ??= new BroadcastChannel('sw~~napp')
+      bc.postMessage({ code: 'GET_READY_STATUS', payload: null })
+    }
+
+    resolver.timer = setTimeout(() => {
+      const index = resolvers.indexOf(resolver)
+      if (index > -1) resolvers.splice(index, 1)
+      reject(Object.assign(new Error('App bridge not ready'), {
+        code: APP_BRIDGE_UNAVAILABLE
+      }))
+    }, SW_FIRST_REPLY_TIMEOUT_MS)
+  })
+}
+
+async function selectClientToPostMessagesTo ({ clientId = '' } = {}) {
+  let lastError
+  for (let attempt = 0; attempt < MAX_SW_ROUTE_ATTEMPTS; attempt++) {
     const clients = await self.clients.matchAll({ includeUncontrolled: false, type: 'window' })
-    const targetClient = clients.find(client =>
-      new URL(client.url).pathname === '/~~napp' &&
-      readyClients.has(client.id) // Check if we have a port for this client
-    )
+    pruneReadyClients(clients, readyClients)
+    const targetClient = findReadyBridgeClient(clients, readyClients, clientId)
 
-    if (targetClient) targetPort = readyClients.get(targetClient.id)
-    else {
-      // Not working:
-      // clients
-      //   .filter(client => new URL(client.url).pathname === '/~~napp')
-      //   .forEach(client => {
-      //     client.postMessage({ code: 'GET_READY_STATUS' })
-      //   })
-      // console.log('Service Worker: No client available with ready port, retrying...')
-      const { promise, resolve } = Promise.withResolvers()
-      resolvers.push(resolve)
-
-      if (resolvers.length === 1) {
-        bc ??= new BroadcastChannel('sw~~napp')
-        bc.postMessage({ code: 'GET_READY_STATUS', payload: null })
-      }
-
-      targetPort = await Promise.race([
-        promise,
-        new Promise(resolve => setTimeout(resolve, 1000))
-      ])
-
-      if (!targetPort) {
-        const index = resolvers.indexOf(resolve)
-        if (index > -1) {
-          resolvers.splice(index, 1)
-        }
+    if (targetClient) {
+      return {
+        port: readyClients.get(targetClient.id).port,
+        clientId: targetClient.id
       }
     }
+
+    try {
+      return await requestBridgeReady()
+    } catch (error) {
+      lastError = error
+    }
   }
-  return targetPort
+  throw Object.assign(new Error('App bridge unavailable after retries'), {
+    code: APP_BRIDGE_UNAVAILABLE,
+    cause: lastError
+  })
 }

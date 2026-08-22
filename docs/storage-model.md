@@ -7,6 +7,13 @@ templates to classify and remove orphaned data.
 
 Values written through `useWebStorage`/`setWebStorageItem` are JSON-encoded.
 
+`appId` is global and shared across users and workspaces; `appKey` identifies
+one app instance. App metadata/caches keyed by `appId` are therefore global,
+while `session_appByKey_<appKey>_*` stores only per-instance state. Keys used
+by the in-memory app-bridge registry (for example `single-napp:...`) are
+ephemeral and intentionally not persisted; they do not belong here or in
+`storage-schema.js`.
+
 ## localStorage
 
 ### Global
@@ -97,6 +104,8 @@ Values written through `useWebStorage`/`setWebStorageItem` are JSON-encoded.
   referentially complete and `visibility` is one of the three allowed values.
 - `openAppKeys` only contains open instances.
 - Subdomain maps are bidirectional.
+- App metadata/caches are global by `appId`; they remain valid while any
+  workspace/account has the app or a subdomain mapping exists.
 
 The two-phase audit removes only confirmed inconsistent/orphaned entries,
 reusing existing app/account cleanup routines. Unknown keys are preserved.

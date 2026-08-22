@@ -108,6 +108,9 @@ export async function * askStream (to, message, options, transfer) {
   const reqId = getReqId()
   const messageQueue = []
   let resolvePromise
+  let firstResponseReceived = false
+  let firstReplyTimer = null
+  let idleTimer = null
 
   const waitForNextMessage = () => {
     return new Promise(resolve => {
@@ -115,16 +118,60 @@ export async function * askStream (to, message, options, transfer) {
     })
   }
 
+  const streamTimeoutError = error => Object.assign(
+    new Error(error?.message || 'Message stream timed out'),
+    { code: 'STREAM_TIMEOUT' }
+  )
+
+  const clearTimers = () => {
+    if (firstReplyTimer) clearTimeout(firstReplyTimer)
+    firstReplyTimer = null
+    if (idleTimer) clearTimeout(idleTimer)
+    idleTimer = null
+  }
+
+  const scheduleIdleTimer = () => {
+    if (!firstResponseReceived) return
+    if (idleTimer) clearTimeout(idleTimer)
+    const idleTimeoutMs = options.idleTimeoutMs
+    if (typeof idleTimeoutMs === 'number' && idleTimeoutMs > 0) {
+      idleTimer = setTimeout(() => pushError(new Error('Message stream idle timed out')), idleTimeoutMs)
+    }
+  }
+
+  const pushError = error => {
+    clearTimers()
+    const entry = { error: streamTimeoutError(error), isLast: true }
+    messageQueue.push(entry)
+    resolvePromise?.()
+  }
+
   resrejByReqId[reqId] = {
     resolve: ({ payload, isLast = true }) => {
+      if (!firstResponseReceived) {
+        firstResponseReceived = true
+        if (firstReplyTimer) clearTimeout(firstReplyTimer)
+        firstReplyTimer = null
+        scheduleIdleTimer()
+      } else {
+        scheduleIdleTimer()
+      }
       messageQueue.push({ payload, isLast })
       if (resolvePromise) resolvePromise()
     },
     reject: error => {
+      clearTimers()
       messageQueue.push({ error })
       if (resolvePromise) resolvePromise()
     }
   }
+
+  const timeoutMs = options.timeoutMs
+  if (typeof timeoutMs === 'number' && timeoutMs > 0) {
+    firstReplyTimer = setTimeout(() => pushError(new Error('Message stream timed out')), timeoutMs)
+  }
+  const onAbort = () => pushError(new Error('Message stream aborted'))
+  options.signal?.addEventListener('abort', onAbort, { once: true })
 
   to.postMessage({
     ...message,
@@ -143,6 +190,8 @@ export async function * askStream (to, message, options, transfer) {
       }
     }
   } finally {
+    clearTimers()
+    options.signal?.removeEventListener('abort', onAbort)
     delete resrejByReqId[reqId]
   }
 }

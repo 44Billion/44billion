@@ -1,5 +1,7 @@
-import { /* handleMessageReply, */ tell, reply } from '../index.js'
-import { nostrDbStreamDonePayload } from '../nostrdb-protocol.js'
+import { toSignal } from '#f'
+import { tell, reply } from './index.js'
+import { APP_BRIDGE_ERROR_KIND } from './app-bridge-error.js'
+import { nostrDbStreamDonePayload } from './nostrdb-protocol.js'
 import {
   createNostrDbMaintenanceSignEvent,
   createNostrDbPersonalCopyDecrypt,
@@ -10,16 +12,14 @@ import {
   nostrDbMaintenanceOptions,
   nostrDbReadParamsWithAppId,
   runNostrDbMethod
-} from './nostrdb.js'
-import { needsNip07Permission, nip07PermissionContext } from './nip07-permission-context.js'
+} from './browser/nostrdb.js'
 import { appIdToAddressObj, addressObjToAppId } from '#helpers/app.js'
-import { base36NsiteToBase16 } from 'libp2r2p/base36'
-import { base16ToBase62 } from 'libp2r2p/base62'
+import { base36NsiteToBase16, bytesToBase36Nsite } from 'libp2r2p/base36'
+import { base16ToBase62, base62ToBytes } from 'libp2r2p/base62'
 import { appEncode, appDecode } from 'libp2r2p/nip19'
 import { streamFileChunksFromDb, getFileChunksFromDb, deleteFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
 import { getNostrDb, startGlobalChunkMaintenance } from '#services/idb/nostrdb/index.js'
 import AppFileManager from '#services/app-file-manager/index.js'
-import AppUpdater from '#services/app-updater/index.js'
 import { setWebStorageItem } from '#hooks/use-web-storage.js'
 import { Base93Encoder, decode } from 'libp2r2p/base93'
 import { sha256 } from '@noble/hashes/sha2.js'
@@ -32,15 +32,45 @@ import { APP_FILE_CHUNK_BYTES } from '#constants/app-file.js'
 import { PROGRESS_VISIBLE_AFTER_COMPLETE_MS, stampProgressEntry } from '#helpers/caching-progress.js'
 import NFileDownloader from '#services/nfile-downloader/index.js'
 import { getEffectiveLocale, subscribeLocaleChanged } from '#i18n/index.js'
+import { askNip07 } from './browser/nip07.js'
+import {
+  registerAppBridgeSignalFactory
+} from './app-bridge-registry.js'
+
+registerAppBridgeSignalFactory(toSignal)
+
+export const APP_BRIDGE_READY_TIMEOUT_MS = 5000
+export const APP_PAGE_READY_TIMEOUT_MS = 5000
+// export const APP_BRIDGE_READY_TIMEOUT_MS = 12000
+// export const APP_PAGE_READY_TIMEOUT_MS = 12000
+export const APP_PENDING_INDICATOR_DELAY_MS = 800
+
+export function retryAppBridge (state, { isAutomatic = false } = {}) {
+  if (isAutomatic) {
+    console.warn(
+      `[app-bridge] Automatic retry for app ${state.appId} on subdomain ${state.key}`
+    )
+  }
+  state.ready$(false)
+  state.error$(null)
+  state.retryCount$(state.retryCount$() + 1)
+  state.bridgeResetInitialization?.()
+  if (!isAutomatic) state.bridgeResetRetry?.()
+  state.schedule?.()
+}
+
+function withWindowId (route, windowId) {
+  route = route || ''
+  const hashIndex = route.indexOf('#')
+  const base = hashIndex === -1 ? route : route.slice(0, hashIndex)
+  const hash = hashIndex === -1 ? '' : route.slice(hashIndex)
+  const separator = base.includes('?') ? '&' : '?'
+  return `${base}${separator}windowId=${encodeURIComponent(windowId)}${hash}`
+}
 
 function isAssetBudgetError (error) {
   return [ASSET_BUDGET_BACKGROUND_DENIED, ASSET_BUDGET_DENIED_BY_USER].includes(error?.code)
 }
-
-// Guard against a stuck foreground asset download: after this long without
-// progress reaching 100, the stream errors out (isLast) so the app can retry
-// instead of leaving the progress UI at 100% forever.
-const CACHE_FILE_TIMEOUT_MS = 180000
 
 function withCacheFileTimeout (promise, timeoutMs) {
   let timeoutId
@@ -52,28 +82,18 @@ function withCacheFileTimeout (promise, timeoutMs) {
   return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId))
 }
 
-// Update icon storage with data URL from streamed chunks
 async function updateIconStorage (appId, favicon, chunks) {
   try {
-    // Decode base93 content to binary
     const binaryChunks = chunks.map(chunk => decode(chunk))
     const blob = new Blob(binaryChunks, { type: favicon.contentType })
-
-    // Convert to data URL for persistent caching (doesn't get revoked like URL.createObjectURL() does)
     const reader = new FileReader()
     const dataUrlPromise = new Promise((resolve, reject) => {
       reader.onload = () => resolve(reader.result)
       reader.onerror = reject
       reader.readAsDataURL(blob)
     })
-
     const dataUrl = await dataUrlPromise
-
-    const icon = {
-      fx: favicon.rootHash,
-      url: dataUrl
-    }
-    // Update storage using setWebStorageItem to trigger cross-component updates
+    const icon = { fx: favicon.rootHash, url: dataUrl }
     setWebStorageItem(localStorage, `session_appById_${appId}_icon`, icon)
     return icon
   } catch (error) {
@@ -81,143 +101,25 @@ async function updateIconStorage (appId, favicon, chunks) {
   }
 }
 
-export async function initMessageListener (
-  userPkB36, appId, appSubdomain, initialRoute,
-  trustedAppPageIframe, appPageIframe, appPageIframeSrc$,
-  cachingProgress$, askVault, requestPermission, openApp,
-  { signal: componentSignal, isSingleNapp = false, onFileNotCached = null, requestAssetBudgetConfirmation = null } = {}
-) {
-  startGlobalChunkMaintenance()
-  const userPkB16 = base36NsiteToBase16(userPkB36)
-  const isDefaultUser = base16ToBase62(
-    userPkB16,
-    { mode: 'integer', minLength: 43 }
-  ) === JSON.parse(localStorage.getItem('session_defaultUserPk'))
-  const currentVaultUrl = new URL(JSON.parse(localStorage.getItem('config_vaultUrl')))
-  const vaultIframe = document.querySelector(`iframe[src="${currentVaultUrl.href.replace(/\/$/, '')}"]`)
-  if (!vaultIframe) console.warn('Vault iframe not found')
-
-  const appAddress = appIdToAddressObj(appId)
-  const appFilesPromise = AppFileManager.create(appId, appAddress)
-  appFilesPromise.catch(() => {}) // prevent unhandled rejection if we bail out early via signal
-
-  let appFiles
-  try {
-    appFiles = componentSignal
-      ? await Promise.race([
-        appFilesPromise,
-        new Promise((_resolve, reject) => {
-          if (componentSignal.aborted) return reject(new Error('aborted'))
-          componentSignal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
-        })
-      ])
-      : await appFilesPromise
-  } catch (_error) {
-    if (componentSignal?.aborted) return // app was closed while waiting, no dialog
-    if (onFileNotCached) onFileNotCached()
-    return
-  }
-  if (isSingleNapp) {
-    try {
-      const retention = await AppUpdater.recordEmbeddedOnlyRetention({
-        appId,
-        ownerPubkey: userPkB16,
-        siteManifest: appFiles.siteManifest,
-        updateSiteManifestMetadata: metadata => appFiles.updateSiteManifestMetadata(metadata)
-      })
-      if (!retention.retained) {
-        componentSignal?.addEventListener('abort', () => {
-          AppUpdater.scheduleCleanup([appId], { ifAvailable: true })
-        }, { once: true })
-      }
-    } catch (err) {
-      console.warn('Failed to record embedded app retention', err)
-      componentSignal?.addEventListener('abort', () => {
-        AppUpdater.scheduleCleanup([appId], { ifAvailable: true })
-      }, { once: true })
-    }
-  }
-
-  let currentTrustedAppPagePort = null
-  let currentAppPagePort = null
-  const nostrDbSubscriptions = new Map()
-  const nfileDownloads = new Map()
-  // Setup cleanup
-  componentSignal?.addEventListener('abort', () => {
-    if (currentTrustedAppPagePort) {
-      currentTrustedAppPagePort.close()
-      currentTrustedAppPagePort = null
-    }
-    if (currentAppPagePort) {
-      currentAppPagePort.close()
-      currentAppPagePort = null
-    }
-    closeNostrDbSubscriptions(nostrDbSubscriptions)
-    for (const downloader of nfileDownloads.values()) downloader.close()
-    nfileDownloads.clear()
-  }, { once: true })
-
-  let ac
-  const appOrigin = location.origin.replace('//', `//${appSubdomain}.`)
-  window.addEventListener('message', e => {
-    if (
-      e.data.code !== 'TRUSTED_IFRAME_READY' ||
-      e.source !== trustedAppPageIframe.contentWindow ||
-      e.origin !== appOrigin
-    ) return
-
-    // iframe's page may reload on sw controller change (and send a new 'TRUSTED_IFRAME_READY' msg)
-    ac?.abort()
-    ac = new AbortController()
-    if (currentTrustedAppPagePort) currentTrustedAppPagePort.close()
-    currentTrustedAppPagePort = e.ports[0]
-    listenToTrustedAppPageMessages(currentTrustedAppPagePort, AbortSignal.any([componentSignal, ac.signal]))
-    loadAppOnce(appSubdomain, initialRoute)
-  }, { signal: componentSignal })
-
-  let hasRunLoadApp = false
-  function loadAppOnce (appSubdomain, route = '') {
-    if (hasRunLoadApp) return
-
-    hasRunLoadApp = true
-    let ac
-    window.addEventListener('message', e => {
-      if (
-        e.data.code !== 'APP_IFRAME_READY' ||
-        e.source !== appPageIframe.contentWindow ||
-        e.origin !== appOrigin
-      ) return
-
-      // iframe's page may reload on sw controller change (and send a new 'APP_IFRAME_READY' msg)
-      ac?.abort()
-      ac = new AbortController()
-      if (currentAppPagePort) currentAppPagePort.close()
-      currentAppPagePort = e.ports[0]
-      listenToAppPageMessages(currentAppPagePort, AbortSignal.any([componentSignal, ac.signal]))
-    }, { signal: componentSignal })
-
-    const domain = window.location.host
-    // Load real app page beside the already loaded trusted app page iframe
-    //
-    // Note: for transparent bg, the iframe's html should add
-    // <meta name="color-scheme" content="light dark"> to the head tag
-    appPageIframeSrc$(`//${appSubdomain}.${domain}${route}`)
-  }
-
-  function listenToTrustedAppPageMessages (trustedAppPagePort, signal) {
+function listenToTrustedAppPageMessages ({
+  state,
+  appFiles,
+  appId,
+  userPkB16,
+  isDefaultUser,
+  cachingProgress$,
+  askVault,
+  onFileNotCached,
+  requestAssetBudgetConfirmation,
+  signal
+}) {
+  return function (trustedAppPagePort) {
     trustedAppPagePort.addEventListener('message', async e => {
+      if (state.currentPort !== trustedAppPagePort) return
       switch (e.data.code) {
-        // For now, sw doesn't need this info
-        // case 'GET_BUNDLE': {
-        //   // using e.data.domainLabels gotten from app sw's self.location
-        //   const msg = await getAppBundleMessage(e.data.domainLabels[0])
-        //   reply(e, msg, { to: trustedAppPagePort })
-        //   break
-        // }
-
         case 'STREAM_NFILE': {
           const { entity, method, range, localOnly, requestToken } = e.data.payload || {}
-          if (!requestToken || nfileDownloads.has(requestToken)) {
+          if (!requestToken || state.nfileDownloads.has(requestToken)) {
             reply(e, { error: new Error('INVALID_NFILE_REQUEST'), isLast: true }, { to: trustedAppPagePort })
             break
           }
@@ -226,9 +128,7 @@ export async function initMessageListener (
             ? null
             : createNostrDbMaintenanceSignEvent({ askVault, pubkey: userPkB16, timeoutMs: 5000 })
           const cacheDb = signEvent
-            ? getNostrDb(userPkB16, {
-              ...nostrDbMaintenanceOptions(signEvent)
-            })
+            ? getNostrDb(userPkB16, { ...nostrDbMaintenanceOptions(signEvent) })
             : null
           let downloader
           try {
@@ -246,63 +146,58 @@ export async function initMessageListener (
                 : null,
               signal
             })
-            nfileDownloads.set(requestToken, downloader)
+            state.nfileDownloads.set(requestToken, downloader)
             const response = await downloader.open({ method, range, localOnly: localOnly === true })
-            if (nfileDownloads.get(requestToken) !== downloader) break
+            if (state.nfileDownloads.get(requestToken) !== downloader) break
             reply(e, {
               payload: { status: response.status, headers: response.headers },
               isLast: !response.body
             }, { to: trustedAppPagePort })
             if (response.body) {
               for await (const chunk of response.body) {
-                if (nfileDownloads.get(requestToken) !== downloader) break
+                if (state.nfileDownloads.get(requestToken) !== downloader) break
                 reply(e, { payload: { chunk }, isLast: false }, { to: trustedAppPagePort })
               }
-              if (nfileDownloads.get(requestToken) === downloader) {
+              if (state.nfileDownloads.get(requestToken) === downloader) {
                 reply(e, { payload: { done: true }, isLast: true }, { to: trustedAppPagePort })
               }
             }
           } catch (error) {
-            if (nfileDownloads.get(requestToken) === downloader) {
+            if (state.nfileDownloads.get(requestToken) === downloader) {
               reply(e, { error, isLast: true }, { to: trustedAppPagePort })
             }
           } finally {
             downloader?.close()
-            nfileDownloads.delete(requestToken)
+            state.nfileDownloads.delete(requestToken)
           }
           break
         }
         case 'CANCEL_NFILE': {
-          const downloader = nfileDownloads.get(e.data.payload?.requestToken)
+          const downloader = state.nfileDownloads.get(e.data.payload?.requestToken)
           downloader?.close()
-          nfileDownloads.delete(e.data.payload?.requestToken)
+          state.nfileDownloads.delete(e.data.payload?.requestToken)
           break
         }
         case 'STREAM_APP_FILE': {
           const handleStreamError = (originalError, errorToSend = new Error('FILE_NOT_CACHED')) => {
             if (originalError) console.log(originalError)
             if (onFileNotCached && errorToSend.message !== 'HTML_FILE_NOT_CACHED' && !isAssetBudgetError(originalError) && !isAssetBudgetError(errorToSend)) {
-              onFileNotCached(e.data.payload.pathname)
+              onFileNotCached({
+                pathname: e.data.payload.pathname,
+                kind: APP_BRIDGE_ERROR_KIND.FILE
+              })
             }
             return reply(e, { error: errorToSend, isLast: true }, { to: trustedAppPagePort })
           }
 
           try {
-            // if chunk is missing (chunks aren't cached), send error,
-            // signaling sw should respond with app loader html, if it's .html file,
-            // which asks to cache it then reloads,
-            // or, when not html,
-            // stream as chunks get cached (could also be:
-            // defer response and sw itself asks to cache it then after done responds,
-            // but there would have a greater chance of the browser putting
-            // the sw to sleep compared to when sw is in the middle of a response streaming)
             const cacheStatus = await appFiles.getFileCacheStatus(e.data.payload.pathname, null, { withMeta: true })
             if (!cacheStatus.isCached) {
               if (cacheStatus.isHtml) handleStreamError(null, new Error('HTML_FILE_NOT_CACHED'))
               else {
                 let {
                   fileRootHash,
-                  total: totalChunks // null when no chunks are cached
+                  total: totalChunks
                 } = cacheStatus
                 let nextChunkIndexToStream = 0
                 let hasErrored = false
@@ -321,7 +216,6 @@ export async function initMessageListener (
                 const tryStream = async () => {
                   if (hasErrored || hasSentLast || isStreaming) return
                   isStreaming = true
-
                   try {
                     // eslint-disable-next-line no-unmodified-loop-condition
                     while (!hasErrored && !hasSentLast) {
@@ -329,15 +223,12 @@ export async function initMessageListener (
                         fromPos: nextChunkIndexToStream,
                         toPos: nextChunkIndexToStream
                       })
-
                       if (chunks.length === 0) break
-
                       const chunk = chunks[0]
                       if (totalChunks === null) {
                         const parsedTotal = chunk.total ?? Number(chunk.evt.tags.find(tag => tag[0] === 'mmr')?.[2])
                         if (!Number.isNaN(parsedTotal) && parsedTotal > 0) totalChunks = parsedTotal
                       }
-
                       const isLast = (totalChunks != null && nextChunkIndexToStream === totalChunks - 1)
                       reply(e, {
                         payload: {
@@ -346,7 +237,6 @@ export async function initMessageListener (
                         },
                         isLast
                       }, { to: trustedAppPagePort })
-
                       nextChunkIndexToStream++
                       if (isLast) hasSentLast = true
                     }
@@ -364,7 +254,6 @@ export async function initMessageListener (
                   if (error) {
                     hasErrored = true
                     clearProgressCompletionTimer(filename)
-                    // Clear progress for this file
                     const currentProgress = cachingProgress$()
                     const { [filename]: _, ...remaining } = currentProgress
                     cachingProgress$(remaining)
@@ -372,8 +261,6 @@ export async function initMessageListener (
                   }
 
                   if (total && totalChunks === null) totalChunks = total
-
-                  // Update caching progress in the signal
                   const currentProgress = cachingProgress$()
                   cachingProgress$({
                     ...currentProgress,
@@ -382,12 +269,6 @@ export async function initMessageListener (
                       totalByteSizeEstimate: totalChunks ? totalChunks * APP_FILE_CHUNK_BYTES : 0
                     })
                   })
-
-                  // Remove from progress when completed. Idempotent: a late
-                  // duplicate progress report restarts the short visibility
-                  // window instead of stacking timers; the progress bar's
-                  // periodic sweep catches any entry that never reaches this
-                  // path.
                   if (cachingProgress >= 100) {
                     clearProgressCompletionTimer(filename)
                     const timer = setTimeout(() => {
@@ -395,14 +276,12 @@ export async function initMessageListener (
                       const latestProgress = cachingProgress$()
                       const { [filename]: _, ...remaining } = latestProgress
                       cachingProgress$(remaining)
-                    }, PROGRESS_VISIBLE_AFTER_COMPLETE_MS) // Keep visible for 1 second after completion
+                    }, PROGRESS_VISIBLE_AFTER_COMPLETE_MS)
                     progressCompletionTimers.set(filename, timer)
                   }
-
                   if (typeof chunkIndex === 'number') {
                     if (chunkIndex === nextChunkIndexToStream) await tryStream()
                   } else {
-                    // Initial progress or resumed without specific chunk
                     await tryStream()
                   }
                 }
@@ -416,7 +295,7 @@ export async function initMessageListener (
                         requestConfirmation: requestAssetBudgetConfirmation
                       }
                     })
-                    return await withCacheFileTimeout(cachePromise, CACHE_FILE_TIMEOUT_MS)
+                    return await withCacheFileTimeout(cachePromise, 180000)
                   }
                 } catch (err) {
                   return handleStreamError(err)
@@ -441,36 +320,161 @@ export async function initMessageListener (
     trustedAppPagePort.start()
     tell(trustedAppPagePort, { code: 'BROWSER_READY', payload: null })
   }
+}
 
-  const appMetadataCache = new Map() // Cache app metadata by app ID
-  const appFetchingState = new Map() // Track fetching state by app ID
-  // Helper function to gather app metadata for permission requests
-  async function getAppMetadata (appIdParam, appAddressParam, { timeoutMs = 1750 } = {}) {
-    if (appMetadataCache.has(appIdParam)) return appMetadataCache.get(appIdParam)
+export async function initAppBridge (state, {
+  cachingProgress$,
+  askVault,
+  onFileNotCached,
+  requestAssetBudgetConfirmation,
+  signal = null
+}) {
+  startGlobalChunkMaintenance()
+  state.bridgeErrorHandler = onFileNotCached
+  // state.userPk is the base62 workspace user key; the bridge helpers expect the
+  // base36 nsite representation used by the old user-page bridge.
+  const userPkB36 = bytesToBase36Nsite(
+    base62ToBytes(state.userPk, { mode: 'integer', byteLength: 32 })
+  )
+  const userPkB16 = base36NsiteToBase16(userPkB36)
+  const isDefaultUser = base16ToBase62(
+    userPkB16,
+    { mode: 'integer', minLength: 43 }
+  ) === JSON.parse(localStorage.getItem('session_defaultUserPk'))
+  const appAddress = appIdToAddressObj(state.appId)
+  let appFilesPromise = AppFileManager.create(state.appId, appAddress)
+  state.appFilesPromise = appFilesPromise
+  appFilesPromise.catch(() => {})
+  const appOrigin = `${location.protocol}//${state.appSubdomain}.${location.host}`
 
-    if (!appFetchingState.has(appIdParam)) {
-      appFetchingState.set(appIdParam, {
-        icon: false,
-        name: false,
-        promise: null
-      })
+  let cleanupFns = []
+  let bridgeTimer
+  let autoRetried = false
+  state.bridgeRetryState = {
+    onError: details => onFileNotCached({
+      pathname: typeof details === 'string' ? details : details?.pathname,
+      kind: APP_BRIDGE_ERROR_KIND.BRIDGE
+    }),
+    retry: () => retryAppBridge(state)
+  }
+
+  const startTrustedMessages = async (trustedAppPagePort) => {
+    let appFiles
+    try {
+      appFiles = await appFilesPromise
+    } catch (error) {
+      state.error$(error)
+      state.ready$(false)
+      clearTimeout(bridgeTimer)
+      onFileNotCached({ pathname: undefined, kind: APP_BRIDGE_ERROR_KIND.BRIDGE })
+      return
     }
+    if (signal?.aborted || state.currentPort !== trustedAppPagePort) return
+    state.appFiles = appFiles
+    const listen = listenToTrustedAppPageMessages({
+      state,
+      appFiles,
+      appId: state.appId,
+      userPkB16,
+      isDefaultUser,
+      cachingProgress$,
+      askVault,
+      onFileNotCached: details => onFileNotCached(details),
+      requestAssetBudgetConfirmation,
+      signal
+    })
+    listen(trustedAppPagePort)
+    state.ready$(true)
+    state.error$(null)
+    clearTimeout(bridgeTimer)
+  }
 
-    const fetchingState = appFetchingState.get(appIdParam)
-    if (fetchingState.promise) return fetchingState.promise
+  const onReadyMessage = e => {
+    if (
+      e.data.code !== 'TRUSTED_IFRAME_READY' ||
+      e.source !== state.trustedIframeRef$()?.contentWindow ||
+      e.origin !== appOrigin
+    ) return
+    state.currentPortAbortController?.abort()
+    state.currentPortAbortController = new AbortController()
+    state.currentPort?.close()
+    state.currentPort = e.ports[0]
+    startTrustedMessages(state.currentPort)
+  }
+  window.addEventListener('message', onReadyMessage, { signal })
+  cleanupFns.push(() => window.removeEventListener('message', onReadyMessage))
 
-    appAddressParam ??= appIdToAddressObj(appIdParam)
-    // it handles caching internally
+  const schedule = () => {
+    state.ready$(false)
+    state.error$(null)
+    state.trustedIframeSrc$(
+      `//${state.appSubdomain}.${window.location.host}/~~napp?windowId=${encodeURIComponent(state.key)}`
+    )
+    clearTimeout(bridgeTimer)
+    bridgeTimer = setTimeout(() => {
+      if (state.ready$()) return
+      if (!autoRetried) {
+        autoRetried = true
+        // One automatic retry. Do not clear autoRetried here: the next timeout
+        // must escalate to the file-not-cached dialog instead of retrying forever.
+        retryAppBridge(state, { isAutomatic: true })
+        return
+      }
+      console.warn(
+        `[app-bridge] Automatic retry did not recover; showing recovery dialog for app ${state.appId} on subdomain ${state.key}`
+      )
+      state.error$(new Error('App bridge did not become ready'))
+      state.bridgeRetryState?.onError({
+        pathname: undefined
+      })
+    }, APP_BRIDGE_READY_TIMEOUT_MS)
+  }
+  state.bridgeResetRetry = () => { autoRetried = false }
+  state.bridgeResetInitialization = () => {
+    AppFileManager.invalidateCachedInstance(state.appId)
+    appFilesPromise = AppFileManager.create(state.appId, appAddress)
+    state.appFilesPromise = appFilesPromise
+    state.appFiles = null
+    state.currentPortAbortController?.abort()
+    state.currentPort?.close()
+    state.currentPort = null
+  }
+  state.schedule = schedule
+  schedule()
+
+  const cleanup = () => {
+    clearTimeout(bridgeTimer)
+    state.currentPortAbortController?.abort()
+    state.currentPort?.close()
+    state.currentPort = null
+    state.ready$(false)
+    cleanupFns.forEach(fn => fn())
+    cleanupFns = []
+  }
+  state.bridgeCleanup = cleanup
+  return cleanup
+}
+
+function getAppMetadata (appIdParam, appAddressParam, {
+  appMetadataCache,
+  appFetchingState,
+  timeoutMs = 1750
+} = {}) {
+  if (appMetadataCache.has(appIdParam)) return appMetadataCache.get(appIdParam)
+  if (!appFetchingState.has(appIdParam)) {
+    appFetchingState.set(appIdParam, { icon: false, name: false, promise: null })
+  }
+  const fetchingState = appFetchingState.get(appIdParam)
+  if (fetchingState.promise) return fetchingState.promise
+
+  appAddressParam ??= appIdToAddressObj(appIdParam)
+  const metadataPromise = (async () => {
     const targetAppFiles = await AppFileManager.create(appIdParam, appAddressParam)
-
     const appObject = {
       id: appIdParam,
-      napp: appEncode(appAddressParam), // no relay hint allowed
-      // Always keep a human-readable fallback while richer metadata is loading.
+      napp: appEncode(appAddressParam),
       alias: appAddressParam.dTag || undefined
-      // name: from bundleMetadata event or index.htm(l)
     }
-
     const promises = []
     if (!('icon' in appObject) && !fetchingState.icon) {
       fetchingState.icon = true
@@ -488,25 +492,80 @@ export async function initMessageListener (
           .finally(() => { fetchingState.name = false })
       )
     }
+    if (promises.length > 0) {
+      const combinedPromises = Promise.all(promises).then(() => appMetadataCache.set(appIdParam, appObject))
+      await Promise.race([combinedPromises, new Promise(resolve => setTimeout(resolve, timeoutMs))])
+    }
+    appMetadataCache.set(appIdParam, appObject)
+    appFetchingState.delete(appIdParam)
+    return appObject
+  })()
+  fetchingState.promise = metadataPromise
+  return metadataPromise
+}
 
-    const metadataPromise = (async () => {
-      if (promises.length > 0) {
-        const combinedPromises = Promise.all(promises)
-          .then(() => appMetadataCache.set(appIdParam, appObject))
-        await Promise.race([combinedPromises, new Promise(resolve => setTimeout(resolve, timeoutMs))])
-      }
+function cancelNostrDbSubscription (subscriptions, subscriptionId) {
+  const subscription = subscriptions.get(subscriptionId)
+  if (!subscription) return
+  subscription.cancelled = true
+  subscription.iterator?.return?.()
+}
 
-      appMetadataCache.set(appIdParam, appObject)
-      appFetchingState.delete(appIdParam)
+async function streamNostrDbSubscription (e, {
+  db,
+  params = [],
+  subscriptionId,
+  subscriptions,
+  appPagePort,
+  authorizer,
+  appId
+}) {
+  let subscription
+  try {
+    if (!subscriptionId) throw new Error('NOSTRDB_SUBSCRIPTION_ID_REQUIRED')
+    if (subscriptions.has(subscriptionId)) throw new Error('NOSTRDB_SUBSCRIPTION_EXISTS')
+    subscription = { iterator: null, cancelled: false }
+    subscriptions.set(subscriptionId, subscription)
 
-      return appObject
-    })()
-    fetchingState.promise = metadataPromise
-
-    return metadataPromise
+    await authorizer?.authorizeBeforeStart?.()
+    if (subscription.cancelled) return
+    const iterator = db.subscribe(...nostrDbReadParamsWithAppId(params, { appId }))
+    subscription.iterator = iterator
+    for await (const item of iterator) {
+      await authorizer?.authorizeItem?.(item)
+      reply(e, { payload: item, isLast: false }, { to: appPagePort })
+    }
+    if (!subscription.cancelled) {
+      reply(e, {
+        payload: nostrDbStreamDonePayload(subscriptionId),
+        isLast: true
+      }, { to: appPagePort })
+    }
+  } catch (error) {
+    if (!subscription?.cancelled) reply(e, { error, isLast: true }, { to: appPagePort })
+  } finally {
+    if (subscriptions.get(subscriptionId) === subscription) subscriptions.delete(subscriptionId)
   }
+}
 
-  function listenToAppPageMessages (appPagePort, signal) {
+function createAppPageMessageListener ({
+  state,
+  appFiles,
+  appId,
+  appAddress,
+  userPkB16,
+  isDefaultUser,
+  askVault,
+  requestPermission,
+  openApp,
+  onFileNotCached,
+  requestAssetBudgetConfirmation,
+  signal
+}) {
+  const appMetadataCache = new Map()
+  const appFetchingState = new Map()
+
+  return function (appPagePort) {
     appPagePort.addEventListener('message', async e => {
       switch (e.data.code) {
         case 'OPEN_APP': {
@@ -521,27 +580,22 @@ export async function initMessageListener (
               console.error('Invalid app URL format:', href)
               break
             }
-
             const encodedAppId = match[1]
             const targetAppAddress = appDecode(encodedAppId)
             targetAppId = addressObjToAppId(targetAppAddress)
-            const targetAppMetadata = await getAppMetadata(targetAppId, targetAppAddress, { timeoutMs: 0 })
-
+            const targetAppMetadata = await getAppMetadata(targetAppId, targetAppAddress, {
+              appMetadataCache,
+              appFetchingState,
+              timeoutMs: 0
+            })
             await requestPermission({
-              app: await getAppMetadata(appId, appAddress),
+              app: await getAppMetadata(appId, appAddress, { appMetadataCache, appFetchingState, timeoutMs: 0 }),
               name: 'openApp',
               eKind: null,
-              meta: {
-                targetApp: targetAppMetadata
-              }
+              meta: { targetApp: targetAppMetadata }
             })
-
             openApp(href)
           } catch (error) {
-            // TODO: schedule this cache cleaning
-            // because other parts may be using these assets too,
-            // like dialogs other than the permission one,
-            // or may use them soon
             try {
               let isTargetAppInstalled = false
               for (const wsKey of JSON.parse(localStorage.getItem('session_workspaceKeys')) ?? []) {
@@ -562,9 +616,7 @@ export async function initMessageListener (
             } catch (cleanupError) {
               console.error('Failed to clear rejected target app files:', cleanupError)
             }
-            if (error?.message !== 'Permission denied') {
-              console.error('Error in OPEN_APP handler:', error)
-            }
+            if (error?.message !== 'Permission denied') console.error('Error in OPEN_APP handler:', error)
           }
           break
         }
@@ -575,12 +627,11 @@ export async function initMessageListener (
             e.data.payload.ns.length === 1 &&
             !e.data.payload.with_shared_key
           ) {
-            const msg = { payload: userPkB16 }
-            reply(e, msg, { to: appPagePort })
+            reply(e, { payload: userPkB16 }, { to: appPagePort })
             break
           }
           const { ns, with_shared_key: withSharedKey, method, params = [] } = e.data.payload
-          const appMetadata = await getAppMetadata(appId, appAddress, { timeoutMs: 0 })
+          const appMetadata = await getAppMetadata(appId, appAddress, { appMetadataCache, appFetchingState, timeoutMs: 0 })
           let msg
           try {
             msg = await askNip07(askVault, userPkB16, { ns, withSharedKey, method, params }, {
@@ -613,7 +664,7 @@ export async function initMessageListener (
             ...(personalCopyDecrypt ? { personalCopyDecrypt } : {}),
             ...(personalCopyObfuscate ? { personalCopyObfuscate } : {})
           })
-          const appMetadata = await getAppMetadata(appId, appAddress, { timeoutMs: 0 })
+          const appMetadata = await getAppMetadata(appId, appAddress, { appMetadataCache, appFetchingState, timeoutMs: 0 })
           if (method === 'subscribe') {
             const authorizer = createNostrDbSubscriptionAuthorizer({
               app: appMetadata,
@@ -624,7 +675,7 @@ export async function initMessageListener (
               db,
               params,
               subscriptionId,
-              subscriptions: nostrDbSubscriptions,
+              subscriptions: state.nostrDbSubscriptions,
               appPagePort,
               authorizer,
               appId
@@ -658,30 +709,22 @@ export async function initMessageListener (
           break
         }
         case 'NOSTRDB_CANCEL': {
-          cancelNostrDbSubscription(nostrDbSubscriptions, e.data.payload?.subscriptionId)
+          cancelNostrDbSubscription(state.nostrDbSubscriptions, e.data.payload?.subscriptionId)
           break
         }
-        // window.napp extras
         case 'WINDOW_NAPP': {
           handleNappRequest(e)
           break
         }
         case 'STREAM_APP_ICON': {
           try {
-            // almost same as STREAM_APP_FILE but
-            // first find a favicon.??? that has image extension or is of image/... mime-type
-            // and if not cached, cache it completly, only then stream chunks
             const favicon = appFiles.getFaviconMetadata()
             if (!favicon) {
-              // Fallback: getIcon() reads the manifest and updates localStorage,
-              // so subsequent calls are served from cache without re-downloading.
               const icon = await appFiles.getIcon()
               if (!icon?.url) {
                 reply(e, { error: new Error('No icon'), isLast: true }, { to: appPagePort })
                 break
               }
-
-              // Decode data URL → bytes → base93 chunks for streaming
               const commaIdx = icon.url.indexOf(',')
               const mimeType = icon.url.slice(5, commaIdx).split(';')[0] || null
               const contentType = mimeType || 'application/octet-stream'
@@ -722,8 +765,6 @@ export async function initMessageListener (
 
             const currentlyCachedAppIconFxOnLs = JSON.parse(localStorage.getItem(`session_appById_${appId}_icon`))?.fx
             const shouldCacheIconOnLs = currentlyCachedAppIconFxOnLs !== favicon.rootHash
-
-            // Collect chunks for storage update
             const allChunks = []
             let i = 0
             for await (const chunk of streamFileChunksFromDb(appId, favicon.rootHash)) {
@@ -739,10 +780,8 @@ export async function initMessageListener (
               }, { to: appPagePort })
             }
 
-            // Update icon storage with complete data
             if (allChunks.length > 0) {
               const { url } = await updateIconStorage(appId, favicon, allChunks)
-              // Update cached metadata if it exists
               if (appMetadataCache.has(appId)) {
                 const cachedMetadata = appMetadataCache.get(appId)
                 cachedMetadata.icon = { fx: favicon.rootHash, url }
@@ -758,11 +797,15 @@ export async function initMessageListener (
           try {
             const progressCallback = ({ progress, error }) => {
               if (error) {
-                if (onFileNotCached && !isAssetBudgetError(error)) onFileNotCached(e.data.payload.pathname)
+                if (onFileNotCached && !isAssetBudgetError(error)) {
+                  onFileNotCached({
+                    pathname: e.data.payload.pathname,
+                    kind: APP_BRIDGE_ERROR_KIND.FILE
+                  })
+                }
                 reply(e, { error, isLast: true }, { to: appPagePort })
               } else {
-                const isLast = progress >= 100
-                reply(e, { payload: progress, isLast }, { to: appPagePort })
+                reply(e, { payload: progress, isLast: progress >= 100 }, { to: appPagePort })
               }
             }
             appFiles.cacheFile(e.data.payload.pathname, null, progressCallback, {
@@ -772,8 +815,12 @@ export async function initMessageListener (
               }
             })
           } catch (error) {
-            console.log(e.data.payload.pathname, 'error:', error.stack)
-            if (onFileNotCached && !isAssetBudgetError(error)) onFileNotCached(e.data.payload.pathname)
+            if (onFileNotCached && !isAssetBudgetError(error)) {
+              onFileNotCached({
+                pathname: e.data.payload.pathname,
+                kind: APP_BRIDGE_ERROR_KIND.FILE
+              })
+            }
             reply(e, { error, isLast: true }, { to: appPagePort })
           }
           break
@@ -789,91 +836,81 @@ export async function initMessageListener (
   }
 }
 
-function cancelNostrDbSubscription (subscriptions, subscriptionId) {
-  const subscription = subscriptions.get(subscriptionId)
-  if (!subscription) return
-  subscription.cancelled = true
-  subscription.iterator?.return?.()
-}
-
-function closeNostrDbSubscriptions (subscriptions) {
-  for (const subscriptionId of subscriptions.keys()) {
-    cancelNostrDbSubscription(subscriptions, subscriptionId)
-  }
-}
-
-async function streamNostrDbSubscription (e, { db, params = [], subscriptionId, subscriptions, appPagePort, authorizer, appId }) {
-  let subscription
-  try {
-    if (!subscriptionId) throw new Error('NOSTRDB_SUBSCRIPTION_ID_REQUIRED')
-    if (subscriptions.has(subscriptionId)) throw new Error('NOSTRDB_SUBSCRIPTION_EXISTS')
-
-    subscription = { iterator: null, cancelled: false }
-    subscriptions.set(subscriptionId, subscription)
-
-    await authorizer?.authorizeBeforeStart?.()
-    if (subscription.cancelled) return
-
-    const iterator = db.subscribe(...nostrDbReadParamsWithAppId(params, { appId }))
-    subscription.iterator = iterator
-
-    for await (const item of iterator) {
-      await authorizer?.authorizeItem?.(item)
-      reply(e, { payload: item, isLast: false }, { to: appPagePort })
-    }
-    if (!subscription.cancelled) {
-      reply(e, {
-        payload: nostrDbStreamDonePayload(subscriptionId),
-        isLast: true
-      }, { to: appPagePort })
-    }
-  } catch (error) {
-    if (!subscription?.cancelled) reply(e, { error, isLast: true }, { to: appPagePort })
-  } finally {
-    if (subscriptions.get(subscriptionId) === subscription) subscriptions.delete(subscriptionId)
-  }
-}
-
 function handleNappRequest (e) {
   return reply(e, { error: new Error('Not implemented yet') })
 }
 
-export async function askNip07 (
-  askVault, pubkey, { ns = [''], withSharedKey = null, method, params = [], context = '' }, { isDefaultUser, requestPermission, app } = {}
-) {
-  if (isDefaultUser) throw new Error('Please login')
-  if (requestPermission && needsNip07Permission(method)) {
-    const { permissions, scope, unknown } = nip07PermissionContext({ method, params })
-    if (unknown) throw new Error(`Unknown method ${method}`)
+export function initAppWindow (state, {
+  initialRoute,
+  appIframeRef$,
+  appIframeSrc$,
+  askVault,
+  requestPermission,
+  openApp,
+  onFileNotCached,
+  requestAssetBudgetConfirmation,
+  onAppReady,
+  signal
+}) {
+  const appAddress = appIdToAddressObj(state.appId)
+  const userPkB36 = bytesToBase36Nsite(
+    base62ToBytes(state.userPk, { mode: 'integer', byteLength: 32 })
+  )
+  const userPkB16 = base36NsiteToBase16(userPkB36)
+  const isDefaultUser = base16ToBase62(
+    userPkB16,
+    { mode: 'integer', minLength: 43 }
+  ) === JSON.parse(localStorage.getItem('session_defaultUserPk'))
+  const appOrigin = `${location.protocol}//${state.appSubdomain}.${location.host}`
+  let currentAppPagePort = null
+  let ac = null
 
-    for (const permission of permissions) {
-      await requestPermission({
-        app,
-        ...permission,
-        meta: {
-          params,
-          ...(scope === undefined ? {} : { scope }),
-          ...permission.meta
-        }
-      })
-    }
-  }
+  const listen = createAppPageMessageListener({
+    state,
+    appFiles: state.appFiles,
+    appId: state.appId,
+    appAddress,
+    userPkB16,
+    isDefaultUser,
+    askVault,
+    requestPermission,
+    openApp,
+    onFileNotCached,
+    requestAssetBudgetConfirmation,
+    signal
+  })
 
-  const { napp, ...appRest } = app
-  const msg = {
-    code: 'NIP07',
-    payload: {
-      app: {
-        ...appRest,
-        id: napp // for vault, this is the id
-      },
-      pubkey,
-      ns, // [name, ...optionalArgs]
-      ...(withSharedKey ? { with_shared_key: withSharedKey } : {}),
-      method,
-      params,
-      ...(context ? { context } : {})
-    }
+  const onAppReadyMessage = e => {
+    if (
+      e.data.code !== 'APP_IFRAME_READY' ||
+      e.source !== appIframeRef$()?.contentWindow ||
+      e.origin !== appOrigin
+    ) return
+    // The `useTask` caller waits for the iframe ref after close/reopen. Check
+    // against the current contentWindow rather than a captured frame so a
+    // reloaded or recreated iframe cannot send APP_IFRAME_READY to a stale
+    // listener.
+    ac?.abort()
+    ac = new AbortController()
+    currentAppPagePort?.close()
+    currentAppPagePort = e.ports[0]
+    listen(currentAppPagePort)
+    onAppReady?.()
   }
-  return askVault(msg, { timeout: 120000 })
+  window.addEventListener('message', onAppReadyMessage, { signal })
+
+  const route = withWindowId(
+    `//${state.appSubdomain}.${window.location.host}${initialRoute || ''}`,
+    state.key
+  )
+  appIframeSrc$(route)
+
+  return function cleanup () {
+    window.removeEventListener('message', onAppReadyMessage)
+    ac?.abort()
+    currentAppPagePort?.close()
+    currentAppPagePort = null
+  }
 }
+
+export { withWindowId }

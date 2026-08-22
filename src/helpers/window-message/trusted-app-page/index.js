@@ -123,16 +123,26 @@ export function initMessageListener () {
   const bc = new BroadcastChannel('sw~~napp')
   bc.addEventListener('message', async e => {
     if (e.data.code !== 'GET_READY_STATUS') return
-    tellSwImReady()
+    tellSwImReady().catch(error => {
+      console.warn('[trusted-app-page] Failed to register with service worker', error)
+    })
+  })
+
+  navigator.serviceWorker?.addEventListener?.('controllerchange', () => {
+    tellSwImReady().catch(error => {
+      console.warn('[trusted-app-page] Failed to re-register with service worker', error)
+    })
   })
 }
 
 let ac
-export function tellSwImReady () {
+export async function tellSwImReady () {
   // sw checks this to tell if the iframe is ready
   const readyMsg = {
     code: 'TRUSTED_IFRAME_READY',
-    payload: null
+    payload: {
+      windowId: new URL(window.location.href).searchParams.get('windowId') || ''
+    }
   }
   // always create a new one because port2 will be
   // lost when sw gets killed
@@ -149,7 +159,9 @@ export function tellSwImReady () {
   }, { signal: ac.signal })
   swPort.start()
 
-  tell(getSw(), readyMsg, { targetOrigin: swOrigin, transfer: [trustedAppPagePortForSw] })
+  const controller = await waitForSwController()
+  if (!controller) throw new Error('Service worker is not ready')
+  tell(controller, readyMsg, { targetOrigin: swOrigin, transfer: [trustedAppPagePortForSw] })
 }
 
 export function tellParentImReady () {
@@ -158,7 +170,9 @@ export function tellParentImReady () {
   // wait for this to add real app page iframe to DOM
   const readyMsg = {
     code: 'TRUSTED_IFRAME_READY',
-    payload: null
+    payload: {
+      windowId: new URL(window.location.href).searchParams.get('windowId') || ''
+    }
   }
 
   const { port1: browserPort, port2: trustedAppPagePortForBrowser } = new MessageChannel()
@@ -186,7 +200,24 @@ export function tellParentImReady () {
   tell(window.parent, readyMsg, { targetOrigin: '*', transfer: [trustedAppPagePortForBrowser] })
 }
 
-function getSw () {
-  if (navigator.serviceWorker.controller) return navigator.serviceWorker.controller
-  throw new Error('Should wait')
+function waitForSwController () {
+  if (navigator.serviceWorker.controller) return Promise.resolve(navigator.serviceWorker.controller)
+  return navigator.serviceWorker.ready
+    .then(registration => {
+      if (registration.active?.state === 'activated') return registration.active
+      if (!registration.active) throw new Error('Service worker is not ready')
+      return new Promise((resolve, reject) => {
+        const onStateChange = () => {
+          if (registration.active?.state === 'activated') {
+            registration.active.removeEventListener('statechange', onStateChange)
+            resolve(registration.active)
+          }
+        }
+        registration.active.addEventListener('statechange', onStateChange, { once: true })
+        setTimeout(() => {
+          registration.active.removeEventListener('statechange', onStateChange)
+          reject(new Error('Service worker activation timed out'))
+        }, 5000)
+      })
+    })
 }
