@@ -320,7 +320,7 @@ function listenToTrustedAppPageMessages ({
 }
 
 export async function initAppBridge (state, {
-  cachingProgress$,
+  cachingProgress$ = state.cachingProgress$,
   askVault,
   onFileNotCached,
   requestAssetBudgetConfirmation,

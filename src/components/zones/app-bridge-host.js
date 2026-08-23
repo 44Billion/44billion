@@ -64,6 +64,7 @@ f('app-bridge-manager', function () {
     cleanup(() => ac.abort())
     const cleanupBridge = await initAppBridge(state, {
       signal: ac.signal,
+      cachingProgress$: state.cachingProgress$,
       askVault,
       requestPermission: () => {},
       onFileNotCached: details => {
