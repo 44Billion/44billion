@@ -6,6 +6,7 @@ export const STORAGE_REPAIR_ATTEMPTS_KEY = 'local_storageRepairAttempts'
 
 const LOCK_NAME = 'storage-audit-repair'
 const MAX_REPAIR_ATTEMPTS = 3
+const initialStorageRepairUrl = globalThis.location?.href || ''
 let lastDevelopmentPlanFingerprint = null
 
 function currentCodeVersion () {
@@ -93,7 +94,13 @@ export async function scheduleStorageRepair ({
   localStorageArea = globalThis.localStorage,
   sessionStorageArea = globalThis.sessionStorage,
   navigatorArea = globalThis.navigator,
-  reload = () => globalThis.location?.reload(),
+  reload = () => {
+    if (initialStorageRepairUrl && globalThis.location?.href !== initialStorageRepairUrl) {
+      globalThis.location.replace(initialStorageRepairUrl)
+    } else {
+      globalThis.location?.reload()
+    }
+  },
   codeVersion = currentCodeVersion()
 } = {}) {
   if (isDevelopment()) {
@@ -129,15 +136,16 @@ export async function scheduleStorageRepair ({
       } else {
         const attempts = attemptsValue(localStorageArea)
         if (attempts >= MAX_REPAIR_ATTEMPTS) {
-          console.warn('[storage-audit] Repair attempts exhausted', existingPlan.issues)
+          console.warn('[storage-audit] Repair attempts exhausted', JSON.stringify(existingPlan.issues ?? []))
           return
         }
         localStorageArea?.setItem?.(STORAGE_REPAIR_IN_PROGRESS_KEY, '1')
         localStorageArea?.setItem?.(STORAGE_REPAIR_ATTEMPTS_KEY, String(attempts + 1))
-        console.info('[storage-audit] Repair pending; reloading to apply', {
+        console.info('[storage-audit] Repair pending; reloading to apply', JSON.stringify({
           codeVersion,
-          issues: existingPlan.issues?.length ?? 0
-        })
+          issues: existingPlan.issues?.length ?? 0,
+          ...summarizePlan(existingPlan)
+        }))
         reload()
         scheduled = true
         return
@@ -162,10 +170,11 @@ export async function scheduleStorageRepair ({
     localStorageArea?.setItem?.(STORAGE_REPAIR_PLAN_KEY, JSON.stringify(plan))
     localStorageArea?.setItem?.(STORAGE_REPAIR_IN_PROGRESS_KEY, '1')
     localStorageArea?.setItem?.(STORAGE_REPAIR_ATTEMPTS_KEY, '1')
-    console.info('[storage-audit] Repair scheduled; reloading to apply', {
+    console.info('[storage-audit] Repair scheduled; reloading to apply', JSON.stringify({
       codeVersion,
-      issues: plan.issues?.length ?? 0
-    })
+      issues: plan.issues?.length ?? 0,
+      ...summarizePlan(plan)
+    }))
     reload()
     scheduled = true
   })
