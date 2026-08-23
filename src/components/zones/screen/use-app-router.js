@@ -29,10 +29,13 @@ export default function useAppRouter () {
       return { hasOpened: false, isInstalled: false }
     }
 
-    function getScore (vis) { return { closed: 3, minimized: 2, open: 1 }[vis] }
+    // Only a closed instance can be reused safely: open/minimized windows
+    // may contain a route that differs from the URL being opened, and we do
+    // not track their current route here.
+    function getScore (vis) { return { closed: 0, minimized: 1, open: 2 }[vis] }
     const app = appKeys$()
       .map(key => ({ key, wsKey, vis: tabStorage[`session_appByKey_${key}_visibility$`]() ?? 'closed' }))
-      .sort((a, b) => getScore(b.vis) - getScore(a.vis))[0]
+      .sort((a, b) => getScore(a.vis) - getScore(b.vis))[0]
     if (!app) throw new Error('App install error')
 
     switch (app.vis) {
@@ -51,19 +54,9 @@ export default function useAppRouter () {
         break
       }
       case 'minimized': {
-        // maximize
-        const appKey = app.key
-        tabStorage[`session_appByKey_${appKey}_visibility$`]('open')
-        tabStorage[`session_workspaceByKey_${app.wsKey}_openAppKeys$`]((v = [], eqKey) => {
-          const i = v.indexOf(appKey)
-          if (i !== -1) v.splice(i, 1) // remove
-          v.unshift(appKey) // place at beginning
-          v[eqKey] = Math.random()
-          return v
-        })
-        // set initial route
-        storage[`session_appByKey_${app.key}_route$`](appRoute)
-        break
+        // Never reuse a minimized window: it is already mounted with a route
+        // that may differ from the requested URL.
+        return { hasOpened: false, isInstalled: true }
       }
       case 'open': {
         // tell caller to open new app instance (new appKey)
@@ -161,6 +154,16 @@ export default function useAppRouter () {
     if (appPath !== '/' || search || hash) {
       appRoute = appPath + search + hash
     } else appRoute = ''
+
+    if (IS_DEVELOPMENT) {
+      console.info('[app-router] opening app URL', {
+        firstPart,
+        appRoute,
+        search,
+        hash,
+        href: window.location.href
+      })
+    }
 
     // Check if a subdomain redirect stashed a target user
     let targetWsKey

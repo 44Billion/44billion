@@ -408,7 +408,9 @@ f('appWindow', function () {
     appReady: false,
     autoRetried: false,
     appCleanup: null,
-    initialRoute: null
+    initialRoute: null,
+    routeVersion: 0,
+    loadedRouteVersion: -1
   }))
   const removeCurrentApp = async () => {
     const currentAppId = appId$()
@@ -444,12 +446,13 @@ f('appWindow', function () {
 
   useTask(
     async ({ track, cleanup }) => {
-      const [isClosed, iframeRef, appSubdomain, appId, userPk] = track(() => [
+      const [isClosed, iframeRef, appSubdomain, appId, userPk, routeValue] = track(() => [
         isClosed$(),
         appIframeRef$(),
         appSubdomain$(),
         appId$(),
-        userPk$()
+        userPk$(),
+        initialRoute$()
       ])
       launchError$(null)
       // This component is reused on open -> closed -> open: stableDomOrderAppKeys$
@@ -467,6 +470,9 @@ f('appWindow', function () {
         runtime.autoRetried = false
         runtime.appCleanup = null
         runtime.initialRoute = null
+        runtime.routeVersion++
+        runtime.loadedRouteVersion = -1
+        initialRoute$('')
         return
       }
       // `after: 'rendering'` applies only to the first run. On a subsequent
@@ -482,10 +488,11 @@ f('appWindow', function () {
         return
       }
 
-      if (runtime.initialRoute == null) {
-        runtime.initialRoute = initialRoute$() || ''
-        if (runtime.initialRoute) initialRoute$('')
+      if (routeValue && routeValue !== runtime.initialRoute) {
+        runtime.initialRoute = routeValue
+        runtime.routeVersion++
       }
+      if (runtime.initialRoute == null) runtime.initialRoute = routeValue || ''
       const initialRoute = runtime.initialRoute
       const ac = new AbortController()
       cleanup(() => ac.abort())
@@ -574,7 +581,11 @@ f('appWindow', function () {
         appReady$(false)
         return
       }
-      if (runtime.startedGeneration === bridgeRetryCount && runtime.appReady) return
+      if (
+        runtime.startedGeneration === bridgeRetryCount &&
+        runtime.appReady &&
+        runtime.loadedRouteVersion === runtime.routeVersion
+      ) return
 
       runtime.appCleanup?.()
       runtime.appCleanup = null
@@ -608,6 +619,14 @@ f('appWindow', function () {
         showPending$(false)
         runtime.appReady = true
         appReady$(true)
+        if (runtime.initialRoute) initialRoute$('')
+      }
+      runtime.loadedRouteVersion = runtime.routeVersion
+      if (IS_DEVELOPMENT) {
+        console.info('[app-window] applying initial route', {
+          appKey,
+          initialRoute
+        })
       }
       const cleanupApp = initAppWindow(bridgeState, {
         appKey,
