@@ -466,39 +466,62 @@ function getAppMetadata (appIdParam, appAddressParam, {
 
   appAddressParam ??= appIdToAddressObj(appIdParam)
   const metadataPromise = (async () => {
-    const targetAppFiles = await AppFileManager.create(appIdParam, appAddressParam)
-    const appObject = {
+    try {
+      const targetAppFiles = await AppFileManager.create(appIdParam, appAddressParam)
+      const appObject = {
+        id: appIdParam,
+        napp: appEncode(appAddressParam),
+        alias: appAddressParam.dTag || undefined
+      }
+      const promises = []
+      if (!('icon' in appObject) && !fetchingState.icon) {
+        fetchingState.icon = true
+        promises.push(
+          targetAppFiles.getIcon()
+            .then(icon => icon && (appObject.icon = icon))
+            .finally(() => { fetchingState.icon = false })
+        )
+      }
+      if (!('name' in appObject) && !fetchingState.name) {
+        fetchingState.name = true
+        promises.push(
+          targetAppFiles.getName()
+            .then(name => name && (appObject.name = name))
+            .finally(() => { fetchingState.name = false })
+        )
+      }
+      if (promises.length > 0) {
+        const combinedPromises = Promise.all(promises).then(() => appMetadataCache.set(appIdParam, appObject))
+        await Promise.race([combinedPromises, new Promise(resolve => setTimeout(resolve, timeoutMs))])
+      }
+      appMetadataCache.set(appIdParam, appObject)
+      return appObject
+    } finally {
+      appFetchingState.delete(appIdParam)
+    }
+  })()
+  fetchingState.promise = metadataPromise
+  return metadataPromise
+}
+
+async function getPermissionAppMetadata (appIdParam, appAddressParam, cache, fetchingState) {
+  try {
+    return await getAppMetadata(appIdParam, appAddressParam, {
+      appMetadataCache: cache,
+      appFetchingState: fetchingState,
+      timeoutMs: 0
+    })
+  } catch (error) {
+    console.warn('[app-bridge] Failed to resolve app metadata for permission dialog; using fallback', {
+      appId: appIdParam,
+      error
+    })
+    return {
       id: appIdParam,
       napp: appEncode(appAddressParam),
       alias: appAddressParam.dTag || undefined
     }
-    const promises = []
-    if (!('icon' in appObject) && !fetchingState.icon) {
-      fetchingState.icon = true
-      promises.push(
-        targetAppFiles.getIcon()
-          .then(icon => icon && (appObject.icon = icon))
-          .finally(() => { fetchingState.icon = false })
-      )
-    }
-    if (!('name' in appObject) && !fetchingState.name) {
-      fetchingState.name = true
-      promises.push(
-        targetAppFiles.getName()
-          .then(name => name && (appObject.name = name))
-          .finally(() => { fetchingState.name = false })
-      )
-    }
-    if (promises.length > 0) {
-      const combinedPromises = Promise.all(promises).then(() => appMetadataCache.set(appIdParam, appObject))
-      await Promise.race([combinedPromises, new Promise(resolve => setTimeout(resolve, timeoutMs))])
-    }
-    appMetadataCache.set(appIdParam, appObject)
-    appFetchingState.delete(appIdParam)
-    return appObject
-  })()
-  fetchingState.promise = metadataPromise
-  return metadataPromise
+  }
 }
 
 function cancelNostrDbSubscription (subscriptions, subscriptionId) {
@@ -580,13 +603,19 @@ function createAppPageMessageListener ({
             const encodedAppId = match[1]
             const targetAppAddress = appDecode(encodedAppId)
             targetAppId = addressObjToAppId(targetAppAddress)
-            const targetAppMetadata = await getAppMetadata(targetAppId, targetAppAddress, {
+            const targetAppMetadata = await getPermissionAppMetadata(
+              targetAppId,
+              targetAppAddress,
               appMetadataCache,
-              appFetchingState,
-              timeoutMs: 0
-            })
+              appFetchingState
+            )
             await requestPermission({
-              app: await getAppMetadata(appId, appAddress, { appMetadataCache, appFetchingState, timeoutMs: 0 }),
+              app: await getPermissionAppMetadata(
+                appId,
+                appAddress,
+                appMetadataCache,
+                appFetchingState
+              ),
               name: 'openApp',
               eKind: null,
               meta: { targetApp: targetAppMetadata }
