@@ -138,7 +138,7 @@ async function runWithBridgeRetry (task) {
 }
 
 async function tryHandleNfileRequest (request, url) {
-  const selected = await selectClientToPostMessagesTo()
+  const selected = await selectClientToPostMessagesTo({ clientId: request.clientId })
   const toPort = selected.port
   const requestToken = globalThis.crypto?.randomUUID?.() || `${Date.now()}:${Math.random()}`
   let cancelSent = false
@@ -229,7 +229,7 @@ async function handleNfileRequest (request, url) {
 
 async function tryHandleRequest (request) {
   const pathname = request.pathname ?? new URL(request.url).pathname
-  const selected = await selectClientToPostMessagesTo()
+  const selected = await selectClientToPostMessagesTo({ clientId: request.clientId })
   const msg = {
     code: 'STREAM_APP_FILE',
     payload: {
@@ -309,6 +309,7 @@ async function handleRequest (request) {
 // the way that worked for sw to talk to clients
 // because client.postMessage didn't work.
 const readyClients = new Map() // clientId -> { port, readyAt, bridgeId }
+const appPageBridgeIds = new Map() // appPageClientId -> bridgeId
 
 // Clean up dead clients periodically, although
 // sw tends to be short lived
@@ -317,6 +318,9 @@ setInterval(async () => {
   const activeIds = new Set(clients.map(c => c.id))
   for (const id of readyClients.keys()) {
     if (!activeIds.has(id)) readyClients.delete(id)
+  }
+  for (const id of appPageBridgeIds.keys()) {
+    if (!activeIds.has(id)) appPageBridgeIds.delete(id)
   }
 }, 30000)
 
@@ -339,6 +343,11 @@ self.addEventListener('message', async e => {
         if (resolver.timer) clearTimeout(resolver.timer)
         resolver.resolve({ port: e.ports[0], clientId: e.source.id })
       }
+      break
+    }
+    case 'APP_PAGE_BRIDGE': {
+      const bridgeId = e.data.payload?.bridgeId
+      if (bridgeId) appPageBridgeIds.set(e.source.id, bridgeId)
       break
     }
   }
@@ -365,12 +374,16 @@ function requestBridgeReady () {
   })
 }
 
-async function selectClientToPostMessagesTo () {
+async function selectClientToPostMessagesTo ({ clientId = '' } = {}) {
   let lastError
   for (let attempt = 0; attempt < MAX_SW_ROUTE_ATTEMPTS; attempt++) {
     const clients = await self.clients.matchAll({ includeUncontrolled: false, type: 'window' })
     pruneReadyClients(clients, readyClients)
-    const targetClient = findReadyBridgeClient(clients, readyClients)
+    const targetClient = findReadyBridgeClient(
+      clients,
+      readyClients,
+      appPageBridgeIds.get(clientId) || ''
+    )
 
     if (targetClient) {
       return {

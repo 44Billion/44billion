@@ -20,6 +20,20 @@ describe('service worker bridge router', () => {
     assert.equal(findReadyBridgeClient(clients, readyClients).id, 'trusted-2')
   })
 
+  it('matches the trusted client for the app page bridge id', () => {
+    const clients = [
+      { id: 'app-1', url: 'https://42.example.com/app' },
+      { id: 'trusted-1', url: 'https://42.example.com/~~napp?bridgeId=7' },
+      { id: 'trusted-2', url: 'https://42.example.com/~~napp?bridgeId=8' }
+    ]
+    const readyClients = new Map([
+      ['trusted-1', { port: {}, readyAt: 100, bridgeId: '7' }],
+      ['trusted-2', { port: {}, readyAt: 200, bridgeId: '8' }]
+    ])
+
+    assert.equal(findReadyBridgeClient(clients, readyClients, '7').id, 'trusted-1')
+  })
+
   it('drops clients that are no longer active', () => {
     const readyClients = new Map([
       ['stale', {}],

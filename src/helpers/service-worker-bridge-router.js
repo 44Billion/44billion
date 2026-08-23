@@ -5,14 +5,26 @@ export function pruneReadyClients (clients, readyClients) {
   }
 }
 
-export function findReadyBridgeClient (clients, readyClients) {
-  return clients
+export function findReadyBridgeClient (clients, readyClients, bridgeId = '') {
+  const ready = clients
     .filter(isTrustedClient)
     .map(client => ({
       client,
       readyAt: readyClients.get(client.id)?.readyAt ?? 0
     }))
     .sort((a, b) => b.readyAt - a.readyAt)[0]?.client || null
+
+  if (!bridgeId) return ready
+
+  const matching = clients
+    .filter(isTrustedClient)
+    .filter(client => readyClients.get(client.id)?.bridgeId === bridgeId)
+    .sort((a, b) =>
+      (readyClients.get(b.id)?.readyAt ?? 0) -
+      (readyClients.get(a.id)?.readyAt ?? 0)
+    )[0]
+
+  return matching || ready
 }
 
 function isTrustedClient (client) {

@@ -1,3 +1,5 @@
+import { getRandomId } from '#helpers/misc.js'
+
 const appBridgeStates = new Map()
 let createAppBridgeSignal = () => {
   throw new Error('App bridge signal factory not configured')
@@ -51,6 +53,7 @@ export function ensureAppBridgeState (appSubdomain, { userPk, appId }) {
 
   state = {
     key,
+    bridgeId: getRandomId(),
     userPk,
     appId,
     appSubdomain: key,

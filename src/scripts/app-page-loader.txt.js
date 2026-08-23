@@ -24,6 +24,13 @@ function tellParentImReady () {
   const p = Promise.withResolvers()
   browserPort.addEventListener('message', e => {
     if (e.data.code !== 'BROWSER_READY') return p.reject()
+    const bridgeId = e.data.payload?.bridgeId
+    if (bridgeId) {
+      navigator.serviceWorker?.controller?.postMessage({
+        code: 'APP_PAGE_BRIDGE',
+        payload: { bridgeId }
+      })
+    }
     p.resolve(browserPort)
   }, { once: true })
   browserPort.start()

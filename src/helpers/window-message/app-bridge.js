@@ -399,7 +399,7 @@ export async function initAppBridge (state, {
     state.ready$(false)
     state.error$(null)
     state.trustedIframeSrc$(
-      `//${state.appSubdomain}.${window.location.host}/~~napp?bridgeId=${encodeURIComponent(state.key)}`
+      `//${state.appSubdomain}.${window.location.host}/~~napp?bridgeId=${encodeURIComponent(state.bridgeId)}`
     )
     clearTimeout(bridgeTimer)
     bridgeTimer = setTimeout(() => {
@@ -819,7 +819,13 @@ function createAppPageMessageListener ({
       }
     }, { signal })
     appPagePort.start()
-    tell(appPagePort, { code: 'BROWSER_READY', payload: { locale: getEffectiveLocale() } })
+    tell(appPagePort, {
+      code: 'BROWSER_READY',
+      payload: {
+        locale: getEffectiveLocale(),
+        bridgeId: state.bridgeId
+      }
+    })
     const unsubscribeLocale = subscribeLocaleChanged(locale => {
       tell(appPagePort, { code: 'LOCALE_CHANGED', payload: { locale } })
     })

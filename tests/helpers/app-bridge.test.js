@@ -31,6 +31,15 @@ describe('app bridge registry', () => {
     assert.equal(first, second)
   })
 
+  it('assigns a unique bridge id to each bridge state instance', () => {
+    const first = ensureAppBridgeState('49', { userPk: 'user', appId: 'app' })
+    const second = ensureAppBridgeState('50', { userPk: 'other-user', appId: 'other-app' })
+
+    assert.notEqual(first.bridgeId, second.bridgeId)
+    disposeAppBridge(first)
+    disposeAppBridge(second)
+  })
+
   it('replaces a disposed bridge when the numeric subdomain is reused', () => {
     const oldState = ensureAppBridgeState('44', { userPk: 'user-a', appId: 'app' })
     const unregister = registerAppBridgeWindow(oldState, { appKey: 'a', cachingProgress$: () => {} })

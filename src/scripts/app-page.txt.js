@@ -66,6 +66,13 @@ function tellParentImReady (p) {
   browserPort.addEventListener('message', e => {
     if (e.data.code !== 'BROWSER_READY') return p.reject()
     localeClient.setLocale(e.data.payload?.locale)
+    const bridgeId = e.data.payload?.bridgeId
+    if (bridgeId) {
+      navigator.serviceWorker?.controller?.postMessage({
+        code: 'APP_PAGE_BRIDGE',
+        payload: { bridgeId }
+      })
+    }
     p.resolve(browserPort)
   }, { once: true })
   browserPort.addEventListener('message', e => {
