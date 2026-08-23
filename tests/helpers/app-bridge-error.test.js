@@ -5,7 +5,9 @@ import {
   APP_BRIDGE_ERROR_KIND,
   isAppBridgeCommunicationError,
   isCriticalAppFile,
-  normalizeAppBridgeError
+  isRetryableAppBridgeError,
+  normalizeAppBridgeError,
+  tagAppBridgeFileError
 } from '../../src/helpers/window-message/app-bridge-error.js'
 
 describe('app bridge error classification', () => {
@@ -36,5 +38,21 @@ describe('app bridge error classification', () => {
       pathname: 'styles.css',
       kind: APP_BRIDGE_ERROR_KIND.FILE
     })
+  })
+
+  it('tags app file errors as non-retryable file errors', () => {
+    const error = tagAppBridgeFileError(new Error('FILE_NOT_CACHED'))
+
+    assert.equal(error.context.kind, APP_BRIDGE_ERROR_KIND.FILE)
+    assert.equal(isRetryableAppBridgeError(error), false)
+  })
+
+  it('classifies bridge/stream failures as retryable', () => {
+    assert.equal(isRetryableAppBridgeError({
+      kind: APP_BRIDGE_ERROR_KIND.BRIDGE
+    }), true)
+    assert.equal(isRetryableAppBridgeError({
+      code: 'STREAM_TIMEOUT'
+    }), true)
   })
 })

@@ -26,3 +26,21 @@ export function isAppBridgeCommunicationError (details) {
 export function isCriticalAppFile (pathname) {
   return pathname === undefined || /^\/?index\.html?$/.test(pathname || '')
 }
+
+export function isRetryableAppBridgeError (error) {
+  return error?.kind === APP_BRIDGE_ERROR_KIND.BRIDGE ||
+    error?.code === 'APP_BRIDGE_UNAVAILABLE' ||
+    error?.code === 'STREAM_TIMEOUT' ||
+    error?.code === 'APP_BRIDGE_RETRY'
+}
+
+export function tagAppBridgeFileError (error) {
+  const normalized = error instanceof Error
+    ? error
+    : new Error(String(error ?? 'App file error'))
+  normalized.context = {
+    ...(normalized.context || {}),
+    kind: APP_BRIDGE_ERROR_KIND.FILE
+  }
+  return normalized
+}

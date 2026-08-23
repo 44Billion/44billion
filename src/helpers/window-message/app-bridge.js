@@ -1,6 +1,9 @@
 import { toSignal } from '#f'
 import { tell, reply } from './index.js'
-import { APP_BRIDGE_ERROR_KIND } from './app-bridge-error.js'
+import {
+  APP_BRIDGE_ERROR_KIND,
+  tagAppBridgeFileError
+} from './app-bridge-error.js'
 import { nostrDbStreamDonePayload } from './nostrdb-protocol.js'
 import {
   createNostrDbMaintenanceSignEvent,
@@ -178,7 +181,10 @@ function listenToTrustedAppPageMessages ({
                 kind: APP_BRIDGE_ERROR_KIND.FILE
               })
             }
-            return reply(e, { error: errorToSend, isLast: true }, { to: trustedAppPagePort })
+            return reply(e, {
+              error: tagAppBridgeFileError(errorToSend),
+              isLast: true
+            }, { to: trustedAppPagePort })
           }
 
           try {
@@ -794,7 +800,10 @@ function createAppPageMessageListener ({
                     kind: APP_BRIDGE_ERROR_KIND.FILE
                   })
                 }
-                reply(e, { error, isLast: true }, { to: appPagePort })
+                reply(e, {
+                  error: tagAppBridgeFileError(error),
+                  isLast: true
+                }, { to: appPagePort })
               } else {
                 reply(e, { payload: progress, isLast: progress >= 100 }, { to: appPagePort })
               }
@@ -812,7 +821,10 @@ function createAppPageMessageListener ({
                 kind: APP_BRIDGE_ERROR_KIND.FILE
               })
             }
-            reply(e, { error, isLast: true }, { to: appPagePort })
+            reply(e, {
+              error: tagAppBridgeFileError(error),
+              isLast: true
+            }, { to: appPagePort })
           }
           break
         }

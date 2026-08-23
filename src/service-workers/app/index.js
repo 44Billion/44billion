@@ -13,6 +13,7 @@ import {
   findReadyBridgeClient,
   pruneReadyClients
 } from '#helpers/service-worker-bridge-router.js'
+import { isRetryableAppBridgeError } from '#helpers/window-message/app-bridge-error.js'
 const appPageLoader = injectIntoTheHeadTag(
   _appPageLoader.replace('/* APP_PAGE_LOADER_THEME */', cssStrings.appPageLoaderTheme),
   `<script>${appPageLoaderScriptContent}</script>`
@@ -118,22 +119,26 @@ function retryableBridgeError (error) {
   })
 }
 
-function isRetryableBridgeError (error) {
-  return error?.code === 'APP_BRIDGE_UNAVAILABLE' ||
-    error?.code === 'STREAM_TIMEOUT' ||
-    error?.code === 'APP_BRIDGE_RETRY'
-}
-
 async function runWithBridgeRetry (task) {
   let lastError
   for (let attempt = 0; attempt < MAX_SW_ROUTE_ATTEMPTS; attempt++) {
     try {
       return await task(attempt)
     } catch (error) {
-      if (!isRetryableBridgeError(error)) throw error
+      if (!isRetryableAppBridgeError(error)) throw error
       lastError = error
+      console.warn(
+        `[app-sw] Bridge attempt ${attempt + 1}/${MAX_SW_ROUTE_ATTEMPTS} failed; retrying`,
+        {
+          pathname: error?.pathname,
+          code: error?.code,
+          kind: error?.kind,
+          message: error?.message
+        }
+      )
     }
   }
+  console.error('[app-sw] Bridge retries exhausted', lastError)
   throw lastError
 }
 
@@ -174,7 +179,9 @@ async function tryHandleNfileRequest (request, url) {
     if (first.value?.error?.code === 'STREAM_TIMEOUT') {
       await iterator.return?.()
       readyClients.delete(selected.clientId)
-      throw retryableBridgeError(first.value.error)
+      const retryError = retryableBridgeError(first.value.error)
+      retryError.pathname = url.pathname
+      throw retryError
     }
     throw first.value?.error || new Error('Nfile request ended without a response')
   }
@@ -247,7 +254,9 @@ async function tryHandleRequest (request) {
   if (firstReplyMsg === undefined || firstReplyMsg.error?.code === 'STREAM_TIMEOUT') {
     await iterator.return?.()
     readyClients.delete(selected.clientId)
-    throw retryableBridgeError(firstReplyMsg?.error || new Error('App bridge timed out'))
+    const retryError = retryableBridgeError(firstReplyMsg?.error || new Error('App bridge timed out'))
+    retryError.pathname = pathname
+    throw retryError
   }
 
   if (firstReplyMsg.error) {
