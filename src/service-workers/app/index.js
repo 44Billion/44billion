@@ -138,7 +138,7 @@ async function runWithBridgeRetry (task) {
 }
 
 async function tryHandleNfileRequest (request, url) {
-  const selected = await selectClientToPostMessagesTo({ clientId: request.clientId })
+  const selected = await selectClientToPostMessagesTo()
   const toPort = selected.port
   const requestToken = globalThis.crypto?.randomUUID?.() || `${Date.now()}:${Math.random()}`
   let cancelSent = false
@@ -229,7 +229,7 @@ async function handleNfileRequest (request, url) {
 
 async function tryHandleRequest (request) {
   const pathname = request.pathname ?? new URL(request.url).pathname
-  const selected = await selectClientToPostMessagesTo({ clientId: request.clientId })
+  const selected = await selectClientToPostMessagesTo()
   const msg = {
     code: 'STREAM_APP_FILE',
     payload: {
@@ -308,7 +308,7 @@ async function handleRequest (request) {
 // then use it to do port.postMessage, was
 // the way that worked for sw to talk to clients
 // because client.postMessage didn't work.
-const readyClients = new Map() // clientId -> { port, readyAt, windowId }
+const readyClients = new Map() // clientId -> { port, readyAt, bridgeId }
 
 // Clean up dead clients periodically, although
 // sw tends to be short lived
@@ -333,7 +333,7 @@ self.addEventListener('message', async e => {
       readyClients.set(e.source.id, {
         port: e.ports[0],
         readyAt: Date.now(),
-        windowId: e.data.payload?.windowId || ''
+        bridgeId: e.data.payload?.bridgeId || ''
       })
       for (const resolver of resolvers.splice(0)) {
         if (resolver.timer) clearTimeout(resolver.timer)
@@ -365,12 +365,12 @@ function requestBridgeReady () {
   })
 }
 
-async function selectClientToPostMessagesTo ({ clientId = '' } = {}) {
+async function selectClientToPostMessagesTo () {
   let lastError
   for (let attempt = 0; attempt < MAX_SW_ROUTE_ATTEMPTS; attempt++) {
     const clients = await self.clients.matchAll({ includeUncontrolled: false, type: 'window' })
     pruneReadyClients(clients, readyClients)
-    const targetClient = findReadyBridgeClient(clients, readyClients, clientId)
+    const targetClient = findReadyBridgeClient(clients, readyClients)
 
     if (targetClient) {
       return {

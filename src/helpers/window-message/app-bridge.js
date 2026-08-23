@@ -59,15 +59,6 @@ export function retryAppBridge (state, { isAutomatic = false } = {}) {
   state.schedule?.()
 }
 
-function withWindowId (route, windowId) {
-  route = route || ''
-  const hashIndex = route.indexOf('#')
-  const base = hashIndex === -1 ? route : route.slice(0, hashIndex)
-  const hash = hashIndex === -1 ? '' : route.slice(hashIndex)
-  const separator = base.includes('?') ? '&' : '?'
-  return `${base}${separator}windowId=${encodeURIComponent(windowId)}${hash}`
-}
-
 function isAssetBudgetError (error) {
   return [ASSET_BUDGET_BACKGROUND_DENIED, ASSET_BUDGET_DENIED_BY_USER].includes(error?.code)
 }
@@ -408,7 +399,7 @@ export async function initAppBridge (state, {
     state.ready$(false)
     state.error$(null)
     state.trustedIframeSrc$(
-      `//${state.appSubdomain}.${window.location.host}/~~napp?windowId=${encodeURIComponent(state.key)}`
+      `//${state.appSubdomain}.${window.location.host}/~~napp?bridgeId=${encodeURIComponent(state.key)}`
     )
     clearTimeout(bridgeTimer)
     bridgeTimer = setTimeout(() => {
@@ -899,10 +890,7 @@ export function initAppWindow (state, {
   }
   window.addEventListener('message', onAppReadyMessage, { signal })
 
-  const route = withWindowId(
-    `//${state.appSubdomain}.${window.location.host}${initialRoute || ''}`,
-    state.key
-  )
+  const route = `//${state.appSubdomain}.${window.location.host}${initialRoute || ''}`
   appIframeSrc$(route)
 
   return function cleanup () {
@@ -912,5 +900,3 @@ export function initAppWindow (state, {
     currentAppPagePort = null
   }
 }
-
-export { withWindowId }

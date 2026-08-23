@@ -177,7 +177,7 @@ describe('trusted app page clearAppData', () => {
     }
     globalThis.window.location = {
       origin: 'https://0.44billion.net',
-      href: 'https://0.44billion.net/~~napp?windowId=0'
+      href: 'https://0.44billion.net/~~napp?bridgeId=0'
     }
     const controller = { postMessage: mock.fn() }
     Object.defineProperty(globalThis, 'navigator', {

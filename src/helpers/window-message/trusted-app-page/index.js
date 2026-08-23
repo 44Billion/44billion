@@ -141,7 +141,7 @@ export async function tellSwImReady () {
   const readyMsg = {
     code: 'TRUSTED_IFRAME_READY',
     payload: {
-      windowId: new URL(window.location.href).searchParams.get('windowId') || ''
+      bridgeId: new URL(window.location.href).searchParams.get('bridgeId') || ''
     }
   }
   // always create a new one because port2 will be
@@ -171,7 +171,7 @@ export function tellParentImReady () {
   const readyMsg = {
     code: 'TRUSTED_IFRAME_READY',
     payload: {
-      windowId: new URL(window.location.href).searchParams.get('windowId') || ''
+      bridgeId: new URL(window.location.href).searchParams.get('bridgeId') || ''
     }
   }
 

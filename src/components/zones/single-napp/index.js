@@ -113,7 +113,7 @@ f('singleNappLauncher', function () {
     appCleanup: null,
     initialRoute: null
   }))
-  const windowId = useMemo(() => getRandomId())
+  const instanceId = useMemo(() => getRandomId())
 
   useTask(
     async ({ track, cleanup }) => {
@@ -148,7 +148,7 @@ f('singleNappLauncher', function () {
       })
       showPending$(false)
       const bridgeState = ensureAppBridgeState(subdomain, { userPk, appId })
-      const appKey = `single-napp:${appId}:${userPk}:${windowId}`
+      const appKey = `single-napp:${appId}:${userPk}:${instanceId}`
       const unregisterBridgeWindow = registerAppBridgeWindow(bridgeState, {
         appKey,
         cachingProgress$,

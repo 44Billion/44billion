@@ -5,19 +5,14 @@ export function pruneReadyClients (clients, readyClients) {
   }
 }
 
-export function findReadyBridgeClient (clients, readyClients, clientId) {
-  const requester = clients.find(client => client.id === clientId)
-  const requesterWindowId = requester
-    ? getClientWindowId(requester)
-    : ''
-
-  return clients.find(client => {
-    if (!isTrustedClient(client)) return false
-    const entry = readyClients.get(client.id)
-    if (!entry) return false
-    if (requesterWindowId) return entry.windowId === requesterWindowId
-    return true
-  }) || null
+export function findReadyBridgeClient (clients, readyClients) {
+  return clients
+    .filter(isTrustedClient)
+    .map(client => ({
+      client,
+      readyAt: readyClients.get(client.id)?.readyAt ?? 0
+    }))
+    .sort((a, b) => b.readyAt - a.readyAt)[0]?.client || null
 }
 
 function isTrustedClient (client) {
@@ -25,13 +20,5 @@ function isTrustedClient (client) {
     return new URL(client.url).pathname === '/~~napp'
   } catch (_error) {
     return false
-  }
-}
-
-export function getClientWindowId (client) {
-  try {
-    return new URL(client.url).searchParams.get('windowId') || ''
-  } catch (_error) {
-    return ''
   }
 }
