@@ -102,6 +102,29 @@ describe('storage audit bootstrap', () => {
     assert.equal(local.getItem(STORAGE_REPAIR_ATTEMPTS_KEY), null)
   })
 
+  it('does not reload for a pending plan without actionable issues', async () => {
+    const local = storageMock({
+      [STORAGE_REPAIR_PLAN_KEY]: JSON.stringify(pendingPlan()),
+      [STORAGE_REPAIR_IN_PROGRESS_KEY]: '1',
+      [STORAGE_REPAIR_ATTEMPTS_KEY]: '1'
+    })
+    const session = storageMock()
+    const reloads = []
+
+    const scheduled = await scheduleStorageRepair({
+      localStorageArea: local,
+      sessionStorageArea: session,
+      codeVersion: 'v1',
+      reload: () => reloads.push(true)
+    })
+
+    assert.equal(scheduled, false)
+    assert.deepEqual(reloads, [])
+    assert.equal(local.getItem(STORAGE_REPAIR_PLAN_KEY), null)
+    assert.equal(local.getItem(STORAGE_REPAIR_IN_PROGRESS_KEY), null)
+    assert.equal(local.getItem(STORAGE_REPAIR_ATTEMPTS_KEY), null)
+  })
+
   it('discards a stale plan without applying it', async () => {
     const local = storageMock({
       session_to_remove: JSON.stringify({ broken: true }),

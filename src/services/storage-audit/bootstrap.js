@@ -31,6 +31,10 @@ export function readPendingStorageRepairPlan (localStorageArea = globalThis.loca
   return parsePlan(localStorageArea?.getItem?.(STORAGE_REPAIR_PLAN_KEY))
 }
 
+function hasActionableStorageIssues (plan) {
+  return (plan?.issues ?? []).some(issue => issue.actionable !== false)
+}
+
 export function clearPendingStorageRepair (localStorageArea = globalThis.localStorage) {
   localStorageArea?.removeItem?.(STORAGE_REPAIR_PLAN_KEY)
   localStorageArea?.removeItem?.(STORAGE_REPAIR_IN_PROGRESS_KEY)
@@ -133,6 +137,11 @@ export async function scheduleStorageRepair ({
     if (existingPlan) {
       if (isDevelopment() || isStalePlan(existingPlan, codeVersion)) {
         clearPendingStorageRepair(localStorageArea)
+      } else if (!hasActionableStorageIssues(existingPlan)) {
+        // Session-only differences can be transient because the launcher and
+        // app state mutate while a tab is running. Without a concrete issue,
+        // don't force a reload that can lose the current route.
+        clearPendingStorageRepair(localStorageArea)
       } else {
         const attempts = attemptsValue(localStorageArea)
         if (attempts >= MAX_REPAIR_ATTEMPTS) {
@@ -164,7 +173,7 @@ export async function scheduleStorageRepair ({
       return
     }
 
-    if (!hasStorageRepairActions(plan)) return
+    if (!hasStorageRepairActions(plan) || !hasActionableStorageIssues(plan)) return
 
     plan.codeVersion = codeVersion
     localStorageArea?.setItem?.(STORAGE_REPAIR_PLAN_KEY, JSON.stringify(plan))
