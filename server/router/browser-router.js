@@ -35,6 +35,7 @@ if (isProduction) {
     .get('/chunks/:name', getChunk)
     .get('/', serveIndex)
     .get('/\\+{1,3}:nappIdWithRoute+', serveIndex)
+    .get('/naddr1:nappIdWithRoute+', serveIndex)
     .get('/app-updates', serveIndex)
     .get('/settings', serveIndex)
     .get('/favicon.png', getServeBuilt('favicon.png', 'image/png', 'public, max-age=86400'))

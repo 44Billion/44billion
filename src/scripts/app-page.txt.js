@@ -1,6 +1,18 @@
 import { tell, ask } from '#helpers/window-message/index.js'
 import { injectEventStore } from '#helpers/window-message/nostrdb-client.js'
 import { createAppLocaleClient } from '#helpers/window-message/app-locale-client.js'
+import { naddrDecode } from 'libp2r2p/nip19'
+import {
+  DRAFT_SITE_MANIFEST,
+  MAIN_SITE_MANIFEST,
+  NEXT_SITE_MANIFEST
+} from 'libp2r2p/kind'
+
+const SITE_MANIFEST_KINDS = new Set([
+  MAIN_SITE_MANIFEST,
+  NEXT_SITE_MANIFEST,
+  DRAFT_SITE_MANIFEST
+])
 
 const localeClient = createAppLocaleClient({
   reportError: error => console.error('window.napp locale listener failed', error)
@@ -196,11 +208,20 @@ function interceptNavigations (browserPortPromise) {
 
       // Check if pathname starts with an encoded app pattern
       const pathname = urlObj.pathname
-      // Match patterns like /+abc123, /++abc123, /+++abc123
-      const encodedAppPattern = /^\/(\+{1,3}[a-zA-Z0-9]{48,})/
+      // Match patterns like /+abc123, /++abc123, /+++abc123 or /naddr1...
+      const encodedAppPattern = /^\/(\+{1,3}[a-zA-Z0-9]{48,}|naddr1[0-9a-z]+)/
       const match = pathname.match(encodedAppPattern)
+      if (!match) return false
 
-      return match !== null
+      // `naddr` carries the event kind itself, so it must be a site manifest
+      // to count as an app URL.
+      const naddrBody = match[1].replace(/^\+{1,3}/, '')
+      if (!naddrBody.startsWith('naddr1')) return true
+      try {
+        return SITE_MANIFEST_KINDS.has(naddrDecode(naddrBody).kind)
+      } catch {
+        return false
+      }
     } catch (_error) {
       return false
     }

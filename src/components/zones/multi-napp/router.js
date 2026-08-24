@@ -2,6 +2,7 @@ import Router from 'url-router'
 
 const router = new Router({
   '/:napp(\\+{1,3}[^/]+):appPath($|\\/.*)': {},
+  '/:napp(naddr1[^/]+):appPath($|\\/.*)': {},
   '/app-updates': {
     mount: 'system-views',
     path: '/app-updates',

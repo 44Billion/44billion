@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { appDecode } from 'libp2r2p/nip19'
+import { appDecode, appEncode, naddrEncode } from 'libp2r2p/nip19'
 import { isAppUrl, resolveAppUrl } from '#helpers/resolve-app-url.js'
 import router from '#zones/multi-napp/router.js'
 
@@ -24,6 +24,31 @@ describe('resolve-app-url', () => {
     const alias = router.find('/+app%20store')
     assert.equal(alias.params.appPath, '')
     assert.equal(alias.params.napp, '+app store')
+  })
+
+  it('recognizes and canonicalizes site-manifest naddr URLs', async () => {
+    const pubkey = 'ab'.repeat(32)
+    const naddr = naddrEncode({ identifier: 'apps', pubkey, kind: 35128 })
+    const expected = appEncode({ dTag: 'apps', pubkey, kind: 35128 })
+
+    assert.equal(isAppUrl(naddr), true)
+    assert.equal(await resolveAppUrl(naddr), expected)
+
+    const nonManifest = naddrEncode({ identifier: 'note', pubkey, kind: 1 })
+    assert.equal(isAppUrl(nonManifest), false)
+    assert.equal(await resolveAppUrl(nonManifest), null)
+  })
+
+  it('matches bare naddr routes through the multi-napp router', () => {
+    const naddr = naddrEncode({
+      identifier: 'apps',
+      pubkey: 'ab'.repeat(32),
+      kind: 35128
+    })
+    const match = router.find(`/${naddr}/rota`)
+
+    assert.equal(match.params.appPath, '/rota')
+    assert.equal(match.params.napp, naddr)
   })
 
   it('resolves hardcoded aliases without network lookups', async () => {

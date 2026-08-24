@@ -135,8 +135,9 @@ export default function useAppRouter () {
     if (!isAppUrl(firstPart)) return
 
     let napp
-    if (decodeAppUrl(firstPart)?.type === 'entity') {
-      napp = firstPart
+    const decodedFirstPart = decodeAppUrl(firstPart)
+    if (decodedFirstPart?.type === 'entity') {
+      napp = decodedFirstPart.entity
     } else {
       napp = await resolveAppUrl(firstPart)
       if (!napp) {
@@ -185,8 +186,9 @@ export default function useAppRouter () {
       const url = new URL(href, window.location.origin)
       const firstPart = url.pathname.split('/')[1]
       let napp
-      if (decodeAppUrl(firstPart)?.type === 'entity') {
-        napp = firstPart
+      const decodedFirstPart = decodeAppUrl(firstPart)
+      if (decodedFirstPart?.type === 'entity') {
+        napp = decodedFirstPart.entity
       } else {
         napp = await resolveAppUrl(firstPart)
         if (!napp) throw new Error('Could not resolve app URL')
