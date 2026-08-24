@@ -54,6 +54,16 @@ function uniqueStrings (value) {
   return [...new Set(value)]
 }
 
+function readStoredJson (storage, key) {
+  const raw = storage?.getItem?.(key)
+  if (raw == null) return undefined
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+}
+
 function toPlainObject (value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : null
 }
@@ -113,6 +123,169 @@ export function hasStorageRepairActions (plan) {
   )
 }
 
+// Pure filtering of an openAppKeys list. `getLocal`/`getSession` are key
+// readers so the same rule works over audit snapshots or raw Storage areas.
+export function normalizeOpenAppKeyList (openAppKeys, {
+  referencedAppKeys,
+  getLocal,
+  getSession
+}) {
+  const unique = uniqueStrings(Array.isArray(openAppKeys) ? openAppKeys : [])
+  return unique.filter(appKey => {
+    const appId = getLocal(`session_appByKey_${appKey}_id`)
+    return referencedAppKeys.has(appKey) &&
+      typeof appId === 'string' &&
+      getSession(`session_appByKey_${appKey}_visibility`) === 'open'
+  })
+}
+
+// Pre-render repair: applies the openAppKeys normalization directly to
+// sessionStorage on every load, without scheduling a reload. Logs whenever it
+// changes something so a recurring corruption is visible in the console.
+export function normalizeOpenAppKeysInStorage ({
+  localStorageArea = globalThis.localStorage,
+  sessionStorageArea = globalThis.sessionStorage
+} = {}) {
+  const workspaceKeys = readStoredJson(localStorageArea, 'session_workspaceKeys')
+  if (!Array.isArray(workspaceKeys)) return { changed: 0, workspaces: [] }
+
+  const referencedAppKeys = new Set()
+  for (const wsKey of workspaceKeys) {
+    if (typeof wsKey !== 'string') continue
+    for (const listKey of [
+      `session_workspaceByKey_${wsKey}_pinnedAppIds`,
+      `session_workspaceByKey_${wsKey}_unpinnedAppIds`
+    ]) {
+      const appIds = readStoredJson(localStorageArea, listKey)
+      if (!Array.isArray(appIds)) continue
+      for (const appId of appIds) {
+        if (typeof appId !== 'string') continue
+        const appKeys = readStoredJson(
+          localStorageArea,
+          `session_workspaceByKey_${wsKey}_appById_${appId}_appKeys`
+        )
+        if (!Array.isArray(appKeys)) continue
+        for (const appKey of appKeys) {
+          if (typeof appKey === 'string') referencedAppKeys.add(appKey)
+        }
+      }
+    }
+  }
+
+  const getLocal = key => readStoredJson(localStorageArea, key)
+  const getSession = key => readStoredJson(sessionStorageArea, key)
+  const changedWorkspaces = []
+
+  for (const wsKey of workspaceKeys) {
+    if (typeof wsKey !== 'string') continue
+    const key = `session_workspaceByKey_${wsKey}_openAppKeys`
+    const stored = readStoredJson(sessionStorageArea, key)
+    if (!Array.isArray(stored)) continue
+
+    const normalized = normalizeOpenAppKeyList(stored, {
+      referencedAppKeys,
+      getLocal,
+      getSession
+    })
+    if (normalized.length === stored.length) continue
+
+    sessionStorageArea?.setItem?.(key, JSON.stringify(normalized))
+    const removedKeys = stored.filter(appKey => !normalized.includes(appKey))
+    changedWorkspaces.push({ wsKey, from: stored.length, to: normalized.length })
+    console.warn(
+      `[storage-audit] Normalized openAppKeys for workspace ${wsKey}: ` +
+      `${stored.length} -> ${normalized.length} entry(ies)` +
+      (removedKeys.length > 0
+        ? ` (removed ${removedKeys.length} stale/duplicate/non-open app instance(s): ${removedKeys.join(', ')})`
+        : '')
+    )
+  }
+
+  return { changed: changedWorkspaces.length, workspaces: changedWorkspaces }
+}
+
+// Pre-render repair for the core localStorage lists: dedupes
+// session_workspaceKeys and session_accountUserPks, and keeps
+// session_openWorkspaceKeys as a deduped subset of workspaceKeys. Applies
+// directly on every load without scheduling a reload, and logs whenever it
+// changes something. Missing values and values that are not arrays of
+// non-empty strings are left untouched; the audit reports those as issues.
+export function normalizeCoreListsInStorage ({
+  localStorageArea = globalThis.localStorage
+} = {}) {
+  const read = key => readStoredJson(localStorageArea, key)
+  const isValidStringList = value =>
+    Array.isArray(value) && value.every(item => typeof item === 'string' && item.length > 0)
+  const changedLists = []
+
+  const workspaceKeys = read('session_workspaceKeys')
+  if (isValidStringList(workspaceKeys)) {
+    const normalized = uniqueStrings(workspaceKeys)
+    if (normalized.length !== workspaceKeys.length) {
+      localStorageArea?.setItem?.('session_workspaceKeys', JSON.stringify(normalized))
+      changedLists.push({
+        key: 'session_workspaceKeys',
+        from: workspaceKeys.length,
+        to: normalized.length
+      })
+      console.warn(
+        `[storage-audit] Normalized session_workspaceKeys: ${workspaceKeys.length} -> ${normalized.length} entry(ies) ` +
+        `(removed ${workspaceKeys.length - normalized.length} duplicate(s))`
+      )
+    }
+  }
+
+  const accountUserPks = read('session_accountUserPks')
+  if (isValidStringList(accountUserPks)) {
+    const normalized = uniqueStrings(accountUserPks)
+    if (normalized.length !== accountUserPks.length) {
+      localStorageArea?.setItem?.('session_accountUserPks', JSON.stringify(normalized))
+      changedLists.push({
+        key: 'session_accountUserPks',
+        from: accountUserPks.length,
+        to: normalized.length
+      })
+      console.warn(
+        `[storage-audit] Normalized session_accountUserPks: ${accountUserPks.length} -> ${normalized.length} entry(ies) ` +
+        `(removed ${accountUserPks.length - normalized.length} duplicate(s))`
+      )
+    }
+  }
+
+  const openWorkspaceKeys = read('session_openWorkspaceKeys')
+  if (isValidStringList(openWorkspaceKeys) && isValidStringList(workspaceKeys)) {
+    const workspaceSet = new Set(uniqueStrings(workspaceKeys))
+    const normalized = uniqueStrings(openWorkspaceKeys.filter(wsKey => workspaceSet.has(wsKey)))
+    if (normalized.length !== openWorkspaceKeys.length) {
+      localStorageArea?.setItem?.('session_openWorkspaceKeys', JSON.stringify(normalized))
+      const removed = openWorkspaceKeys.filter(wsKey => !normalized.includes(wsKey))
+      changedLists.push({
+        key: 'session_openWorkspaceKeys',
+        from: openWorkspaceKeys.length,
+        to: normalized.length
+      })
+      console.warn(
+        `[storage-audit] Normalized session_openWorkspaceKeys: ${openWorkspaceKeys.length} -> ${normalized.length} entry(ies) ` +
+        (removed.length > 0
+          ? `(removed stale/duplicate workspace key(s): ${removed.join(', ')})`
+          : '(duplicate(s) removed)')
+      )
+    }
+  }
+
+  return { changed: changedLists.length, lists: changedLists }
+}
+
+export function normalizePersistedListsInStorage (options) {
+  const core = normalizeCoreListsInStorage(options)
+  const openAppKeys = normalizeOpenAppKeysInStorage(options)
+  return {
+    changed: core.changed + openAppKeys.changed,
+    core: core.lists,
+    openAppKeys: openAppKeys.workspaces
+  }
+}
+
 export function auditPersistedState (localStorageArea, sessionStorageArea) {
   const local = storageSnapshot(localStorageArea)
   const session = storageSnapshot(sessionStorageArea)
@@ -130,22 +303,33 @@ export function auditPersistedState (localStorageArea, sessionStorageArea) {
     issues.push(item)
   }
 
+  const workspaceKeysRaw = getValue(local, 'session_workspaceKeys')
   let workspaceKeys = toPlainArrayValue('session_workspaceKeys', local, setLocal, issue)
   workspaceKeys = uniqueStrings(workspaceKeys)
-  if (workspaceKeys.length !== getValue(local, 'session_workspaceKeys')?.length) {
-    setLocal('session_workspaceKeys', workspaceKeys)
+  if (Array.isArray(workspaceKeysRaw) && workspaceKeys.length !== workspaceKeysRaw.length) {
+    console.warn(
+      `[storage-audit] session_workspaceKeys would change: ${workspaceKeysRaw.length} -> ${workspaceKeys.length} entry(ies) (duplicate(s) removed)`
+    )
   }
 
+  const accountUserPksRaw = getValue(local, 'session_accountUserPks')
   let accountUserPks = toPlainArrayValue('session_accountUserPks', local, setLocal, issue)
   accountUserPks = uniqueStrings(accountUserPks)
-  if (accountUserPks.length !== getValue(local, 'session_accountUserPks')?.length) {
-    setLocal('session_accountUserPks', accountUserPks)
+  if (Array.isArray(accountUserPksRaw) && accountUserPks.length !== accountUserPksRaw.length) {
+    console.warn(
+      `[storage-audit] session_accountUserPks would change: ${accountUserPksRaw.length} -> ${accountUserPks.length} entry(ies) (duplicate(s) removed)`
+    )
   }
 
+  const openWorkspaceKeysRaw = getValue(local, 'session_openWorkspaceKeys')
   let openWorkspaceKeys = toPlainArrayValue('session_openWorkspaceKeys', local, setLocal, issue)
   openWorkspaceKeys = uniqueStrings(openWorkspaceKeys).filter(wsKey => workspaceKeys.includes(wsKey))
-  if (openWorkspaceKeys.length !== getValue(local, 'session_openWorkspaceKeys')?.length) {
-    setLocal('session_openWorkspaceKeys', openWorkspaceKeys)
+  if (Array.isArray(openWorkspaceKeysRaw) && openWorkspaceKeys.length !== openWorkspaceKeysRaw.length) {
+    const removed = openWorkspaceKeysRaw.filter(wsKey => !openWorkspaceKeys.includes(wsKey))
+    console.warn(
+      `[storage-audit] session_openWorkspaceKeys would change: ${openWorkspaceKeysRaw.length} -> ${openWorkspaceKeys.length} entry(ies)` +
+      (removed.length > 0 ? ` (stale/duplicate: ${removed.join(', ')})` : '')
+    )
   }
 
   const defaultUserPk = getValue(local, 'session_defaultUserPk')
@@ -265,20 +449,35 @@ export function auditPersistedState (localStorageArea, sessionStorageArea) {
       setLocal(`session_workspaceByKey_${wsKey}_unpinnedAppIds`, unpinned.filter(appId => remainingAppIds.includes(appId)))
     }
 
-    let openAppKeys = toPlainArrayValue(
-      `session_workspaceByKey_${wsKey}_openAppKeys`,
+    const openAppKeysKey = `session_workspaceByKey_${wsKey}_openAppKeys`
+    const openAppKeys = toPlainArrayValue(
+      openAppKeysKey,
       session,
       setSession,
       issue
     )
-    openAppKeys = uniqueStrings(openAppKeys).filter(appKey => {
-      const appId = getValue(local, `session_appByKey_${appKey}_id`)
-      return referencedAppKeys.has(appKey) &&
-        typeof appId === 'string' &&
-        getValue(session, `session_appByKey_${appKey}_visibility`) === 'open'
-    })
-    if (openAppKeys.length !== getValue(session, `session_workspaceByKey_${wsKey}_openAppKeys`)?.length) {
-      setSession(`session_workspaceByKey_${wsKey}_openAppKeys`, openAppKeys)
+    // The normalization itself is applied pre-render on every load by
+    // normalizeOpenAppKeysInStorage, so it must not be scheduled as a silent
+    // session write here (issues: 0 should stay clean). The audit only
+    // detects and logs a difference, which is the clue that something keeps
+    // corrupting the list. Missing keys are intentionally not logged/written:
+    // writing [] for an absent key would be a no-op mutation.
+    if (getValue(session, openAppKeysKey) !== undefined) {
+      const normalized = normalizeOpenAppKeyList(openAppKeys, {
+        referencedAppKeys,
+        getLocal: key => getValue(local, key),
+        getSession: key => getValue(session, key)
+      })
+      if (normalized.length !== openAppKeys.length) {
+        const removedKeys = openAppKeys.filter(appKey => !normalized.includes(appKey))
+        console.warn(
+          `[storage-audit] openAppKeys for workspace ${wsKey} would change: ` +
+          `${openAppKeys.length} -> ${normalized.length} entry(ies)` +
+          (removedKeys.length > 0
+            ? ` (stale/duplicate/non-open: ${removedKeys.join(', ')})`
+            : '')
+        )
+      }
     }
   }
 

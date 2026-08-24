@@ -107,5 +107,41 @@ ephemeral and intentionally not persisted; they do not belong here or in
 - App metadata/caches are global by `appId`; they remain valid while any
   workspace/account has the app or a subdomain mapping exists.
 
+### Derived-list normalization
+
+`session_workspaceByKey_<wsKey>_openAppKeys` is the ordered window list:
+`workspaceWindow` renders one `<app-window>` per key, so a stale key (instance
+removed/uninstalled but still listed), a duplicate, or a key whose
+`visibility` is not `open` would render broken, duplicated, or unwanted
+windows after a reload. Keeping the list consistent is a correctness repair,
+not a space optimization (`sessionStorage` entries are tiny).
+
+Three core lists receive the same treatment:
+
+- `session_workspaceKeys` — deduped (duplicates would render duplicated
+  workspace windows).
+- `session_accountUserPks` — deduped (duplicates would double-count/clean up
+  accounts).
+- `session_openWorkspaceKeys` — deduped and filtered to a subset of
+  `session_workspaceKeys` (a stale first key would leave the active
+  workspace/user undefined).
+
+All four lists are normalized on every load before components render
+(`normalizePersistedListsInStorage`, invoked from the storage-audit bootstrap
+in the root window only): `openAppKeys` drops instance keys that are not
+referenced or not `open`, and the core lists are deduped/filtered, then logs
+`[storage-audit] Normalized openAppKeys for workspace <ws>: N -> M ...`
+(`session_workspaceKeys`, `session_accountUserPks` and
+`session_openWorkspaceKeys` have their own `Normalized ...` log lines)
+whenever something changes. Missing keys are left untouched — writing `[]`
+for an absent key would be a no-op mutation — and invalid JSON/array values
+are intentionally left for the audit, which reports them as `invalid_array`
+issues and repairs them through the normal reload plan.
+
+The post-render audit no longer schedules silent writes for these lists; it
+only logs `... would change: ...` as a clue. If any of these logs appears on
+every load, something is continuously corrupting the state and should be
+investigated.
+
 The two-phase audit removes only confirmed inconsistent/orphaned entries,
 reusing existing app/account cleanup routines. Unknown keys are preserved.

@@ -1,4 +1,8 @@
-import { auditPersistedState, hasStorageRepairActions } from './audit.js'
+import {
+  auditPersistedState,
+  hasStorageRepairActions,
+  normalizePersistedListsInStorage
+} from './audit.js'
 
 export const STORAGE_REPAIR_PLAN_KEY = 'local_pendingStorageRepairPlan'
 export const STORAGE_REPAIR_IN_PROGRESS_KEY = 'local_storageRepairInProgress'
@@ -198,6 +202,16 @@ export async function applyPendingStorageRepair ({
   codeVersion = currentCodeVersion()
 } = {}) {
   if (globalThis.window && globalThis.window !== globalThis.window.top) return false
+
+  // Silently normalize derived lists (workspaceKeys, accountUserPks,
+  // openWorkspaceKeys and per-workspace openAppKeys) before any component
+  // reads storage. Runs on every load without scheduling a reload; logs
+  // whenever it changes something so recurring corruption is visible.
+  try {
+    normalizePersistedListsInStorage({ localStorageArea, sessionStorageArea })
+  } catch (error) {
+    console.warn('[storage-audit] persisted-list normalization failed', error)
+  }
 
   let plan = readPendingStorageRepairPlan(localStorageArea)
   if (!plan) {

@@ -159,6 +159,45 @@ describe('storage audit bootstrap', () => {
     assert.equal(local.getItem(STORAGE_REPAIR_IN_PROGRESS_KEY), null)
   })
 
+  it('normalizes derived lists on every load even without a repair plan', async () => {
+    const local = storageMock({
+      session_workspaceKeys: JSON.stringify(['ws1', 'ws1']),
+      session_accountUserPks: JSON.stringify(['user', 'user']),
+      session_openWorkspaceKeys: JSON.stringify(['ws1', 'ghost']),
+      session_workspaceByKey_ws1_pinnedAppIds: JSON.stringify(['app1']),
+      session_workspaceByKey_ws1_unpinnedAppIds: JSON.stringify([]),
+      session_workspaceByKey_ws1_appById_app1_appKeys: JSON.stringify(['key1']),
+      session_appByKey_key1_id: JSON.stringify('app1')
+    })
+    const session = storageMock({
+      session_workspaceByKey_ws1_openAppKeys: JSON.stringify(['key1', 'key1', 'ghost']),
+      session_appByKey_key1_visibility: JSON.stringify('open')
+    })
+    const warns = []
+    const originalWarn = console.warn
+    console.warn = (...args) => warns.push(args.join(' '))
+    try {
+      const applied = await applyPendingStorageRepair({
+        localStorageArea: local,
+        sessionStorageArea: session,
+        codeVersion: 'v1'
+      })
+
+      assert.equal(applied, false)
+      assert.deepEqual(JSON.parse(local.getItem('session_workspaceKeys')), ['ws1'])
+      assert.deepEqual(JSON.parse(local.getItem('session_accountUserPks')), ['user'])
+      assert.deepEqual(JSON.parse(local.getItem('session_openWorkspaceKeys')), ['ws1'])
+      assert.deepEqual(JSON.parse(session.getItem('session_workspaceByKey_ws1_openAppKeys')), ['key1'])
+      assert.equal(warns.length, 4)
+      assert.match(warns[0], /Normalized session_workspaceKeys/)
+      assert.match(warns[1], /Normalized session_accountUserPks/)
+      assert.match(warns[2], /Normalized session_openWorkspaceKeys/)
+      assert.match(warns[3], /Normalized openAppKeys for workspace ws1/)
+    } finally {
+      console.warn = originalWarn
+    }
+  })
+
   it('skips stage-one scheduling while another tab holds the lock', async () => {
     const local = storageMock({ session_appById_orphan_name: JSON.stringify('Orphan') })
     const session = storageMock()
