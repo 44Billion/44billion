@@ -59,7 +59,16 @@ export function nostrDbReadParamsWithAppId (params = [], { appId } = {}) {
   ]
 }
 
-export function createNostrDbSignEvent ({ askNip07, askVault, pubkey, app, isDefaultUser }) {
+export function createNostrDbSignEvent ({
+  askNip07,
+  askVault,
+  pubkey,
+  app,
+  isDefaultUser = false,
+  isReadOnly = false,
+  isLocked = false,
+  onSignerRequestAttention
+}) {
   return async event => {
     const resolvedApp = typeof app === 'function' ? await app() : app
     const { payload, error } = await askNip07(askVault, pubkey, {
@@ -69,15 +78,19 @@ export function createNostrDbSignEvent ({ askNip07, askVault, pubkey, app, isDef
       context: NOSTRDB_MERGE_CONTEXT
     }, {
       app: resolvedApp,
-      isDefaultUser
+      isDefaultUser,
+      isReadOnly,
+      isLocked,
+      onSignerRequestAttention
     })
     if (error) throw error
     return payload
   }
 }
 
-export function createNostrDbMaintenanceSignEvent ({ askVault, pubkey, timeoutMs = 120000 }) {
+export function createNostrDbMaintenanceSignEvent ({ askVault, pubkey, timeoutMs = 120000, guard }) {
   return async event => {
+    guard?.({ method: nostrDbSignMethodForTemplate(event), params: [event] })
     const { payload, error } = await askVault({
       code: 'NIP07',
       payload: {
@@ -93,17 +106,19 @@ export function createNostrDbMaintenanceSignEvent ({ askVault, pubkey, timeoutMs
   }
 }
 
-export function createNostrDbPersonalCopyDecrypt ({ askVault, pubkey }) {
+export function createNostrDbPersonalCopyDecrypt ({ askVault, pubkey, guard }) {
   return async event => {
     const kind = personalCopyEncryptionKind(event)
     if (kind === null) throw new Error('PERSONAL_COPY_KIND_REQUIRED')
+    const params = [pubkey, String(kind), '', event?.content]
+    guard?.({ method: 'nip44v3_decrypt', params })
     const { payload, error } = await askVault({
       code: 'NIP07',
       payload: {
         pubkey,
         ns: [''],
         method: 'nip44v3_decrypt',
-        params: [pubkey, String(kind), '', event?.content],
+        params,
         context: NOSTRDB_PERSONAL_COPY_CONTEXT
       }
     }, { timeout: 120000 })
@@ -112,15 +127,17 @@ export function createNostrDbPersonalCopyDecrypt ({ askVault, pubkey }) {
   }
 }
 
-export function createNostrDbPersonalCopyEncrypt ({ askVault, pubkey }) {
+export function createNostrDbPersonalCopyEncrypt ({ askVault, pubkey, guard }) {
   return async (kind, plaintext) => {
+    const params = [pubkey, String(kind), '', plaintextBase64(plaintext)]
+    guard?.({ method: 'nip44v3_encrypt', params })
     const { payload, error } = await askVault({
       code: 'NIP07',
       payload: {
         pubkey,
         ns: [''],
         method: 'nip44v3_encrypt',
-        params: [pubkey, String(kind), '', plaintextBase64(plaintext)],
+        params,
         context: NOSTRDB_PERSONAL_COPY_CONTEXT
       }
     }, { timeout: 120000 })
@@ -129,15 +146,17 @@ export function createNostrDbPersonalCopyEncrypt ({ askVault, pubkey }) {
   }
 }
 
-export function createNostrDbPersonalCopyObfuscate ({ askVault, pubkey }) {
+export function createNostrDbPersonalCopyObfuscate ({ askVault, pubkey, guard }) {
   return async (value, kind, scope) => {
+    const params = [value, String(kind), scope]
+    guard?.({ method: 'obfuscate', params })
     const { payload, error } = await askVault({
       code: 'NIP07',
       payload: {
         pubkey,
         ns: [''],
         method: 'obfuscate',
-        params: [value, String(kind), scope],
+        params,
         context: NOSTRDB_PERSONAL_COPY_CONTEXT
       }
     }, { timeout: 120000 })

@@ -5,6 +5,7 @@ import useTrackAccountEvents from './use-track-account-events.js'
 import useWebStorage from '#hooks/use-web-storage.js'
 // import useLongPress from '#hooks/use-long-press.js'
 import useScrollbarConfig from '#hooks/use-scrollbar-config.js'
+import useIsMobile from '#hooks/use-is-mobile.js'
 import '#shared/menu.js'
 import '#shared/avatar.js'
 import {
@@ -60,8 +61,14 @@ import '#shared/icons/icon-lock.js'
 import '#shared/icons/icon-library-plus.js'
 import '#shared/icons/icon-share-2.js'
 import '#shared/icons/icon-copy.js'
+import '#shared/icons/icon-pencil-off.js'
+import '#shared/signer-request-tooltip.js'
 import { getAssetBudgetConfirmation } from '#i18n/asset-budget.js'
 import { getT } from '#i18n/index.js'
+import {
+  clearSignerRequestAttention,
+  signerRequestAttention$
+} from '#helpers/signer-request-attention.js'
 import './menus/toolbar-more-menu.js'
 import './menus/other-users-app-groups.js'
 import { otherUsersGroupPopoverOpen$ } from './menus/other-users-app-groups.js'
@@ -917,6 +924,7 @@ f('toolbarMenu', function () {
   const { close: closeMenu } = useClosestStore('<a-menu>')
   const vaultModalStore = useVaultModalStore()
   const { askVault } = useVaultActor()
+  const isMobile$ = useIsMobile()
 
   // Track unlocking state for each user
   const unlockingUsers$ = useSignal({})
@@ -934,6 +942,7 @@ f('toolbarMenu', function () {
       if (userPk !== undefined && userPk !== null) {
         const profile = storage[`session_accountByUserPk_${userPk}_profile$`]()
         const isLocked = storage[`session_accountByUserPk_${userPk}_isLocked$`]()
+        const isReadOnly = storage[`session_accountByUserPk_${userPk}_isReadOnly$`]() ?? false
 
         // Initialize count for this user if not seen before
         if (userCounts[userPk] === undefined) {
@@ -952,6 +961,7 @@ f('toolbarMenu', function () {
               base62ToBase16(userPk, { mode: 'integer', byteLength: 32 })) ||
             t('Default User'),
           isLocked,
+          isReadOnly,
           index: userCounts[userPk], // User-specific index (1-indexed)
           totalCount: userCounts[userPk] // Current count (will be final after loop)
         })
@@ -1195,9 +1205,13 @@ f('toolbarMenu', function () {
             </div>
             <div>
               <div class="user-name">${user.name}</div>
-              ${user.isLocked
+              ${user.isReadOnly
                 ? this.h`<div class=${errorMessage ? 'user-unlock-error' : 'user-unlock-hint'}>
-                    ${errorMessage || t('Touch to unlock')}
+                    ${errorMessage || t('Read-only')}
+                  </div>`
+                : user.isLocked
+                ? this.h`<div class=${errorMessage ? 'user-unlock-error' : 'user-unlock-hint'}>
+                    ${errorMessage || (isMobile$() ? t('Tap to unlock') : t('Click to unlock'))}
                   </div>`
                 : ''}
             </div>
@@ -1243,6 +1257,7 @@ f('toolbarAvatar', function () {
     session_workspaceKeys$: workspaceKeys$
   } = storage
   const firstAccountAttention$ = useGlobalSignal(FIRST_ACCOUNT_ATTENTION_SIGNAL, null)
+  const { isHidden$: isToolbarHidden$ } = useGlobalStore('toolbarState', { isHidden$: false })
 
   const userPk$ = useComputed(() => {
     const wsKey = openWorkspaceKeys$()[0]
@@ -1252,6 +1267,22 @@ f('toolbarAvatar', function () {
   const isLocked$ = useComputed(() => {
     const userPk = userPk$()
     return userPk ? storage[`session_accountByUserPk_${userPk}_isLocked$`]() : false
+  })
+
+  const isReadOnly$ = useComputed(() => {
+    const userPk = userPk$()
+    if (!userPk || userPk === defaultUserPk$()) return false
+    return storage[`session_accountByUserPk_${userPk}_isReadOnly$`]() === true
+  })
+
+  const tooltipOpen$ = useSignal(false)
+  const tooltipKind$ = useSignal(null)
+  const isMobile$ = useIsMobile()
+  const tooltipText$ = useComputed(() => {
+    if (tooltipKind$() !== 'create-account') return t('Unlock your account to continue')
+    return isMobile$()
+      ? t('Create an account — it takes one tap')
+      : t('Create an account — it takes one click')
   })
 
   const showFirstAccountAttention$ = useComputed(() => shouldShowFirstAccountAttention({
@@ -1272,6 +1303,58 @@ f('toolbarAvatar', function () {
       }
     }, Math.max(0, attention.expiresAt - Date.now()))
     cleanup(() => clearTimeout(timeout))
+  })
+
+  // Signer-request tooltip: only the active user's attention is rendered,
+  // it stays open for the attention window, and any close path clears the
+  // shared signal so the next request can reopen it.
+  useTask(({ track, cleanup }) => {
+    const attention = track(() => signerRequestAttention$())
+    const userPk = track(() => userPk$())
+    const valid = attention && attention.userPk === userPk && attention.expiresAt > Date.now()
+    if (!valid) {
+      tooltipOpen$(false)
+      tooltipKind$(null)
+      if (attention) clearSignerRequestAttention()
+      return
+    }
+    tooltipKind$(attention.kind)
+
+    // When the toolbar is hidden (which also entered fullscreen), reveal it
+    // without exiting fullscreen and wait for its animation to finish before
+    // firing the halo + tooltip, so the anchor is actually visible.
+    let revealTimer
+    let toolbarEl
+    let onTransitionEnd
+    let revealed = false
+    const reveal = () => {
+      if (revealed) return
+      revealed = true
+      tooltipOpen$(true)
+    }
+    if (isToolbarHidden$()) {
+      isToolbarHidden$.set(false)
+      toolbarEl = document.getElementById('unified-toolbar')
+      onTransitionEnd = e => {
+        if (e.target === toolbarEl) reveal()
+      }
+      toolbarEl?.addEventListener('transitionend', onTransitionEnd)
+      // Fallback in case transitionend does not fire (e.g. reduced motion).
+      revealTimer = setTimeout(reveal, 400)
+    } else {
+      reveal()
+    }
+
+    const timeout = setTimeout(() => {
+      tooltipOpen$(false)
+      tooltipKind$(null)
+      clearSignerRequestAttention()
+    }, Math.max(0, attention.expiresAt - Date.now()))
+    cleanup(() => {
+      clearTimeout(timeout)
+      clearTimeout(revealTimer)
+      if (onTransitionEnd && toolbarEl) toolbarEl.removeEventListener('transitionend', onTransitionEnd)
+    })
   })
 
   // Calculate the user index and total count for the active user
@@ -1318,114 +1401,155 @@ f('toolbarAvatar', function () {
     closeMenu()
   })
   const onClick = useCallback(() => {
+    tooltipOpen$(false)
+    tooltipKind$(null)
+    clearSignerRequestAttention()
     if (isLoggedIn$()) return toggleMenu()
 
     vaultModalStore.open()
   })
+  const handleTooltipActivate = useCallback(() => {
+    tooltipOpen$(false)
+    tooltipKind$(null)
+    clearSignerRequestAttention()
+    closeMenu()
+    vaultModalStore.open()
+  })
 
-  return this.h`<div
-    id='toolbar-active-avatar-button'
-    class=${{ 'first-account-attention': showFirstAccountAttention$() }}
-    ref=${anchorRef$}
-    onclick=${onClick}
-    style=${`
-      anchor-name: --toolbar-avatar-menu;
-      color: ${cssVars.colors.fg2};
-      width: 40px; height: 40px; display: flex; justify-content: center; align-items: center;
-      border-radius: 50%;
-      position: relative;
-      cursor: pointer;
-    `}
-  >
-    <style>${`
-      #toolbar-active-avatar-button.first-account-attention::before,
-      #toolbar-active-avatar-button.first-account-attention::after {
-        content: '';
-        position: absolute;
-        inset: 4px;
-        border: 2px solid ${cssVars.colors.bgAccentPrimary};
+  return this.h`<div style="position: relative; display: inline-block;">
+    <div
+      id='toolbar-active-avatar-button'
+      class=${{
+        'first-account-attention': showFirstAccountAttention$(),
+        'signer-request-attention': tooltipOpen$()
+      }}
+      ref=${anchorRef$}
+      onclick=${onClick}
+      aria-describedby=${tooltipOpen$() ? 'signer-request-tooltip' : null}
+      style=${`
+        anchor-name: --toolbar-avatar-menu;
+        color: ${cssVars.colors.fg2};
+        width: 40px; height: 40px; display: flex; justify-content: center; align-items: center;
         border-radius: 50%;
-        opacity: 0;
-        pointer-events: none;
-        animation: toolbar-first-account-halo 1.4s ease-out both;
-      }
-
-      #toolbar-active-avatar-button.first-account-attention::after {
-        animation-delay: 550ms;
-      }
-
-      @keyframes toolbar-first-account-halo {
-        0% {
-          opacity: 0;
-          transform: scale(.94);
-        }
-        15% {
-          opacity: .75;
-        }
-        100% {
-          opacity: 0;
-          transform: scale(1.45);
-        }
-      }
-
-      @media (prefers-reduced-motion: reduce) {
-        #toolbar-active-avatar-button.first-account-attention::before {
-          animation: toolbar-first-account-outline 1.95s ease-out both;
-        }
-        #toolbar-active-avatar-button.first-account-attention::after {
-          display: none;
-          animation: none;
-        }
-      }
-
-      @keyframes toolbar-first-account-outline {
-        0%, 70% {
-          opacity: .75;
-          transform: scale(1);
-        }
-        100% {
-          opacity: 0;
-          transform: scale(1);
-        }
-      }
-    `}</style>
-    <a-avatar props=${{ pk$: userPk$, size: '32px', weight$: 'duotone', strokeWidth$: 1 }} />
-    ${userIndex$().showBadge
-      ? this.h`<div style=${`
+        position: relative;
+        cursor: pointer;
+      `}
+    >
+      <style>${`
+        #toolbar-active-avatar-button.first-account-attention::before,
+        #toolbar-active-avatar-button.first-account-attention::after,
+        #toolbar-active-avatar-button.signer-request-attention::before,
+        #toolbar-active-avatar-button.signer-request-attention::after {
+          content: '';
           position: absolute;
-          bottom: -2px;
-          left: -2px;
-          width: 16px;
-          height: 16px;
-          background-color: ${cssVars.colors.bgAccentSecondary};
+          inset: 4px;
+          border: 2px solid ${cssVars.colors.bgAccentPrimary};
           border-radius: 50%;
-          display: flex;
-          justify-content: center;
-          align-items: center;
-          color: ${cssVars.colors.fgAccent};
-          font-size: 10px;
-          font-weight: bold;
-        `}>
-          ${userIndex$().index}
-        </div>`
-      : ''}
-    ${isLocked$()
-      ? this.h`<div style=${`
-          position: absolute;
-          bottom: -2px;
-          right: -2px;
-          width: 16px;
-          height: 16px;
-          background-color: ${cssVars.colors.bgAccentPrimary};
-          border-radius: 50%;
-          display: flex;
-          justify-content: center;
-          align-items: center;
-          color: ${cssVars.colors.fgAccent};
-        `}>
-          <icon-lock props=${{ size: '10px' }} />
-        </div>`
-      : ''}
+          opacity: 0;
+          pointer-events: none;
+          animation: toolbar-first-account-halo 1.4s ease-out both;
+        }
+
+        #toolbar-active-avatar-button.first-account-attention::after,
+        #toolbar-active-avatar-button.signer-request-attention::after {
+          animation-delay: 550ms;
+        }
+
+        @keyframes toolbar-first-account-halo {
+          0% {
+            opacity: 0;
+            transform: scale(.94);
+          }
+          15% {
+            opacity: .75;
+          }
+          100% {
+            opacity: 0;
+            transform: scale(1.45);
+          }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          #toolbar-active-avatar-button.first-account-attention::before,
+          #toolbar-active-avatar-button.signer-request-attention::before {
+            animation: toolbar-first-account-outline 1.95s ease-out both;
+          }
+          #toolbar-active-avatar-button.first-account-attention::after,
+          #toolbar-active-avatar-button.signer-request-attention::after {
+            display: none;
+            animation: none;
+          }
+        }
+
+        @keyframes toolbar-first-account-outline {
+          0%, 70% {
+            opacity: .75;
+            transform: scale(1);
+          }
+          100% {
+            opacity: 0;
+            transform: scale(1);
+          }
+        }
+      `}</style>
+      <a-avatar props=${{ pk$: userPk$, size: '32px', weight$: 'duotone', strokeWidth$: 1 }} />
+      ${isReadOnly$()
+        ? this.h`<div style=${`
+            position: absolute;
+            inset: 0;
+            border-radius: 50%;
+            background-color: ${cssVars.colors.overlaySelected};
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: ${cssVars.colors.fg2};
+          `}>
+            <icon-pencil-off props=${{ size: '16px' }} />
+          </div>`
+        : ''}
+      ${userIndex$().showBadge
+        ? this.h`<div style=${`
+            position: absolute;
+            bottom: -2px;
+            left: -2px;
+            width: 16px;
+            height: 16px;
+            background-color: ${cssVars.colors.bgAccentSecondary};
+            border-radius: 50%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: ${cssVars.colors.fgAccent};
+            font-size: 10px;
+            font-weight: bold;
+          `}>
+            ${userIndex$().index}
+          </div>`
+        : ''}
+      ${isLocked$()
+        ? this.h`<div style=${`
+            position: absolute;
+            bottom: -2px;
+            right: -2px;
+            width: 16px;
+            height: 16px;
+            background-color: ${cssVars.colors.bgAccentPrimary};
+            border-radius: 50%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: ${cssVars.colors.fgAccent};
+          `}>
+            <icon-lock props=${{ size: '10px' }} />
+          </div>`
+        : ''}
+    </div>
+    <signer-request-tooltip props=${{
+      open$: tooltipOpen$,
+      text$: tooltipText$,
+      anchorRef$,
+      onActivate: handleTooltipActivate
+    }} />
   </div>`
 })
 
@@ -1953,7 +2077,12 @@ function getLocales () {
     'Default User': { en: 'Default User', fr: 'Utilisateur par défaut', it: 'Utente predefinito', de: 'Standardbenutzer', es: 'Usuario predeterminado', 'pt-BR': 'Usuário padrão', ru: 'Пользователь по умолчанию', 'zh-CN': '默认用户', 'zh-TW': '預設使用者', ja: 'デフォルトユーザー', ko: '기본 사용자' },
     'Failed to unlock account': { en: 'Failed to unlock account', fr: 'Impossible de déverrouiller le compte', it: 'Impossibile sbloccare l’account', de: 'Konto konnte nicht entsperrt werden', es: 'No se pudo desbloquear la cuenta', 'pt-BR': 'Falha ao desbloquear a conta', ru: 'Не удалось разблокировать учётную запись', 'zh-CN': '无法解锁账户', 'zh-TW': '無法解鎖帳號', ja: 'アカウントのロックを解除できませんでした', ko: '계정 잠금을 해제하지 못했습니다' },
     'Error unlocking': { en: 'Error unlocking', fr: 'Erreur de déverrouillage', it: 'Errore durante lo sblocco', de: 'Fehler beim Entsperren', es: 'Error al desbloquear', 'pt-BR': 'Erro ao desbloquear', ru: 'Ошибка разблокировки', 'zh-CN': '解锁时出错', 'zh-TW': '解鎖時發生錯誤', ja: 'ロック解除エラー', ko: '잠금 해제 오류' },
-    'Touch to unlock': { en: 'Touch to unlock', fr: 'Touchez pour déverrouiller', it: 'Tocca per sbloccare', de: 'Zum Entsperren berühren', es: 'Toca para desbloquear', 'pt-BR': 'Toque para desbloquear', ru: 'Нажмите, чтобы разблокировать', 'zh-CN': '轻触以解锁', 'zh-TW': '輕觸以解鎖', ja: 'タップしてロック解除', ko: '탭하여 잠금 해제' },
+    'Click to unlock': { en: 'Click to unlock', fr: 'Cliquez pour déverrouiller', it: 'Clicca per sbloccare', de: 'Zum Entsperren klicken', es: 'Haz clic para desbloquear', 'pt-BR': 'Clique para desbloquear', ru: 'Кликните, чтобы разблокировать', 'zh-CN': '点击以解锁', 'zh-TW': '點擊以解鎖', ja: 'クリックしてロック解除', ko: '클릭하여 잠금 해제' },
+    'Tap to unlock': { en: 'Tap to unlock', fr: 'Appuyez pour déverrouiller', it: 'Tocca per sbloccare', de: 'Zum Entsperren tippen', es: 'Toca para desbloquear', 'pt-BR': 'Toque para desbloquear', ru: 'Коснитесь, чтобы разблокировать', 'zh-CN': '轻触以解锁', 'zh-TW': '輕觸以解鎖', ja: 'タップしてロック解除', ko: '탭하여 잠금 해제' },
+    'Read-only': { en: 'Read-only', fr: 'Lecture seule', it: 'Sola lettura', de: 'Nur lesen', es: 'Solo lectura', 'pt-BR': 'Somente leitura', ru: 'Только чтение', 'zh-CN': '只读', 'zh-TW': '唯讀', ja: '読み取り専用', ko: '읽기 전용' },
+    'Create an account — it takes one click': { en: 'Create an account — it takes one click', fr: 'Créez un compte — cela ne prend qu’un clic', it: 'Crea un account — basta un clic', de: 'Konto erstellen — dauert nur einen Klick', es: 'Crea una cuenta — solo un clic', 'pt-BR': 'Crie uma conta — basta um clique', ru: 'Создайте аккаунт — это один клик', 'zh-CN': '创建账户——只需一次点击', 'zh-TW': '建立帳戶——只需一次點擊', ja: 'アカウント作成 — ワンクリックで完了', ko: '계정 만들기 — 클릭 한 번이면 끝' },
+    'Create an account — it takes one tap': { en: 'Create an account — it takes one tap', fr: 'Créez un compte — cela ne prend qu’un appui', it: 'Crea un account — basta un tocco', de: 'Konto erstellen — dauert nur einen Tipp', es: 'Crea una cuenta — solo un toque', 'pt-BR': 'Crie uma conta — basta um toque', ru: 'Создайте аккаунт — это одно касание', 'zh-CN': '创建账户——只需轻点一次', 'zh-TW': '建立帳戶——只需輕觸一次', ja: 'アカウント作成 — タップ1回で完了', ko: '계정 만들기 — 탭 한 번이면 끝' },
+    'Unlock your account to continue': { en: 'Unlock your account to continue', fr: 'Déverrouillez votre compte pour continuer', it: 'Sblocca il tuo account per continuare', de: 'Entsperren Sie Ihr Konto, um fortzufahren', es: 'Desbloquea tu cuenta para continuar', 'pt-BR': 'Desbloqueie sua conta para continuar', ru: 'Разблокируйте аккаунт, чтобы продолжить', 'zh-CN': '解锁您的账户以继续', 'zh-TW': '解鎖您的帳號以繼續', ja: '続行するにはアカウントのロックを解除してください', ko: '계속하려면 계정 잠금을 해제하세요' },
     'Please open an app': { en: 'Please open an app', fr: 'Veuillez ouvrir une application', it: 'Apri un’app', de: 'Bitte eine App öffnen', es: 'Abre una aplicación', 'pt-BR': 'Abra um app', ru: 'Откройте приложение', 'zh-CN': '请打开一个应用', 'zh-TW': '請開啟一個應用程式', ja: 'アプリを開いてください', ko: '앱을 열어 주세요' },
     'Opening app...': { en: 'Opening app...', fr: 'Ouverture de l’application...', it: 'Apertura dell’app...', de: 'App wird geöffnet...', es: 'Abriendo la aplicación...', 'pt-BR': 'Abrindo o app...', ru: 'Открытие приложения...', 'zh-CN': '正在打开应用...', 'zh-TW': '正在開啟應用程式...', ja: 'アプリを開いています…', ko: '앱을 여는 중...' },
     Open: { en: 'Open', fr: 'Ouvrir', it: 'Apri', de: 'Öffnen', es: 'Abrir', 'pt-BR': 'Abrir', ru: 'Открыть', 'zh-CN': '打开', 'zh-TW': '開啟', ja: '開く', ko: '열기' },

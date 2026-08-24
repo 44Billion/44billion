@@ -2,15 +2,24 @@ import {
   needsNip07Permission,
   nip07PermissionContext
 } from './nip07-permission-context.js'
+import { guardSignerRequest } from './signer-guard.js'
 
 export async function askNip07 (
   askVault, pubkey, { ns = [''], withSharedKey = null, method, params = [], context = '' }, {
-    isDefaultUser,
+    isDefaultUser = false,
+    isReadOnly = false,
+    isLocked = false,
+    onSignerRequestAttention,
     requestPermission,
     app
   } = {}
 ) {
-  if (isDefaultUser) throw new Error('Please login')
+  guardSignerRequest({
+    method,
+    params,
+    account: { isDefaultUser, isReadOnly, isLocked },
+    onAttention: onSignerRequestAttention
+  })
   if (requestPermission && needsNip07Permission(method)) {
     const { permissions, scope, unknown } = nip07PermissionContext({ method, params })
     if (unknown) throw new Error(`Unknown method ${method}`)

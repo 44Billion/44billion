@@ -37,8 +37,16 @@ import NFileDownloader from '#services/nfile-downloader/index.js'
 import { getEffectiveLocale, subscribeLocaleChanged } from '#i18n/index.js'
 import { askNip07 } from './browser/nip07.js'
 import {
+  guardSignerRequest,
+  readSignerAccountFlags
+} from './browser/signer-guard.js'
+import {
   registerAppBridgeSignalFactory
 } from './app-bridge-registry.js'
+import {
+  isActiveWorkspaceUser,
+  requestSignerAttention
+} from '#helpers/signer-request-attention.js'
 
 registerAppBridgeSignalFactory(toSignal)
 
@@ -47,6 +55,11 @@ export const APP_PAGE_READY_TIMEOUT_MS = 5000
 // export const APP_BRIDGE_READY_TIMEOUT_MS = 12000
 // export const APP_PAGE_READY_TIMEOUT_MS = 12000
 export const APP_PENDING_INDICATOR_DELAY_MS = 800
+
+function notifySignerRequestAttention ({ kind, userPk }) {
+  if (!isActiveWorkspaceUser(userPk)) return
+  requestSignerAttention({ kind, userPk })
+}
 
 export function retryAppBridge (state, { isAutomatic = false } = {}) {
   if (isAutomatic) {
@@ -101,6 +114,7 @@ function listenToTrustedAppPageMessages ({
   appId,
   userPkB16,
   isDefaultUser,
+  guardSigner,
   cachingProgress$,
   askVault,
   onFileNotCached,
@@ -120,7 +134,12 @@ function listenToTrustedAppPageMessages ({
 
           const signEvent = isDefaultUser
             ? null
-            : createNostrDbMaintenanceSignEvent({ askVault, pubkey: userPkB16, timeoutMs: 5000 })
+            : createNostrDbMaintenanceSignEvent({
+              askVault,
+              pubkey: userPkB16,
+              timeoutMs: 5000,
+              guard: guardSigner
+            })
           const cacheDb = signEvent
             ? getNostrDb(userPkB16, { ...nostrDbMaintenanceOptions(signEvent) })
             : null
@@ -334,11 +353,18 @@ export async function initAppBridge (state, {
     base62ToBytes(state.userPk, { mode: 'integer', byteLength: 32 })
   )
   const userPkB16 = base36NsiteToBase16(userPkB36)
+  const defaultUserPk = JSON.parse(localStorage.getItem('session_defaultUserPk'))
   const isDefaultUser = base16ToBase62(
     userPkB16,
     { mode: 'integer', minLength: 43 }
-  ) === JSON.parse(localStorage.getItem('session_defaultUserPk'))
+  ) === defaultUserPk
   const appAddress = appIdToAddressObj(state.appId)
+  const guardSigner = ({ method, params }) => guardSignerRequest({
+    method,
+    params,
+    account: readSignerAccountFlags(state.userPk, { defaultUserPk }),
+    onAttention: kind => notifySignerRequestAttention({ kind, userPk: state.userPk })
+  })
   let appFilesPromise = AppFileManager.create(state.appId, appAddress)
   state.appFilesPromise = appFilesPromise
   appFilesPromise.catch(() => {})
@@ -374,6 +400,7 @@ export async function initAppBridge (state, {
       appId: state.appId,
       userPkB16,
       isDefaultUser,
+      guardSigner,
       cachingProgress$,
       askVault,
       onFileNotCached: details => onFileNotCached(details),
@@ -575,6 +602,8 @@ function createAppPageMessageListener ({
   appAddress,
   userPkB16,
   isDefaultUser,
+  defaultUserPk,
+  guardSigner,
   askVault,
   requestPermission,
   openApp,
@@ -658,10 +687,12 @@ function createAppPageMessageListener ({
           }
           const { ns, with_shared_key: withSharedKey, method, params = [] } = e.data.payload
           const appMetadata = await getAppMetadata(appId, appAddress, { appMetadataCache, appFetchingState, timeoutMs: 0 })
+          const accountFlags = readSignerAccountFlags(state.userPk, { defaultUserPk })
           let msg
           try {
             msg = await askNip07(askVault, userPkB16, { ns, withSharedKey, method, params }, {
-              isDefaultUser,
+              ...accountFlags,
+              onSignerRequestAttention: kind => notifySignerRequestAttention({ kind, userPk: state.userPk }),
               requestPermission,
               app: appMetadata
             })
@@ -675,16 +706,16 @@ function createAppPageMessageListener ({
           const { method, params = [], subscriptionId } = e.data.payload || {}
           const maintenanceSignEvent = isDefaultUser
             ? null
-            : createNostrDbMaintenanceSignEvent({ askVault, pubkey: userPkB16 })
+            : createNostrDbMaintenanceSignEvent({ askVault, pubkey: userPkB16, guard: guardSigner })
           const personalCopyDecrypt = isDefaultUser
             ? null
-            : createNostrDbPersonalCopyDecrypt({ askVault, pubkey: userPkB16 })
+            : createNostrDbPersonalCopyDecrypt({ askVault, pubkey: userPkB16, guard: guardSigner })
           const personalCopyEncrypt = isDefaultUser
             ? null
-            : createNostrDbPersonalCopyEncrypt({ askVault, pubkey: userPkB16 })
+            : createNostrDbPersonalCopyEncrypt({ askVault, pubkey: userPkB16, guard: guardSigner })
           const personalCopyObfuscate = isDefaultUser
             ? null
-            : createNostrDbPersonalCopyObfuscate({ askVault, pubkey: userPkB16 })
+            : createNostrDbPersonalCopyObfuscate({ askVault, pubkey: userPkB16, guard: guardSigner })
           const db = getNostrDb(userPkB16, {
             ...nostrDbMaintenanceOptions(maintenanceSignEvent),
             ...(personalCopyDecrypt ? { personalCopyDecrypt } : {}),
@@ -708,12 +739,14 @@ function createAppPageMessageListener ({
             })
             break
           }
+          const accountFlags = readSignerAccountFlags(state.userPk, { defaultUserPk })
           const signEvent = createNostrDbSignEvent({
             askNip07,
             askVault,
             pubkey: userPkB16,
             app: appMetadata,
-            isDefaultUser
+            ...accountFlags,
+            onSignerRequestAttention: kind => notifySignerRequestAttention({ kind, userPk: state.userPk })
           })
           try {
             reply(e, {
@@ -895,11 +928,18 @@ export function initAppWindow (state, {
     base62ToBytes(state.userPk, { mode: 'integer', byteLength: 32 })
   )
   const userPkB16 = base36NsiteToBase16(userPkB36)
+  const defaultUserPk = JSON.parse(localStorage.getItem('session_defaultUserPk'))
   const isDefaultUser = base16ToBase62(
     userPkB16,
     { mode: 'integer', minLength: 43 }
-  ) === JSON.parse(localStorage.getItem('session_defaultUserPk'))
+  ) === defaultUserPk
   const appOrigin = `${location.protocol}//${state.appSubdomain}.${location.host}`
+  const guardSigner = ({ method, params }) => guardSignerRequest({
+    method,
+    params,
+    account: readSignerAccountFlags(state.userPk, { defaultUserPk }),
+    onAttention: kind => notifySignerRequestAttention({ kind, userPk: state.userPk })
+  })
   let currentAppPagePort = null
   let ac = null
 
@@ -910,6 +950,8 @@ export function initAppWindow (state, {
     appAddress,
     userPkB16,
     isDefaultUser,
+    defaultUserPk,
+    guardSigner,
     askVault,
     requestPermission,
     openApp,
