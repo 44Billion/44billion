@@ -454,14 +454,19 @@ f('appWindow', function () {
 
   useTask(
     async ({ track, cleanup }) => {
-      const [isClosed, iframeRef, appSubdomain, appId, userPk, routeValue] = track(() => [
+      const [isClosed, iframeRef, appSubdomain, appId, userPk] = track(() => [
         isClosed$(),
         appIframeRef$(),
         appSubdomain$(),
         appId$(),
-        userPk$(),
-        initialRoute$()
+        userPk$()
       ])
+      // The initial route is consumed once and cleared by onAppReady after the
+      // app loads. Reading it outside `track` keeps that clear from
+      // re-running this task: a re-run would first run the previous cleanup,
+      // which closes the app page MessagePort, and the early-return guard
+      // below would leave the port closed forever.
+      const routeValue = initialRoute$()
       launchError$(null)
       // This component is reused on open -> closed -> open: stableDomOrderAppKeys$
       // retains the app key, while the render returns nothing while closed. The
