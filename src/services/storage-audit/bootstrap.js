@@ -99,6 +99,7 @@ function planFingerprint (summary) {
 }
 
 async function auditWithManifestOwnedAppIds (localStorageArea, sessionStorageArea) {
+  const startedAt = performance.now()
   let manifestAppIds = new Set()
   try {
     const { default: AppUpdater } = await import('#services/app-updater/index.js')
@@ -110,7 +111,16 @@ async function auditWithManifestOwnedAppIds (localStorageArea, sessionStorageAre
       error
     )
   }
-  return auditPersistedState(localStorageArea, sessionStorageArea, { manifestAppIds })
+  const manifestsMs = Math.max(0, Math.round(performance.now() - startedAt))
+  const auditStartedAt = performance.now()
+  const result = auditPersistedState(localStorageArea, sessionStorageArea, { manifestAppIds })
+  const auditMs = Math.max(0, Math.round(performance.now() - auditStartedAt))
+  console.info(
+    `[storage-audit] Audit completed in ${auditMs + manifestsMs}ms ` +
+    `(site manifests: ${manifestsMs}ms, persisted state: ${auditMs}ms, ` +
+    `${manifestAppIds.size} site manifest(s), ${result.issues.length} issue(s))`
+  )
+  return result
 }
 
 export async function scheduleStorageRepair ({

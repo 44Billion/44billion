@@ -157,6 +157,33 @@ describe('storage audit bootstrap', () => {
     }
   })
 
+  it('logs how long the audit took to complete', async () => {
+    const local = storageMock()
+    const session = storageMock()
+    const infos = []
+    const originalInfo = console.info
+    console.info = (...args) => infos.push(args.join(' '))
+    try {
+      await scheduleStorageRepair({
+        localStorageArea: local,
+        sessionStorageArea: session,
+        codeVersion: 'v1',
+        reload: () => {}
+      })
+
+      assert.equal(
+        infos.some(line => /\[storage-audit\] Audit completed in \d+ms/.test(line)),
+        true
+      )
+      assert.equal(
+        infos.some(line => /site manifests: \d+ms, persisted state: \d+ms/.test(line)),
+        true
+      )
+    } finally {
+      console.info = originalInfo
+    }
+  })
+
   it('discards a stale plan without applying it', async () => {
     const local = storageMock({
       session_to_remove: JSON.stringify({ broken: true }),
