@@ -143,5 +143,36 @@ only logs `... would change: ...` as a clue. If any of these logs appears on
 every load, something is continuously corrupting the state and should be
 investigated.
 
+### Embedded single-napp retention
+
+`singleNappOpenedAtByOwner` is **not** a `localStorage`/`sessionStorage` key.
+It lives inside each app's site-manifest metadata in IndexedDB
+(`44billion_browser` / `siteManifests`, record field `s`) as a map of
+`ownerPubkey` → last-opened timestamp (`manifest.meta.singleNappOpenedAtByOwner`).
+
+It is recorded by `AppUpdater.recordEmbeddedOnlyRetention` when the
+`<single-napp />` zone renders an app for a real account. While at least one
+owner is within the 30-day retention window
+(`SINGLE_NAPP_RETENTION_MS`), uninstalling the app deliberately preserves its
+`session_appById_*` metadata and cached assets so embedded links keep working.
+
+The expiry is handled by the normal cleanup job
+(`AppUpdater.initCleanupJob()` → `app-cleanup-job`): it removes stale owners,
+and when no installed owner and no recent owner remain, it removes cached
+files, `session_appById_*` metadata and subdomain mappings. The audit must not
+flag metadata of apps that still own a site manifest — do not reintroduce
+`orphan_app_metadata_key` for appIds covered by the cleanup job. The
+storage-audit bootstrap computes the manifest-owned set with
+`AppUpdater.getSiteManifestAppIds` and passes it to `auditPersistedState` as
+`manifestAppIds`; the orphan rule only applies when the manifest is already
+gone (i.e. the normal cleanup can no longer act on the app). Apps whose
+retention window simply expired are left to the cleanup job, which removes
+their metadata/assets on its next run without forcing a reload.
+
+Timestamps in the future (`openedAt > now`, e.g. from a skewed clock) are
+treated as stale during partitioning and are logged with a
+`[app-updater]`/`[single-napp-retention]` warning, so corrupted data can never
+cause permanent retention.
+
 The two-phase audit removes only confirmed inconsistent/orphaned entries,
 reusing existing app/account cleanup routines. Unknown keys are preserved.

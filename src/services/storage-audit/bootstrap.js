@@ -98,6 +98,21 @@ function planFingerprint (summary) {
   })
 }
 
+async function auditWithManifestOwnedAppIds (localStorageArea, sessionStorageArea) {
+  let manifestAppIds = new Set()
+  try {
+    const { default: AppUpdater } = await import('#services/app-updater/index.js')
+    const ids = await AppUpdater.getSiteManifestAppIds({ _localStorage: localStorageArea })
+    manifestAppIds = new Set(Array.isArray(ids) ? ids : [])
+  } catch (error) {
+    console.warn(
+      '[storage-audit] Failed to load site-manifest app ids; orphan metadata will not be exempted',
+      error
+    )
+  }
+  return auditPersistedState(localStorageArea, sessionStorageArea, { manifestAppIds })
+}
+
 export async function scheduleStorageRepair ({
   localStorageArea = globalThis.localStorage,
   sessionStorageArea = globalThis.sessionStorage,
@@ -113,7 +128,7 @@ export async function scheduleStorageRepair ({
 } = {}) {
   if (isDevelopment()) {
     try {
-      const { plan } = auditPersistedState(localStorageArea, sessionStorageArea)
+      const { plan } = await auditWithManifestOwnedAppIds(localStorageArea, sessionStorageArea)
       if (hasStorageRepairActions(plan)) {
         const summary = summarizePlan(plan)
         const debugSummary = { ...summary, codeVersion }
@@ -171,7 +186,7 @@ export async function scheduleStorageRepair ({
 
     let plan
     try {
-      ({ plan } = auditPersistedState(localStorageArea, sessionStorageArea))
+      ({ plan } = await auditWithManifestOwnedAppIds(localStorageArea, sessionStorageArea))
     } catch (error) {
       console.error('[storage-audit] Audit failed', error)
       return

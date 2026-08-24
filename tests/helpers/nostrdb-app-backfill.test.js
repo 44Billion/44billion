@@ -19,7 +19,8 @@ const {
 } = await import('../../src/helpers/window-message/browser/vault-accepted-message-queue.js')
 const {
   cleanupNostrDbAppForWorkspace,
-  isNostrDbAppInstalledForOwner
+  isNostrDbAppInstalledForOwner,
+  recentSingleNappOwnersFromManifest
 } = await import('../../src/components/zones/screen/helpers/nostrdb-app-lifecycle.js')
 const {
   requestNostrDbAppBackfillForWorkspace,
@@ -336,5 +337,27 @@ describe('nostrdb app backfill launcher helper', () => {
       getSiteManifestFromDb: async () => null
     }), true)
     assert.deepEqual(deletes, [{ owner: ownerPubkey, appId: 'app-1' }])
+  })
+
+  describe('recentSingleNappOwnersFromManifest', () => {
+    it('treats future timestamps as stale instead of recent', () => {
+      const owner = 'e'.repeat(64)
+      const now = 100 * 24 * 60 * 60 * 1000
+      const warns = []
+      const originalWarn = console.warn
+      console.warn = (...args) => warns.push(args.join(' '))
+      try {
+        const recent = recentSingleNappOwnersFromManifest(
+          { meta: { singleNappOpenedAtByOwner: { [owner]: now + 1000 } } },
+          { now, retentionMs: 30 * 24 * 60 * 60 * 1000 }
+        )
+
+        assert.deepEqual(recent, {})
+        assert.equal(warns.length, 1)
+        assert.match(warns[0], /future timestamp/)
+      } finally {
+        console.warn = originalWarn
+      }
+    })
   })
 })

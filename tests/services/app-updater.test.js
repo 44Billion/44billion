@@ -1707,4 +1707,75 @@ describe('AppUpdater', () => {
       }
     })
   })
+
+  describe('partitionSingleNappOwners', () => {
+    it('treats future timestamps as stale instead of permanently recent', () => {
+      const owner = 'c'.repeat(64)
+      const now = 100 * 24 * 60 * 60 * 1000
+      const warns = []
+      const originalWarn = console.warn
+      console.warn = (...args) => warns.push(args.join(' '))
+      try {
+        const result = AppUpdater.partitionSingleNappOwners(
+          { [owner]: now + 1000 },
+          { now, retentionMs: 30 * 24 * 60 * 60 * 1000 }
+        )
+
+        assert.deepEqual(result.recent, {})
+        assert.deepEqual(result.stale, [owner])
+        assert.equal(result.changed, true)
+        assert.equal(warns.length, 1)
+        assert.match(warns[0], /future timestamp/)
+        assert.match(warns[0], new RegExp(owner))
+      } finally {
+        console.warn = originalWarn
+      }
+    })
+
+    it('keeps timestamps inside the retention window as recent', () => {
+      const owner = 'd'.repeat(64)
+      const now = 100 * 24 * 60 * 60 * 1000
+
+      const result = AppUpdater.partitionSingleNappOwners(
+        { [owner]: now - 1 },
+        { now, retentionMs: 30 * 24 * 60 * 60 * 1000 }
+      )
+
+      assert.deepEqual(result.recent, { [owner]: now - 1 })
+      assert.deepEqual(result.stale, [])
+      assert.equal(result.changed, false)
+    })
+  })
+
+  describe('getSiteManifestAppIds', () => {
+    it('collects app ids from every site manifest kind', async () => {
+      const main = {
+        kind: 35128,
+        pubkey: 'a'.repeat(64),
+        tags: [['d', 'main-app']]
+      }
+      const draft = {
+        kind: 35130,
+        pubkey: 'b'.repeat(64),
+        tags: [['d', 'draft-app']]
+      }
+
+      const appIds = await AppUpdater.getSiteManifestAppIds({
+        _listSiteManifestsFromDb: async () => [main, draft],
+        _addressObjToAppId: addressObjToAppId
+      })
+
+      assert.equal(appIds.length, 2)
+      assert.ok(appIds.includes(addressObjToAppId({
+        kind: 35128,
+        pubkey: 'a'.repeat(64),
+        dTag: 'main-app'
+      })))
+      assert.ok(appIds.includes(addressObjToAppId({
+        kind: 35130,
+        pubkey: 'b'.repeat(64),
+        dTag: 'draft-app'
+      })))
+    })
+  })
 })

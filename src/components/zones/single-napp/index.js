@@ -2,6 +2,7 @@ import { f, useClosestStore, useSignal, useTask, useComputed, useMemo } from '#f
 import useWebStorage from '#hooks/use-web-storage.js'
 import { appDecode } from 'libp2r2p/nip19'
 import { addressObjToAppId } from '#helpers/app.js'
+import { base62ToBase16 } from 'libp2r2p/base62'
 import {
   APP_PENDING_INDICATOR_DELAY_MS,
   APP_PAGE_READY_TIMEOUT_MS,
@@ -111,7 +112,8 @@ f('singleNappLauncher', function () {
     appReady: false,
     autoRetried: false,
     appCleanup: null,
-    initialRoute: null
+    initialRoute: null,
+    retentionRecorded: false
   }))
   const instanceId = useMemo(() => getRandomId())
 
@@ -221,6 +223,23 @@ f('singleNappLauncher', function () {
         runtime.autoRetried = false
         runtime.appCleanup = null
         return
+      }
+      if (!runtime.retentionRecorded && bridgeState.appFiles?.siteManifest) {
+        runtime.retentionRecorded = true
+        const ownerPubkey =
+          userPk && userPk !== storage.session_defaultUserPk$()
+            ? base62ToBase16(userPk, { mode: 'integer', byteLength: 32 }).toLowerCase()
+            : ''
+        AppUpdater.recordEmbeddedOnlyRetention({
+          appId,
+          ownerPubkey,
+          siteManifest: bridgeState.appFiles.siteManifest,
+          updateSiteManifestMetadata: metadata =>
+            bridgeState.appFiles.updateSiteManifestMetadata(metadata),
+          _localStorage: localStorage
+        }).catch(error => {
+          console.warn('[single-napp] Failed to record embedded-only retention', error)
+        })
       }
       if (runtime.startedGeneration === bridgeRetryCount && runtime.appReady) return
 

@@ -62,8 +62,16 @@ export function recentSingleNappOwnersFromManifest (
 ) {
   const owners = normalizeSingleNappOpenedAtByOwner(manifest?.meta?.singleNappOpenedAtByOwner)
   const cutoff = now - retentionMs
+  const futureOwners = Object.entries(owners)
+    .filter(([, openedAt]) => openedAt > now)
+    .map(([owner]) => owner)
+  if (futureOwners.length > 0) {
+    console.warn(
+      `[single-napp-retention] singleNappOpenedAtByOwner contains future timestamp(s); treating as stale (owner(s): ${futureOwners.join(', ')})`
+    )
+  }
   return Object.fromEntries(
-    Object.entries(owners).filter(([, openedAt]) => openedAt >= cutoff)
+    Object.entries(owners).filter(([, openedAt]) => openedAt >= cutoff && openedAt <= now)
   )
 }
 

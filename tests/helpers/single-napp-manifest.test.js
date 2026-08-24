@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { indexedDB } from 'fake-indexeddb'
+import { readFile } from 'node:fs/promises'
 import { addressObjToAppId } from '../../src/helpers/app.js'
 
 import {
@@ -60,5 +61,16 @@ describe('single-napp manifest metadata', () => {
     assert.equal(stored.meta.seenUpdateVersion, '2'.repeat(64))
     assert.equal(stored.meta.latestUpdateEventId, undefined)
     assert.equal(stored.meta.seenUpdateEventId, undefined)
+  })
+
+  it('records embedded-only retention when the single-napp zone renders', async () => {
+    const source = await readFile(
+      new URL('../../src/components/zones/single-napp/index.js', import.meta.url),
+      'utf8'
+    )
+
+    assert.match(source, /recordEmbeddedOnlyRetention/)
+    assert.match(source, /base62ToBase16/)
+    assert.match(source, /retentionRecorded/)
   })
 })

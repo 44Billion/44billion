@@ -22,6 +22,15 @@ mock.module('#services/storage-audit/repair.js', {
   }
 })
 
+let mockManifestAppIds = []
+mock.module('#services/app-updater/index.js', {
+  defaultExport: {
+    async getSiteManifestAppIds () {
+      return mockManifestAppIds
+    }
+  }
+})
+
 function storageMock (entries = {}) {
   const data = new Map(Object.entries(entries))
   return {
@@ -123,6 +132,29 @@ describe('storage audit bootstrap', () => {
     assert.equal(local.getItem(STORAGE_REPAIR_PLAN_KEY), null)
     assert.equal(local.getItem(STORAGE_REPAIR_IN_PROGRESS_KEY), null)
     assert.equal(local.getItem(STORAGE_REPAIR_ATTEMPTS_KEY), null)
+  })
+
+  it('does not flag metadata of app ids that still own a site manifest', async () => {
+    const local = storageMock({
+      session_appById_retainedapp_name: JSON.stringify('Retained')
+    })
+    const session = storageMock()
+    const reloads = []
+    mockManifestAppIds = ['retainedapp']
+    try {
+      const scheduled = await scheduleStorageRepair({
+        localStorageArea: local,
+        sessionStorageArea: session,
+        codeVersion: 'v1',
+        reload: () => reloads.push(true)
+      })
+
+      assert.equal(scheduled, false)
+      assert.deepEqual(reloads, [])
+      assert.equal(local.getItem(STORAGE_REPAIR_PLAN_KEY), null)
+    } finally {
+      mockManifestAppIds = []
+    }
   })
 
   it('discards a stale plan without applying it', async () => {

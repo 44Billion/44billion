@@ -206,6 +206,29 @@ export default class AppUpdater {
     return Array.from(embeddedAppIds)
   }
 
+  // App ids that still have a site manifest in IndexedDB. The cleanup job
+  // (`scheduleCleanup`) owns the full lifecycle of these apps, so the storage
+  // audit must not flag their metadata as orphan.
+  static async getSiteManifestAppIds ({
+    _listSiteManifestsFromDb = listSiteManifestsFromDb,
+    _addressObjToAppId = addressObjToAppId
+  } = {}) {
+    const appIds = new Set()
+    for (const manifest of await _listSiteManifestsFromDb()) {
+      const dTag = manifest.tags.find(t => t[0] === 'd')?.[1] ?? ''
+      try {
+        appIds.add(_addressObjToAppId({
+          kind: manifest.kind,
+          pubkey: manifest.pubkey,
+          dTag
+        }))
+      } catch (_err) {
+        continue
+      }
+    }
+    return Array.from(appIds)
+  }
+
   static partitionSingleNappOwners (singleNappOpenedAtByOwner, {
     now = Date.now(),
     retentionMs = SINGLE_NAPP_RETENTION_MS
@@ -214,10 +237,26 @@ export default class AppUpdater {
     const cutoff = now - retentionMs
     const recent = {}
     const stale = []
+    const future = []
 
     for (const [owner, openedAt] of Object.entries(owners)) {
-      if (openedAt >= cutoff) recent[owner] = openedAt
-      else stale.push(owner)
+      if (openedAt > now) {
+        // A future timestamp (skewed clock or corrupted data) must never keep
+        // an app retained forever: treat it as stale so the cleanup job can
+        // drop it from the manifest and eventually evict the app.
+        future.push(owner)
+        stale.push(owner)
+      } else if (openedAt >= cutoff) {
+        recent[owner] = openedAt
+      } else {
+        stale.push(owner)
+      }
+    }
+
+    if (future.length > 0) {
+      console.warn(
+        `[app-updater] singleNappOpenedAtByOwner contains future timestamp(s); treating as stale (owner(s): ${future.join(', ')})`
+      )
     }
 
     return {

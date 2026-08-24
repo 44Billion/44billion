@@ -286,7 +286,9 @@ export function normalizePersistedListsInStorage (options) {
   }
 }
 
-export function auditPersistedState (localStorageArea, sessionStorageArea) {
+export function auditPersistedState (localStorageArea, sessionStorageArea, {
+  manifestAppIds = new Set()
+} = {}) {
   const local = storageSnapshot(localStorageArea)
   const session = storageSnapshot(sessionStorageArea)
   const plan = createEmptyPlan()
@@ -537,7 +539,8 @@ export function auditPersistedState (localStorageArea, sessionStorageArea) {
     referencedAppIds,
     referencedAppKeys,
     referencedUserPks,
-    accountUserPks
+    accountUserPks,
+    manifestAppIds
   })
 
   return { ok: !hasStorageRepairActions(plan), issues, plan }
@@ -651,7 +654,8 @@ function auditOrphanKeys (local, session, {
   referencedAppIds,
   referencedAppKeys,
   referencedUserPks,
-  accountUserPks
+  accountUserPks,
+  manifestAppIds = new Set()
 }) {
   const workspaceLocalPrefixes = ['session_workspaceByKey_']
   const appInstanceLocalPrefixes = ['session_appByKey_']
@@ -677,7 +681,12 @@ function auditOrphanKeys (local, session, {
     }
     if (key.startsWith('session_appById_')) {
       const appId = extractDynamicId(key, appMetadataPrefixes, APP_METADATA_SUFFIXES)
-      if (appId && !referencedAppIds.has(appId) && !hasAnySubdomainForApp(local, appId)) {
+      if (
+        appId &&
+        !referencedAppIds.has(appId) &&
+        !hasAnySubdomainForApp(local, appId) &&
+        !manifestAppIds.has(appId)
+      ) {
         issue('orphan_app_metadata_key', 'Orphan app metadata key', { key })
         setLocal(key, null)
       }

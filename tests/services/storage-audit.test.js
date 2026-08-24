@@ -369,4 +369,19 @@ describe('storage audit', () => {
     assert.equal(result.plan.local.session_appById_orphan_name, null)
     assert.equal(result.plan.local.custom_unknown_key, undefined)
   })
+
+  it('skips orphan metadata for app ids that still own a site manifest', () => {
+    const state = validState({
+      local: {
+        session_appById_retainedapp_name: 'Retained'
+      }
+    })
+    const result = auditPersistedState(state.local, state.session, {
+      manifestAppIds: new Set(['retainedapp'])
+    })
+
+    assert.equal(result.ok, true)
+    assert.equal(result.plan.local.session_appById_retainedapp_name, undefined)
+    assert.equal(result.issues.some(issue => issue.code === 'orphan_app_metadata_key'), false)
+  })
 })
