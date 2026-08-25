@@ -1,13 +1,25 @@
 import { describe, it, mock } from 'node:test'
 import assert from 'node:assert/strict'
-import AppUpdater, {
-  MAX_ACTIVE_EMBEDDED_APPS,
-  MAX_NEW_RETAINED_EMBEDDED_APPS_PER_HOUR,
-  MAX_RETAINED_EMBEDDED_APPS
-} from '../../src/services/app-updater/index.js'
 import { addressObjToAppId } from '../../src/helpers/app.js'
 import { getManifestAggregateHash } from '../../src/helpers/site-manifest.js'
 import { base16ToBase62 } from 'libp2r2p/base62'
+
+mock.module('#f', {
+  namedExports: {
+    setWebStorageItem: (storageArea, key, value) => {
+      if (value === undefined) storageArea.removeItem(key)
+      else storageArea.setItem(key, JSON.stringify(value))
+      return value
+    }
+  }
+})
+
+const {
+  default: AppUpdater,
+  MAX_ACTIVE_EMBEDDED_APPS,
+  MAX_NEW_RETAINED_EMBEDDED_APPS_PER_HOUR,
+  MAX_RETAINED_EMBEDDED_APPS
+} = await import('../../src/services/app-updater/index.js')
 
 const MAIN_PUBKEY = '1'.repeat(64)
 const DRAFT_PUBKEY = '2'.repeat(64)

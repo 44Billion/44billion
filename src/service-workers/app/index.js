@@ -394,7 +394,11 @@ async function selectClientToPostMessagesTo ({ clientId = '' } = {}) {
       appPageBridgeIds.get(clientId) || ''
     )
 
-    if (targetClient) {
+    // A live trusted iframe may not have a readyClients entry yet (e.g. the
+    // service worker restarted while the iframe stayed loaded). In that case
+    // fall through to requestBridgeReady(), which asks it to re-register via
+    // the sw~~napp BroadcastChannel instead of crashing on a missing port.
+    if (targetClient && readyClients.has(targetClient.id)) {
       return {
         port: readyClients.get(targetClient.id).port,
         clientId: targetClient.id

@@ -1,8 +1,9 @@
 import { f, useClosestStore, useSignal, useTask, useComputed, useMemo } from '#f'
-import useWebStorage from '#hooks/use-web-storage.js'
+import { useWebStorage } from '#f'
 import { appDecode } from 'libp2r2p/nip19'
 import { addressObjToAppId } from '#helpers/app.js'
 import { base62ToBase16 } from 'libp2r2p/base62'
+import { useActiveWorkspaceOrder } from '#hooks/use-active-workspace-order.js'
 import {
   APP_PENDING_INDICATOR_DELAY_MS,
   APP_PAGE_READY_TIMEOUT_MS,
@@ -38,9 +39,8 @@ f('singleNapp', function () {
   // launcher, but its stores, dialogs and DOM are in a separate Window/JS
   // realm, so providers needed by this embedded launcher must be mounted here.
   const storage = useWebStorage(localStorage)
-  const {
-    session_openWorkspaceKeys$: openWorkspaceKeys$
-  } = storage
+  const tabStorage = useWebStorage(sessionStorage)
+  const { order$: openWorkspaceKeys$ } = useActiveWorkspaceOrder(storage, tabStorage)
   const wsKey = openWorkspaceKeys$()[0]
   if (!wsKey) throw new Error('User n/a')
 

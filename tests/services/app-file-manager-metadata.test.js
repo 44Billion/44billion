@@ -37,7 +37,7 @@ mock.module('#helpers/nostr-queries.js', {
     getUserRelays: async () => ({ [A]: { read: [], write: [] } })
   }
 })
-mock.module('#hooks/use-web-storage.js', {
+mock.module('#f', {
   namedExports: {
     setWebStorageItem: () => {}
   }

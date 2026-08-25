@@ -27,7 +27,9 @@ mock.module('#f', {
     useCallback: value => value,
     useSignal: toTestSignal,
     useGlobalSignal: (_namespace, value) => toTestSignal(value),
-    useTask: () => {}
+    useTask: () => {},
+    useWebStorage: () => ({}),
+    setWebStorageItem: () => {}
   }
 })
 mock.module('#f/components/f-to-signals.js', { namedExports: {} })
@@ -42,7 +44,6 @@ mock.module('#services/idb/browser/queries/permission.js', {
 mock.module('#assets/styles/theme.js', {
   namedExports: { cssVars: { colors: {} }, jsVars: { breakpoints: {} } }
 })
-mock.module('#hooks/use-web-storage.js', { defaultExport: () => ({}) })
 
 const {
   getEffectiveLocale,

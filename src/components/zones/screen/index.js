@@ -2,7 +2,7 @@ import { f, useCallback, useComputed, useStore, useGlobalStore, useGlobalSignal,
 import AppUpdater from '#services/app-updater/index.js'
 import useInitOrResetScreen from './use-init-or-reset-screen.js'
 import useTrackAccountEvents from './use-track-account-events.js'
-import useWebStorage from '#hooks/use-web-storage.js'
+import { useWebStorage } from '#f'
 // import useLongPress from '#hooks/use-long-press.js'
 import useScrollbarConfig from '#hooks/use-scrollbar-config.js'
 import useIsMobile from '#hooks/use-is-mobile.js'
@@ -69,6 +69,9 @@ import {
   clearSignerRequestAttention,
   signerRequestAttention$
 } from '#helpers/signer-request-attention.js'
+import {
+  useActiveWorkspaceOrder
+} from '#hooks/use-active-workspace-order.js'
 import './menus/toolbar-more-menu.js'
 import './menus/other-users-app-groups.js'
 import { otherUsersGroupPopoverOpen$ } from './menus/other-users-app-groups.js'
@@ -87,6 +90,7 @@ f('aScreen', function () {
   useTrackAccountEvents()
   const storage = useWebStorage(localStorage)
   const tabStorage = useWebStorage(sessionStorage)
+  const { order$: activeWsOrder$ } = useActiveWorkspaceOrder(storage, tabStorage)
 
   // No track: the audit should run once, not react to workspace changes.
   // Register before useAppRouter so a repair reload preserves the original
@@ -95,6 +99,33 @@ f('aScreen', function () {
     if (!storage.session_workspaceKeys$()?.length) return
     scheduleStorageRepair().catch(error => {
       console.error('[storage-audit] Failed to schedule repair', error)
+    })
+  })
+
+  // The focused/visible tab's workspace order becomes the canonical order
+  // used to initialize new tabs (last-writer-wins on focus).
+  useTask(({ cleanup }) => {
+    const syncCanonicalOrder = () => {
+      if (document.visibilityState !== 'visible') return
+      const next = activeWsOrder$()
+      const current = storage.session_openWorkspaceKeys$?.() ?? []
+      const currentList = Array.isArray(current) ? current : []
+      if (
+        next.length === currentList.length &&
+        next.every((key, index) => key === currentList[index])
+      ) return
+      storage.session_openWorkspaceKeys$(next)
+    }
+
+    syncCanonicalOrder()
+    window.addEventListener('focus', syncCanonicalOrder)
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') syncCanonicalOrder()
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    cleanup(() => {
+      window.removeEventListener('focus', syncCanonicalOrder)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
     })
   })
 
@@ -108,7 +139,7 @@ f('aScreen', function () {
     const focusedApp = track(() => {
       if (isSystemRoute$()) return null
 
-      const wsKeys = storage.session_openWorkspaceKeys$() ?? []
+      const wsKeys = activeWsOrder$() ?? []
       const wsKey = wsKeys[0]
       if (!wsKey) return null
 
@@ -140,7 +171,7 @@ f('aScreen', function () {
       // Find the workspace for the target user without switching active workspace
       let wsKey
       if (userPk) {
-        wsKey = (storage.session_openWorkspaceKeys$() || []).find(
+        wsKey = (storage.session_workspaceKeys$() || []).find(
           k => storage[`session_workspaceByKey_${k}_userPk$`]() === userPk
         )
       }
@@ -248,15 +279,16 @@ f('system-views', function () {
   return this.h`
     <a-route props=${{ path: '/settings' }} />
     <a-route props=${{ path: '/app-updates' }} />
+    <a-route props=${{ path: '/sticky-sessions' }} />
   `
 })
 
 f('aWindows', function () {
-  const {
-    // Order is important, that's why we didn't compute from workspaceKeys$
-    // Recently opened/clicked first
-    session_openWorkspaceKeys$: openWorkspaceKeys$
-  } = useWebStorage(localStorage)
+  const storage = useWebStorage(localStorage)
+  const tabStorage = useWebStorage(sessionStorage)
+  // Order is important, that's why we didn't compute from workspaceKeys$
+  // Recently opened/clicked first; each tab keeps its own order.
+  const { order$: openWorkspaceKeys$ } = useActiveWorkspaceOrder(storage, tabStorage)
 
   const stableDomOrderWsKeys$ = useSignal([])
   useTask(({ track }) => {
@@ -925,7 +957,9 @@ f('toolbarActiveAvatar', function () {
 })
 f('toolbarMenu', function () {
   const storage = useWebStorage(localStorage)
-  const { session_openWorkspaceKeys$: openWorkspaceKeys$, session_workspaceKeys$: workspaceKeys$ } = storage
+  const tabStorage = useWebStorage(sessionStorage)
+  const { session_workspaceKeys$: workspaceKeys$ } = storage
+  const { order$: openWorkspaceKeys$, setOrder } = useActiveWorkspaceOrder(storage, tabStorage)
   const { close: closeMenu } = useClosestStore('<a-menu>')
   const vaultModalStore = useVaultModalStore()
   const { askVault } = useVaultActor()
@@ -1002,7 +1036,7 @@ f('toolbarMenu', function () {
       // Switch user: move this user's workspace to the head of openWorkspaceKeys$
       const currentOpenWorkspaceKeys = [...openWorkspaceKeys$()]
       const newOpenWorkspaceKeys = [wsKey, ...currentOpenWorkspaceKeys.filter(key => key !== wsKey)]
-      storage.session_openWorkspaceKeys$(newOpenWorkspaceKeys)
+      setOrder(newOpenWorkspaceKeys)
     }
 
     // If user is locked, try to unlock
@@ -1255,12 +1289,13 @@ f('toolbarMenu', function () {
 })
 f('toolbarAvatar', function () {
   const storage = useWebStorage(localStorage)
+  const tabStorage = useWebStorage(sessionStorage)
   const {
     session_accountUserPks$: accountUserPks$,
     session_defaultUserPk$: defaultUserPk$,
-    session_openWorkspaceKeys$: openWorkspaceKeys$,
     session_workspaceKeys$: workspaceKeys$
   } = storage
+  const { order$: openWorkspaceKeys$ } = useActiveWorkspaceOrder(storage, tabStorage)
   const firstAccountAttention$ = useGlobalSignal(FIRST_ACCOUNT_ATTENTION_SIGNAL, null)
   const { isHidden$: isToolbarHidden$ } = useGlobalStore('toolbarState', { isHidden$: false })
 
@@ -1614,7 +1649,8 @@ f('toolbarAppList', function () {
 })
 f('toolbarPinnedApps', function () {
   const storage = useWebStorage(localStorage)
-  const { session_openWorkspaceKeys$: openWorkspaceKeys$ } = storage
+  const tabStorage = useWebStorage(sessionStorage)
+  const { order$: openWorkspaceKeys$ } = useActiveWorkspaceOrder(storage, tabStorage)
   const appIdsdKeysIndexes$ = useComputed(() => {
     const wsKey = openWorkspaceKeys$()[0]
     const pinnedAppIds = storage[`session_workspaceByKey_${wsKey}_pinnedAppIds$`]() || []
@@ -1635,7 +1671,8 @@ f('toolbarPinnedApps', function () {
 })
 f('toolbarUnpinnedApps', function () {
   const storage = useWebStorage(localStorage)
-  const { session_openWorkspaceKeys$: openWorkspaceKeys$ } = storage
+  const tabStorage = useWebStorage(sessionStorage)
+  const { order$: openWorkspaceKeys$ } = useActiveWorkspaceOrder(storage, tabStorage)
   const isGroupPopoverOpen$ = useComputed(() => otherUsersGroupPopoverOpen$())
   const appIdsdKeysIndexes$ = useComputed(() => {
     const wsKey = openWorkspaceKeys$()[0]
@@ -1934,11 +1971,12 @@ f('appLaunchersMenu', function () {
 f('toolbarAppLauncher', function () {
   const storage = useWebStorage(localStorage)
   const tabStorage = useWebStorage(sessionStorage)
+  const { order$: activeWsOrder$ } = useActiveWorkspaceOrder(storage, tabStorage)
   const { isSystemRoute$, closeSystemViews } = useSystemRouter()
   const newAppIdsObj$ = useGlobalSignal('hardcoded_newAppIdsObj')
   const appIndex$ = useStateSignal(this.props.appIndex)
   const appRef$ = useSignal()
-  const workspaceKey = this.props.workspaceKey || storage.session_openWorkspaceKeys$()[0]
+  const workspaceKey = this.props.workspaceKey || activeWsOrder$()[0]
 
   const app$ = useComputed(() => ({
     id: this.props.appId,

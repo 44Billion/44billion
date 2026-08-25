@@ -1,10 +1,11 @@
 import { useTask, useCallback, useGlobalStore } from '#f'
 import { useLocation } from '#f'
-import useWebStorage from '#hooks/use-web-storage.js'
+import { useWebStorage } from '#f'
 import { appDecode } from 'libp2r2p/nip19'
 import { decodeAppUrl, isValidPublicRelayUrl, normalizeRelayUrl } from 'libp2r2p/url'
 import { addressObjToAppId } from '#helpers/app.js'
 import { isAppUrl, resolveAppUrl } from '#helpers/resolve-app-url.js'
+import { useActiveWorkspaceOrder } from '#hooks/use-active-workspace-order.js'
 import router from '#zones/multi-napp/router.js'
 import { requestNostrDbAppBackfillForWorkspace } from './helpers/nostrdb-app-backfill.js'
 
@@ -12,9 +13,7 @@ export default function useAppRouter () {
   const loc = useLocation()
   const storage = useWebStorage(localStorage)
   const tabStorage = useWebStorage(sessionStorage)
-  const {
-    session_openWorkspaceKeys$: openWorkspaceKeys$
-  } = storage
+  const { order$: openWorkspaceKeys$ } = useActiveWorkspaceOrder(storage, tabStorage)
 
   const maybeOpenInstalledApp = useCallback((appId, appRoute, wsKey) => {
     wsKey ??= openWorkspaceKeys$()[0]
@@ -171,7 +170,7 @@ export default function useAppRouter () {
     const navUserPk = sessionStorage.getItem('_subdomain_nav_userPk')
     if (navUserPk) {
       sessionStorage.removeItem('_subdomain_nav_userPk')
-      targetWsKey = openWorkspaceKeys$().find(
+      targetWsKey = storage.session_workspaceKeys$().find(
         k => storage[`session_workspaceByKey_${k}_userPk$`]() === navUserPk
       )
     }

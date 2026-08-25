@@ -32,9 +32,17 @@ export function clearSignerRequestAttention () {
 
 // useWebStorage serializes values with JSON.stringify, so both the workspace
 // list and the workspace userPk must be parsed before comparing.
-export function isActiveWorkspaceUser (userPk, storage = globalThis.localStorage) {
+export function isActiveWorkspaceUser (
+  userPk,
+  storage = globalThis.localStorage,
+  tabStorage = globalThis.sessionStorage
+) {
   try {
-    const openWorkspaceKeys = JSON.parse(storage?.getItem('session_openWorkspaceKeys') ?? '[]')
+    const tabOrder = JSON.parse(tabStorage?.getItem?.('session_tabWorkspaceKeys') ?? 'null')
+    const canonical = JSON.parse(storage?.getItem?.('session_openWorkspaceKeys') ?? '[]')
+    const openWorkspaceKeys = Array.isArray(tabOrder) && tabOrder.length > 0
+      ? tabOrder
+      : (Array.isArray(canonical) ? canonical : [])
     const wsKey = openWorkspaceKeys?.[0]
     if (!wsKey) return false
     const storedUserPk = JSON.parse(storage?.getItem(`session_workspaceByKey_${wsKey}_userPk`) ?? 'null')

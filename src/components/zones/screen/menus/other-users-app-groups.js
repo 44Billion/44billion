@@ -3,8 +3,9 @@ import { cssVars } from '#assets/styles/theme.js'
 import '#shared/menu.js'
 import '#shared/avatar.js'
 import '#shared/app-icon.js'
-import useWebStorage from '#hooks/use-web-storage.js'
+import { useWebStorage } from '#f'
 import useScrollbarConfig from '#hooks/use-scrollbar-config.js'
+import { useActiveWorkspaceOrder } from '#hooks/use-active-workspace-order.js'
 import { getT } from '#i18n/index.js'
 import { base62ToBase16 } from 'libp2r2p/base62'
 
@@ -27,9 +28,9 @@ f('other-users-app-groups', function () {
   const storage = useWebStorage(localStorage)
   const tabStorage = useWebStorage(sessionStorage)
   const {
-    session_openWorkspaceKeys$: openWorkspaceKeys$,
     session_defaultUserPk$: defaultUserPk$
   } = storage
+  const { order$: openWorkspaceKeys$ } = useActiveWorkspaceOrder(storage, tabStorage)
   const scrollbar$ = useScrollbarConfig()
   // Measure with the same scrollbar-width the grid uses (thin), so the
   // reserved width always matches the actual scrollbar. On overlay/mobile

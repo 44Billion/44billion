@@ -1,5 +1,5 @@
 import { useTask, useGlobalSignal } from '#f'
-import useWebStorage from '#hooks/use-web-storage.js'
+import { useWebStorage } from '#f'
 import { appDecode, npubEncode } from 'libp2r2p/nip19'
 import { generateB62SecretKey as getB62PublicKeyStub } from '#helpers/nip01.js'
 import { addressObjToAppId } from '#helpers/app.js'
@@ -140,7 +140,8 @@ function addUser ({ userPk, storage, tabStorage, isFirstTimeUser: _ }) {
 
   storage.session_accountUserPks$([userPk])
   storage.session_workspaceKeys$([wsKey])
-  storage.session_openWorkspaceKeys$([wsKey]) // order of group of windows
+  tabStorage.session_tabWorkspaceKeys$?.([wsKey])
+  storage.session_openWorkspaceKeys$?.([wsKey]) // order of group of windows
 }
 
 // Seed a brand-new workspace for an account with the starter (core) apps.
@@ -199,7 +200,11 @@ function addWorkspaceForUser ({ userPk, storage, tabStorage }) {
 // ]
 export async function setAccountsState (nextAccountState, storage, tabStorage) {
   const currentWorkspaceKeys = storage.session_workspaceKeys$() || []
-  const currentOpenWorkspaceKeys = storage.session_openWorkspaceKeys$() || []
+  const tabOrder = tabStorage.session_tabWorkspaceKeys$?.()
+  const canonicalOrder = storage.session_openWorkspaceKeys$?.() || []
+  const currentOpenWorkspaceKeys = Array.isArray(tabOrder) && tabOrder.length > 0
+    ? tabOrder
+    : (Array.isArray(canonicalOrder) ? canonicalOrder : [])
   const defaultUserPk = storage.session_defaultUserPk$()
 
   // Check if we only have the default user currently
@@ -277,7 +282,8 @@ export async function setAccountsState (nextAccountState, storage, tabStorage) {
     )
     if (newWorkspaceKeys.length > 0) {
       const nextWorkspaceKeys = [defaultWorkspaceKey].concat(newWorkspaceKeys)
-      storage.session_openWorkspaceKeys$(nextWorkspaceKeys)
+      tabStorage.session_tabWorkspaceKeys$?.(nextWorkspaceKeys)
+      storage.session_openWorkspaceKeys$?.(nextWorkspaceKeys)
       storage.session_workspaceKeys$(nextWorkspaceKeys)
     }
   } else {
@@ -320,8 +326,9 @@ export async function setAccountsState (nextAccountState, storage, tabStorage) {
       .concat(nextWorkspaceKeys.filter(wsKey => !preservedOpenWorkspaceKeysSet.has(wsKey)))
 
     // Update workspace lists
-    storage.session_openWorkspaceKeys$(nextOpenWorkspaceKeys)
-    // This one is after storage.session_openWorkspaceKeys$(nextWorkspaceKeys)
+    tabStorage.session_tabWorkspaceKeys$?.(nextOpenWorkspaceKeys)
+    storage.session_openWorkspaceKeys$?.(nextOpenWorkspaceKeys)
+    // This one is after the open-workspace-order write
     // because it will trigger useTask above that may
     // add a default user if empty, changing both arrays
     //

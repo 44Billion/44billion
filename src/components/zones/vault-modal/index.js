@@ -1,5 +1,5 @@
 import { f, useGlobalStore, useGlobalSignal, useClosestStore, useStore, useTask, useCallback, useComputed, useSignal } from '#f'
-import useWebStorage from '#hooks/use-web-storage.js'
+import { useWebStorage } from '#f'
 import { tell, ask, reply } from '#helpers/window-message/index.js'
 import { setAccountsState } from '#zones/screen/use-init-or-reset-screen.js'
 import {
@@ -30,6 +30,7 @@ import {
   FIRST_ACCOUNT_ATTENTION_MS,
   FIRST_ACCOUNT_ATTENTION_SIGNAL
 } from '#zones/screen/account-attention.js'
+import { useActiveWorkspaceOrder } from '#hooks/use-active-workspace-order.js'
 
 export { isLegacyVaultUrl } from './presentation.js'
 
@@ -995,9 +996,8 @@ function useVaultActorInit (vaultPort$) {
   }))
 
   const vaultModalStore = useVaultModalStore()
-  const {
-    session_openWorkspaceKeys$: openWorkspaceKeys$
-  } = storage
+  const tabStorage = useWebStorage(sessionStorage)
+  const { order$: openWorkspaceKeys$ } = useActiveWorkspaceOrder(storage, tabStorage)
   const userPk$ = useComputed(() => {
     const wsKey = openWorkspaceKeys$()[0]
     return storage[`session_workspaceByKey_${wsKey}_userPk$`]()

@@ -7,10 +7,11 @@ import '#shared/icons/icon-settings.js'
 import '#shared/icons/icon-shopping-bag.js'
 import '#shared/icons/icon-reload.js'
 import { useLocation } from '#f'
-import useWebStorage from '#hooks/use-web-storage.js'
+import { useWebStorage } from '#f'
 import { getT } from '#i18n/index.js'
 import { launcherUpdateLocales } from '#i18n/launcher-update.js'
 import { applyLauncherUpdate, launcherUpdateState$ } from '#services/launcher-sw-manager.js'
+import useStickySessionBadgeCount from '#hooks/use-sticky-session-badge.js'
 
 export const toolbarMoreMenuLocales = getLocales()
 const t = getT({ ...toolbarMoreMenuLocales, ...launcherUpdateLocales })
@@ -57,6 +58,7 @@ f('toolbar-more-menu', function () {
   const showUpdateIndicator$ = useComputed(() =>
     (appUpdateMode$() ?? 'always') === 'manual' && (appUpdateCount$() ?? 0) > 0
   )
+  const stickyBadgeCount$ = useStickySessionBadgeCount()
   const launcherUpdatePending$ = useComputed(() =>
     launcherUpdateState$() === 'dismissed'
   )
@@ -175,7 +177,7 @@ f('toolbar-more-menu', function () {
         }}>
           <div class='icon-wrapper'><icon-settings props=${{ size: '16px' }} /></div>
           <div class='menu-label'>${t('Settings')}</div>
-          ${showUpdateIndicator$() ? this.h`<div class='badge-dot'></div>` : ''}
+          ${showUpdateIndicator$() || stickyBadgeCount$() > 0 ? this.h`<div class='badge-dot'></div>` : ''}
         </div>
       </div>
     `
@@ -229,7 +231,9 @@ f('toolbar-more-menu', function () {
         }
       `}</style>
       <icon-dots props=${{ size: '24px' }} />
-      ${showUpdateIndicator$() || launcherUpdatePending$() ? this.h`<div class='more-menu-badge'></div>` : ''}
+      ${showUpdateIndicator$() || launcherUpdatePending$() || stickyBadgeCount$() > 0
+        ? this.h`<div class='more-menu-badge'></div>`
+        : ''}
     </div>
     <a-menu props=${menuProps} />
   `

@@ -23,6 +23,8 @@ ephemeral and intentionally not persisted; they do not belong here or in
 - `config_isSingleWindow` — boolean; false means multi-window.
 - `config_appUpdateMode` — `always`, `wifi`, or `manual`.
 - `config_vaultUrl` — configured vault URL.
+- `config_stickySessions` — boolean; when true, open/minimized windows are
+  remembered per tab and restored on later visits.
 - `session_defaultUserPk` — base62 pubkey of the default user, or absent.
 - `session_accountUserPks` — ordered base62 pubkeys of connected accounts.
 - `session_workspaceKeys` — ordered workspace keys.
@@ -36,6 +38,21 @@ ephemeral and intentionally not persisted; they do not belong here or in
 - `local_pendingStorageRepairPlan` — durable repair plan, retained until applied.
 - `local_storageRepairInProgress` — crash-safe repair marker.
 - `local_storageRepairAttempts` — repair retry counter.
+- `local_stickySessionSnapshots` — per-tab snapshots of open/minimized windows:
+  `{ [snapshotId]: { updatedAt, workspaceKeys, workspaces: { [wsKey]: { openKeys, minimizedKeys } } } }`
+  (`openKeys` keeps window order; `minimizedKeys` lists minimized instances,
+  which are intentionally absent from `openKeys`; visibility is derived from
+  which list a key belongs to. The sticky-sessions screen displays one icon
+  per app in toolbar order — pinned first, then unpinned — with a numeric
+  badge of instance count.)
+- `local_stickySessionClaims` — claim leases per snapshot:
+  `{ [snapshotId]: { tabId, claimedAt } }` (5-minute lease, refreshed by heartbeat).
+- `local_stickySessionSeenIds` — snapshot ids already acknowledged on the
+  sticky-sessions screen (suppresses badges).
+- `local_stickySessionDeletions` — deletion tombstones for claimed sessions:
+  `{ [snapshotId]: deletedAt }`. The owning tab reacts by closing all of its
+  app instances and removing the tombstone; leftovers are garbage-collected
+  after 24 hours.
 
 ### Per workspace (`<wsKey>`)
 
@@ -71,6 +88,11 @@ ephemeral and intentionally not persisted; they do not belong here or in
 
 ## sessionStorage
 
+- `session_tabWorkspaceKeys` — this tab's ordered workspace keys. Each tab has
+  its own order; `session_openWorkspaceKeys` (localStorage) is only the
+  canonical last-writer-wins value used to initialize a new tab's order.
+- `session_stickyTabId` — this tab's sticky-session id (claims a snapshot when
+  Sticky Sessions is enabled).
 - `session_workspaceByKey_<wsKey>_openAppKeys` — ordered open window keys.
 - `session_appByKey_<appKey>_visibility` — `open`, `minimized`, or `closed`.
 - `session_singleNappOpenAppCounts` — embedded app open counters.
@@ -173,6 +195,25 @@ Timestamps in the future (`openedAt > now`, e.g. from a skewed clock) are
 treated as stale during partitioning and are logged with a
 `[app-updater]`/`[single-napp-retention]` warning, so corrupted data can never
 cause permanent retention.
+
+### Sticky Sessions
+
+When `config_stickySessions` is enabled, each launcher tab snapshots its own
+open/minimized windows best-effort: state changes are debounced (5s trailing,
+paused while the document is hidden) and committed as a full draft under
+`local_stickySessionSnapshots[tabId]`. Snapshots are deleted when they become
+empty, garbage-collected after 30 days without updates, capped at 10 per
+user, and their claims expire after 5 minutes without a heartbeat.
+
+On a new tab, the pre-render bootstrap claims the oldest unclaimed snapshot
+under the `sticky-session-restore` Web Lock, validates every referenced
+appKey against the current instance lists (dropping and logging uninstalled
+apps), hydrates `session_tabWorkspaceKeys`, `openAppKeys` and `visibility`
+into sessionStorage, and re-runs the persisted-list normalization. The
+`/sticky-sessions` screen lists snapshots with their apps and open/minimized
+state, and offers Restore (opens a new tab targeting a snapshot) and Delete.
+Disabling Sticky Sessions asks for confirmation and then purges snapshots,
+claims, seen ids and deletion tombstones.
 
 The two-phase audit removes only confirmed inconsistent/orphaned entries,
 reusing existing app/account cleanup routines. Unknown keys are preserved.

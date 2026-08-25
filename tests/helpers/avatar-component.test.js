@@ -13,7 +13,13 @@ mock.module('#f', {
   namedExports: {
     f: (_name, render) => { renderAvatar = render },
     useStore: toTestStore,
-    useTask: () => {}
+    useTask: () => {},
+    useWebStorage: () => new Proxy({}, {
+      get: (_target, key) => key === 'session_defaultUserPk$'
+        ? () => defaultUserPk
+        : () => undefined
+    }),
+    setWebStorageItem: () => {}
   }
 })
 mock.module('#helpers/avatar.js', {
@@ -30,13 +36,6 @@ mock.module('#helpers/avatar.js', {
 mock.module('#shared/icons/icon-user-circle.js', { namedExports: {} })
 mock.module('#shared/svg.js', { namedExports: {} })
 mock.module('libp2r2p/base62', { namedExports: { base62ToBase16: value => value } })
-mock.module('#hooks/use-web-storage.js', {
-  defaultExport: () => new Proxy({}, {
-    get: (_target, key) => key === 'session_defaultUserPk$'
-      ? () => defaultUserPk
-      : () => undefined
-  })
-})
 mock.module('#assets/styles/theme.js', {
   namedExports: { cssVars: { colors: { bgAvatar: 'black', bgAvatarLoading: 'gray' } } }
 })

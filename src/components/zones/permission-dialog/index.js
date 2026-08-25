@@ -6,7 +6,7 @@ import { BROAD_EVENT_KIND, EVENT_ACCESS_PERMISSION, EVENT_ACCESS_PERSONAL_PERMIS
 import { cssVars, jsVars } from '#assets/styles/theme.js'
 import '#shared/app-icon.js'
 import '#shared/icons/icon-x.js'
-import useWebStorage from '#hooks/use-web-storage.js'
+import { useWebStorage } from '#f'
 import { getT } from '#i18n/index.js'
 
 const l = (en, fr, it, de, es, ptBR, ru, zhCN, zhTW, ja, ko) => ({

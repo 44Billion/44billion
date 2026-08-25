@@ -1,5 +1,6 @@
 import { f, useTask } from '#f'
 import AppUpdater from '#services/app-updater/index.js'
+import useStickySessionSnapshotter from '#hooks/use-sticky-session-snapshotter.js'
 import { formatAssetBudgetBytes } from '#services/app-asset-budget/index.js'
 import { useLocation } from '#f'
 import router from './router.js'
@@ -14,6 +15,7 @@ import '#zones/app-bridge-host.js'
 
 f('multi-napp', function () {
   const { requestConfirmation } = useConfirmationDialogStore()
+  useStickySessionSnapshotter()
 
   useTask(({ cleanup }) => {
     const requestAssetBudgetConfirmation = details => requestConfirmation(getAssetBudgetConfirmation({

@@ -9,6 +9,15 @@ import { appIdToAddressObj } from '#helpers/app.js'
 import { isAppUrl, resolveAppUrl } from '#helpers/resolve-app-url.js'
 import { initLauncherSw } from '#services/launcher-sw-manager.js'
 import { applyPendingStorageRepair } from '#services/storage-audit/bootstrap.js'
+import { normalizePersistedListsInStorage } from '#services/storage-audit/audit.js'
+import { initTabWorkspaceOrder } from '#helpers/active-workspace-order.js'
+import { getRandomId } from '#helpers/misc.js'
+import {
+  claimAndHydrateStickySession,
+  isStickySessionsEnabled,
+  readJson,
+  SESSION_STICKY_TAB_ID
+} from '#services/sticky-sessions/index.js'
 import { useInitI18n } from '#i18n/index.js'
 
 // Clear old localStorage data from pre-v2 schema (bundle→siteManifest migration)
@@ -76,6 +85,43 @@ f('aApp', function () {
     await applyPendingStorageRepair().catch(error => {
       console.error('[storage-audit] Failed to apply pending repair', error)
     })
+
+    if (window === window.top) {
+      initTabWorkspaceOrder({
+        localStorageArea: localStorage,
+        sessionStorageArea: sessionStorage
+      })
+      let didHydrate = false
+      if (isStickySessionsEnabled()) {
+        const requestedSnapshotId = new URLSearchParams(window.location.search).get('sticky')
+        const existingTabId = readJson(sessionStorage, SESSION_STICKY_TAB_ID)
+        if (!existingTabId || requestedSnapshotId) {
+          const workspaceKeys = JSON.parse(localStorage.getItem('session_workspaceKeys') ?? '[]')
+          try {
+            const result = await claimAndHydrateStickySession({
+              localStorageArea: localStorage,
+              sessionStorageArea: sessionStorage,
+              tabId: getRandomId(),
+              requestedSnapshotId,
+              resetClonedState: Boolean(requestedSnapshotId),
+              workspaceKeys: Array.isArray(workspaceKeys) ? workspaceKeys : []
+            })
+            didHydrate = result?.hydrated === true
+            if (requestedSnapshotId) {
+              history.replaceState(history.state, '', `${window.location.pathname}${window.location.hash}`)
+            }
+          } catch (error) {
+            console.warn('[sticky-sessions] Failed to hydrate saved session', error)
+          }
+        }
+      }
+      if (didHydrate) {
+        normalizePersistedListsInStorage({
+          localStorageArea: localStorage,
+          sessionStorageArea: sessionStorage
+        })
+      }
+    }
 
     const firstRoutePart = window.location.pathname.replace(/^\/|\/.*$/g, '')
     if (!isAppUrl(firstRoutePart)) {

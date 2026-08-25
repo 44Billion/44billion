@@ -18,7 +18,7 @@ import { base62ToBase16 } from 'libp2r2p/base62'
 import { getUserRelays } from '#helpers/nostr-queries.js'
 import { cleanupNostrDbAppForOwner as cleanupNostrDbAppForOwnerBase } from '#helpers/nostrdb-app-cleanup.js'
 import { addSubdomainFreeId } from '#helpers/subdomain-mapping.js'
-import { setWebStorageItem } from '#helpers/web-storage.js'
+import { setWebStorageItem } from '#f'
 import { removeVaultAcceptedMessage } from '#helpers/window-message/browser/vault-accepted-message-queue.js'
 import { jsVars } from '#assets/styles/theme.js'
 

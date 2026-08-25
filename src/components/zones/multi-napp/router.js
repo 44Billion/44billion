@@ -9,6 +9,12 @@ const router = new Router({
     tag: 'napp-updates',
     loadModule: () => import('#views/napp-updates/index.js')
   },
+  '/sticky-sessions': {
+    mount: 'system-views',
+    path: '/sticky-sessions',
+    tag: 'sticky-sessions',
+    loadModule: () => import('#views/sticky-sessions/index.js')
+  },
   '/settings': {
     mount: 'system-views',
     path: '/settings',

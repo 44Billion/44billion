@@ -29,6 +29,9 @@ function createConfirmationDialogStore () {
     confirmText$ () {
       return (this.currentRequest$() ?? this.lastRequest$())?.confirmText ?? t('Yes')
     },
+    maxWidth$ () {
+      return (this.currentRequest$() ?? this.lastRequest$())?.maxWidth ?? ''
+    },
     resolveCurrent () {
       const req = this.currentRequest$()
       if (!req) return
@@ -48,12 +51,12 @@ function createConfirmationDialogStore () {
     close () {
       this.rejectCurrent(closedError())
     },
-    requestConfirmation ({ title, message, confirmText } = {}) {
+    requestConfirmation ({ title, message, confirmText, maxWidth } = {}) {
       const pending = this.currentRequest$()
       if (pending) pending.reject(supersededError())
 
       const { promise, resolve, reject } = Promise.withResolvers()
-      this.currentRequest$({ title, message, confirmText, resolve, reject })
+      this.currentRequest$({ title, message, confirmText, maxWidth, resolve, reject })
       return promise
     }
   }
@@ -226,7 +229,10 @@ f('confirmation-dialog-card', function () {
         }
       }
     `}</style>
-    <div id='confirmation-dialog-card'>
+    <div
+      id='confirmation-dialog-card'
+      style=${cdStore.maxWidth$() ? `max-width: ${cdStore.maxWidth$()};` : null}
+    >
       <div class='icon-area'>
         <icon-help-hexagon-filled props=${{ width: '33px', height: '36px' }} />
       </div>

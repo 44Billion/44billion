@@ -8,7 +8,7 @@ import {
 import '#shared/icons/icon-user-circle.js'
 import '#shared/svg.js'
 import { base62ToBase16 } from 'libp2r2p/base62'
-import useWebStorage from '#hooks/use-web-storage.js'
+import { useWebStorage } from '#f'
 import { cssVars } from '#assets/styles/theme.js'
 import { getT } from '#i18n/index.js'
 

@@ -1,7 +1,10 @@
 import { f, useSignal, useCallback, useComputed } from '#f'
-import useWebStorage from '#hooks/use-web-storage.js'
+import { useWebStorage } from '#f'
 import { useLocation } from '#f'
 import { cssVars } from '#assets/styles/theme.js'
+import { useConfirmationDialogStore } from '#zones/confirmation-dialog/index.js'
+import useStickySessionBadgeCount from '#hooks/use-sticky-session-badge.js'
+import { purgeStickySessions } from '#services/sticky-sessions/index.js'
 import '#shared/back-btn.js'
 import '#shared/toggle-switch.js'
 import '#shared/icons/icon-check.js'
@@ -39,8 +42,13 @@ f('a-settings', function () {
     config_isSingleWindow$: isSingleWindow$,
     config_appUpdateMode$: appUpdateMode$,
     config_vaultUrl$: vaultUrl$,
+    config_stickySessions$: stickySessions$,
     session_unread_appUpdateCount$: appUpdateCount$
   } = storage
+  const { requestConfirmation } = useConfirmationDialogStore()
+  const stickyBadgeCount$ = useStickySessionBadgeCount()
+  const stickyEnabled$ = useComputed(() => stickySessions$() === true)
+  const stickyToggleReset$ = useSignal(0)
   const updateMode$ = useComputed(() => appUpdateMode$() ?? 'always')
   const isManualUpdate$ = useComputed(() => updateMode$() === 'manual')
   const showAppUpdatesBadge$ = useComputed(() => isManualUpdate$() && (appUpdateCount$() ?? 0) > 0)
@@ -80,6 +88,28 @@ f('a-settings', function () {
 
   const cancelVaultUrlChange = useCallback(() => {
     draftVaultUrl$(vaultUrl$())
+  })
+
+  const handleStickyToggle = useCallback(async checked => {
+    if (checked) {
+      stickySessions$(true)
+      return
+    }
+    try {
+      await requestConfirmation({
+        title: t('Disable Sticky Sessions'),
+        message: t('Disabling Sticky Sessions deletes all saved sessions. This cannot be undone.'),
+        confirmText: t('Disable & delete sessions'),
+        maxWidth: '630px'
+      })
+    } catch {
+      // The native checkbox already flipped visually; remount the switch from
+      // the real config value so a dismissed confirmation reverts it.
+      stickyToggleReset$(v => v + 1)
+      return
+    }
+    purgeStickySessions({ localStorageArea: localStorage })
+    stickySessions$(false)
   })
 
   return this.h`
@@ -267,6 +297,33 @@ f('a-settings', function () {
             onChange: (checked) => isSingleWindow$(!checked)
           }} />
         </div>
+
+        <div class="item">
+          <div class="item-content">
+            <div class="item-title">${t('Sticky Sessions')}</div>
+            <div class="item-subtitle">${t('Remember open apps across browser sessions')}</div>
+          </div>
+          ${this.h({ key: `sticky-${stickyEnabled$()}-${stickyToggleReset$()}` })`
+            <toggle-switch
+              props=${{
+                checked: stickyEnabled$(),
+                onChange: handleStickyToggle
+              }}
+            />
+          `}
+        </div>
+
+        <div class=${{
+          item: true,
+          'app-updates-item': true,
+          collapsed: !stickyEnabled$()
+        }} onclick=${() => location.pushState({}, '', '/sticky-sessions')}>
+          <div class="item-content">
+            <div class="item-title">${t('Saved Sessions')}</div>
+            <div class="item-subtitle">${t('Manage saved sessions')}</div>
+          </div>
+          ${stickyBadgeCount$() > 0 ? this.h`<div class="badge">${stickyBadgeCount$()}</div>` : ''}
+        </div>
       </div>
 
       <div class="section">
@@ -332,6 +389,13 @@ function getLocales () {
     'Check for updates': { en: 'Check for updates', fr: 'Rechercher des mises à jour', it: 'Controlla aggiornamenti', de: 'Nach Updates suchen', es: 'Buscar actualizaciones', 'pt-BR': 'Procurar atualizações', ru: 'Проверить обновления', 'zh-CN': '检查更新', 'zh-TW': '檢查更新', ja: '更新を確認', ko: '업데이트 확인' },
     'Multi-Window Mode': { en: 'Multi-Window Mode', fr: 'Mode multifenêtre', it: 'Modalità multi-finestra', de: 'Mehrfenstermodus', es: 'Modo multiventana', 'pt-BR': 'Modo de múltiplas janelas', ru: 'Многооконный режим', 'zh-CN': '多窗口模式', 'zh-TW': '多視窗模式', ja: 'マルチウィンドウモード', ko: '다중 창 모드' },
     'Toggle between single and multi-window mode': { en: 'Toggle between single and multi-window mode', fr: 'Basculer entre une ou plusieurs fenêtres', it: 'Passa dalla modalità a finestra singola a quella multipla', de: 'Zwischen Ein- und Mehrfenstermodus wechseln', es: 'Alternar entre una y varias ventanas', 'pt-BR': 'Alternar entre uma ou várias janelas', ru: 'Переключить однооконный или многооконный режим', 'zh-CN': '切换单窗口和多窗口模式', 'zh-TW': '切換單視窗與多視窗模式', ja: '単一ウィンドウとマルチウィンドウを切り替え', ko: '단일 창과 다중 창 모드 전환' },
+    'Sticky Sessions': { en: 'Sticky Sessions', fr: 'Sessions persistantes', it: 'Sessioni persistenti', de: 'Sticky-Sitzungen', es: 'Sesiones persistentes', 'pt-BR': 'Sessões persistentes', ru: 'Липкие сессии', 'zh-CN': '粘性会话', 'zh-TW': '黏性工作階段', ja: 'スティッキーセッション', ko: '고정 세션' },
+    'Remember open apps across browser sessions': { en: 'Remember open apps across browser sessions', fr: 'Mémoriser les applications ouvertes entre les sessions du navigateur', it: 'Ricorda le app aperte tra sessioni del browser', de: 'Geöffnete Apps über Browser-Sitzungen hinweg merken', es: 'Recordar las apps abiertas entre sesiones del navegador', 'pt-BR': 'Lembrar apps abertos entre sessões do navegador', ru: 'Запоминать открытые приложения между сессиями браузера', 'zh-CN': '跨浏览器会话记住打开的应用', 'zh-TW': '跨瀏覽器工作階段記住開啟的應用程式', ja: 'ブラウザセッションをまたいで開いているアプリを記憶', ko: '브라우저 세션 간 열린 앱 기억' },
+    'Saved Sessions': { en: 'Saved Sessions', fr: 'Sessions enregistrées', it: 'Sessioni salvate', de: 'Gespeicherte Sitzungen', es: 'Sesiones guardadas', 'pt-BR': 'Sessões salvas', ru: 'Сохранённые сессии', 'zh-CN': '已保存的会话', 'zh-TW': '已儲存的工作階段', ja: '保存済みセッション', ko: '저장된 세션' },
+    'Manage saved sessions': { en: 'Manage saved sessions', fr: 'Gérer les sessions enregistrées', it: 'Gestisci le sessioni salvate', de: 'Gespeicherte Sitzungen verwalten', es: 'Gestionar sesiones guardadas', 'pt-BR': 'Gerenciar sessões salvas', ru: 'Управлять сохранёнными сессиями', 'zh-CN': '管理已保存的会话', 'zh-TW': '管理已儲存的工作階段', ja: '保存済みセッションを管理', ko: '저장된 세션 관리' },
+    'Disable Sticky Sessions': { en: 'Disable Sticky Sessions', fr: 'Désactiver les sessions persistantes', it: 'Disattiva le sessioni persistenti', de: 'Sticky-Sitzungen deaktivieren', es: 'Desactivar sesiones persistentes', 'pt-BR': 'Desativar sessões persistentes', ru: 'Отключить липкие сессии', 'zh-CN': '禁用粘性会话', 'zh-TW': '停用黏性工作階段', ja: 'スティッキーセッションを無効化', ko: '고정 세션 비활성화' },
+    'Disabling Sticky Sessions deletes all saved sessions. This cannot be undone.': { en: 'Disabling Sticky Sessions deletes all saved sessions. This cannot be undone.', fr: 'La désactivation des sessions persistantes supprime toutes les sessions enregistrées. Cette action est irréversible.', it: 'Disattivare le sessioni persistenti elimina tutte le sessioni salvate. Questa operazione non può essere annullata.', de: 'Das Deaktivieren der Sticky-Sitzungen löscht alle gespeicherten Sitzungen. Dies kann nicht rückgängig gemacht werden.', es: 'Desactivar las sesiones persistentes elimina todas las sesiones guardadas. Esto no se puede deshacer.', 'pt-BR': 'Desativar sessões persistentes apaga todas as sessões salvas. Isso não pode ser desfeito.', ru: 'Отключение липких сессий удаляет все сохранённые сессии. Это действие нельзя отменить.', 'zh-CN': '禁用粘性会话将删除所有已保存的会话，且无法撤消。', 'zh-TW': '停用黏性工作階段會刪除所有已儲存的工作階段，且無法復原。', ja: 'スティッキーセッションを無効にすると保存済みのセッションがすべて削除され、元に戻せません。', ko: '고정 세션을 비활성화하면 저장된 모든 세션이 삭제되며 되돌릴 수 없습니다.' },
+    'Disable & delete sessions': { en: 'Disable & delete sessions', fr: 'Désactiver et supprimer les sessions', it: 'Disattiva ed elimina le sessioni', de: 'Deaktivieren und Sitzungen löschen', es: 'Desactivar y eliminar sesiones', 'pt-BR': 'Desativar e apagar sessões', ru: 'Отключить и удалить сессии', 'zh-CN': '禁用并删除会话', 'zh-TW': '停用並刪除工作階段', ja: '無効化してセッションを削除', ko: '비활성화 및 세션 삭제' },
     Advanced: { en: 'Advanced', fr: 'Avancé', it: 'Avanzate', de: 'Erweitert', es: 'Avanzado', 'pt-BR': 'Avançado', ru: 'Дополнительно', 'zh-CN': '高级', 'zh-TW': '進階', ja: '詳細設定', ko: '고급' },
     'Credential Vault URL': { en: 'Credential Vault URL', fr: 'URL du coffre d’identifiants', it: 'URL del vault delle credenziali', de: 'URL des Anmeldedatentresors', es: 'URL de la bóveda de credenciales', 'pt-BR': 'URL do cofre de credenciais', ru: 'URL хранилища учётных данных', 'zh-CN': '凭据保管库 URL', 'zh-TW': '憑證保管庫 URL', ja: '認証情報保管庫の URL', ko: '자격 증명 보관소 URL' }
   }

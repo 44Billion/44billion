@@ -20,6 +20,7 @@ export const GLOBAL_LOCAL_KEYS = [
   'config_isSingleWindow',
   'config_appUpdateMode',
   'config_vaultUrl',
+  'config_stickySessions',
   'session_defaultUserPk',
   'session_accountUserPks',
   'session_workspaceKeys',
@@ -32,12 +33,18 @@ export const GLOBAL_LOCAL_KEYS = [
   'local_embeddedOnlyRetentionAdmissions',
   'local_pendingStorageRepairPlan',
   'local_storageRepairInProgress',
-  'local_storageRepairAttempts'
+  'local_storageRepairAttempts',
+  'local_stickySessionSnapshots',
+  'local_stickySessionClaims',
+  'local_stickySessionSeenIds',
+  'local_stickySessionDeletions'
 ]
 
 export const GLOBAL_SESSION_KEYS = [
   'session_singleNappOpenAppCounts',
-  '_subdomain_nav_userPk'
+  '_subdomain_nav_userPk',
+  'session_tabWorkspaceKeys',
+  'session_stickyTabId'
 ]
 
 export const WORKSPACE_LOCAL_SUFFIXES = [
