@@ -4,7 +4,7 @@ import globalCssString from '#assets/styles/global.css'
 import { cssClasses, cssStrings } from '#assets/styles/theme.js'
 import { f, useSignal, useTask } from '#f'
 import { appEncode } from 'libp2r2p/nip19'
-import { decodeAppUrl } from 'libp2r2p/url'
+import { tryDecodeAppUrl } from 'libp2r2p/url'
 import { appIdToAddressObj } from '#helpers/app.js'
 import { isAppUrl, resolveAppUrl } from '#helpers/resolve-app-url.js'
 import { initLauncherSw } from '#services/launcher-sw-manager.js'
@@ -130,7 +130,7 @@ f('aApp', function () {
       return
     }
 
-    if (window === window.top || decodeAppUrl(firstRoutePart)?.type === 'entity') {
+    if (window === window.top || tryDecodeAppUrl(firstRoutePart)?.type === 'entity') {
       shouldLoadSingleNapp$(window !== window.top)
       await (shouldLoadSingleNapp$() ? import('#zones/single-napp/index.js') : import('#zones/multi-napp/index.js'))
       return

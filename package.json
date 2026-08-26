@@ -46,7 +46,7 @@
     "@dicebear/styles": "^10.3.0",
     "@leeoniya/ufuzzy": "^1.0.19",
     "@noble/hashes": "^2.0.1",
-    "libp2r2p": "^0.10.8",
+    "libp2r2p": "^0.10.10",
     "meilisearch": "^0.54.0",
     "mime": "^4.0.7",
     "nmmr": "^2.0.0",

@@ -2,7 +2,7 @@ import { useTask, useCallback, useGlobalStore } from '#f'
 import { useLocation } from '#f'
 import { useWebStorage } from '#f'
 import { appDecode } from 'libp2r2p/nip19'
-import { decodeAppUrl, isValidPublicRelayUrl, normalizeRelayUrl } from 'libp2r2p/url'
+import { isValidPublicRelayUrl, normalizeRelayUrl, tryDecodeAppUrl } from 'libp2r2p/url'
 import { addressObjToAppId } from '#helpers/app.js'
 import { isAppUrl, resolveAppUrl } from '#helpers/resolve-app-url.js'
 import { useActiveWorkspaceOrder } from '#hooks/use-active-workspace-order.js'
@@ -134,7 +134,7 @@ export default function useAppRouter () {
     if (!isAppUrl(firstPart)) return
 
     let napp
-    const decodedFirstPart = decodeAppUrl(firstPart)
+    const decodedFirstPart = tryDecodeAppUrl(firstPart)
     if (decodedFirstPart?.type === 'entity') {
       napp = decodedFirstPart.entity
     } else {
@@ -185,7 +185,7 @@ export default function useAppRouter () {
       const url = new URL(href, window.location.origin)
       const firstPart = url.pathname.split('/')[1]
       let napp
-      const decodedFirstPart = decodeAppUrl(firstPart)
+      const decodedFirstPart = tryDecodeAppUrl(firstPart)
       if (decodedFirstPart?.type === 'entity') {
         napp = decodedFirstPart.entity
       } else {

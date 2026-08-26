@@ -20,7 +20,7 @@ import { appIdToAddressObj, addressObjToAppId } from '#helpers/app.js'
 import { base36NsiteToBase16, bytesToBase36Nsite } from 'libp2r2p/base36'
 import { base16ToBase62, base62ToBytes } from 'libp2r2p/base62'
 import { appEncode, appDecode } from 'libp2r2p/nip19'
-import { decodeAppUrl } from 'libp2r2p/url'
+import { tryDecodeAppUrl } from 'libp2r2p/url'
 import { streamFileChunksFromDb, getFileChunksFromDb, deleteFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
 import { getNostrDb, startGlobalChunkMaintenance } from '#services/idb/nostrdb/index.js'
 import AppFileManager from '#services/app-file-manager/index.js'
@@ -630,7 +630,7 @@ function createAppPageMessageListener ({
               console.error('Invalid app URL format:', href)
               break
             }
-            const decodedUrl = decodeAppUrl(match[1])
+            const decodedUrl = tryDecodeAppUrl(match[1])
             if (!decodedUrl || decodedUrl.type !== 'entity') {
               console.error('Invalid app URL format:', href)
               break
