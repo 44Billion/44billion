@@ -83,13 +83,19 @@ export function buildSnapshotFromDraft ({ workspaceKeys, byWorkspace }) {
     const openKeys = Array.isArray(ws?.openKeys) ? ws.openKeys : []
     const minimizedKeys = Array.isArray(ws?.minimizedKeys) ? ws.minimizedKeys : []
     const rawVisibility = ws?.visibility ?? {}
+    const rawRoutes = ws?.routes && typeof ws.routes === 'object' ? ws.routes : {}
     const validOpen = openKeys.filter(key => rawVisibility[key] === 'open')
     const validMinimized = [...new Set([
       ...minimizedKeys.filter(key => rawVisibility[key] === 'minimized'),
       ...openKeys.filter(key => rawVisibility[key] === 'minimized')
     ])]
     if (validOpen.length > 0 || validMinimized.length > 0) {
-      workspaces[wsKey] = { openKeys: validOpen, minimizedKeys: validMinimized }
+      const routes = {}
+      for (const appKey of [...validOpen, ...validMinimized]) {
+        const route = rawRoutes[appKey]
+        if (typeof route === 'string' && route) routes[appKey] = route
+      }
+      workspaces[wsKey] = { openKeys: validOpen, minimizedKeys: validMinimized, routes }
     }
   }
   return { workspaceKeys: order, workspaces }
@@ -144,8 +150,10 @@ export function validateAndCleanSnapshot (snapshot, {
     const validKeys = collectValidAppKeys(localStorageArea, wsKey)
     const openKeys = Array.isArray(ws?.openKeys) ? ws.openKeys : []
     const minimizedKeys = Array.isArray(ws?.minimizedKeys) ? ws.minimizedKeys : []
+    const rawRoutes = ws?.routes && typeof ws.routes === 'object' ? ws.routes : {}
     const allKeys = [...new Set([...openKeys, ...minimizedKeys])]
     const classified = {}
+    const routes = {}
     for (const appKey of allKeys) {
       const value = minimizedKeys.includes(appKey) ? 'minimized' : 'open'
       if (!validKeys.has(appKey) || !VALID_VISIBILITY.has(value)) {
@@ -153,11 +161,13 @@ export function validateAndCleanSnapshot (snapshot, {
         continue
       }
       classified[appKey] = value
+      const route = rawRoutes[appKey]
+      if (typeof route === 'string' && route) routes[appKey] = route
     }
     const validOpen = allKeys.filter(key => classified[key] === 'open')
     const validMinimized = allKeys.filter(key => classified[key] === 'minimized')
     if (validOpen.length > 0 || validMinimized.length > 0) {
-      cleaned.workspaces[wsKey] = { openKeys: validOpen, minimizedKeys: validMinimized }
+      cleaned.workspaces[wsKey] = { openKeys: validOpen, minimizedKeys: validMinimized, routes }
     }
   }
 
@@ -182,11 +192,14 @@ export function hydrateSnapshot (snapshot, {
   }
   for (const [wsKey, ws] of Object.entries(cleaned.workspaces)) {
     writeJson(sessionStorageArea, `session_workspaceByKey_${wsKey}_openAppKeys`, ws.openKeys)
+    const routes = ws.routes ?? {}
     for (const appKey of ws.openKeys) {
       writeJson(sessionStorageArea, `session_appByKey_${appKey}_visibility`, 'open')
+      writeJson(localStorageArea, `session_appByKey_${appKey}_route`, routes[appKey] ?? '')
     }
     for (const appKey of ws.minimizedKeys) {
       writeJson(sessionStorageArea, `session_appByKey_${appKey}_visibility`, 'minimized')
+      writeJson(localStorageArea, `session_appByKey_${appKey}_route`, routes[appKey] ?? '')
     }
   }
 

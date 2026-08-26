@@ -599,6 +599,7 @@ async function streamNostrDbSubscription (e, {
 function createAppPageMessageListener ({
   state,
   appFiles,
+  appKey,
   appId,
   appAddress,
   userPkB16,
@@ -705,6 +706,20 @@ function createAppPageMessageListener ({
             msg = { error: err }
           }
           reply(e, msg, { to: appPagePort })
+          break
+        }
+        case 'APP_ROUTE_CHANGED': {
+          const href = e.data.payload?.href
+          if (
+            typeof href !== 'string' ||
+            href.length === 0 ||
+            href.length > 4096 ||
+            !href.startsWith('/') ||
+            /^\/(?:\+{1,3}[a-zA-Z0-9]{48,}|naddr1[0-9a-z]+)/.test(href)
+          ) break
+          if (localStorage.getItem(`session_appByKey_${appKey}_route`) !== href) {
+            setWebStorageItem(localStorage, `session_appByKey_${appKey}_route`, href)
+          }
           break
         }
         case 'NOSTRDB': {
@@ -917,6 +932,7 @@ function handleNappRequest (e) {
 }
 
 export function initAppWindow (state, {
+  appKey,
   initialRoute,
   appIframeRef$,
   appIframeSrc$,
@@ -951,6 +967,7 @@ export function initAppWindow (state, {
   const listen = createAppPageMessageListener({
     state,
     appFiles: state.appFiles,
+    appKey,
     appId: state.appId,
     appAddress,
     userPkB16,

@@ -65,13 +65,16 @@ export default function useStickySessionSnapshotter () {
       const openKeys = track(() => tabStorage[`session_workspaceByKey_${wsKey}_openAppKeys$`]()) ?? []
       const appKeys = [...collectValidAppKeys(localStorage, wsKey)]
       const visibility = {}
+      const routes = {}
       for (const appKey of appKeys) {
         visibility[appKey] = track(() => tabStorage[`session_appByKey_${appKey}_visibility$`]())
+        routes[appKey] = track(() => storage[`session_appByKey_${appKey}_route$`]())
       }
       byWorkspace[wsKey] = {
         openKeys,
         minimizedKeys: appKeys.filter(key => visibility[key] === 'minimized'),
-        visibility
+        visibility,
+        routes
       }
     }
 

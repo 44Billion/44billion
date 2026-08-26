@@ -39,12 +39,13 @@ ephemeral and intentionally not persisted; they do not belong here or in
 - `local_storageRepairInProgress` — crash-safe repair marker.
 - `local_storageRepairAttempts` — repair retry counter.
 - `local_stickySessionSnapshots` — per-tab snapshots of open/minimized windows:
-  `{ [snapshotId]: { updatedAt, workspaceKeys, workspaces: { [wsKey]: { openKeys, minimizedKeys } } } }`
+  `{ [snapshotId]: { updatedAt, workspaceKeys, workspaces: { [wsKey]: { openKeys, minimizedKeys, routes } } } }`
   (`openKeys` keeps window order; `minimizedKeys` lists minimized instances,
   which are intentionally absent from `openKeys`; visibility is derived from
-  which list a key belongs to. The sticky-sessions screen displays one icon
-  per app in toolbar order — pinned first, then unpinned — with a numeric
-  badge of instance count.)
+  which list a key belongs to; `routes` maps each open/minimized `appKey` to
+  the app route to restore. The sticky-sessions screen displays one icon per
+  app in toolbar order — pinned first, then unpinned — with a numeric badge
+  of instance count.)
 - `local_stickySessionClaims` — claim leases per snapshot:
   `{ [snapshotId]: { tabId, claimedAt } }` (5-minute lease, refreshed by heartbeat).
 - `local_stickySessionSeenIds` — snapshot ids already acknowledged on the

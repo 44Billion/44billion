@@ -105,7 +105,8 @@ describe('sticky sessions', () => {
         ws1: {
           openKeys: ['key1', 'key2'],
           minimizedKeys: ['key3'],
-          visibility: { key1: 'open', key2: 'closed', key3: 'minimized' }
+          visibility: { key1: 'open', key2: 'closed', key3: 'minimized' },
+          routes: { key1: '/a', key2: '/b', key3: '/c' }
         },
         ws2: {
           openKeys: [],
@@ -118,7 +119,8 @@ describe('sticky sessions', () => {
     assert.deepEqual(snapshot.workspaces, {
       ws1: {
         openKeys: ['key1'],
-        minimizedKeys: ['key3']
+        minimizedKeys: ['key3'],
+        routes: { key1: '/a', key3: '/c' }
       }
     })
     assert.equal(isSnapshotEmpty(snapshot), false)
@@ -142,7 +144,8 @@ describe('sticky sessions', () => {
       workspaces: {
         ws1: {
           openKeys: ['key1', 'missing'],
-          minimizedKeys: ['key2']
+          minimizedKeys: ['key2'],
+          routes: { key1: '/route-a', missing: '/gone', key2: '/route-b' }
         },
         ghostWs: {
           openKeys: ['key1'],
@@ -160,10 +163,16 @@ describe('sticky sessions', () => {
     assert.deepEqual(droppedKeys, ['missing'])
     assert.deepEqual(cleaned.workspaces.ws1.openKeys, ['key1'])
     assert.deepEqual(cleaned.workspaces.ws1.minimizedKeys, ['key2'])
+    assert.deepEqual(cleaned.workspaces.ws1.routes, {
+      key1: '/route-a',
+      key2: '/route-b'
+    })
     assert.equal(cleaned.workspaces.ghostWs, undefined)
     assert.deepEqual(JSON.parse(session.getItem('session_workspaceByKey_ws1_openAppKeys')), ['key1'])
     assert.equal(session.getItem('session_appByKey_key1_visibility'), JSON.stringify('open'))
     assert.equal(session.getItem('session_appByKey_key2_visibility'), JSON.stringify('minimized'))
+    assert.equal(JSON.parse(local.getItem('session_appByKey_key1_route')), '/route-a')
+    assert.equal(JSON.parse(local.getItem('session_appByKey_key2_route')), '/route-b')
   })
 
   it('validates and cleans without writing when no drop happens', () => {
@@ -185,6 +194,7 @@ describe('sticky sessions', () => {
     assert.deepEqual(droppedKeys, [])
     assert.deepEqual(cleaned.workspaces.ws1.openKeys, ['key1'])
     assert.deepEqual(cleaned.workspaces.ws1.minimizedKeys, [])
+    assert.deepEqual(cleaned.workspaces.ws1.routes, {})
     assert.equal(session.getItem('session_workspaceByKey_ws1_openAppKeys'), null)
   })
 
@@ -202,7 +212,11 @@ describe('sticky sessions', () => {
         updatedAt: Date.now(),
         workspaceKeys: ['ws1'],
         workspaces: {
-          ws1: { openKeys: ['key2'], minimizedKeys: [] }
+          ws1: {
+            openKeys: ['key2'],
+            minimizedKeys: [],
+            routes: { key2: '/route-b' }
+          }
         }
       }
     }))
@@ -233,9 +247,11 @@ describe('sticky sessions', () => {
     assert.equal(result.snapshotId, 'new-tab')
     assert.equal(session.getItem(SESSION_STICKY_TAB_ID), JSON.stringify('new-tab'))
     assert.deepEqual(JSON.parse(session.getItem('session_workspaceByKey_ws1_openAppKeys')), ['key2'])
+    assert.equal(JSON.parse(local.getItem('session_appByKey_key2_route')), '/route-b')
     const snapshots = JSON.parse(local.getItem(LOCAL_STICKY_SNAPSHOTS))
     assert.equal(snapshots.snapB, undefined)
     assert.ok(snapshots['new-tab'])
+    assert.deepEqual(snapshots['new-tab'].workspaces.ws1.routes, { key2: '/route-b' })
     const claims = JSON.parse(local.getItem(LOCAL_STICKY_CLAIMS))
     assert.equal(claims['new-tab'].tabId, 'new-tab')
     assert.ok(Number.isFinite(claims['new-tab'].claimedAt))

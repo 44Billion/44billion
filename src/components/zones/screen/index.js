@@ -449,6 +449,7 @@ f('appWindow', function () {
     autoRetried: false,
     appCleanup: null,
     initialRoute: null,
+    routeConsumed: false,
     routeVersion: 0,
     loadedRouteVersion: -1
   }))
@@ -493,11 +494,12 @@ f('appWindow', function () {
         appId$(),
         userPk$()
       ])
-      // The initial route is consumed once and cleared by onAppReady after the
-      // app loads. Reading it outside `track` keeps that clear from
-      // re-running this task: a re-run would first run the previous cleanup,
-      // which closes the app page MessagePort, and the early-return guard
-      // below would leave the port closed forever.
+      // The initial route is consumed once by onAppReady, then kept in
+      // storage so the app can be restored at the same URL later. Reading it
+      // outside `track` keeps those storage writes from re-running this task:
+      // a re-run would first run the previous cleanup, which closes the app
+      // page MessagePort, and the early-return guard below would leave the
+      // port closed forever.
       const routeValue = initialRoute$()
       launchError$(null)
       // This component is reused on open -> closed -> open: stableDomOrderAppKeys$
@@ -515,9 +517,9 @@ f('appWindow', function () {
         runtime.autoRetried = false
         runtime.appCleanup = null
         runtime.initialRoute = null
+        runtime.routeConsumed = false
         runtime.routeVersion++
         runtime.loadedRouteVersion = -1
-        initialRoute$('')
         return
       }
       // `after: 'rendering'` applies only to the first run. On a subsequent
@@ -533,7 +535,7 @@ f('appWindow', function () {
         return
       }
 
-      if (routeValue && routeValue !== runtime.initialRoute) {
+      if (routeValue && !runtime.routeConsumed && routeValue !== runtime.initialRoute) {
         runtime.initialRoute = routeValue
         runtime.routeVersion++
       }
@@ -663,8 +665,8 @@ f('appWindow', function () {
         clearTimeout(appPageTimeout)
         showPending$(false)
         runtime.appReady = true
+        runtime.routeConsumed = true
         appReady$(true)
-        if (runtime.initialRoute) initialRoute$('')
       }
       runtime.loadedRouteVersion = runtime.routeVersion
       if (IS_DEVELOPMENT) {

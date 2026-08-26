@@ -33,6 +33,7 @@ function injectLocale () {
   injectLocale()
   injectEventStore(window, p.promise)
   interceptNavigations(p.promise)
+  reportRouteChanges(p.promise)
   tellParentImReady(p)
   await preventSwUsage()
   await p.promise
@@ -331,4 +332,56 @@ function interceptNavigations (browserPortPromise) {
       console.error('Error sending OPEN_APP message:', error)
     }
   }
+}
+
+// Reports the app's current route (pathname + search + hash) to the launcher
+// so open/minimized windows can be restored at the same URL after a reload.
+// SPA navigations are captured by patching the history APIs and listening to
+// popstate/hashchange; hard navigations (and the initial load) are covered by
+// the report sent as soon as the browser port is ready.
+function reportRouteChanges (browserPortPromise) {
+  const currentRoute = () => window.location.pathname + window.location.search + window.location.hash
+  let latestRoute = null
+
+  function sendRoute (force = false) {
+    const route = currentRoute()
+    if (!force && route === latestRoute) return
+    latestRoute = route
+    browserPortPromise.then(browserPort => {
+      tell(browserPort, {
+        code: 'APP_ROUTE_CHANGED',
+        payload: { href: route }
+      })
+    }).catch(error => {
+      console.error('Failed to send APP_ROUTE_CHANGED:', error)
+    })
+  }
+
+  const originalPushState = history.pushState
+  const originalReplaceState = history.replaceState
+  if (typeof originalPushState === 'function') {
+    history.pushState = function (...args) {
+      const result = originalPushState.apply(this, args)
+      sendRoute()
+      return result
+    }
+  }
+  if (typeof originalReplaceState === 'function') {
+    history.replaceState = function (...args) {
+      const result = originalReplaceState.apply(this, args)
+      sendRoute()
+      return result
+    }
+  }
+  window.addEventListener('popstate', () => sendRoute())
+  window.addEventListener('hashchange', () => sendRoute())
+  if ('navigation' in window && typeof window.navigation.addEventListener === 'function') {
+    // Fires after a same-document navigation has committed, so `location`
+    // already reflects the destination URL (and canceled app-URL
+    // navigations are skipped because `location` did not change).
+    window.navigation.addEventListener('navigatesuccess', () => sendRoute())
+  }
+  window.addEventListener('pagehide', () => sendRoute(true))
+
+  sendRoute(true)
 }

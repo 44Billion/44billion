@@ -76,5 +76,21 @@ describe('sticky sessions UI', () => {
     )
     assert.match(snapshotter, /ackStickySessionDeletion/)
     assert.match(snapshotter, /local_stickySessionDeletions\$/)
+    assert.match(snapshotter, /session_appByKey_\$\{appKey\}_route\$/)
+
+    const appPage = await readFile(
+      new URL('../../src/scripts/app-page.txt.js', import.meta.url),
+      'utf8'
+    )
+    assert.match(appPage, /reportRouteChanges/)
+    assert.match(appPage, /history\.pushState/)
+    assert.match(appPage, /APP_ROUTE_CHANGED/)
+
+    const appBridge = await readFile(
+      new URL('../../src/helpers/window-message/app-bridge.js', import.meta.url),
+      'utf8'
+    )
+    assert.match(appBridge, /case 'APP_ROUTE_CHANGED'/)
+    assert.match(appBridge, /session_appByKey_\$\{appKey\}_route/)
   })
 })
