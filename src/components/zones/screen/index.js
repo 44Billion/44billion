@@ -1915,6 +1915,10 @@ f('appLaunchersMenu', function () {
           <div class='icon-wrapper-271yiduh'><icon-library-plus props=${{ size: '16px' }} /></div>
           <div class='menu-label' onclick=${newWindow}>${t('New Window')}</div>
         </div>
+        <div class=${{ invisible: appKeys.length <= 1 }}>
+          <div class='icon-wrapper-271yiduh'><icon-remove props=${{ size: '16px' }} /></div>
+          <div class='menu-label' onclick=${removeApp}>${t('Remove Window')}</div>
+        </div>
         <div class=${{ invisible: visibility !== 'open' }}>
           <div class='icon-wrapper-271yiduh'><icon-minimize props=${{ size: '16px' }} /></div>
           <div class='menu-label' onclick=${minimizeApp}>${t('Minimize')}</div>
@@ -1922,10 +1926,6 @@ f('appLaunchersMenu', function () {
         <div class=${{ invisible: visibility === 'closed' }}>
           <div class='icon-wrapper-271yiduh'><icon-close props=${{ size: '16px' }} /></div>
           <div class='menu-label' onclick=${closeApp}>${t('Close')}</div>
-        </div>
-        <div class=${{ invisible: appKeys.length <= 1 }}>
-          <div class='icon-wrapper-271yiduh'><icon-remove props=${{ size: '16px' }} /></div>
-          <div class='menu-label' onclick=${removeApp}>${t('Remove')}</div>
         </div>
         <div class=${{ invisible: appKeys.length !== 1 }}>
           <div class='icon-wrapper-271yiduh'><icon-delete props=${{ size: '16px' }} /></div>
@@ -2142,7 +2142,7 @@ function getLocales () {
     'Bring to First': { en: 'Bring to First', fr: 'Mettre au premier plan', it: 'Porta in primo piano', de: 'In den Vordergrund', es: 'Traer al frente', 'pt-BR': 'Trazer para frente', ru: 'На передний план', 'zh-CN': '置于最前', 'zh-TW': '移至最前', ja: '最前面に移動', ko: '맨 앞으로 가져오기' },
     Minimize: { en: 'Minimize', fr: 'Réduire', it: 'Riduci', de: 'Minimieren', es: 'Minimizar', 'pt-BR': 'Minimizar', ru: 'Свернуть', 'zh-CN': '最小化', 'zh-TW': '最小化', ja: '最小化', ko: '최소화' },
     Close: { en: 'Close', fr: 'Fermer', it: 'Chiudi', de: 'Schließen', es: 'Cerrar', 'pt-BR': 'Fechar', ru: 'Закрыть', 'zh-CN': '关闭', 'zh-TW': '關閉', ja: '閉じる', ko: '닫기' },
-    Remove: { en: 'Remove', fr: 'Retirer', it: 'Rimuovi', de: 'Entfernen', es: 'Quitar', 'pt-BR': 'Remover', ru: 'Убрать', 'zh-CN': '移除', 'zh-TW': '移除', ja: '取り除く', ko: '제거' },
+    'Remove Window': { en: 'Remove Window', fr: 'Retirer la fenêtre', it: 'Rimuovi finestra', de: 'Fenster entfernen', es: 'Quitar ventana', 'pt-BR': 'Remover Janela', ru: 'Убрать окно', 'zh-CN': '移除窗口', 'zh-TW': '移除視窗', ja: 'ウィンドウを取り除く', ko: '창 제거' },
     Delete: { en: 'Delete', fr: 'Supprimer', it: 'Elimina', de: 'Löschen', es: 'Eliminar', 'pt-BR': 'Excluir', ru: 'Удалить', 'zh-CN': '删除', 'zh-TW': '刪除', ja: '削除', ko: '삭제' }
   }
 }
