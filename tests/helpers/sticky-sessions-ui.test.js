@@ -92,5 +92,6 @@ describe('sticky sessions UI', () => {
     )
     assert.match(appBridge, /case 'APP_ROUTE_CHANGED'/)
     assert.match(appBridge, /session_appByKey_\$\{appKey\}_route/)
+    assert.match(appBridge, /session_appByKey_\$\{appKey\}_visibility/)
   })
 })

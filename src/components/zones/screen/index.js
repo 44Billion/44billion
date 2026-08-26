@@ -520,6 +520,9 @@ f('appWindow', function () {
         runtime.routeConsumed = false
         runtime.routeVersion++
         runtime.loadedRouteVersion = -1
+        // Closing an instance resets its route: reopening it must start from
+        // the root instead of returning to a possibly broken route.
+        initialRoute$('')
         return
       }
       // `after: 'rendering'` applies only to the first run. On a subsequent

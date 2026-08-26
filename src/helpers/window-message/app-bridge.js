@@ -717,6 +717,18 @@ function createAppPageMessageListener ({
             !href.startsWith('/') ||
             /^\/(?:\+{1,3}[a-zA-Z0-9]{48,}|naddr1[0-9a-z]+)/.test(href)
           ) break
+          // Only live windows keep a route: ignore reports that arrive after
+          // the instance was closed (e.g. a pagehide right before removal).
+          let visibility
+          try {
+            visibility = JSON.parse(sessionStorage.getItem(`session_appByKey_${appKey}_visibility`))
+          } catch (error) {
+            console.warn('[app-bridge] Failed to parse app instance visibility', {
+              appKey,
+              error
+            })
+          }
+          if (visibility !== 'open' && visibility !== 'minimized') break
           if (localStorage.getItem(`session_appByKey_${appKey}_route`) !== href) {
             setWebStorageItem(localStorage, `session_appByKey_${appKey}_route`, href)
           }
