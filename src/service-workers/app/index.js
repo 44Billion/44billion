@@ -412,9 +412,13 @@ async function selectClientToPostMessagesTo ({ clientId = '' } = {}) {
     // service worker restarted while the iframe stayed loaded). In that case
     // fall through to requestBridgeReady(), which asks it to re-register via
     // the sw~~napp BroadcastChannel instead of crashing on a missing port.
-    if (targetClient && readyClients.has(targetClient.id)) {
+    // Also require a real port: a stale registration without one must not be
+    // returned (reading `.port` of a missing entry was the source of the
+    // `Cannot read properties of undefined (reading 'port')` crashes).
+    const entry = targetClient ? readyClients.get(targetClient.id) : null
+    if (entry?.port) {
       return {
-        port: readyClients.get(targetClient.id).port,
+        port: entry.port,
         clientId: targetClient.id
       }
     }
