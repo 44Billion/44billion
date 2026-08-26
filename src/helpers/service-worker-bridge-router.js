@@ -5,7 +5,7 @@ export function pruneReadyClients (clients, readyClients) {
   }
 }
 
-export function findReadyBridgeClient (clients, readyClients, bridgeId = '') {
+export function findReadyBridgeClient (clients, readyClients, bridgeId = '', { strict = false } = {}) {
   const ready = clients
     .filter(isTrustedClient)
     .map(client => ({
@@ -24,7 +24,11 @@ export function findReadyBridgeClient (clients, readyClients, bridgeId = '') {
       (readyClients.get(a.id)?.readyAt ?? 0)
     )[0]
 
-  return matching || ready
+  // When the app page's bridge id is known (e.g. carried in the iframe URL),
+  // routing must stay on that tab: never fall back to another tab's trusted
+  // iframe. The non-strict fallback remains only for requests that arrive
+  // before any bridge id can be associated with the app page.
+  return strict ? (matching || null) : (matching || ready)
 }
 
 function isTrustedClient (client) {

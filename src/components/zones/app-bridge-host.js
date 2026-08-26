@@ -80,8 +80,17 @@ f('app-bridge-manager', function () {
         const onlinePromise = isCritical
           ? isOnline().catch(() => false)
           : Promise.resolve(false)
+        const storedNameRaw = localStorage.getItem(`session_appById_${state.appId}_name`)
+        let storedAppName = ''
+        if (storedNameRaw) {
+          try {
+            storedAppName = JSON.parse(storedNameRaw) ?? ''
+          } catch {
+            storedAppName = ''
+          }
+        }
         return requestFileNotCachedAction({
-          appName: payload.appName || getFileNotCachedText('App Download'),
+          appName: payload.appName || storedAppName || getFileNotCachedText('App Download'),
           message
         }).then(() => retryAppBridge(state)).catch(async () => {
           const online = await onlinePromise

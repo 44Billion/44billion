@@ -943,6 +943,18 @@ function handleNappRequest (e) {
   return reply(e, { error: new Error('Not implemented yet') })
 }
 
+// Appends the launcher-internal bridge marker to an app iframe URL. The app
+// subdomain service worker reads it to route the very first document request
+// to the trusted iframe of the same tab; the injected app-page script strips
+// it from the URL before the app's own scripts run.
+function withBridgeMarker (route, bridgeId) {
+  const hashIndex = route.indexOf('#')
+  const hash = hashIndex === -1 ? '' : route.slice(hashIndex)
+  const base = hashIndex === -1 ? route : route.slice(0, hashIndex)
+  const separator = base.includes('?') ? '&' : '?'
+  return `${base}${separator}~~bridgeId=${encodeURIComponent(bridgeId)}${hash}`
+}
+
 export function initAppWindow (state, {
   appKey,
   initialRoute,
@@ -1013,7 +1025,10 @@ export function initAppWindow (state, {
   }
   window.addEventListener('message', onAppReadyMessage, { signal })
 
-  const route = `//${state.appSubdomain}.${window.location.host}${initialRoute || ''}`
+  const route = withBridgeMarker(
+    `//${state.appSubdomain}.${window.location.host}${initialRoute || ''}`,
+    state.bridgeId
+  )
   appIframeSrc$(route)
 
   return function cleanup () {

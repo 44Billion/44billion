@@ -34,6 +34,23 @@ describe('service worker bridge router', () => {
     assert.equal(findReadyBridgeClient(clients, readyClients, '7').id, 'trusted-1')
   })
 
+  it('does not fall back to another trusted client in strict mode', () => {
+    const clients = [
+      { id: 'app-1', url: 'https://42.example.com/app' },
+      { id: 'trusted-1', url: 'https://42.example.com/~~napp?bridgeId=7' },
+      { id: 'trusted-2', url: 'https://42.example.com/~~napp?bridgeId=8' }
+    ]
+    const readyClients = new Map([
+      ['trusted-1', { port: {}, readyAt: 100, bridgeId: '7' }],
+      ['trusted-2', { port: {}, readyAt: 200, bridgeId: '8' }]
+    ])
+
+    assert.equal(findReadyBridgeClient(clients, readyClients, '7', { strict: true }).id, 'trusted-1')
+    assert.equal(findReadyBridgeClient(clients, readyClients, '9', { strict: true }), null)
+    // Without strict mode the legacy fallback is preserved.
+    assert.equal(findReadyBridgeClient(clients, readyClients, '9').id, 'trusted-2')
+  })
+
   it('drops clients that are no longer active', () => {
     const readyClients = new Map([
       ['stale', {}],

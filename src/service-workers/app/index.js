@@ -62,6 +62,13 @@ self.addEventListener('fetch', e => {
 
   // console.log('Service Worker: fetching', e.request.url)
   const requestUrl = new URL(e.request.url)
+  const markerBridgeId = requestUrl.searchParams.get('~~bridgeId')
+  if (markerBridgeId && e.clientId) {
+    // Remember the bridge id before serving the first document: subsequent
+    // requests from this app page (after the injected script strips the
+    // marker) keep routing to the trusted iframe of the same tab.
+    appPageBridgeIds.set(e.clientId, markerBridgeId)
+  }
   const isNfile = requestUrl.origin === 'https://nostr.alt' &&
     /^\/nfile1[0-9a-z]+$/.test(requestUrl.pathname)
   if (isNfile) {
@@ -343,12 +350,12 @@ self.addEventListener('message', async e => {
     // Handle ready signals from clients
     case 'TRUSTED_IFRAME_READY': {
       if (pathname !== '/~~napp') return
-      readyClients.set(e.source.id, {
-        port: e.ports[0],
-        readyAt: Date.now(),
-        bridgeId: e.data.payload?.bridgeId || ''
-      })
-      for (const resolver of resolvers.splice(0)) {
+      const bridgeId = e.data.payload?.bridgeId || ''
+      readyClients.set(e.source.id, { port: e.ports[0], readyAt: Date.now(), bridgeId })
+      for (let index = resolvers.length - 1; index >= 0; index--) {
+        const resolver = resolvers[index]
+        if (resolver.bridgeId && resolver.bridgeId !== bridgeId) continue
+        resolvers.splice(index, 1)
         if (resolver.timer) clearTimeout(resolver.timer)
         resolver.resolve({ port: e.ports[0], clientId: e.source.id })
       }
@@ -363,15 +370,13 @@ self.addEventListener('message', async e => {
 })
 
 let bc
-function requestBridgeReady () {
+function requestBridgeReady (bridgeId = '') {
   return new Promise((resolve, reject) => {
-    const resolver = { resolve, reject, timer: null }
+    const resolver = { resolve, reject, timer: null, bridgeId }
     resolvers.push(resolver)
 
-    if (resolvers.length === 1) {
-      bc ??= new BroadcastChannel('sw~~napp')
-      bc.postMessage({ code: 'GET_READY_STATUS', payload: null })
-    }
+    bc ??= new BroadcastChannel('sw~~napp')
+    bc.postMessage({ code: 'GET_READY_STATUS', payload: null })
 
     resolver.timer = setTimeout(() => {
       const index = resolvers.indexOf(resolver)
@@ -383,16 +388,25 @@ function requestBridgeReady () {
   })
 }
 
+function hasTrustedClientForBridge (clients, bridgeId) {
+  return clients.some(client => {
+    try {
+      const url = new URL(client.url)
+      return url.pathname === '/~~napp' && url.searchParams.get('bridgeId') === bridgeId
+    } catch {
+      return false
+    }
+  })
+}
+
 async function selectClientToPostMessagesTo ({ clientId = '' } = {}) {
+  const bridgeId = appPageBridgeIds.get(clientId) || ''
+  const strict = Boolean(bridgeId)
   let lastError
   for (let attempt = 0; attempt < MAX_SW_ROUTE_ATTEMPTS; attempt++) {
     const clients = await self.clients.matchAll({ includeUncontrolled: false, type: 'window' })
     pruneReadyClients(clients, readyClients)
-    const targetClient = findReadyBridgeClient(
-      clients,
-      readyClients,
-      appPageBridgeIds.get(clientId) || ''
-    )
+    const targetClient = findReadyBridgeClient(clients, readyClients, bridgeId, { strict })
 
     // A live trusted iframe may not have a readyClients entry yet (e.g. the
     // service worker restarted while the iframe stayed loaded). In that case
@@ -405,8 +419,17 @@ async function selectClientToPostMessagesTo ({ clientId = '' } = {}) {
       }
     }
 
+    // With a known bridge id, only that tab's trusted iframe may serve this
+    // app. If it does not exist at all, fail fast instead of waiting out the
+    // retry window on a stale or missing bridge.
+    if (strict && !hasTrustedClientForBridge(clients, bridgeId)) {
+      throw Object.assign(new Error('App bridge unavailable: trusted iframe not found'), {
+        code: APP_BRIDGE_UNAVAILABLE
+      })
+    }
+
     try {
-      return await requestBridgeReady()
+      return await requestBridgeReady(bridgeId)
     } catch (error) {
       lastError = error
     }

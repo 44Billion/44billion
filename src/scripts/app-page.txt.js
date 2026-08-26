@@ -28,6 +28,7 @@ function injectLocale () {
 // ERROR: Top-level await is currently not supported with the "iife" output format [plugin js-text]
 // https://github.com/evanw/esbuild/issues/253
 (async () => {
+  stripBridgeMarker()
   const p = Promise.withResolvers()
   injectNip07(p.promise) // first thing
   injectLocale()
@@ -38,6 +39,16 @@ function injectLocale () {
   await preventSwUsage()
   await p.promise
 })()
+
+// Removes the launcher-internal bridge marker from the URL before the app's
+// own scripts run. The service worker already used it to route the first
+// requests to the trusted iframe of the correct tab.
+function stripBridgeMarker () {
+  const url = new URL(window.location.href)
+  if (!url.searchParams.has('~~bridgeId')) return
+  url.searchParams.delete('~~bridgeId')
+  history.replaceState(history.state, '', `${url.pathname}${url.search}${url.hash}`)
+}
 
 async function preventSwUsage () {
   const registration = await navigator.serviceWorker.ready
