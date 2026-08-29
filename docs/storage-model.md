@@ -54,6 +54,20 @@ ephemeral and intentionally not persisted; they do not belong here or in
   `{ [snapshotId]: deletedAt }`. The owning tab reacts by closing all of its
   app instances and removing the tombstone; leftovers are garbage-collected
   after 24 hours.
+- `local_widgets` — widgets per workspace:
+  `{ [widgetKey]: { appId, wsKey, row, col, desired: { w, h }, pinnedRoute, createdAt, updatedAt } }`.
+  `widgetKey` is a random instance id; `row`/`col` are the top-left grid cell
+  (col is absolute across pages; page = `floor(col / viewportCols)`);
+  `desired` is the preferred size in cells (minimum 1x1); `pinnedRoute` is the
+  route the widget resets to after being auto-closed.
+- `local_personas` — global personas (account sets seen as one identity):
+  `{ [personaId]: { userPks, createdAt, updatedAt } }`. Personas are
+  app-agnostic; a pubkey may belong to several personas. The default persona
+  is virtual (`__default__`) and is never stored here.
+- `local_appPersonaSelections` — active persona per app per workspace:
+  `{ [wsKey]: { [appId]: personaId | null } }`. `null`/absent means no persona
+  (only the workspace user). `__default__` resolves to all current users and
+  is derived at read time.
 
 ### Per workspace (`<wsKey>`)
 
@@ -96,6 +110,10 @@ ephemeral and intentionally not persisted; they do not belong here or in
   Sticky Sessions is enabled).
 - `session_workspaceByKey_<wsKey>_openAppKeys` — ordered open window keys.
 - `session_appByKey_<appKey>_visibility` — `open`, `minimized`, or `closed`.
+- `session_widgetByKey_<widgetKey>_route` — live widget route (updates while
+  open/minimized; resets to the widget's `pinnedRoute` when auto-closed).
+- `session_widgetByKey_<widgetKey>_visibility` — `open`, `minimized`, or
+  `closed`.
 - `session_singleNappOpenAppCounts` — embedded app open counters.
 - `_subdomain_nav_userPk` — ephemeral subdomain redirect target.
 

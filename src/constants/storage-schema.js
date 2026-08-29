@@ -37,7 +37,10 @@ export const GLOBAL_LOCAL_KEYS = [
   'local_stickySessionSnapshots',
   'local_stickySessionClaims',
   'local_stickySessionSeenIds',
-  'local_stickySessionDeletions'
+  'local_stickySessionDeletions',
+  'local_widgets',
+  'local_personas',
+  'local_appPersonaSelections'
 ]
 
 export const GLOBAL_SESSION_KEYS = [
@@ -69,6 +72,11 @@ export const APP_INSTANCE_SESSION_SUFFIXES = [
   '_visibility'
 ]
 
+export const WIDGET_SESSION_SUFFIXES = [
+  '_route',
+  '_visibility'
+]
+
 export const APP_METADATA_SUFFIXES = [
   '_name',
   '_description',
@@ -94,5 +102,6 @@ export const DYNAMIC_LOCAL_PREFIXES = [
 
 export const DYNAMIC_SESSION_PREFIXES = [
   'session_workspaceByKey_',
-  'session_appByKey_'
+  'session_appByKey_',
+  'session_widgetByKey_'
 ]

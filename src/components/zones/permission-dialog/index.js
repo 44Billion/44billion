@@ -290,6 +290,13 @@ f('permissionDialogCard', function () {
       } = storage
       const cachedAppName = cachedAppName$()
       return req.app.name || cachedAppName || req.app.alias || req.app.napp || t('App')
+    },
+    isWidget$ () {
+      return this.req$().meta?.isWidget === true
+    },
+    accountUserPk$ () {
+      const pubkey = this.req$().meta?.accountUserPk
+      return typeof pubkey === 'string' && pubkey ? pubkey : null
     }
   }))
   const appIconProps = useStore(() => ({
@@ -321,6 +328,33 @@ f('permissionDialogCard', function () {
           border-radius: 10px;
           background-color: ${cssVars.colors.bgAvatar};
           color: ${cssVars.colors.fg3};
+        }
+
+        .app-icon .widget-badge {
+          position: absolute;
+          right: 2px;
+          bottom: 2px;
+          min-width: 14px;
+          height: 14px;
+          padding: 0 3px;
+          box-sizing: border-box;
+          display: grid;
+          place-items: center;
+          border-radius: 7px;
+          background-color: ${cssVars.colors.bgAccentSecondary};
+          color: ${cssVars.colors.fgAccent};
+          font-size: 9rem;
+          font-weight: 700;
+          line-height: 1;
+        }
+
+        .permission-account {
+          font-size: 12rem;
+          color: ${cssVars.colors.fgMuted};
+          margin-top: 2px;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
         }
 
         .app-info {
@@ -449,10 +483,12 @@ f('permissionDialogCard', function () {
     <div class='permission-dialog-card'>
       <div class="app-icon">
         <app-icon props=${appIconProps} />
+        ${store.isWidget$() ? this.h`<span class="widget-badge">W</span>` : ''}
       </div>
       <div class="app-info">
         <div class="app-name">${store.appName$()}</div>
         <div class="permission-text">${store.permissionText$()}</div>
+        ${store.accountUserPk$() ? this.h`<div class="permission-account">${t('Account: {{pubkey}}', { pubkey: `${store.accountUserPk$().slice(0, 8)}...${store.accountUserPk$().slice(-8)}` })}</div>` : ''}
       </div>
       <div class="permission-actions">
         <button
@@ -554,6 +590,7 @@ function getLocales () {
     'Can I {{action}} {{dataType}}?': l('Can I {{action}} {{dataType}}?', 'Puis-je effectuer « {{action}} » sur {{dataType}} ?', 'Posso eseguire “{{action}}” su {{dataType}}?', 'Darf ich „{{action}}“ für {{dataType}} ausführen?', '¿Puedo ejecutar «{{action}}» sobre {{dataType}}?', 'Posso executar “{{action}}” em {{dataType}}?', 'Можно выполнить «{{action}}» для «{{dataType}}»?', '可以对 {{dataType}} 执行“{{action}}”吗？', '可以對 {{dataType}} 執行「{{action}}」嗎？', '{{dataType}} に「{{action}}」を実行してもよいですか？', '{{dataType}}에 “{{action}}” 작업을 수행해도 될까요?'),
     'Channel: {{scope}}': l('Channel: {{scope}}', 'Canal : {{scope}}', 'Canale: {{scope}}', 'Kanal: {{scope}}', 'Canal: {{scope}}', 'Canal: {{scope}}', 'Канал: {{scope}}', '频道：{{scope}}', '頻道：{{scope}}', 'チャンネル：{{scope}}', '채널: {{scope}}'),
     'Scope: {{scope}}': l('Scope: {{scope}}', 'Portée : {{scope}}', 'Ambito: {{scope}}', 'Bereich: {{scope}}', 'Ámbito: {{scope}}', 'Escopo: {{scope}}', 'Область: {{scope}}', '范围：{{scope}}', '範圍：{{scope}}', '範囲：{{scope}}', '범위: {{scope}}'),
+    'Account: {{pubkey}}': l('Account: {{pubkey}}', 'Compte : {{pubkey}}', 'Account: {{pubkey}}', 'Konto: {{pubkey}}', 'Cuenta: {{pubkey}}', 'Conta: {{pubkey}}', 'Аккаунт: {{pubkey}}', '账户：{{pubkey}}', '帳戶：{{pubkey}}', 'アカウント：{{pubkey}}', '계정: {{pubkey}}'),
     App: l('App', 'Application', 'App', 'App', 'Aplicación', 'App', 'Приложение', '应用', '應用程式', 'アプリ', '앱'),
     Allow: l('Allow', 'Autoriser', 'Consenti', 'Zulassen', 'Permitir', 'Permitir', 'Разрешить', '允许', '允許', '許可', '허용')
   }

@@ -5,6 +5,8 @@ import { generateB62SecretKey as getB62PublicKeyStub } from '#helpers/nip01.js'
 import { addressObjToAppId } from '#helpers/app.js'
 import { base16ToBase62, base62ToBase16 } from 'libp2r2p/base62'
 import AppUpdater from '#services/app-updater/index.js'
+import { removeWidgetsForWorkspace } from '#services/widgets/index.js'
+import { removeSelectionsForWorkspace } from '#services/personas/index.js'
 import { cleanupNostrDbAppForWorkspace } from './helpers/nostrdb-app-lifecycle.js'
 import { requestNostrDbAppBackfillsForWorkspace } from './helpers/nostrdb-app-backfill.js'
 import { firstAccountActivationMetadata } from './account-attention.js'
@@ -373,6 +375,18 @@ export async function setAccountsState (nextAccountState, storage, tabStorage) {
         })
         storage[`session_workspaceByKey_${wsKey}_appById_${appId}_appKeys$`](undefined)
       })
+
+      if (globalThis.localStorage) {
+        removeWidgetsForWorkspace({
+          localStorageArea: globalThis.localStorage,
+          sessionStorageArea: globalThis.sessionStorage,
+          wsKey
+        })
+        removeSelectionsForWorkspace({
+          localStorageArea: globalThis.localStorage,
+          wsKey
+        })
+      }
     }
   }
 

@@ -4,11 +4,13 @@ import {
   APP_INSTANCE_LOCAL_SUFFIXES,
   APP_INSTANCE_SESSION_SUFFIXES,
   APP_METADATA_SUFFIXES,
+  WIDGET_SESSION_SUFFIXES,
   WORKSPACE_LOCAL_SUFFIXES,
   WORKSPACE_SESSION_SUFFIXES
 } from '#constants/storage-schema.js'
 
 export const STORAGE_REPAIR_PLAN_VERSION = 1
+const DEFAULT_PERSONA_ID = '__default__'
 
 const HEX32 = /^[0-9a-f]{64}$/i
 
@@ -91,6 +93,134 @@ function extractDynamicId (key, prefixes, suffixes) {
     }
   }
   return null
+}
+
+function isValidWidgetRecord (widget) {
+  return Boolean(
+    widget &&
+    typeof widget === 'object' &&
+    typeof widget.appId === 'string' &&
+    widget.appId.length > 0 &&
+    typeof widget.wsKey === 'string' &&
+    widget.wsKey.length > 0 &&
+    Number.isInteger(widget.row) &&
+    widget.row >= 0 &&
+    Number.isInteger(widget.col) &&
+    widget.col >= 0 &&
+    widget.desired &&
+    typeof widget.desired === 'object' &&
+    Number.isInteger(widget.desired.w) &&
+    widget.desired.w >= 1 &&
+    Number.isInteger(widget.desired.h) &&
+    widget.desired.h >= 1 &&
+    typeof widget.pinnedRoute === 'string'
+  )
+}
+
+function auditWidgetsAndPersonas (local, session, plan, issue, setLocal, setSession, {
+  workspaceKeys,
+  installedAppsByWs,
+  removedWorkspaceIds = new Set()
+}) {
+  const referencedWidgetKeys = new Set()
+  const isAppInstalledInWorkspace = (appId, wsKey) =>
+    installedAppsByWs.get(wsKey)?.has(appId) === true
+
+  // Widgets: drop invalid records, records of removed/missing workspaces and
+  // records whose app is no longer installed in that workspace.
+  const widgetsRaw = getValue(local, 'local_widgets')
+  if (widgetsRaw !== undefined && widgetsRaw !== null) {
+    const widgets = toPlainObject(widgetsRaw) ?? {}
+    let changed = Object.keys(widgets).length !== Object.keys(widgetsRaw ?? {}).length
+    const cleaned = {}
+    for (const [widgetKey, widget] of Object.entries(widgets)) {
+      const valid =
+        isValidWidgetRecord(widget) &&
+        !removedWorkspaceIds.has(widget.wsKey) &&
+        workspaceKeys.includes(widget.wsKey) &&
+        isAppInstalledInWorkspace(widget.appId, widget.wsKey)
+      if (!valid) {
+        changed = true
+        issue('invalid_widget', 'Invalid widget record', { widgetKey })
+        setSession(`session_widgetByKey_${widgetKey}_route`, null)
+        setSession(`session_widgetByKey_${widgetKey}_visibility`, null)
+        continue
+      }
+      cleaned[widgetKey] = widget
+      referencedWidgetKeys.add(widgetKey)
+    }
+    if (changed) setLocal('local_widgets', cleaned)
+  } else if (widgetsRaw !== undefined) {
+    issue('invalid_widgets', 'local_widgets must be an object', { key: 'local_widgets' })
+    setLocal('local_widgets', null)
+  }
+
+  // Personas: keep only valid non-empty records; the default persona is
+  // virtual and must never be persisted.
+  const personasRaw = getValue(local, 'local_personas')
+  let personas = {}
+  if (personasRaw !== undefined && personasRaw !== null) {
+    personas = toPlainObject(personasRaw) ?? {}
+    let changed = Object.keys(personas).length !== Object.keys(personasRaw ?? {}).length
+    for (const [personaId, persona] of Object.entries(personas)) {
+      const valid =
+        personaId !== DEFAULT_PERSONA_ID &&
+        persona &&
+        typeof persona === 'object' &&
+        Array.isArray(persona.userPks) &&
+        persona.userPks.length > 0 &&
+        persona.userPks.every(pk => typeof pk === 'string' && pk.length > 0)
+      if (!valid) {
+        delete personas[personaId]
+        changed = true
+        issue('invalid_persona', 'Invalid persona record', { personaId })
+      }
+    }
+    if (changed) setLocal('local_personas', personas)
+  } else if (personasRaw !== undefined) {
+    issue('invalid_personas', 'local_personas must be an object', { key: 'local_personas' })
+    setLocal('local_personas', null)
+  }
+
+  // Selections: valid ws/app pairs, persona exists or is the virtual default.
+  const selectionsRaw = getValue(local, 'local_appPersonaSelections')
+  if (selectionsRaw !== undefined && selectionsRaw !== null) {
+    const selections = toPlainObject(selectionsRaw) ?? {}
+    let changed = Object.keys(selections).length !== Object.keys(selectionsRaw ?? {}).length
+    for (const [wsKey, wsSelections] of Object.entries(selections)) {
+      const validWs =
+        !removedWorkspaceIds.has(wsKey) &&
+        workspaceKeys.includes(wsKey) &&
+        wsSelections &&
+        typeof wsSelections === 'object'
+      if (!validWs) {
+        delete selections[wsKey]
+        changed = true
+        continue
+      }
+      for (const [appId, personaId] of Object.entries(wsSelections)) {
+        const valid =
+          isAppInstalledInWorkspace(appId, wsKey) &&
+          (personaId === DEFAULT_PERSONA_ID || Boolean(personas[personaId]))
+        if (!valid) {
+          delete wsSelections[appId]
+          changed = true
+        }
+      }
+      if (Object.keys(wsSelections).length === 0) {
+        delete selections[wsKey]
+        changed = true
+      }
+    }
+    if (changed) setLocal('local_appPersonaSelections', selections)
+  } else if (selectionsRaw !== undefined) {
+    issue('invalid_persona_selections', 'local_appPersonaSelections must be an object', {
+      key: 'local_appPersonaSelections'
+    })
+    setLocal('local_appPersonaSelections', null)
+  }
+
+  return referencedWidgetKeys
 }
 
 function createEmptyPlan () {
@@ -344,6 +474,7 @@ export function auditPersistedState (localStorageArea, sessionStorageArea, {
   const referencedAppKeys = new Set()
   const referencedUserPks = new Set()
   const appOwners = new Map()
+  const installedAppsByWs = new Map()
 
   if (defaultUserPk && typeof defaultUserPk === 'string') referencedUserPks.add(defaultUserPk)
 
@@ -446,6 +577,7 @@ export function auditPersistedState (localStorageArea, sessionStorageArea, {
     }
 
     const remainingAppIds = appIds.filter(appId => (validAppKeysByAppId.get(appId) ?? []).length > 0)
+    installedAppsByWs.set(wsKey, new Set(remainingAppIds))
     if (remainingAppIds.length !== appIds.length) {
       setLocal(`session_workspaceByKey_${wsKey}_pinnedAppIds`, pinned.filter(appId => remainingAppIds.includes(appId)))
       setLocal(`session_workspaceByKey_${wsKey}_unpinnedAppIds`, unpinned.filter(appId => remainingAppIds.includes(appId)))
@@ -530,6 +662,11 @@ export function auditPersistedState (localStorageArea, sessionStorageArea, {
   }
 
   auditSubdomains(local, plan, issue, setLocal)
+  const referencedWidgetKeys = auditWidgetsAndPersonas(local, session, plan, issue, setLocal, setSession, {
+    workspaceKeys: validWorkspaceKeys,
+    installedAppsByWs,
+    removedWorkspaceIds
+  })
   auditOrphanKeys(local, session, {
     plan,
     issue,
@@ -538,6 +675,7 @@ export function auditPersistedState (localStorageArea, sessionStorageArea, {
     workspaceKeys: validWorkspaceKeys,
     referencedAppIds,
     referencedAppKeys,
+    referencedWidgetKeys,
     referencedUserPks,
     accountUserPks,
     manifestAppIds
@@ -653,6 +791,7 @@ function auditOrphanKeys (local, session, {
   workspaceKeys,
   referencedAppIds,
   referencedAppKeys,
+  referencedWidgetKeys,
   referencedUserPks,
   accountUserPks,
   manifestAppIds = new Set()
@@ -712,6 +851,12 @@ function auditOrphanKeys (local, session, {
       const appKey = extractDynamicId(key, ['session_appByKey_'], APP_INSTANCE_SESSION_SUFFIXES)
       if (appKey && !referencedAppKeys.has(appKey)) {
         issue('orphan_app_instance_session_key', 'Orphan app instance session key', { key })
+        setSession(key, null)
+      }
+    } else if (key.startsWith('session_widgetByKey_')) {
+      const widgetKey = extractDynamicId(key, ['session_widgetByKey_'], WIDGET_SESSION_SUFFIXES)
+      if (widgetKey && !referencedWidgetKeys.has(widgetKey)) {
+        issue('orphan_widget_session_key', 'Orphan widget session key', { key })
         setSession(key, null)
       }
     }

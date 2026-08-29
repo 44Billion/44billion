@@ -144,6 +144,8 @@ describe('app lifecycle helper', () => {
       _hasAnyRecentSingleNappOpen: async () => false,
       _clearAppFiles: async appId => { calls.files.push(appId) },
       _releaseAppSubdomain: (...args) => { calls.release.push(args) },
+      _removeWidgetsForApp: () => {},
+      _removeSelectionsForApp: () => {},
       _base62ToBase16: () => 'a'.repeat(64)
     })
 
@@ -316,6 +318,8 @@ describe('app lifecycle helper', () => {
       _hasRecentSingleNappOpenForOwner: async () => false,
       _hasAnyRecentSingleNappOpen: async () => false,
       _clearAppFiles: async () => {},
+      _removeWidgetsForApp: () => {},
+      _removeSelectionsForApp: () => {},
       _base62ToBase16: () => 'a'.repeat(64)
     })
 

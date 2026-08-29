@@ -5,6 +5,7 @@ import { cssVars } from '#assets/styles/theme.js'
 f('pending-indicator', function () {
   const textValue = this.props.text$ ?? this.props.text
   const text = typeof textValue === 'function' ? textValue() : textValue
+  const compact = this.props.compact === true
 
   return this.h`
     <style>${/* css */`
@@ -30,11 +31,22 @@ f('pending-indicator', function () {
         animation: pendingIndicatorPulse 2s cubic-bezier(.4, 0, .6, 1) infinite;
       }
 
+      pending-indicator .pending-indicator-root.pending-indicator-compact {
+        padding: 4px;
+      }
+
+      pending-indicator .pending-indicator-root.pending-indicator-compact .pending-indicator-label {
+        display: none;
+      }
+
       @keyframes pendingIndicatorPulse {
         50% { opacity: .5; }
       }
     `}</style>
-    <div class='pending-indicator-root'>
+    <div class=${{
+      'pending-indicator-root': true,
+      'pending-indicator-compact': compact
+    }}>
       <icon-hourglass-high props=${{ size: '20px', style: 'color:' + cssVars.colors.bgAccentSecondary }} />
       <span class='pending-indicator-label'>${text}</span>
     </div>

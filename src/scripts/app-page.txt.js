@@ -29,6 +29,7 @@ function injectLocale () {
 // https://github.com/evanw/esbuild/issues/253
 (async () => {
   stripBridgeMarker()
+  hideAutoFitContent()
   const p = Promise.withResolvers()
   injectNip07(p.promise) // first thing
   injectLocale()
@@ -38,6 +39,7 @@ function injectLocale () {
   tellParentImReady(p)
   await preventSwUsage()
   await p.promise
+  startAutoFitIfWidget()
 })()
 
 // Removes the launcher-internal bridge marker from the URL before the app's
@@ -89,6 +91,8 @@ function tellParentImReady (p) {
   }
   browserPort.addEventListener('message', e => {
     if (e.data.code !== 'BROWSER_READY') return p.reject()
+    autoFitEnabled = e.data.payload?.isWidget === true
+    autoFitPort = browserPort
     localeClient.setLocale(e.data.payload?.locale)
     const bridgeId = e.data.payload?.bridgeId
     if (bridgeId) {
@@ -97,6 +101,12 @@ function tellParentImReady (p) {
         payload: { bridgeId }
       })
     }
+    if (autoFitEnabled) {
+      document.documentElement.style.overflowX = 'hidden'
+      scheduleAutoFitReveal(AUTO_FIT_FIRST_FIT_TIMEOUT_MS)
+    } else {
+      revealAutoFit()
+    }
     p.resolve(browserPort)
   }, { once: true })
   browserPort.addEventListener('message', e => {
@@ -104,6 +114,341 @@ function tellParentImReady (p) {
   })
   browserPort.start()
   tell(window.parent, readyMsg, { targetOrigin: '*', transfer: [appPagePortForBrowser] })
+}
+
+// Widget auto-fit: when the app runs inside a widget, measure horizontal
+// overflow at 100% zoom and apply CSS `zoom` so the content fits the widget's
+// cells. The launcher cannot read scrollWidth across origins, so this must
+// run inside the app page. No app cooperation is required.
+const AUTO_FIT_MIN_ZOOM = 0.25
+const AUTO_FIT_OVERFLOW_EPSILON = 2
+const AUTO_FIT_DEBOUNCE_MS = 150
+const AUTO_FIT_REVEAL_TIMEOUT_MS = 1200
+const AUTO_FIT_ZOOM_EPSILON = 0.02
+const AUTO_FIT_FIRST_FIT_RETRY_MS = 150
+const AUTO_FIT_FIRST_FIT_TIMEOUT_MS = 5000
+const AUTO_FIT_STABLE_MS = 300
+const AUTO_FIT_SETTLE_TIMEOUT_MS = 500
+const AUTO_FIT_WIDE_MIN_WIDTH = 360
+let autoFitEnabled = false
+let autoFitRevealTimer = null
+let autoFitDebounceTimer = null
+let autoFitFirstFitRetryTimer = null
+let autoFitLastWidth = null
+let autoFitZoomApplied = null
+let autoFitFirstFit = true
+let autoFitStartedAt = 0
+let autoFitLastMutationAt = 0
+let autoFitMutationObserver = null
+let autoFitTransitionActive = false
+let autoFitPort = null
+let autoFitWideMode = false
+
+function setAutoFitHidden (hidden) {
+  document.documentElement.style.visibility = hidden ? 'hidden' : ''
+}
+
+function revealAutoFit () {
+  clearTimeout(autoFitRevealTimer)
+  clearTimeout(autoFitFirstFitRetryTimer)
+  autoFitFirstFit = false
+  if (autoFitMutationObserver) {
+    autoFitMutationObserver.disconnect()
+    autoFitMutationObserver = null
+  }
+  setAutoFitHidden(false)
+  if (autoFitEnabled && autoFitPort) {
+    tell(autoFitPort, { code: 'AUTO_FIT', payload: { op: 'done' } })
+  }
+}
+
+function scheduleAutoFitReveal (delay = AUTO_FIT_REVEAL_TIMEOUT_MS) {
+  clearTimeout(autoFitRevealTimer)
+  autoFitRevealTimer = setTimeout(revealAutoFit, delay)
+}
+
+function hideAutoFitContent () {
+  setAutoFitHidden(true)
+}
+
+function applyAutoFitZoom (zoom) {
+  autoFitZoomApplied = zoom
+  document.documentElement.style.zoom = zoom < 1 ? String(zoom) : ''
+}
+
+// Measures overflow at 100% zoom without ever painting the reset: the
+// temporary zoom change and the forced layout happen synchronously, and the
+// previous zoom is restored before the browser can render the intermediate
+// state.
+function computeAutoFitZoom () {
+  const root = document.documentElement
+  const body = document.body
+  const previousZoomStyle = root.style.zoom
+  root.style.zoom = ''
+  const viewportWidth = root.clientWidth
+  const scrollWidth = Math.max(root.scrollWidth, body ? body.scrollWidth : 0)
+  root.style.zoom = previousZoomStyle
+  autoFitLastWidth = viewportWidth
+  if (scrollWidth <= viewportWidth + AUTO_FIT_OVERFLOW_EPSILON) return 1
+  const next = Math.max(AUTO_FIT_MIN_ZOOM, Math.min(1, viewportWidth / scrollWidth))
+  return Math.round(next * 100) / 100
+}
+
+function isAutoFitSettled () {
+  const sinceMutation = autoFitLastMutationAt === 0
+    ? Date.now() - autoFitStartedAt
+    : Date.now() - autoFitLastMutationAt
+  const quiet = sinceMutation >= AUTO_FIT_STABLE_MS
+  const fontsReady = !document.fonts || document.fonts.status !== 'loading'
+  return quiet && fontsReady
+}
+
+function waitForAutoFitSettle () {
+  const frames = new Promise(resolve => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve))
+  })
+  const fonts = document.fonts?.status === 'loading'
+    ? Promise.race([
+      document.fonts.ready.catch(() => {}),
+      new Promise(resolve => setTimeout(resolve, 200))
+    ])
+    : Promise.resolve()
+  return Promise.race([
+    Promise.all([frames, fonts]),
+    new Promise(resolve => setTimeout(resolve, AUTO_FIT_SETTLE_TIMEOUT_MS))
+  ])
+}
+
+function isTransparentCssValue (color) {
+  const transparentBlack = ['rgba', '(0, 0, 0, 0)'].join('(')
+  return !color || color === 'transparent' || color === transparentBlack
+}
+
+function getOpaqueAutoFitBackground () {
+  const root = document.documentElement
+  const rootBg = getComputedStyle(root).getPropertyValue('background-color')
+  if (!isTransparentCssValue(rootBg)) return rootBg
+  const body = document.body
+  if (body) {
+    const bodyBg = getComputedStyle(body).getPropertyValue('background-color')
+    if (!isTransparentCssValue(bodyBg)) return bodyBg
+  }
+  return 'canvas'
+}
+
+function injectAutoFitTransitionStyles () {
+  const style = document.createElement('style')
+  style.textContent = `
+    ::view-transition-old(root) {
+      animation: autoFitHold 250ms ease both;
+    }
+    ::view-transition-new(root) {
+      animation: autoFitReveal 250ms ease both;
+    }
+    @keyframes autoFitHold {
+      0%, 80% { opacity: 1; }
+      100% { opacity: 0; }
+    }
+    @keyframes autoFitReveal {
+      0%, 80% { opacity: 0; }
+      100% { opacity: 1; }
+    }
+  `
+  document.head.appendChild(style)
+}
+
+function scheduleAutoFitFit () {
+  clearTimeout(autoFitDebounceTimer)
+  autoFitDebounceTimer = setTimeout(fitAutoFit, AUTO_FIT_DEBOUNCE_MS)
+}
+
+function applyAutoFitZoomNow (target) {
+  applyAutoFitZoom(target)
+  autoFitFirstFit = false
+  requestAnimationFrame(revealAutoFit)
+}
+
+function waitForAutoFitViewport (targetWidth, timeoutMs) {
+  return new Promise(resolve => {
+    let done = false
+    const finish = () => {
+      if (done) return
+      done = true
+      resolve()
+    }
+    const check = () => {
+      if (document.documentElement.clientWidth >= targetWidth) return finish()
+      requestAnimationFrame(check)
+    }
+    check()
+    setTimeout(finish, timeoutMs)
+  })
+}
+
+async function requestAutoFitWide (viewportWidth) {
+  if (!autoFitPort) {
+    const target = computeAutoFitZoom()
+    applyAutoFitZoomNow(target)
+    return
+  }
+  setAutoFitHidden(true)
+  scheduleAutoFitReveal(AUTO_FIT_FIRST_FIT_TIMEOUT_MS)
+  let wide = false
+  try {
+    const result = await ask(autoFitPort, {
+      code: 'AUTO_FIT',
+      payload: { op: 'reportOverflow', viewportWidth }
+    }, { timeout: 500 })
+    wide = result?.payload?.wide === true && !result?.error
+  } catch (error) {
+    console.warn('[app-page] Auto-fit wide request failed', error)
+  }
+  if (!wide) {
+    autoFitWideMode = false
+    const target = computeAutoFitZoom()
+    applyAutoFitZoomNow(target)
+    return
+  }
+  autoFitWideMode = true
+  // Wait for the launcher to resize the iframe to the wide viewport, then
+  // let the regular fit run (ResizeObserver also triggers it).
+  await waitForAutoFitViewport(AUTO_FIT_WIDE_MIN_WIDTH, 1000)
+  if (document.documentElement.clientWidth < AUTO_FIT_WIDE_MIN_WIDTH - 1) {
+    autoFitWideMode = false
+    const target = computeAutoFitZoom()
+    applyAutoFitZoomNow(target)
+    return
+  }
+  fitAutoFit()
+}
+
+function fitAutoFit () {
+  clearTimeout(autoFitDebounceTimer)
+  const viewportWidth = document.documentElement.clientWidth
+  const target = computeAutoFitZoom()
+  const current = autoFitZoomApplied ?? 1
+  const unchanged = Math.abs(target - current) < AUTO_FIT_ZOOM_EPSILON
+  const inWideViewport = autoFitWideMode &&
+    viewportWidth >= AUTO_FIT_WIDE_MIN_WIDTH - 1
+
+  if (autoFitWideMode && !inWideViewport) {
+    // The launcher toggled wide off to re-evaluate at the real width.
+    autoFitWideMode = false
+  }
+
+  if (unchanged) {
+    if (autoFitFirstFit) {
+      // The app may not have rendered its layout yet: stay hidden until the
+      // DOM has been quiet for a while and fonts are ready, so a "no
+      // overflow" measurement is trustworthy.
+      if (isAutoFitSettled()) {
+        autoFitFirstFit = false
+        revealAutoFit()
+        return
+      }
+      clearTimeout(autoFitFirstFitRetryTimer)
+      autoFitFirstFitRetryTimer = setTimeout(() => {
+        autoFitFirstFitRetryTimer = null
+        fitAutoFit()
+      }, AUTO_FIT_FIRST_FIT_RETRY_MS)
+      return
+    }
+    revealAutoFit()
+    return
+  }
+
+  if (viewportWidth < AUTO_FIT_WIDE_MIN_WIDTH && !autoFitWideMode) {
+    requestAutoFitWide(viewportWidth)
+    return
+  }
+
+  const apply = () => applyAutoFitZoom(target)
+  const canTransition = !autoFitFirstFit &&
+    typeof document.startViewTransition === 'function' &&
+    !document.hidden
+  if (canTransition) {
+    if (autoFitTransitionActive) {
+      scheduleAutoFitFit()
+      return
+    }
+    autoFitTransitionActive = true
+    const root = document.documentElement
+    const previousBg = root.style.backgroundColor
+    const solidBg = getOpaqueAutoFitBackground()
+    const needsOpaqueBg = Boolean(solidBg) && isTransparentCssValue(previousBg)
+    if (needsOpaqueBg) root.style.backgroundColor = solidBg
+    const finishTransition = error => {
+      autoFitTransitionActive = false
+      if (error) console.warn('[app-page] Auto-fit view transition failed', error)
+      scheduleAutoFitFit()
+    }
+    try {
+      const transition = document.startViewTransition(async () => {
+        apply()
+        // Keep the old snapshot covering the live content while the browser
+        // settles the layout at the new zoom; only after that the new state
+        // is captured and the cross-fade starts.
+        try {
+          await waitForAutoFitSettle()
+        } catch (err) {
+          console.error('Error occurred while waiting for auto-fit settle', err)
+        } finally {
+          if (needsOpaqueBg) root.style.backgroundColor = previousBg
+        }
+      })
+      transition.finished.then(
+        () => finishTransition(null),
+        finishTransition
+      )
+    } catch (error) {
+      autoFitTransitionActive = false
+      console.warn('[app-page] Auto-fit view transition failed', error)
+      if (needsOpaqueBg) root.style.backgroundColor = previousBg
+      apply()
+    }
+    revealAutoFit()
+    return
+  }
+  // Fallback (first fit or no View Transitions support): apply directly. The
+  // content is already hidden during the first fit, so never hide an already
+  // visible widget here — that would create a blank-frame flicker.
+  apply()
+  autoFitFirstFit = false
+  requestAnimationFrame(revealAutoFit)
+}
+
+function startAutoFitIfWidget () {
+  if (!autoFitEnabled) return
+  document.documentElement.style.overflowX = 'hidden'
+  autoFitStartedAt = Date.now()
+  injectAutoFitTransitionStyles()
+  const scheduleResize = () => {
+    const width = document.documentElement.clientWidth
+    if (width === autoFitLastWidth && autoFitZoomApplied !== null) return
+    scheduleAutoFitFit()
+  }
+  if (typeof ResizeObserver === 'function') {
+    const observer = new ResizeObserver(scheduleResize)
+    observer.observe(document.documentElement)
+  }
+  if (document.fonts?.ready) {
+    document.fonts.ready.then(scheduleAutoFitFit).catch(() => {})
+  }
+  if (typeof MutationObserver === 'function') {
+    autoFitMutationObserver = new MutationObserver(() => {
+      autoFitLastMutationAt = Date.now()
+      scheduleAutoFitFit()
+    })
+    autoFitMutationObserver.observe(document.documentElement, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      characterData: true
+    })
+  }
+  window.addEventListener('load', scheduleAutoFitFit)
+  document.addEventListener('load', scheduleAutoFitFit, true)
+  fitAutoFit()
 }
 
 function injectNip07 (promise) {
@@ -179,6 +524,27 @@ function injectNip07 (promise) {
 
   // napp methods will use code='WINDOW_NAPP'
   const napp = {}
+  napp.getPersonaPublicKeys = () => promise
+    .then(browserPort => ask(
+      browserPort,
+      { code: 'WINDOW_NAPP', payload: { op: 'getPersonaPublicKeys' } }
+    ))
+    .then(({ payload, error }) => {
+      if (error) throw error
+      return payload
+    })
+  napp.getWindowNostrFor = pubkey => {
+    const scoped = buildMethodsObject(nip07Methods, { ns: [''], userPk: pubkey })
+    scoped.ns = (nsName, ...nsParams) =>
+      buildMethodsObject(nip07Methods, { ns: [nsName, ...nsParams], userPk: pubkey })
+    scoped.withSharedKey = (...withSharedKeyParams) =>
+      buildMethodsObject(nip07Methods, {
+        ns: [''],
+        with_shared_key: withSharedKeyParams,
+        userPk: pubkey
+      })
+    return scoped
+  }
 
   Object.assign(window, { nostr, napp })
 }

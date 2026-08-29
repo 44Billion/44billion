@@ -11,7 +11,8 @@ export async function askNip07 (
     isLocked = false,
     onSignerRequestAttention,
     requestPermission,
-    app
+    app,
+    permissionMeta
   } = {}
 ) {
   guardSignerRequest({
@@ -31,7 +32,8 @@ export async function askNip07 (
         meta: {
           params,
           ...(scope === undefined ? {} : { scope }),
-          ...permission.meta
+          ...permission.meta,
+          ...(permissionMeta || {})
         }
       })
     }

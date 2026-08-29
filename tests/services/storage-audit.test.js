@@ -384,4 +384,132 @@ describe('storage audit', () => {
     assert.equal(result.plan.local.session_appById_retainedapp_name, undefined)
     assert.equal(result.issues.some(issue => issue.code === 'orphan_app_metadata_key'), false)
   })
+
+  it('accepts valid widgets, personas and persona selections', () => {
+    const state = validState({
+      local: {
+        session_workspaceByKey_ws1_pinnedAppIds: ['app1', 'app2'],
+        session_workspaceByKey_ws1_appById_app2_appKeys: ['key2'],
+        session_appByKey_key2_id: 'app2',
+        local_widgets: {
+          w1: {
+            appId: 'app1',
+            wsKey: 'ws1',
+            row: 0,
+            col: 0,
+            desired: { w: 2, h: 3 },
+            pinnedRoute: '/pinned',
+            createdAt: 1,
+            updatedAt: 1
+          }
+        },
+        local_personas: {
+          p1: { userPks: ['user'], createdAt: 1, updatedAt: 1 }
+        },
+        local_appPersonaSelections: {
+          ws1: { app1: 'p1', app2: '__default__' }
+        }
+      },
+      session: {
+        session_widgetByKey_w1_route: '/live',
+        session_widgetByKey_w1_visibility: 'open'
+      }
+    })
+    const result = auditPersistedState(state.local, state.session)
+
+    assert.equal(result.ok, true)
+  })
+
+  it('removes widgets whose app is not installed and their session keys', () => {
+    const state = validState({
+      local: {
+        local_widgets: {
+          w1: {
+            appId: 'appX',
+            wsKey: 'ws1',
+            row: 0,
+            col: 0,
+            desired: { w: 1, h: 1 },
+            pinnedRoute: '',
+            createdAt: 1,
+            updatedAt: 1
+          }
+        }
+      },
+      session: {
+        session_widgetByKey_w1_route: '/x',
+        session_widgetByKey_w1_visibility: 'open'
+      }
+    })
+    const result = auditPersistedState(state.local, state.session)
+
+    assert.equal(result.ok, false)
+    assert.deepEqual(result.plan.local.local_widgets, {})
+    assert.equal(result.plan.session.session_widgetByKey_w1_route, null)
+    assert.equal(result.plan.session.session_widgetByKey_w1_visibility, null)
+    assert.equal(result.issues.some(issue => issue.code === 'invalid_widget'), true)
+  })
+
+  it('removes invalid personas and stale selections but keeps the virtual default', () => {
+    const state = validState({
+      local: {
+        session_workspaceByKey_ws1_pinnedAppIds: ['app1', 'app2', 'app3', 'app4'],
+        session_workspaceByKey_ws1_appById_app2_appKeys: ['key2'],
+        session_workspaceByKey_ws1_appById_app3_appKeys: ['key3'],
+        session_workspaceByKey_ws1_appById_app4_appKeys: ['key4'],
+        session_appByKey_key2_id: 'app2',
+        session_appByKey_key3_id: 'app3',
+        session_appByKey_key4_id: 'app4',
+        local_personas: {
+          p1: { userPks: ['user'], createdAt: 1, updatedAt: 1 },
+          p2: { userPks: [], createdAt: 1, updatedAt: 1 },
+          '__default__': { userPks: ['user'], createdAt: 1, updatedAt: 1 }
+        },
+        local_appPersonaSelections: {
+          ws1: { app1: 'p1', app2: 'p2', app3: 'missing', app4: '__default__' }
+        }
+      }
+    })
+    const result = auditPersistedState(state.local, state.session)
+
+    assert.equal(result.ok, false)
+    assert.deepEqual(Object.keys(result.plan.local.local_personas), ['p1'])
+    assert.deepEqual(result.plan.local.local_appPersonaSelections, {
+      ws1: { app1: 'p1', app4: '__default__' }
+    })
+  })
+
+  it('cleans widgets and selections of a removed workspace', () => {
+    const state = validState({
+      local: {
+        session_workspaceByKey_ws1_userPk: '',
+        local_widgets: {
+          w1: {
+            appId: 'app1',
+            wsKey: 'ws1',
+            row: 0,
+            col: 0,
+            desired: { w: 1, h: 1 },
+            pinnedRoute: '',
+            createdAt: 1,
+            updatedAt: 1
+          }
+        },
+        local_appPersonaSelections: {
+          ws1: { app1: 'p1' }
+        },
+        local_personas: {
+          p1: { userPks: ['user'], createdAt: 1, updatedAt: 1 }
+        }
+      },
+      session: {
+        session_widgetByKey_w1_visibility: 'open'
+      }
+    })
+    const result = auditPersistedState(state.local, state.session)
+
+    assert.equal(result.ok, false)
+    assert.deepEqual(result.plan.local.local_widgets, {})
+    assert.deepEqual(result.plan.local.local_appPersonaSelections, {})
+  })
 })

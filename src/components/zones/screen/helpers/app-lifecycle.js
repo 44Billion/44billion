@@ -122,6 +122,10 @@ export async function uninstallAppFromWorkspace ({
   userPk,
   appSubdomain = null,
   preserveAppMetadata = false,
+  _localStorageArea = globalThis.localStorage,
+  _sessionStorageArea = globalThis.sessionStorage,
+  _removeWidgetsForApp = null,
+  _removeSelectionsForApp = null,
   _cleanupNostrDb = cleanupNostrDbAppForWorkspace,
   _askAppToClearData = askAppToClearData,
   _hasRecentSingleNappOpenForOwner = hasRecentSingleNappOpenForOwner,
@@ -144,6 +148,21 @@ export async function uninstallAppFromWorkspace ({
     appId,
     userPk,
     appSubdomain
+  })
+  const removeWidgetsForApp = _removeWidgetsForApp ||
+    (await import('#services/widgets/index.js')).removeWidgetsForAppInWorkspace
+  const removeSelectionsForApp = _removeSelectionsForApp ||
+    (await import('#services/personas/index.js')).removeSelectionsForAppInWorkspace
+  removeWidgetsForApp({
+    localStorageArea: _localStorageArea,
+    sessionStorageArea: _sessionStorageArea,
+    wsKey,
+    appId
+  })
+  removeSelectionsForApp({
+    localStorageArea: _localStorageArea,
+    wsKey,
+    appId
   })
   if (!removed.hasOtherAnyInstances && !preserveAppMetadata) {
     clearAppMetadata({ storage, appId })

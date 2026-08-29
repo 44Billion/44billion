@@ -74,6 +74,7 @@ import {
 } from '#hooks/use-active-workspace-order.js'
 import './menus/toolbar-more-menu.js'
 import './menus/other-users-app-groups.js'
+import './widgets/index.js'
 import { otherUsersGroupPopoverOpen$ } from './menus/other-users-app-groups.js'
 import {
   FIRST_ACCOUNT_ATTENTION_SIGNAL,
@@ -207,7 +208,8 @@ f('aScreen', function () {
       flex: 1;
       position: relative;
 
-      /* system views; above all; widgets view would be similar but below it with z-i:1 while sysviews z-i:2 */
+      /* system views stay above the whole #windows stack (z-index 1 here).
+         Inside #windows: background 0, widgets 1, workspace windows 2. */
       #system-views {
         display: ${isSystemRoute$() ? 'flex' : 'none'} !important;
         justify-content: center;
@@ -305,6 +307,7 @@ f('aWindows', function () {
         key: workspaceKey
       })`<workspace-window key=${workspaceKey} props=${{ workspaceKey, mruRankByWsKey$ }} />`
     )}
+    <widgets-layer />
     <windows-background />
   `
 })
@@ -680,6 +683,8 @@ f('appWindow', function () {
       }
       const cleanupApp = initAppWindow(bridgeState, {
         appKey,
+        wsKey,
+        instanceKind: 'window',
         initialRoute,
         appIframeRef$,
         appIframeSrc$,
@@ -739,7 +744,7 @@ f('appWindow', function () {
           position: absolute;
           inset: 0;
           visibility: hidden;
-          z-index: 1;
+          z-index: 2;
           flex: 0 1 100%;
           overflow: hidden;
 
@@ -1699,6 +1704,7 @@ f('appLaunchersMenu', function () {
   const store = useClosestStore('<a-menu>')
   const storage = useWebStorage(localStorage)
   const tabStorage = useWebStorage(sessionStorage)
+  const draft$ = useGlobalSignal('widgetsDraft', null)
   const { requestConfirmation } = useConfirmationDialogStore()
   const { openNewAppInstance } = useGlobalStore('useAppRouter')
   const menuProps = useStore(() => ({
@@ -1823,6 +1829,16 @@ f('appLaunchersMenu', function () {
         userPk: storage[`session_workspaceByKey_${workspaceKey}_userPk$`]()
       })
     },
+    addWidget () {
+      const { id: appId, key: appKey, workspaceKey } = this.app$()
+      const pinnedRoute = storage[`session_appByKey_${appKey}_route$`]() || ''
+      this.close() // close menu
+      draft$({
+        appId,
+        wsKey: workspaceKey,
+        pinnedRoute
+      })
+    },
     async deleteApp () {
       try {
         await requestConfirmation({
@@ -1855,6 +1871,7 @@ f('appLaunchersMenu', function () {
         openApp,
         bringToFirst,
         newWindow,
+        addWidget,
         minimizeApp,
         closeApp,
         removeApp,
@@ -1918,6 +1935,10 @@ f('appLaunchersMenu', function () {
         <div class=${{ invisible: appKeys.length <= 1 }}>
           <div class='icon-wrapper-271yiduh'><icon-remove props=${{ size: '16px' }} /></div>
           <div class='menu-label' onclick=${removeApp}>${t('Remove Window')}</div>
+        </div>
+        <div>
+          <div class='icon-wrapper-271yiduh'><icon-dots props=${{ size: '16px' }} /></div>
+          <div class='menu-label' onclick=${addWidget}>${t('Add Widget')}</div>
         </div>
         <div class=${{ invisible: visibility !== 'open' }}>
           <div class='icon-wrapper-271yiduh'><icon-minimize props=${{ size: '16px' }} /></div>
@@ -2143,6 +2164,7 @@ function getLocales () {
     Minimize: { en: 'Minimize', fr: 'Réduire', it: 'Riduci', de: 'Minimieren', es: 'Minimizar', 'pt-BR': 'Minimizar', ru: 'Свернуть', 'zh-CN': '最小化', 'zh-TW': '最小化', ja: '最小化', ko: '최소화' },
     Close: { en: 'Close', fr: 'Fermer', it: 'Chiudi', de: 'Schließen', es: 'Cerrar', 'pt-BR': 'Fechar', ru: 'Закрыть', 'zh-CN': '关闭', 'zh-TW': '關閉', ja: '閉じる', ko: '닫기' },
     'Remove Window': { en: 'Remove Window', fr: 'Retirer la fenêtre', it: 'Rimuovi finestra', de: 'Fenster entfernen', es: 'Quitar ventana', 'pt-BR': 'Remover Janela', ru: 'Убрать окно', 'zh-CN': '移除窗口', 'zh-TW': '移除視窗', ja: 'ウィンドウを取り除く', ko: '창 제거' },
+    'Add Widget': { en: 'Add Widget', fr: 'Ajouter un widget', it: 'Aggiungi widget', de: 'Widget hinzufügen', es: 'Añadir widget', 'pt-BR': 'Adicionar Widget', ru: 'Добавить виджет', 'zh-CN': '添加小组件', 'zh-TW': '新增小工具', ja: 'ウィジェットを追加', ko: '위젯 추가' },
     Delete: { en: 'Delete', fr: 'Supprimer', it: 'Elimina', de: 'Löschen', es: 'Eliminar', 'pt-BR': 'Excluir', ru: 'Удалить', 'zh-CN': '删除', 'zh-TW': '刪除', ja: '削除', ko: '삭제' }
   }
 }

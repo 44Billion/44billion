@@ -184,6 +184,29 @@
       80% { transform: scale(1.1) rotate(8deg) translateY(-15px); }
       100% { transform: scale(1) rotate(0deg) translateY(0); }
     }
+
+    /* Compact widget space: keep the ostrich theme as a mini pixel-art
+       animation and drop the text/progress chrome. */
+    @media (max-width: 240px), (max-height: 240px) {
+      .loader-container {
+        padding: 6px;
+      }
+      .ostrich-wrapper {
+        width: 80px;
+        height: 96px;
+        margin-bottom: 0;
+      }
+      #pixel-ostrich {
+        margin: 28px auto;
+        transform: scale(0.5);
+        transform-origin: center top;
+      }
+      .progress-bar-container,
+      #progress-text,
+      #icon-display {
+        display: none;
+      }
+    }
   </style>
 </head>
 <body>

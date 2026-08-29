@@ -18,7 +18,7 @@ import {
 } from './browser/nostrdb.js'
 import { appIdToAddressObj, addressObjToAppId } from '#helpers/app.js'
 import { base36NsiteToBase16, bytesToBase36Nsite } from 'libp2r2p/base36'
-import { base16ToBase62, base62ToBytes } from 'libp2r2p/base62'
+import { base16ToBase62, base62ToBase16, base62ToBytes } from 'libp2r2p/base62'
 import { appEncode, appDecode } from 'libp2r2p/nip19'
 import { tryDecodeAppUrl } from 'libp2r2p/url'
 import { streamFileChunksFromDb, getFileChunksFromDb, deleteFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
@@ -37,6 +37,12 @@ import { PROGRESS_VISIBLE_AFTER_COMPLETE_MS, stampProgressEntry } from '#helpers
 import NFileDownloader from '#services/nfile-downloader/index.js'
 import { getEffectiveLocale, subscribeLocaleChanged } from '#i18n/index.js'
 import { askNip07 } from './browser/nip07.js'
+import {
+  getAppPersonaSelection,
+  readPersonas,
+  readJson as readPersonaJson,
+  resolvePersonaUserPks
+} from '#services/personas/index.js'
 import {
   guardSignerRequest,
   readSignerAccountFlags
@@ -60,6 +66,21 @@ export const APP_PENDING_INDICATOR_DELAY_MS = 800
 function notifySignerRequestAttention ({ kind, userPk }) {
   if (!isActiveWorkspaceUser(userPk)) return
   requestSignerAttention({ kind, userPk })
+}
+
+function resolveActivePersonaUserPks ({ appId, wsKey, instanceUserPk }) {
+  const local = globalThis.localStorage
+  const personaId = getAppPersonaSelection({ localStorageArea: local, wsKey, appId })
+  const accountUserPks = readPersonaJson(local, 'session_accountUserPks', [])
+  const defaultUserPk = readPersonaJson(local, 'session_defaultUserPk', null)
+  const personas = readPersonas(local)
+  return resolvePersonaUserPks({
+    personaId,
+    personas,
+    accountUserPks,
+    defaultUserPk,
+    workspaceUserPk: instanceUserPk
+  })
 }
 
 export function retryAppBridge (state, { isAutomatic = false } = {}) {
@@ -611,7 +632,9 @@ function createAppPageMessageListener ({
   openApp,
   onFileNotCached,
   requestAssetBudgetConfirmation,
-  signal
+  signal,
+  wsKey,
+  instanceKind = 'window'
 }) {
   const appMetadataCache = new Map()
   const appFetchingState = new Map()
@@ -682,25 +705,66 @@ function createAppPageMessageListener ({
           break
         }
         case 'NIP07': {
-          if (
-            ['peek_public_key', 'get_public_key'].includes(e.data.payload.method) &&
-            e.data.payload.ns[0] === '' &&
+          const scopedUserPkHex = typeof e.data.payload?.userPk === 'string' ? e.data.payload.userPk : null
+          const isPeekOrGet = ['peek_public_key', 'get_public_key'].includes(e.data.payload.method)
+          const isDefaultScope = e.data.payload.ns[0] === '' &&
             e.data.payload.ns.length === 1 &&
             !e.data.payload.with_shared_key
-          ) {
-            reply(e, { payload: userPkB16 }, { to: appPagePort })
+          const isHexPubkey = value => typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value)
+          const personaPks = () => resolveActivePersonaUserPks({
+            appId,
+            wsKey,
+            instanceUserPk: state.userPk
+          })
+          const personaError = () => Object.assign(
+            new Error('Pubkey is not part of the app active persona'),
+            { code: 'PUBKEY_NOT_IN_PERSONA' }
+          )
+          if (isPeekOrGet && isDefaultScope) {
+            if (!scopedUserPkHex || scopedUserPkHex === userPkB16) {
+              reply(e, { payload: userPkB16 }, { to: appPagePort })
+              break
+            }
+            if (!isHexPubkey(scopedUserPkHex)) {
+              reply(e, { error: personaError() }, { to: appPagePort })
+              break
+            }
+            const targetUserPkB62 = base16ToBase62(scopedUserPkHex, { mode: 'integer', minLength: 43 })
+            if (!personaPks().includes(targetUserPkB62)) {
+              reply(e, { error: personaError() }, { to: appPagePort })
+              break
+            }
+            reply(e, { payload: scopedUserPkHex }, { to: appPagePort })
             break
+          }
+          let targetUserPkB16 = userPkB16
+          let targetUserPkB62 = state.userPk
+          if (scopedUserPkHex) {
+            if (!isHexPubkey(scopedUserPkHex)) {
+              reply(e, { error: personaError() }, { to: appPagePort })
+              break
+            }
+            targetUserPkB62 = base16ToBase62(scopedUserPkHex, { mode: 'integer', minLength: 43 })
+            if (!personaPks().includes(targetUserPkB62)) {
+              reply(e, { error: personaError() }, { to: appPagePort })
+              break
+            }
+            targetUserPkB16 = scopedUserPkHex
           }
           const { ns, with_shared_key: withSharedKey, method, params = [] } = e.data.payload
           const appMetadata = await getAppMetadata(appId, appAddress, { appMetadataCache, appFetchingState, timeoutMs: 0 })
-          const accountFlags = readSignerAccountFlags(state.userPk, { defaultUserPk })
+          const accountFlags = readSignerAccountFlags(targetUserPkB62, { defaultUserPk })
           let msg
           try {
-            msg = await askNip07(askVault, userPkB16, { ns, withSharedKey, method, params }, {
+            msg = await askNip07(askVault, targetUserPkB16, { ns, withSharedKey, method, params }, {
               ...accountFlags,
-              onSignerRequestAttention: kind => notifySignerRequestAttention({ kind, userPk: state.userPk }),
+              onSignerRequestAttention: kind => notifySignerRequestAttention({ kind, userPk: targetUserPkB62 }),
               requestPermission,
-              app: appMetadata
+              app: appMetadata,
+              permissionMeta: {
+                ...(instanceKind === 'widget' ? { isWidget: true } : {}),
+                ...(scopedUserPkHex ? { accountUserPk: scopedUserPkHex } : {})
+              }
             })
           } catch (err) {
             msg = { error: err }
@@ -720,16 +784,31 @@ function createAppPageMessageListener ({
           // Only live windows keep a route: ignore reports that arrive after
           // the instance was closed (e.g. a pagehide right before removal).
           let visibility
-          try {
-            visibility = JSON.parse(sessionStorage.getItem(`session_appByKey_${appKey}_visibility`))
-          } catch (error) {
-            console.warn('[app-bridge] Failed to parse app instance visibility', {
-              appKey,
-              error
-            })
+          if (instanceKind === 'widget') {
+            try {
+              visibility = JSON.parse(sessionStorage.getItem(`session_widgetByKey_${appKey}_visibility`))
+            } catch (error) {
+              console.warn('[app-bridge] Failed to parse widget instance visibility', {
+                appKey,
+                error
+              })
+            }
+          } else {
+            try {
+              visibility = JSON.parse(sessionStorage.getItem(`session_appByKey_${appKey}_visibility`))
+            } catch (error) {
+              console.warn('[app-bridge] Failed to parse app instance visibility', {
+                appKey,
+                error
+              })
+            }
           }
           if (visibility !== 'open' && visibility !== 'minimized') break
-          if (localStorage.getItem(`session_appByKey_${appKey}_route`) !== href) {
+          if (instanceKind === 'widget') {
+            if (sessionStorage.getItem(`session_widgetByKey_${appKey}_route`) !== href) {
+              setWebStorageItem(sessionStorage, `session_widgetByKey_${appKey}_route`, href)
+            }
+          } else if (localStorage.getItem(`session_appByKey_${appKey}_route`) !== href) {
             setWebStorageItem(localStorage, `session_appByKey_${appKey}_route`, href)
           }
           break
@@ -804,7 +883,59 @@ function createAppPageMessageListener ({
           break
         }
         case 'WINDOW_NAPP': {
-          handleNappRequest(e)
+          const { op } = e.data.payload || {}
+          if (op === 'getPersonaPublicKeys') {
+            const personaPks = resolveActivePersonaUserPks({
+              appId,
+              wsKey,
+              instanceUserPk: state.userPk
+            })
+            reply(e, {
+              payload: personaPks.map(pk => {
+                try {
+                  return base62ToBase16(pk, { mode: 'integer', byteLength: 32 }).toLowerCase()
+                } catch {
+                  return null
+                }
+              }).filter(pk => typeof pk === 'string')
+            }, { to: appPagePort })
+            break
+          }
+          const error = Object.assign(
+            new Error('Unknown window.napp operation'),
+            { code: 'UNKNOWN_NAPP_OP' }
+          )
+          reply(e, { error }, { to: appPagePort })
+          break
+        }
+        case 'AUTO_FIT': {
+          const { op } = e.data.payload || {}
+          const entry = state.windows.get(appKey)
+          if (op === 'reportOverflow') {
+            let wide = false
+            try {
+              wide = (await entry?.onAutoFitOverflow?.({
+                viewportWidth: e.data.payload?.viewportWidth
+              })) === true
+            } catch (error) {
+              console.warn('[app-bridge] Auto-fit wide request failed', error)
+            }
+            reply(e, { payload: { wide } }, { to: appPagePort })
+            break
+          }
+          if (op === 'done') {
+            try {
+              entry?.onAutoFitDone?.()
+            } catch (error) {
+              console.warn('[app-bridge] Auto-fit done callback failed', error)
+            }
+            break
+          }
+          const error = Object.assign(
+            new Error('Unknown auto-fit operation'),
+            { code: 'UNKNOWN_AUTO_FIT_OP' }
+          )
+          reply(e, { error }, { to: appPagePort })
           break
         }
         case 'STREAM_APP_ICON': {
@@ -929,7 +1060,8 @@ function createAppPageMessageListener ({
       code: 'BROWSER_READY',
       payload: {
         locale: getEffectiveLocale(),
-        bridgeId: state.bridgeId
+        bridgeId: state.bridgeId,
+        isWidget: instanceKind === 'widget'
       }
     })
     const unsubscribeLocale = subscribeLocaleChanged(locale => {
@@ -937,10 +1069,6 @@ function createAppPageMessageListener ({
     })
     signal.addEventListener('abort', unsubscribeLocale, { once: true })
   }
-}
-
-function handleNappRequest (e) {
-  return reply(e, { error: new Error('Not implemented yet') })
 }
 
 // Appends the launcher-internal bridge marker to an app iframe URL. The app
@@ -966,7 +1094,9 @@ export function initAppWindow (state, {
   onFileNotCached,
   requestAssetBudgetConfirmation,
   onAppReady,
-  signal
+  signal,
+  wsKey,
+  instanceKind = 'window'
 }) {
   const appAddress = appIdToAddressObj(state.appId)
   const userPkB36 = bytesToBase36Nsite(
@@ -1003,7 +1133,9 @@ export function initAppWindow (state, {
     openApp,
     onFileNotCached,
     requestAssetBudgetConfirmation,
-    signal
+    signal,
+    wsKey,
+    instanceKind
   })
 
   const onAppReadyMessage = e => {
