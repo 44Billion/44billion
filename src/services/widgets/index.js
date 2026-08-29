@@ -7,6 +7,16 @@ export const WIDGET_DEFAULT_DESIRED = { w: 4, h: 6 }
 export const WIDGET_MINIMIZED_TTL_MS = 5 * 60 * 1000
 export const WIDGET_AUTO_FIT_MIN_WIDTH = 360
 
+// Virtual-width decision shared by widgets and regular windows: the launcher
+// emulates `minWidth` (iframe resize + scale) only when the real area is
+// narrower and the app asked for a positive minimum.
+export function shouldApplyVirtualWidth (realWidth, minWidth) {
+  return Number.isFinite(realWidth) &&
+    Number.isFinite(minWidth) &&
+    minWidth > 0 &&
+    realWidth < minWidth
+}
+
 export function readJson (storage, key, fallback = undefined) {
   const raw = storage?.getItem?.(key)
   if (raw == null) return fallback

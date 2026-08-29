@@ -24,6 +24,7 @@ import {
   removeAppFromWorkspace,
   uninstallAppFromWorkspace
 } from './helpers/app-lifecycle.js'
+import { shouldApplyVirtualWidth } from '#services/widgets/index.js'
 import { resetDraftAppRuntimeData } from './helpers/draft-app-runtime-reset.js'
 import { usePermissionDialogStore } from '#zones/permission-dialog/index.js'
 import { getFileNotCachedText } from '#zones/file-not-cached-dialog/index.js'
@@ -431,6 +432,13 @@ f('appWindow', function () {
   const appReady$ = useSignal(false)
   const showPending$ = useSignal(false)
   const launchError$ = useSignal(null)
+  const windowRootRef$ = useSignal(null)
+  const windowWidth$ = useSignal(null)
+  const windowHeight$ = useSignal(null)
+  const minWidth$ = useSignal(0)
+  const virtualWidth$ = useSignal(false)
+  const iframeReevalHidden$ = useSignal(false)
+  const reeval = useMemo(() => ({ lastWidth: null, lastMinWidth: null }))
   const { cachingProgress$ } = useClosestStore('<napp-assets-caching-progress-bar>', {
     cachingProgress$: {
       // [filename]: {
@@ -456,6 +464,35 @@ f('appWindow', function () {
     routeVersion: 0,
     loadedRouteVersion: -1
   }))
+
+  useTask(({ track, cleanup }) => {
+    const root = track(() => windowRootRef$())
+    if (!root) return
+    const update = () => {
+      windowWidth$(root.clientWidth)
+      windowHeight$(root.clientHeight)
+    }
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(root)
+    cleanup(() => observer.disconnect())
+  }, { after: 'rendering' })
+
+  useTask(({ track }) => {
+    const width = track(() => windowWidth$())
+    const minWidth = track(() => minWidth$())
+    if (width == null) return
+    const applyVirtual = shouldApplyVirtualWidth(width, minWidth)
+    const widthChanged = reeval.lastWidth !== null && width !== reeval.lastWidth
+    const minWidthChanged = reeval.lastMinWidth !== null && minWidth !== reeval.lastMinWidth
+    reeval.lastWidth = width
+    reeval.lastMinWidth = minWidth
+    const modeChanged = virtualWidth$() !== applyVirtual
+    if (!widthChanged && !minWidthChanged && !modeChanged) return
+    virtualWidth$(applyVirtual)
+    if (modeChanged || (applyVirtual && minWidthChanged)) iframeReevalHidden$(true)
+  })
+
   const removeCurrentApp = async () => {
     const currentAppId = appId$()
     const currentUserPk = userPk$()
@@ -515,6 +552,9 @@ f('appWindow', function () {
         appReady$(false)
         showPending$(false)
         launchError$(null)
+        virtualWidth$(false)
+        iframeReevalHidden$(false)
+        minWidth$(0)
         runtime.startedGeneration = null
         runtime.appReady = false
         runtime.autoRetried = false
@@ -561,6 +601,17 @@ f('appWindow', function () {
             if (i !== -1) { v.splice(i, 1); v[eqKey] = Math.random() }
             return v
           })
+        },
+        onSetMinWidth (minWidth) {
+          const value = Math.round(Number(minWidth))
+          if (!Number.isFinite(value) || value < 0) {
+            console.warn('[app-window] Invalid minWidth', minWidth)
+            return
+          }
+          minWidth$(value)
+        },
+        onAutoFitDone () {
+          iframeReevalHidden$(false)
         },
         onRemove: removeCurrentApp
       })
@@ -722,9 +773,20 @@ f('appWindow', function () {
   )
 
   if (isClosed$()) return
+  const windowWidth = windowWidth$()
+  const windowHeight = windowHeight$()
+  const minWidth = minWidth$()
+  const iframeVisibility = iframeReevalHidden$() ? 'hidden' : ''
+  const iframeStyle = virtualWidth$() && windowWidth && windowWidth > 0 && minWidth > 0
+    ? `position:absolute;top:0;left:0;width:${minWidth}px;` +
+      `height:${Math.round(windowHeight * minWidth / windowWidth)}px;` +
+      `transform:scale(${windowWidth / minWidth});` +
+      `transform-origin:top left;${iframeVisibility ? `visibility:${iframeVisibility};` : ''}`
+    : (iframeVisibility ? `visibility:${iframeVisibility};` : '')
 
   return this.h`
     <div
+      ref=${windowRootRef$}
       style=${`
         background-color: ${cssVars.colors.bg};
       `}
@@ -826,6 +888,7 @@ f('appWindow', function () {
       : this.h`
         <iframe
           class='napp-page'
+          style=${iframeStyle}
           allow='fullscreen; screen-wake-lock; ambient-light-sensor;
                  autoplay; midi; encrypted-media;
                  accelerometer; gyroscope; magnetometer; xr-spatial-tracking;

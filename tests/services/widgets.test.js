@@ -20,6 +20,7 @@ const {
   removeWidget,
   removeWidgetsForAppInWorkspace,
   removeWidgetsForWorkspace,
+  shouldApplyVirtualWidth,
   setWidgetPinnedRoute,
   updateWidgetPosition,
   widgetSessionKey
@@ -210,5 +211,13 @@ describe('widgets service', () => {
     const a = placements.find(p => p.widgetKey === 'a')
     assert.equal(a.page, 2)
     assert.equal(a.col, 8)
+  })
+
+  it('shouldApplyVirtualWidth only applies for positive minWidth below the real width', () => {
+    assert.equal(shouldApplyVirtualWidth(200, 360), true)
+    assert.equal(shouldApplyVirtualWidth(400, 360), false)
+    assert.equal(shouldApplyVirtualWidth(200, 0), false)
+    assert.equal(shouldApplyVirtualWidth(200, -10), false)
+    assert.equal(shouldApplyVirtualWidth(200, '360'), false)
   })
 })

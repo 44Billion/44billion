@@ -911,16 +911,12 @@ function createAppPageMessageListener ({
         case 'AUTO_FIT': {
           const { op } = e.data.payload || {}
           const entry = state.windows.get(appKey)
-          if (op === 'reportOverflow') {
-            let wide = false
+          if (op === 'setMinWidth') {
             try {
-              wide = (await entry?.onAutoFitOverflow?.({
-                viewportWidth: e.data.payload?.viewportWidth
-              })) === true
+              entry?.onSetMinWidth?.(e.data.payload?.minWidth)
             } catch (error) {
-              console.warn('[app-bridge] Auto-fit wide request failed', error)
+              console.warn('[app-bridge] Auto-fit setMinWidth callback failed', error)
             }
-            reply(e, { payload: { wide } }, { to: appPagePort })
             break
           }
           if (op === 'done') {

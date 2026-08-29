@@ -39,7 +39,7 @@ function injectLocale () {
   tellParentImReady(p)
   await preventSwUsage()
   await p.promise
-  startAutoFitIfWidget()
+  startAutoFit()
 })()
 
 // Removes the launcher-internal bridge marker from the URL before the app's
@@ -91,7 +91,7 @@ function tellParentImReady (p) {
   }
   browserPort.addEventListener('message', e => {
     if (e.data.code !== 'BROWSER_READY') return p.reject()
-    autoFitEnabled = e.data.payload?.isWidget === true
+    autoFitEnabled = true
     autoFitPort = browserPort
     localeClient.setLocale(e.data.payload?.locale)
     const bridgeId = e.data.payload?.bridgeId
@@ -101,12 +101,8 @@ function tellParentImReady (p) {
         payload: { bridgeId }
       })
     }
-    if (autoFitEnabled) {
-      document.documentElement.style.overflowX = 'hidden'
-      scheduleAutoFitReveal(AUTO_FIT_FIRST_FIT_TIMEOUT_MS)
-    } else {
-      revealAutoFit()
-    }
+    document.documentElement.style.overflowX = 'hidden'
+    scheduleAutoFitReveal(AUTO_FIT_FIRST_FIT_TIMEOUT_MS)
     p.resolve(browserPort)
   }, { once: true })
   browserPort.addEventListener('message', e => {
@@ -116,10 +112,10 @@ function tellParentImReady (p) {
   tell(window.parent, readyMsg, { targetOrigin: '*', transfer: [appPagePortForBrowser] })
 }
 
-// Widget auto-fit: when the app runs inside a widget, measure horizontal
-// overflow at 100% zoom and apply CSS `zoom` so the content fits the widget's
-// cells. The launcher cannot read scrollWidth across origins, so this must
-// run inside the app page. No app cooperation is required.
+// Auto-fit: measure horizontal overflow at 100% zoom and apply CSS `zoom` so
+// the content fits the instance area (widget cell or app window). The launcher
+// cannot read scrollWidth across origins, so this must run inside the app
+// page. No app cooperation is required for the default behavior.
 const AUTO_FIT_MIN_ZOOM = 0.25
 const AUTO_FIT_OVERFLOW_EPSILON = 2
 const AUTO_FIT_DEBOUNCE_MS = 150
@@ -129,7 +125,6 @@ const AUTO_FIT_FIRST_FIT_RETRY_MS = 150
 const AUTO_FIT_FIRST_FIT_TIMEOUT_MS = 5000
 const AUTO_FIT_STABLE_MS = 300
 const AUTO_FIT_SETTLE_TIMEOUT_MS = 500
-const AUTO_FIT_WIDE_MIN_WIDTH = 360
 let autoFitEnabled = false
 let autoFitRevealTimer = null
 let autoFitDebounceTimer = null
@@ -142,7 +137,6 @@ let autoFitLastMutationAt = 0
 let autoFitMutationObserver = null
 let autoFitTransitionActive = false
 let autoFitPort = null
-let autoFitWideMode = false
 
 function setAutoFitHidden (hidden) {
   document.documentElement.style.visibility = hidden ? 'hidden' : ''
@@ -262,79 +256,11 @@ function scheduleAutoFitFit () {
   autoFitDebounceTimer = setTimeout(fitAutoFit, AUTO_FIT_DEBOUNCE_MS)
 }
 
-function applyAutoFitZoomNow (target) {
-  applyAutoFitZoom(target)
-  autoFitFirstFit = false
-  requestAnimationFrame(revealAutoFit)
-}
-
-function waitForAutoFitViewport (targetWidth, timeoutMs) {
-  return new Promise(resolve => {
-    let done = false
-    const finish = () => {
-      if (done) return
-      done = true
-      resolve()
-    }
-    const check = () => {
-      if (document.documentElement.clientWidth >= targetWidth) return finish()
-      requestAnimationFrame(check)
-    }
-    check()
-    setTimeout(finish, timeoutMs)
-  })
-}
-
-async function requestAutoFitWide (viewportWidth) {
-  if (!autoFitPort) {
-    const target = computeAutoFitZoom()
-    applyAutoFitZoomNow(target)
-    return
-  }
-  setAutoFitHidden(true)
-  scheduleAutoFitReveal(AUTO_FIT_FIRST_FIT_TIMEOUT_MS)
-  let wide = false
-  try {
-    const result = await ask(autoFitPort, {
-      code: 'AUTO_FIT',
-      payload: { op: 'reportOverflow', viewportWidth }
-    }, { timeout: 500 })
-    wide = result?.payload?.wide === true && !result?.error
-  } catch (error) {
-    console.warn('[app-page] Auto-fit wide request failed', error)
-  }
-  if (!wide) {
-    autoFitWideMode = false
-    const target = computeAutoFitZoom()
-    applyAutoFitZoomNow(target)
-    return
-  }
-  autoFitWideMode = true
-  // Wait for the launcher to resize the iframe to the wide viewport, then
-  // let the regular fit run (ResizeObserver also triggers it).
-  await waitForAutoFitViewport(AUTO_FIT_WIDE_MIN_WIDTH, 1000)
-  if (document.documentElement.clientWidth < AUTO_FIT_WIDE_MIN_WIDTH - 1) {
-    autoFitWideMode = false
-    const target = computeAutoFitZoom()
-    applyAutoFitZoomNow(target)
-    return
-  }
-  fitAutoFit()
-}
-
 function fitAutoFit () {
   clearTimeout(autoFitDebounceTimer)
-  const viewportWidth = document.documentElement.clientWidth
   const target = computeAutoFitZoom()
   const current = autoFitZoomApplied ?? 1
   const unchanged = Math.abs(target - current) < AUTO_FIT_ZOOM_EPSILON
-  const inWideViewport = autoFitWideMode &&
-    viewportWidth >= AUTO_FIT_WIDE_MIN_WIDTH - 1
-
-  if (autoFitWideMode && !inWideViewport) {
-    // The launcher toggled wide off to re-evaluate at the real width.
-    autoFitWideMode = false
-  }
 
   if (unchanged) {
     if (autoFitFirstFit) {
@@ -354,11 +280,6 @@ function fitAutoFit () {
       return
     }
     revealAutoFit()
-    return
-  }
-
-  if (viewportWidth < AUTO_FIT_WIDE_MIN_WIDTH && !autoFitWideMode) {
-    requestAutoFitWide(viewportWidth)
     return
   }
 
@@ -417,7 +338,7 @@ function fitAutoFit () {
   requestAnimationFrame(revealAutoFit)
 }
 
-function startAutoFitIfWidget () {
+function startAutoFit () {
   if (!autoFitEnabled) return
   document.documentElement.style.overflowX = 'hidden'
   autoFitStartedAt = Date.now()
@@ -544,6 +465,19 @@ function injectNip07 (promise) {
         userPk: pubkey
       })
     return scoped
+  }
+  napp.setMinWidth = minWidth => {
+    const value = Math.round(Number(minWidth))
+    if (!Number.isFinite(value) || value < 0) {
+      console.warn('[app-page] Invalid setMinWidth value', minWidth)
+      return
+    }
+    if (autoFitPort) {
+      tell(autoFitPort, {
+        code: 'AUTO_FIT',
+        payload: { op: 'setMinWidth', minWidth: value }
+      })
+    }
   }
 
   Object.assign(window, { nostr, napp })

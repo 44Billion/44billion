@@ -29,6 +29,7 @@ import {
   removeWidget,
   readWidgetSessionValue,
   setWidgetPinnedRoute,
+  shouldApplyVirtualWidth,
   updateWidgetPosition,
   WIDGET_DEFAULT_DESIRED,
   WIDGET_AUTO_FIT_MIN_WIDTH,
@@ -199,7 +200,8 @@ f('widget-window', function () {
     showPending$: false,
     launchError$: null,
     wideMode$: false,
-    iframeReevalHidden$: false
+    iframeReevalHidden$: false,
+    minWidth$: WIDGET_AUTO_FIT_MIN_WIDTH
   }))
 
   const runtime = useMemo(() => ({
@@ -217,23 +219,22 @@ f('widget-window', function () {
     return placement ? placement.w * (CELL + GAP) - GAP : null
   })
 
-  // Re-evaluate wide mode when the cell width changes while wide is active:
-  // toggle the iframe back to the real width under cover and let the app page
-  // re-measure there (it re-requests wide only if overflow persists).
-  const reeval = useMemo(() => ({ lastCellWidth: null }))
+  // Apply/re-evaluate the virtual width whenever the cell width or the app's
+  // minWidth changes; toggles happen under cover (iframe hidden until `done`).
+  const reeval = useMemo(() => ({ lastCellWidth: null, lastMinWidth: null }))
   useTask(({ track }) => {
-    const wide = track(() => store.wideMode$())
     const cellWidth = track(() => cellWidth$())
+    const minWidth = track(() => store.minWidth$())
     if (cellWidth == null) return
-    const changed = reeval.lastCellWidth !== null && cellWidth !== reeval.lastCellWidth
+    const applyWide = shouldApplyVirtualWidth(cellWidth, minWidth)
+    const cellChanged = reeval.lastCellWidth !== null && cellWidth !== reeval.lastCellWidth
+    const minWidthChanged = reeval.lastMinWidth !== null && minWidth !== reeval.lastMinWidth
     reeval.lastCellWidth = cellWidth
-    if (!wide || !changed) return
-    store.wideMode$(false)
-    if (cellWidth >= WIDGET_AUTO_FIT_MIN_WIDTH) {
-      store.iframeReevalHidden$(false)
-    } else {
-      store.iframeReevalHidden$(true)
-    }
+    reeval.lastMinWidth = minWidth
+    const modeChanged = store.wideMode$() !== applyWide
+    if (!cellChanged && !minWidthChanged && !modeChanged) return
+    store.wideMode$(applyWide)
+    if (modeChanged || (applyWide && minWidthChanged)) store.iframeReevalHidden$(true)
   })
 
   const setVisibility = (visibility, { now = Date.now() } = {}) => {
@@ -325,6 +326,7 @@ f('widget-window', function () {
         store.showPending$(false)
         store.wideMode$(false)
         store.iframeReevalHidden$(false)
+        store.minWidth$(WIDGET_AUTO_FIT_MIN_WIDTH)
         runtime.appCleanup?.()
         runtime.appCleanup = null
         runtime.startedGeneration = null
@@ -347,13 +349,13 @@ f('widget-window', function () {
         onClose () {
           if (store.visibility$() === 'open') setVisibility('minimized')
         },
-        onAutoFitOverflow ({ viewportWidth }) {
-          const cellWidth = cellWidth$()
-          const wide = cellWidth != null &&
-            cellWidth < WIDGET_AUTO_FIT_MIN_WIDTH &&
-            viewportWidth < WIDGET_AUTO_FIT_MIN_WIDTH
-          if (wide) store.wideMode$(true)
-          return wide
+        onSetMinWidth (minWidth) {
+          const value = Math.round(Number(minWidth))
+          if (!Number.isFinite(value) || value < 0) {
+            console.warn('[widget-window] Invalid minWidth', minWidth)
+            return
+          }
+          store.minWidth$(value)
         },
         onAutoFitDone () {
           store.iframeReevalHidden$(false)
@@ -589,13 +591,14 @@ f('widget-window', function () {
   const wide = store.wideMode$() && placement?.w && placement?.h
   const cellWidth = placement.w * (CELL + GAP) - GAP
   const cellHeight = placement.h * (CELL + GAP) - GAP
-  const iframeVisibility = store.iframeReevalHidden$() ? 'hidden' : 'visible'
-  const iframeStyle = wide && cellWidth > 0
-    ? `position:absolute;top:0;left:0;width:${WIDGET_AUTO_FIT_MIN_WIDTH}px;` +
-      `height:${Math.round(cellHeight * WIDGET_AUTO_FIT_MIN_WIDTH / cellWidth)}px;` +
-      `transform:scale(${cellWidth / WIDGET_AUTO_FIT_MIN_WIDTH});` +
-      `transform-origin:top left;visibility:${iframeVisibility};`
-    : `visibility:${iframeVisibility};`
+  const iframeVisibility = store.iframeReevalHidden$() ? 'hidden' : ''
+  const virtualWidth = store.minWidth$()
+  const iframeStyle = wide && cellWidth > 0 && virtualWidth > 0
+    ? `position:absolute;top:0;left:0;width:${virtualWidth}px;` +
+      `height:${Math.round(cellHeight * virtualWidth / cellWidth)}px;` +
+      `transform:scale(${cellWidth / virtualWidth});` +
+      `transform-origin:top left;${iframeVisibility ? `visibility:${iframeVisibility};` : ''}`
+    : (iframeVisibility ? `visibility:${iframeVisibility};` : '')
 
   return this.h`
     <div
