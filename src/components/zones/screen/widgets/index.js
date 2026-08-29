@@ -43,24 +43,29 @@ const t = getT(widgetsLocales)
 const CELL = 40
 const GAP = 20
 const LONG_PRESS_MS = 600
+const DOT_SIZE = 8
+const DOT_GAP = 8
 
 function computeGridSize (el) {
   const w = el?.clientWidth ?? 0
   const h = el?.clientHeight ?? 0
-  const cols = Math.max(1, Math.floor((w + GAP) / (CELL + GAP)))
-  const rows = Math.max(1, Math.floor((h + GAP) / (CELL + GAP)))
+  const cols = Math.max(1, Math.floor((w - GAP) / (CELL + GAP)))
+  const rows = Math.max(1, Math.floor(h / (CELL + GAP)))
   return {
     cols,
     rows,
     pageWidth: cols * CELL + (cols - 1) * GAP,
-    pageHeight: rows * CELL + (rows - 1) * GAP
+    pageHeight: rows * CELL + (rows - 1) * GAP,
+    viewportWidth: w,
+    viewportHeight: h
   }
 }
 
 function placementStyle (placement, grid) {
   if (!placement || !grid) return null
-  const col = placement.col % grid.cols
-  return `left:${col * (CELL + GAP)}px;top:${placement.row * (CELL + GAP)}px;` +
+  // `col` is absolute across pages; the grid width and page step keep each
+  // page aligned, so no modulo is applied here.
+  return `left:${GAP + placement.col * (CELL + GAP)}px;top:${GAP + placement.row * (CELL + GAP)}px;` +
     `width:${placement.w * CELL + (placement.w - 1) * GAP}px;` +
     `height:${placement.h * CELL + (placement.h - 1) * GAP}px`
 }
@@ -72,11 +77,15 @@ f('widgets-layer', function () {
   const draft$ = useGlobalSignal('widgetsDraft', null)
   const store = useStore(() => ({
     elRef$: null,
-    grid$: { cols: 1, rows: 1, pageWidth: 0, pageHeight: 0 }
+    scrollRef$: null,
+    dotsRef$: null,
+    grid$: { cols: 1, rows: 1, pageWidth: 0, pageHeight: 0, viewportWidth: 0, viewportHeight: 0 },
+    currentPage$: 0,
+    dotsWidth$: 0
   }))
 
   useTask(({ track, cleanup }) => {
-    const el = track(() => store.elRef$())
+    const el = track(() => store.scrollRef$())
     if (!el) return
     const update = () => store.grid$(computeGridSize(el))
     update()
@@ -84,6 +93,29 @@ f('widgets-layer', function () {
     observer.observe(el)
     cleanup(() => observer.disconnect())
   }, { after: 'rendering' })
+
+  useTask(({ track, cleanup }) => {
+    const el = track(() => store.dotsRef$())
+    if (!el) return
+    const update = () => store.dotsWidth$(el.clientWidth)
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(el)
+    cleanup(() => observer.disconnect())
+  }, { after: 'rendering' })
+
+  useTask(({ track, cleanup }) => {
+    const el = track(() => store.scrollRef$())
+    if (!el) return
+    const update = () => {
+      const step = store.grid$().pageWidth + GAP
+      if (step <= 0) return
+      store.currentPage$(Math.round(el.scrollLeft / step))
+    }
+    update()
+    el.addEventListener('scroll', update, { passive: true })
+    cleanup(() => el.removeEventListener('scroll', update))
+  })
 
   const activeWsKey$ = useComputed(() => order$()[0] ?? null)
   const wsWidgets$ = useComputed(() => {
@@ -109,6 +141,19 @@ f('widgets-layer', function () {
     return map
   })
   const pageCount$ = useComputed(() => layout$().pageCount)
+  const pageStep$ = useComputed(() => Math.max(store.grid$().pageWidth + GAP, 1))
+  const maxDots$ = useComputed(() =>
+    Math.max(1, Math.floor((store.dotsWidth$() + DOT_GAP) / (DOT_SIZE + DOT_GAP)))
+  )
+  const visiblePages$ = useComputed(() => {
+    const total = Math.max(1, pageCount$())
+    const current = Math.min(Math.max(0, store.currentPage$()), total - 1)
+    const max = maxDots$()
+    if (total <= max) return Array.from({ length: total }, (_, index) => index)
+    const half = Math.floor((max - 1) / 2)
+    const start = Math.max(0, Math.min(current - half, total - max))
+    return Array.from({ length: max }, (_, index) => start + index)
+  })
   const widgetKeys$ = useComputed(() => {
     const wsKey = activeWsKey$()
     const widgets = storage.local_widgets$() ?? {}
@@ -118,7 +163,43 @@ f('widgets-layer', function () {
   const grid = store.grid$()
   const pageWidth = Math.max(grid.pageWidth, 1)
   const pageCount = Math.max(1, pageCount$())
+  const pageStep = pageWidth + GAP
+  const contentWidth = pageCount * pageWidth + (pageCount + 1) * GAP
+  // Keep enough trailing space so every page (including the last) can align
+  // its left margin to the viewport edge instead of being clamped mid-page.
+  const gridWidth = Math.max(
+    contentWidth,
+    (grid.viewportWidth || 0) + (pageCount - 1) * pageStep
+  )
   const draft = draft$()
+  const goToPage = page => {
+    const el = store.scrollRef$()
+    if (!el) return
+    el.scrollTo({
+      left: Math.max(0, Math.min(page, pageCount - 1)) * pageStep$(),
+      behavior: 'smooth'
+    })
+  }
+  const swipe = useMemo(() => ({ startX: null, suppressClick: false }))
+  const onDotsPointerDown = event => {
+    swipe.startX = event.clientX
+    swipe.suppressClick = false
+  }
+  const onDotsPointerUp = event => {
+    if (swipe.startX == null) return
+    const dx = event.clientX - swipe.startX
+    swipe.startX = null
+    if (Math.abs(dx) < 40) return
+    swipe.suppressClick = true
+    goToPage(store.currentPage$() + (dx < 0 ? 1 : -1))
+  }
+  const onDotClick = page => {
+    if (swipe.suppressClick) {
+      swipe.suppressClick = false
+      return
+    }
+    goToPage(page)
+  }
 
   return this.h`
     <div id='widgets-layer' ref=${store.elRef$} class='widgets-layer-scope'>
@@ -127,39 +208,99 @@ f('widgets-layer', function () {
           position: absolute;
           inset: 0;
           z-index: 1;
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+          pointer-events: none;
+        }
+        .widgets-layer-scope#widgets-layer #widgets-scroll {
+          flex: 1;
+          min-height: 0;
+          position: relative;
           overflow-x: auto;
           overflow-y: hidden;
           pointer-events: none;
-          scrollbar-width: thin;
+          scrollbar-width: none;
+        }
+        .widgets-layer-scope#widgets-layer #widgets-scroll::-webkit-scrollbar {
+          display: none;
         }
         .widgets-layer-scope#widgets-layer #widgets-grid {
           position: relative;
           height: 100%;
-          width: ${pageWidth * pageCount}px;
+          width: ${gridWidth}px;
           pointer-events: none;
         }
         .widgets-layer-scope#widgets-layer widget-window {
           pointer-events: auto;
         }
+        .widgets-layer-scope#widgets-layer #widgets-dots {
+          flex: 0 0 ${GAP}px;
+          height: ${GAP}px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: ${DOT_GAP}px;
+          pointer-events: auto;
+          touch-action: pan-y;
+        }
+        .widgets-layer-scope#widgets-layer .widget-page-dot {
+          width: ${DOT_SIZE}px;
+          height: ${DOT_SIZE}px;
+          border: 0;
+          padding: 0;
+          border-radius: 50%;
+          cursor: pointer;
+          background-color: ${cssVars.colors.fg3};
+          opacity: .55;
+        }
+        .widgets-layer-scope#widgets-layer .widget-page-dot.active {
+          background-color: ${cssVars.colors.bgAccentPrimary};
+          opacity: 1;
+        }
       `}</style>
-      <div id='widgets-grid'>
+      <div id='widgets-scroll' ref=${store.scrollRef$}>
+        <div id='widgets-grid'>
+          <div style="display: contents"></div>
+          ${widgetKeys$().map(key => this.h({ key })`
+            <widget-window
+              props=${{
+                widgetKey: key,
+                layout$: placementsByKey$,
+                grid$: store.grid$,
+                pageCount$
+              }}
+            />
+          `)}
+          ${draft
+            ? this.h`<widget-creation-overlay props=${{
+              appId: draft.appId,
+              wsKey: draft.wsKey,
+              pinnedRoute: draft.pinnedRoute,
+              pageWidth,
+              grid$: store.grid$
+            }} />`
+            : ''}
+        </div>
+      </div>
+      <div
+        id='widgets-dots'
+        ref=${store.dotsRef$}
+        onpointerdown=${onDotsPointerDown}
+        onpointerup=${onDotsPointerUp}
+      >
         <div style="display: contents"></div>
-        ${widgetKeys$().map(key => this.h({ key })`
-          <widget-window
-            props=${{
-              widgetKey: key,
-              layout$: placementsByKey$,
-              grid$: store.grid$,
-              pageCount$
-            }}
-          />
-        `)}
-        ${draft
-          ? this.h`<widget-creation-overlay props=${{
-            appId: draft.appId,
-            wsKey: draft.wsKey,
-            pinnedRoute: draft.pinnedRoute
-          }} />`
+        ${pageCount > 1
+          ? visiblePages$().map(page => this.h({ key: page })`
+            <button
+              class=${{
+                'widget-page-dot': true,
+                active: page === store.currentPage$()
+              }}
+              aria-label=${`Page ${page + 1}`}
+              onclick=${() => onDotClick(page)}
+            ></button>
+          `)
           : ''}
       </div>
     </div>
@@ -619,6 +760,7 @@ f('widget-window', function () {
         .widget-window-root {
           position: absolute;
           overflow: hidden;
+          clip-path: inset(0);
           border-radius: 8px;
           background-color: ${cssVars.colors.bg};
           box-shadow: 0 2px 8px ${cssVars.colors.shadow};
@@ -743,20 +885,9 @@ f('widget-creation-overlay', function () {
   const draft$ = useGlobalSignal('widgetsDraft', null)
   const store = useStore(() => ({
     elRef$: null,
-    grid$: { cols: 1, rows: 1, pageWidth: 0, pageHeight: 0 },
     preview$: null,
     dragging$: false
   }))
-
-  useTask(({ track, cleanup }) => {
-    const el = track(() => store.elRef$())
-    if (!el) return
-    const update = () => store.grid$(computeGridSize(el))
-    update()
-    const observer = new ResizeObserver(update)
-    observer.observe(el)
-    cleanup(() => observer.disconnect())
-  }, { after: 'rendering' })
 
   useTask(({ cleanup }) => {
     const onKeyDown = event => {
@@ -767,7 +898,8 @@ f('widget-creation-overlay', function () {
   })
 
   const drag = useMemo(() => ({ active: false, startX: 0, startY: 0, startRow: 0, startCol: 0 }))
-  const grid = store.grid$()
+  const grid = this.props.grid$()
+  const pageWidth = Math.max(this.props.pageWidth ?? 1, 1)
   const desired = grid.cols >= WIDGET_DEFAULT_DESIRED.w && grid.rows >= WIDGET_DEFAULT_DESIRED.h
     ? WIDGET_DEFAULT_DESIRED
     : { w: 1, h: 1 }
@@ -789,7 +921,7 @@ f('widget-creation-overlay', function () {
   }
   const onMove = event => {
     if (!drag.active) return
-    const currentGrid = store.grid$()
+    const currentGrid = this.props.grid$()
     if (!currentGrid) return
     const cell = CELL + GAP
     let row = Math.round((event.clientY - drag.startY) / cell)
@@ -803,7 +935,7 @@ f('widget-creation-overlay', function () {
     drag.active = false
     window.removeEventListener('pointermove', onMove, { capture: true })
     window.removeEventListener('pointerup', onEnd, { capture: true })
-    const currentGrid = store.grid$()
+    const currentGrid = this.props.grid$()
     const preview = store.preview$()
     store.dragging$(false)
     store.preview$(null)
@@ -828,11 +960,15 @@ f('widget-creation-overlay', function () {
 
   if (!store.dragging$()) {
     return this.h`
-      <div class='widget-creation-overlay' ref=${store.elRef$} onclick=${cancel}>
+      <div
+        class='widget-creation-overlay'
+        ref=${store.elRef$}
+        onclick=${cancel}
+        style=${`position:absolute;left:${GAP}px;top:0;width:${pageWidth}px;height:100%;`}
+      >
         <style>${/* css */`
           .widget-creation-overlay {
             position: absolute;
-            inset: 0;
             z-index: 100;
             background-color: color-mix(in srgb, ${cssVars.colors.shadow} 35%, transparent);
             cursor: crosshair;
@@ -859,11 +995,14 @@ f('widget-creation-overlay', function () {
     `
   }
   return this.h`
-    <div class='widget-creation-overlay widget-creation-dragging' ref=${store.elRef$}>
+    <div
+      class='widget-creation-overlay widget-creation-dragging'
+      ref=${store.elRef$}
+      style=${`position:absolute;left:${GAP}px;top:0;width:${pageWidth}px;height:100%;`}
+    >
       <style>${/* css */`
         .widget-creation-overlay.widget-creation-dragging {
           position: absolute;
-          inset: 0;
           z-index: 100;
           background-color: color-mix(in srgb, ${cssVars.colors.shadow} 20%, transparent);
           cursor: grabbing;
@@ -878,7 +1017,7 @@ f('widget-creation-overlay', function () {
       `}</style>
       <div
         class='widget-creation-preview'
-        style=${placementStyle(store.preview$() || initialPreview, store.grid$())}
+        style=${placementStyle(store.preview$() || initialPreview, this.props.grid$())}
       ></div>
     </div>
   `

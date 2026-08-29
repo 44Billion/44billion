@@ -65,6 +65,12 @@ describe('widgets and personas wiring', () => {
     assert.match(widgets, /Pin URL/)
     assert.match(widgets, /Remove Widget/)
     assert.match(widgets, /pending-indicator/)
+    assert.match(widgets, /widgets-dots/)
+    assert.match(widgets, /widget-page-dot/)
+    assert.match(widgets, /scrollbar-width: none/)
+    assert.match(widgets, /currentPage/)
+    assert.match(widgets, /GAP \+ placement\.col \* \(CELL \+ GAP\)/)
+    assert.doesNotMatch(widgets, /placement\.col % grid\.cols/)
   })
 
   it('keeps compact loading and the mini ostrich theme', async () => {
