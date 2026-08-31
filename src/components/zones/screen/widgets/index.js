@@ -49,6 +49,7 @@ const DOT_GAP = 8
 const DRAG_EDGE_ZONE = 48
 const DRAG_PAGE_FLIP_DELAY_MS = 450
 const DRAG_PAGE_FLIP_THROTTLE_MS = 1500
+const WIDGET_PLACEHOLDER_KEY = '__creation_placeholder__'
 
 function computeGridSize (el) {
   return computeEffectiveGrid(el?.clientWidth ?? 0, el?.clientHeight ?? 0)
@@ -67,6 +68,20 @@ function placementStyle (placement, grid) {
     `height:${placement.h * cell + (placement.h - 1) * gap}px;`
 }
 
+// Style used inside a viewport-fixed page overlay: the overlay root already
+// starts at the page content area (left margin), so only the page-local column
+// offset plus the global top margin are applied.
+function pageLocalPlacementStyle (placement, grid) {
+  if (!placement || !grid) return null
+  const cell = grid.cell || BASE_CELL
+  const gap = grid.gap || GAP
+  const margin = grid.margin || GAP
+  const col = placement.col % grid.cols
+  return `left:${col * (cell + gap)}px;top:${margin + placement.row * (cell + gap)}px;` +
+    `width:${placement.w * cell + (placement.w - 1) * gap}px;` +
+    `height:${placement.h * cell + (placement.h - 1) * gap}px;`
+}
+
 f('widgets-layer', function () {
   const storage = useWebStorage(localStorage)
   const tabStorage = useWebStorage(sessionStorage)
@@ -74,6 +89,7 @@ f('widgets-layer', function () {
   const draft$ = useGlobalSignal('widgetsDraft', null)
   const dragDraft$ = useGlobalSignal('widgetDragDraft', null)
   const dragEdge$ = useGlobalSignal('widgetDragEdge', null)
+  const creationDraft$ = useGlobalSignal('widgetCreationDraft', null)
   const store = useStore(() => ({
     elRef$: null,
     scrollRef$: null,
@@ -139,19 +155,32 @@ f('widgets-layer', function () {
   const layout$ = useComputed(() => {
     const grid = store.grid$()
     const widgets = wsWidgets$()
-    if (widgets.length === 0) return { placements: [], pageCount: 1 }
     const drag = dragDraft$()
-    const entries = drag?.widgetKey
+    let entries = drag?.widgetKey
       ? widgets.map(widget =>
         widget.widgetKey === drag.widgetKey
           ? { ...widget, row: drag.row, col: drag.col }
           : widget
       )
       : widgets
+    let anchorKey = drag?.widgetKey ?? null
+    const creation = creationDraft$()
+    if (creation) {
+      entries = [...entries, {
+        widgetKey: WIDGET_PLACEHOLDER_KEY,
+        row: creation.row,
+        col: creation.col,
+        desired: { w: creation.w, h: creation.h },
+        createdAt: 0,
+        order: -1
+      }]
+      anchorKey = WIDGET_PLACEHOLDER_KEY
+    }
+    if (widgets.length === 0 && !creation) return { placements: [], pageCount: 1 }
     return fitWidgets(entries, {
       viewportCols: grid.cols,
       viewportRows: grid.rows,
-      anchorKey: drag?.widgetKey ?? null
+      anchorKey
     })
   })
   const placementsByKey$ = useComputed(() => {
@@ -323,6 +352,15 @@ f('widgets-layer', function () {
           visible: dragEdge$() === 'right'
         }}
       ></div>
+      ${draft
+        ? this.h`<widget-creation-overlay props=${{
+          appId: draft.appId,
+          wsKey: draft.wsKey,
+          pinnedRoute: draft.pinnedRoute,
+          pageWidth,
+          grid$: store.grid$
+        }} />`
+        : ''}
       <div id='widgets-scroll' ref=${store.scrollRef$}>
         <div id='widgets-grid'>
           <div style="display: contents"></div>
@@ -335,15 +373,6 @@ f('widgets-layer', function () {
               }}
             />
           `)}
-          ${draft
-            ? this.h`<widget-creation-overlay props=${{
-              appId: draft.appId,
-              wsKey: draft.wsKey,
-              pinnedRoute: draft.pinnedRoute,
-              pageWidth,
-              grid$: store.grid$
-            }} />`
-            : ''}
         </div>
       </div>
       <div
@@ -1026,6 +1055,8 @@ f('widget-window', function () {
 
 f('widget-creation-overlay', function () {
   const draft$ = useGlobalSignal('widgetsDraft', null)
+  const creationDraft$ = useGlobalSignal('widgetCreationDraft', null)
+  const dragEdge$ = useGlobalSignal('widgetDragEdge', null)
   const store = useStore(() => ({
     elRef$: null,
     preview$: null,
@@ -1034,13 +1065,73 @@ f('widget-creation-overlay', function () {
 
   useTask(({ cleanup }) => {
     const onKeyDown = event => {
-      if (event.key === 'Escape') draft$(null)
+      if (event.key === 'Escape') cancelDrag()
     }
     window.addEventListener('keydown', onKeyDown)
     cleanup(() => window.removeEventListener('keydown', onKeyDown))
   })
 
-  const drag = useMemo(() => ({ active: false, startX: 0, startY: 0, startRow: 0, startCol: 0 }))
+  const drag = useMemo(() => ({
+    active: false,
+    startX: 0,
+    startY: 0,
+    startRow: 0,
+    startCol: 0,
+    lastClientX: 0,
+    flipTimer: null,
+    flipDir: 0,
+    lastFlipAt: 0
+  }))
+  const stopDragAutoFlip = () => {
+    clearTimeout(drag.flipTimer)
+    drag.flipTimer = null
+    drag.flipDir = 0
+    dragEdge$(null)
+  }
+  const scheduleDragAutoFlip = (scrollEl, dir) => {
+    if (drag.flipDir === dir && drag.flipTimer) return
+    drag.flipDir = dir
+    clearTimeout(drag.flipTimer)
+    const flipPage = () => {
+      drag.flipTimer = null
+      const elapsed = Date.now() - drag.lastFlipAt
+      if (elapsed < DRAG_PAGE_FLIP_THROTTLE_MS) {
+        if (drag.flipDir === dir) {
+          drag.flipTimer = setTimeout(flipPage, DRAG_PAGE_FLIP_THROTTLE_MS - elapsed)
+        }
+        return
+      }
+      const grid = this.props.grid$()
+      if (!grid || !scrollEl.isConnected) return
+      const step = grid.pageWidth + grid.gap
+      const current = Math.round(scrollEl.scrollLeft / step)
+      const next = Math.max(0, current + dir)
+      if (next === current) return
+      drag.lastFlipAt = Date.now()
+      drag.startCol += dir * grid.cols
+      creationDraft$(draft => draft
+        ? { ...draft, col: draft.col + dir * grid.cols }
+        : draft)
+      const scrollToPageAfterRender = () => {
+        if (!scrollEl.isConnected) return
+        scrollEl.scrollTo({ left: next * step, behavior: 'smooth' })
+        requestAnimationFrame(() => {
+          if (!scrollEl.isConnected) return
+          if (Math.round(scrollEl.scrollLeft / step) < next) {
+            scrollEl.scrollTo({ left: next * step, behavior: 'smooth' })
+          }
+        })
+      }
+      requestAnimationFrame(() => requestAnimationFrame(scrollToPageAfterRender))
+      const rect = scrollEl.getBoundingClientRect()
+      const stillInZone = dir > 0
+        ? drag.lastClientX >= rect.right - DRAG_EDGE_ZONE
+        : drag.lastClientX <= rect.left + DRAG_EDGE_ZONE
+      if (stillInZone) scheduleDragAutoFlip(scrollEl, dir)
+    }
+    drag.flipTimer = setTimeout(flipPage, DRAG_PAGE_FLIP_DELAY_MS)
+  }
+
   const grid = this.props.grid$()
   const pageWidth = Math.max(this.props.pageWidth ?? 1, 1)
   const desired = grid.cols >= WIDGET_DEFAULT_DESIRED.w && grid.rows >= WIDGET_DEFAULT_DESIRED.h
@@ -1052,11 +1143,23 @@ f('widget-creation-overlay', function () {
     if (drag.active) return
     event.preventDefault()
     event.stopPropagation()
+    const currentGrid = this.props.grid$()
+    const scrollEl = store.elRef$()?.closest?.('#widgets-scroll')
+    const step = currentGrid.pageWidth + currentGrid.gap
+    const currentPage = scrollEl && step > 0
+      ? Math.max(0, Math.round(scrollEl.scrollLeft / step))
+      : 0
     drag.active = true
     drag.startX = event.clientX
     drag.startY = event.clientY
     drag.startRow = 0
-    drag.startCol = 0
+    drag.startCol = currentPage * currentGrid.cols
+    creationDraft$({
+      col: drag.startCol,
+      row: 0,
+      w: desired.w,
+      h: desired.h
+    })
     store.preview$({ ...initialPreview })
     store.dragging$(true)
     window.addEventListener('pointermove', onMove, { capture: true })
@@ -1068,46 +1171,92 @@ f('widget-creation-overlay', function () {
     if (!currentGrid) return
     const cell = currentGrid.cell + currentGrid.gap
     let row = Math.round((event.clientY - drag.startY) / cell)
-    let col = Math.round((event.clientX - drag.startX) / cell)
+    let col = drag.startCol + Math.round((event.clientX - drag.startX) / cell)
     row = Math.max(0, Math.min(row, currentGrid.rows - desired.h))
-    col = Math.max(0, col)
-    store.preview$({ col, row, w: desired.w, h: desired.h })
+    const currentDraft = creationDraft$()
+    const currentPage = Math.max(
+      0,
+      Math.floor((currentDraft?.col ?? col) / currentGrid.cols)
+    )
+    const minCol = currentPage * currentGrid.cols
+    const maxCol = currentPage * currentGrid.cols +
+      Math.max(0, currentGrid.cols - desired.w)
+    col = Math.max(minCol, Math.min(col, maxCol))
+    creationDraft$(draft => draft
+      ? { ...draft, col, row }
+      : draft)
+    store.preview$({
+      col: col % currentGrid.cols,
+      row,
+      w: desired.w,
+      h: desired.h
+    })
+    const scrollEl = store.elRef$()?.closest?.('#widgets-scroll')
+    if (!scrollEl) return
+    drag.lastClientX = event.clientX
+    const rect = scrollEl.getBoundingClientRect()
+    const dir = event.clientX >= rect.right - DRAG_EDGE_ZONE
+      ? 1
+      : event.clientX <= rect.left + DRAG_EDGE_ZONE
+        ? -1
+        : 0
+    if (dir !== 0) {
+      const step = currentGrid.pageWidth + currentGrid.gap
+      const current = Math.round(scrollEl.scrollLeft / step)
+      dragEdge$(dir === 1 ? 'right' : current > 0 ? 'left' : null)
+      scheduleDragAutoFlip(scrollEl, dir)
+    } else {
+      dragEdge$(null)
+      stopDragAutoFlip()
+    }
   }
   const onEnd = () => {
     if (!drag.active) return
     drag.active = false
+    stopDragAutoFlip()
     window.removeEventListener('pointermove', onMove, { capture: true })
     window.removeEventListener('pointerup', onEnd, { capture: true })
     const currentGrid = this.props.grid$()
-    const preview = store.preview$()
+    const creation = creationDraft$()
     store.dragging$(false)
     store.preview$(null)
+    creationDraft$(null)
     const draft = draft$()
-    if (!draft || !preview || !currentGrid) return
-    const col = Math.min(preview.col, currentGrid.cols - preview.w)
-    const row = Math.min(preview.row, currentGrid.rows - preview.h)
+    if (!draft || !creation || !currentGrid) return
     const widgetKey = addWidget({
       localStorageArea: localStorage,
       appId: draft.appId,
       wsKey: draft.wsKey,
-      row,
-      col,
-      desired: { w: preview.w, h: preview.h },
+      row: creation.row,
+      col: creation.col,
+      desired: { w: creation.w, h: creation.h },
       pinnedRoute: draft.pinnedRoute || ''
     })
     writeWidgetSessionValue(sessionStorage, widgetKey, 'route', draft.pinnedRoute || '')
     writeWidgetSessionValue(sessionStorage, widgetKey, 'visibility', 'open')
     draft$(null)
   }
-  const cancel = () => draft$(null)
+  const cancelDrag = () => {
+    if (drag.active) {
+      drag.active = false
+      stopDragAutoFlip()
+      window.removeEventListener('pointermove', onMove, { capture: true })
+      window.removeEventListener('pointerup', onEnd, { capture: true })
+    }
+    store.dragging$(false)
+    store.preview$(null)
+    creationDraft$(null)
+    dragEdge$(null)
+    draft$(null)
+  }
 
   if (!store.dragging$()) {
     return this.h`
       <div
         class='widget-creation-overlay'
         ref=${store.elRef$}
-        onclick=${cancel}
-        style=${`position:absolute;left:${this.props.grid$().margin}px;top:0;width:${pageWidth}px;height:100%;`}
+        onclick=${cancelDrag}
+        style=${`position:absolute;left:${this.props.grid$().margin}px;top:0;bottom:${GAP}px;width:${pageWidth}px;`}
       >
         <style>${/* css */`
           .widget-creation-overlay {
@@ -1120,7 +1269,7 @@ f('widget-creation-overlay', function () {
         `}</style>
         <button
           class='widget-creation-placeholder'
-          style=${placementStyle({ col: initialPreview.col, row: initialPreview.row, ...desired }, grid)}
+          style=${pageLocalPlacementStyle({ col: initialPreview.col, row: initialPreview.row, ...desired }, grid)}
           onpointerdown=${beginDrag}
         >
           <style>${/* css */`
@@ -1141,7 +1290,7 @@ f('widget-creation-overlay', function () {
     <div
       class='widget-creation-overlay widget-creation-dragging'
       ref=${store.elRef$}
-      style=${`position:absolute;left:${this.props.grid$().margin}px;top:0;width:${pageWidth}px;height:100%;`}
+      style=${`position:absolute;left:${this.props.grid$().margin}px;top:0;bottom:${GAP}px;width:${pageWidth}px;`}
     >
       <style>${/* css */`
         .widget-creation-overlay.widget-creation-dragging {
@@ -1160,7 +1309,7 @@ f('widget-creation-overlay', function () {
       `}</style>
       <div
         class='widget-creation-preview'
-        style=${placementStyle(store.preview$() || initialPreview, this.props.grid$())}
+        style=${pageLocalPlacementStyle(store.preview$() || initialPreview, this.props.grid$())}
       ></div>
     </div>
   `
