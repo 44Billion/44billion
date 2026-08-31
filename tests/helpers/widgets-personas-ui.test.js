@@ -24,6 +24,7 @@ describe('widgets and personas wiring', () => {
     assert.match(appPage, /WIDGET_DRAG/)
     assert.match(appPage, /WIDGET_SELECT_MODE/)
     assert.match(appPage, /startWidgetDragListener/)
+    assert.match(appPage, /finalizeFirstFit/)
   })
 
   it('routes persona requests and scoped NIP07 calls through the app bridge', async () => {

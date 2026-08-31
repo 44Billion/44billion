@@ -466,9 +466,27 @@ function startAutoFit () {
     })
   }
   window.addEventListener('load', scheduleAutoFitFit)
+  window.addEventListener('load', finalizeFirstFit)
   document.addEventListener('load', scheduleAutoFitFit, true)
   fitAutoFit()
   startWidgetDragListener()
+}
+
+// First fit must never stay hidden forever: `window.load` is the hard deadline
+// for revealing content even if the DOM never settles (apps with continuous
+// mutations). A short grace period covers SPAs that render just after load.
+function finalizeFirstFit () {
+  if (!autoFitFirstFit) return
+  if (isAutoFitSettled()) {
+    autoFitFirstFit = false
+    fitAutoFit()
+    return
+  }
+  setTimeout(() => {
+    if (!autoFitFirstFit) return
+    autoFitFirstFit = false
+    fitAutoFit()
+  }, 800)
 }
 
 function injectNip07 (promise) {

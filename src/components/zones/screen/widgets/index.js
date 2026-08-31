@@ -534,7 +534,12 @@ f('widget-window', function () {
     const modeChanged = store.wideMode$() !== applyWide
     if (!cellChanged && !minWidthChanged && !modeChanged) return
     store.wideMode$(applyWide)
-    if (modeChanged || (applyWide && minWidthChanged)) store.iframeReevalHidden$(true)
+    // Cover only real changes after mount; the initial wide application is
+    // applied from the first render, so it must not depend on the app's
+    // `done` message to become visible.
+    if ((cellChanged || minWidthChanged) && (modeChanged || applyWide)) {
+      store.iframeReevalHidden$(true)
+    }
   })
 
   const setVisibility = (visibility, { now = Date.now() } = {}) => {
