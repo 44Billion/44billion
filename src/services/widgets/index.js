@@ -283,8 +283,15 @@ export function derivePage (col, viewportCols) {
 
 // Deterministic layout: preserves each widget's desired position/size as much
 // as the viewport allows, then resolves collisions row-major and grows pages
-// only when needed.
-export function fitWidgets (widgets, { viewportCols, viewportRows, initialPages = 1 } = {}) {
+// only when needed. When `anchorKey` is provided, that widget is fixed at its
+// (clamped) target position first and the remaining widgets reorganize around
+// it — used for live drag previews.
+export function fitWidgets (widgets, {
+  viewportCols,
+  viewportRows,
+  initialPages = 1,
+  anchorKey = null
+} = {}) {
   const cols = Math.max(1, Math.floor(Number(viewportCols) || 1))
   const rows = Math.max(1, Math.floor(Number(viewportRows) || 1))
   const entries = (Array.isArray(widgets) ? widgets : []).map((widget, index) => ({
@@ -340,6 +347,19 @@ export function fitWidgets (widgets, { viewportCols, viewportRows, initialPages 
     a.order - b.order
   )
 
+  if (anchorKey != null) {
+    const anchorIndex = sorted.findIndex(entry => entry.widgetKey === anchorKey)
+    if (anchorIndex !== -1) {
+      const [anchor] = sorted.splice(anchorIndex, 1)
+      occupy(
+        anchor,
+        pageOf(anchor),
+        clamp(anchor.row, rows - anchor.h),
+        clamp(anchor.col % cols, cols - anchor.w)
+      )
+    }
+  }
+
   for (const entry of sorted) {
     const startPage = pageOf(entry)
     const startRow = clamp(entry.row, rows - entry.h)
@@ -373,4 +393,20 @@ export function fitWidgets (widgets, { viewportCols, viewportRows, initialPages 
   }
 
   return { placements, pageCount }
+}
+
+// Applies fitted positions to multiple widgets in a single write. Positions
+// are [{ widgetKey, row, col }]; unknown keys are ignored.
+export function applyWidgetPositions ({ localStorageArea, positions, now = Date.now() }) {
+  const widgets = readWidgets(localStorageArea)
+  let changed = false
+  for (const position of Array.isArray(positions) ? positions : []) {
+    const widget = widgets[position?.widgetKey]
+    if (!widget) continue
+    widget.row = Math.max(0, Math.floor(Number(position.row) || 0))
+    widget.col = Math.max(0, Math.floor(Number(position.col) || 0))
+    widget.updatedAt = now
+    changed = true
+  }
+  if (changed) writeWidgets(localStorageArea, widgets)
 }

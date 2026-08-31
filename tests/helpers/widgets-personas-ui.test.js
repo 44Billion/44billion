@@ -71,6 +71,10 @@ describe('widgets and personas wiring', () => {
     assert.match(widgets, /currentPage/)
     assert.match(widgets, /margin \+ placement\.col \* \(cell \+ gap\)/)
     assert.doesNotMatch(widgets, /placement\.col % grid\.cols/)
+    assert.match(widgets, /widgetDragDraft/)
+    assert.match(widgets, /anchorKey/)
+    assert.match(widgets, /applyWidgetPositions/)
+    assert.match(widgets, /z-index:1000/)
   })
 
   it('keeps compact loading and the mini ostrich theme', async () => {

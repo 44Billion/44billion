@@ -25,6 +25,7 @@ import { formatAssetBudgetBytes } from '#services/app-asset-budget/index.js'
 import { getT } from '#i18n/index.js'
 import {
   addWidget,
+  applyWidgetPositions,
   BASE_CELL,
   computeEffectiveGrid,
   fitWidgets,
@@ -32,7 +33,6 @@ import {
   readWidgetSessionValue,
   setWidgetPinnedRoute,
   shouldApplyVirtualWidth,
-  updateWidgetPosition,
   WIDGET_DEFAULT_DESIRED,
   WIDGET_AUTO_FIT_MIN_WIDTH,
   WIDGET_MINIMIZED_TTL_MS,
@@ -61,7 +61,7 @@ function placementStyle (placement, grid) {
   return `left:${margin + placement.col * (cell + gap)}px;` +
     `top:${margin + placement.row * (cell + gap)}px;` +
     `width:${placement.w * cell + (placement.w - 1) * gap}px;` +
-    `height:${placement.h * cell + (placement.h - 1) * gap}px`
+    `height:${placement.h * cell + (placement.h - 1) * gap}px;`
 }
 
 f('widgets-layer', function () {
@@ -69,6 +69,7 @@ f('widgets-layer', function () {
   const tabStorage = useWebStorage(sessionStorage)
   const { order$ } = useActiveWorkspaceOrder(storage, tabStorage)
   const draft$ = useGlobalSignal('widgetsDraft', null)
+  const dragDraft$ = useGlobalSignal('widgetDragDraft', null)
   const store = useStore(() => ({
     elRef$: null,
     scrollRef$: null,
@@ -135,9 +136,18 @@ f('widgets-layer', function () {
     const grid = store.grid$()
     const widgets = wsWidgets$()
     if (widgets.length === 0) return { placements: [], pageCount: 1 }
-    return fitWidgets(widgets, {
+    const drag = dragDraft$()
+    const entries = drag?.widgetKey
+      ? widgets.map(widget =>
+        widget.widgetKey === drag.widgetKey
+          ? { ...widget, row: drag.row, col: drag.col }
+          : widget
+      )
+      : widgets
+    return fitWidgets(entries, {
       viewportCols: grid.cols,
-      viewportRows: grid.rows
+      viewportRows: grid.rows,
+      anchorKey: drag?.widgetKey ?? null
     })
   })
   const placementsByKey$ = useComputed(() => {
@@ -321,6 +331,7 @@ f('widget-window', function () {
   const layout$ = this.props.layout$
   const grid$ = this.props.grid$
   const pageCount$ = this.props.pageCount$
+  const dragDraft$ = useGlobalSignal('widgetDragDraft', null)
   const { askVault } = useVaultActor()
   const { requestPermission } = usePermissionDialogStore()
   const { requestConfirmation } = useConfirmationDialogStore()
@@ -340,7 +351,6 @@ f('widget-window', function () {
     minimizedAt$: null,
     controls$: false,
     dragging$: false,
-    dragPreview$: null,
     elRef$: null,
     appIframeRef$: null,
     appIframeSrc$: 'about:blank',
@@ -656,7 +666,8 @@ f('widget-window', function () {
     drag.startRow = placement.row
     drag.startCol = placement.col
     store.controls$(false)
-    store.dragPreview$({
+    dragDraft$({
+      widgetKey,
       col: placement.col,
       row: placement.row,
       w: placement.w,
@@ -687,53 +698,53 @@ f('widget-window', function () {
     }
     page = Math.max(0, Math.min(page, pageCount - 1))
     row = Math.max(0, Math.min(row, grid.rows - size.h))
-    store.dragPreview$({
-      col: page * grid.cols + col,
-      row,
-      w: size.w,
-      h: size.h
-    })
+    dragDraft$(draft => draft
+      ? {
+          ...draft,
+          col: page * grid.cols + col,
+          row
+        }
+      : draft)
   }
   const onDragEnd = () => {
     if (!drag.active) return
     drag.active = false
     window.removeEventListener('pointermove', onDragMove, { capture: true })
     window.removeEventListener('pointerup', onDragEnd, { capture: true })
-    const preview = store.dragPreview$()
+    const preview = dragDraft$()
     store.dragging$(false)
-    store.dragPreview$(null)
+    dragDraft$(null)
     if (!preview) return
     const grid = grid$()
     if (!grid) return
     const record = store.record$()
-    const otherWidgets = Object.entries(storage.local_widgets$() ?? {})
-      .filter(([, widget]) => widget?.wsKey === record?.wsKey && widget !== record)
+    if (!record) return
+    const allWidgets = Object.entries(storage.local_widgets$() ?? {})
+      .filter(([, widget]) => widget?.wsKey === record.wsKey)
       .map(([otherKey, widget]) => ({ ...widget, widgetKey: otherKey }))
-    const fitted = fitWidgets([
-      ...otherWidgets.map(widget => ({ widgetKey: widget.widgetKey, ...widget })),
-      {
-        widgetKey,
-        row: preview.row,
-        col: preview.col,
-        desired: record?.desired || WIDGET_DEFAULT_DESIRED,
-        createdAt: record?.createdAt || 0
-      }
-    ], { viewportCols: grid.cols, viewportRows: grid.rows })
-    const placed = fitted.placements.find(item => item.widgetKey === widgetKey)
-    if (!placed) return
-    updateWidgetPosition({
+    const entries = allWidgets.map(widget =>
+      widget.widgetKey === widgetKey
+        ? { ...widget, row: preview.row, col: preview.col }
+        : widget
+    )
+    const fitted = fitWidgets(entries, {
+      viewportCols: grid.cols,
+      viewportRows: grid.rows,
+      anchorKey: widgetKey
+    })
+    applyWidgetPositions({
       localStorageArea: localStorage,
-      widgetKey,
-      row: placed.row,
-      col: placed.col
+      positions: fitted.placements.map(position => ({
+        widgetKey: position.widgetKey,
+        row: position.row,
+        col: position.col
+      }))
     })
   }
 
   const record = store.record$()
   if (!record) return
-  const placement = store.dragging$()
-    ? (store.dragPreview$() ?? placement$())
-    : placement$()
+  const placement = placement$()
   const style = placementStyle(placement, grid$())
   if (!style) return
   const visibility = store.visibility$()
@@ -760,7 +771,7 @@ f('widget-window', function () {
         'widget-window-closed': isClosed,
         'widget-controls-visible': store.controls$() || store.dragging$()
       }}
-      style=${style}
+      style=${store.dragging$() ? `${style}z-index:1000;` : style}
       ref=${store.elRef$}
       onpointerdown=${onRootPointerDown}
       onpointerup=${onRootPointerUp}

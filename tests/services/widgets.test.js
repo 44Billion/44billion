@@ -13,6 +13,7 @@ mock.module('#f', {
 
 const {
   addWidget,
+  applyWidgetPositions,
   computeEffectiveGrid,
   derivePage,
   fitSize,
@@ -248,5 +249,60 @@ describe('widgets service', () => {
     assert.ok(grid.pageHeight <= grid.viewportHeight - grid.margin)
     const tiny = computeEffectiveGrid(1000, 40)
     assert.ok(tiny.rows >= 1)
+  })
+
+  it('fitWidgets anchors the dragged widget and reorganizes others around it', () => {
+    const { placements, pageCount } = fitWidgets([
+      { widgetKey: 'dragged', row: 0, col: 0, desired: { w: 2, h: 2 }, createdAt: 1 },
+      { widgetKey: 'other', row: 0, col: 0, desired: { w: 1, h: 1 }, createdAt: 2 }
+    ], {
+      viewportCols: 5,
+      viewportRows: 5,
+      anchorKey: 'dragged'
+    })
+    assert.equal(pageCount, 1)
+    const dragged = placements.find(p => p.widgetKey === 'dragged')
+    const other = placements.find(p => p.widgetKey === 'other')
+    assert.deepEqual([dragged.row, dragged.col], [0, 0])
+    assert.deepEqual([other.row, other.col], [0, 2])
+  })
+
+  it('fitWidgets anchor keeps its page and grows pageCount when needed', () => {
+    const { placements, pageCount } = fitWidgets([
+      { widgetKey: 'dragged', row: 0, col: 6, desired: { w: 1, h: 1 }, createdAt: 1 },
+      { widgetKey: 'other', row: 0, col: 0, desired: { w: 1, h: 1 }, createdAt: 2 }
+    ], {
+      viewportCols: 3,
+      viewportRows: 3,
+      anchorKey: 'dragged'
+    })
+    const dragged = placements.find(p => p.widgetKey === 'dragged')
+    assert.equal(dragged.page, 2)
+    assert.equal(pageCount, 3)
+  })
+
+  it('applyWidgetPositions updates multiple widgets in a single write', () => {
+    const { local } = widgetState({
+      local: {
+        local_widgets: {
+          w1: { appId: 'app1', wsKey: 'ws1', row: 0, col: 0, desired: { w: 1, h: 1 }, pinnedRoute: '', createdAt: 1, updatedAt: 1 },
+          w2: { appId: 'app1', wsKey: 'ws1', row: 1, col: 1, desired: { w: 1, h: 1 }, pinnedRoute: '', createdAt: 1, updatedAt: 1 }
+        }
+      }
+    })
+    applyWidgetPositions({
+      localStorageArea: local,
+      positions: [
+        { widgetKey: 'w1', row: 2, col: 3 },
+        { widgetKey: 'w2', row: 4, col: 5 },
+        { widgetKey: 'missing', row: 9, col: 9 }
+      ],
+      now: 500
+    })
+    const widgets = JSON.parse(local.getItem('local_widgets'))
+    assert.deepEqual([widgets.w1.row, widgets.w1.col], [2, 3])
+    assert.deepEqual([widgets.w2.row, widgets.w2.col], [4, 5])
+    assert.equal(widgets.w1.updatedAt, 500)
+    assert.equal(widgets.missing, undefined)
   })
 })
