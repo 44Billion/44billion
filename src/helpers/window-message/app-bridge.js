@@ -43,6 +43,7 @@ import {
   readJson as readPersonaJson,
   resolvePersonaUserPks
 } from '#services/personas/index.js'
+import { setWidgetPinnedRoute } from '#services/widgets/index.js'
 import {
   guardSignerRequest,
   readSignerAccountFlags
@@ -807,6 +808,18 @@ function createAppPageMessageListener ({
           if (instanceKind === 'widget') {
             if (sessionStorage.getItem(`session_widgetByKey_${appKey}_route`) !== href) {
               setWebStorageItem(sessionStorage, `session_widgetByKey_${appKey}_route`, href)
+              try {
+                setWidgetPinnedRoute({
+                  localStorageArea: localStorage,
+                  widgetKey: appKey,
+                  pinnedRoute: href
+                })
+              } catch (error) {
+                console.warn('[app-bridge] Failed to auto-pin widget route', {
+                  appKey,
+                  error
+                })
+              }
             }
           } else if (localStorage.getItem(`session_appByKey_${appKey}_route`) !== href) {
             setWebStorageItem(localStorage, `session_appByKey_${appKey}_route`, href)
@@ -934,6 +947,16 @@ function createAppPageMessageListener ({
           reply(e, { error }, { to: appPagePort })
           break
         }
+        case 'WIDGET_DRAG': {
+          const entry = state.windows.get(appKey)
+          const { op, x, y } = e.data.payload || {}
+          try {
+            entry?.onWidgetDrag?.({ op, x, y })
+          } catch (error) {
+            console.warn('[app-bridge] Widget drag callback failed', error)
+          }
+          break
+        }
         case 'STREAM_APP_ICON': {
           try {
             const favicon = appFiles.getFaviconMetadata()
@@ -1052,6 +1075,8 @@ function createAppPageMessageListener ({
       }
     }, { signal })
     appPagePort.start()
+    const widgetEntry = state.windows.get(appKey)
+    if (widgetEntry) widgetEntry.widgetPort = appPagePort
     tell(appPagePort, {
       code: 'BROWSER_READY',
       payload: {
@@ -1063,7 +1088,11 @@ function createAppPageMessageListener ({
     const unsubscribeLocale = subscribeLocaleChanged(locale => {
       tell(appPagePort, { code: 'LOCALE_CHANGED', payload: { locale } })
     })
-    signal.addEventListener('abort', unsubscribeLocale, { once: true })
+    signal.addEventListener('abort', () => {
+      unsubscribeLocale()
+      const entry = state.windows.get(appKey)
+      if (entry?.widgetPort === appPagePort) entry.widgetPort = null
+    }, { once: true })
   }
 }
 

@@ -14,6 +14,7 @@ mock.module('#f', {
 const {
   addWidget,
   applyWidgetPositions,
+  applyWidgetResize,
   computeEffectiveGrid,
   derivePage,
   fitSize,
@@ -22,6 +23,7 @@ const {
   removeWidget,
   removeWidgetsForAppInWorkspace,
   removeWidgetsForWorkspace,
+  resizeWidgetFromNode,
   shouldApplyVirtualWidth,
   setWidgetPinnedRoute,
   updateWidgetPosition,
@@ -304,5 +306,56 @@ describe('widgets service', () => {
     assert.deepEqual([widgets.w2.row, widgets.w2.col], [4, 5])
     assert.equal(widgets.w1.updatedAt, 500)
     assert.equal(widgets.missing, undefined)
+  })
+
+  it('resizeWidgetFromNode handles the four nodes with min 1 cell and page clamps', () => {
+    const base = { row: 1, col: 4, desired: { w: 2, h: 3 } }
+    // col 4 with 4 cols/page => page 1, pageCol 0, maxW = 4
+    assert.deepEqual(
+      resizeWidgetFromNode({ widget: base, node: 'right', deltaCols: 2, viewportCols: 4, viewportRows: 6 }),
+      { row: 1, col: 4, desired: { w: 4, h: 3 } }
+    )
+    assert.deepEqual(
+      resizeWidgetFromNode({ widget: base, node: 'right', deltaCols: 99, viewportCols: 4, viewportRows: 6 }),
+      { row: 1, col: 4, desired: { w: 4, h: 3 } }
+    )
+    assert.deepEqual(
+      resizeWidgetFromNode({ widget: base, node: 'right', deltaCols: -2, viewportCols: 4, viewportRows: 6 }),
+      { row: 1, col: 4, desired: { w: 1, h: 3 } }
+    )
+  })
+
+  it('resizeWidgetFromNode adjusts col/row for left and top nodes', () => {
+    const base = { row: 2, col: 5, desired: { w: 2, h: 2 } }
+    // col 5 => page 1, pageCol 1; extending left keeps the right edge at col 7
+    assert.deepEqual(
+      resizeWidgetFromNode({ widget: base, node: 'left', deltaCols: -1, viewportCols: 4, viewportRows: 6 }),
+      { row: 2, col: 4, desired: { w: 3, h: 2 } }
+    )
+    assert.deepEqual(
+      resizeWidgetFromNode({ widget: base, node: 'top', deltaRows: -1, viewportCols: 4, viewportRows: 6 }),
+      { row: 1, col: 5, desired: { w: 2, h: 3 } }
+    )
+    assert.deepEqual(
+      resizeWidgetFromNode({ widget: base, node: 'bottom', deltaRows: 9, viewportCols: 4, viewportRows: 6 }),
+      { row: 2, col: 5, desired: { w: 2, h: 4 } }
+    )
+  })
+
+  it('applyWidgetResize writes row, col and desired in one update', () => {
+    const { local } = widgetState()
+    applyWidgetResize({
+      localStorageArea: local,
+      widgetKey: 'w1',
+      row: 3,
+      col: 7,
+      desired: { w: 3, h: 4 },
+      now: 900
+    })
+    const record = JSON.parse(local.getItem('local_widgets')).w1
+    assert.equal(record.row, 3)
+    assert.equal(record.col, 7)
+    assert.deepEqual(record.desired, { w: 3, h: 4 })
+    assert.equal(record.updatedAt, 900)
   })
 })

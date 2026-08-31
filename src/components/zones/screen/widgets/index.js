@@ -10,9 +10,8 @@ import {
 import { useWebStorage } from '#f'
 import { cssVars } from '#assets/styles/theme.js'
 import { useActiveWorkspaceOrder } from '#hooks/use-active-workspace-order.js'
+import { tell } from '#helpers/window-message/index.js'
 import '#shared/pending-indicator.js'
-import '#shared/icons/icon-grip-vertical.js'
-import '#shared/icons/icon-pin.js'
 import '#shared/icons/icon-close.js'
 import { APP_PENDING_INDICATOR_DELAY_MS, initAppWindow } from '#helpers/window-message/app-bridge.js'
 import { ensureAppBridgeState, registerAppBridgeWindow } from '#helpers/window-message/app-bridge-registry.js'
@@ -26,12 +25,13 @@ import { getT } from '#i18n/index.js'
 import {
   addWidget,
   applyWidgetPositions,
+  applyWidgetResize,
   BASE_CELL,
   computeEffectiveGrid,
   fitWidgets,
   removeWidget,
   readWidgetSessionValue,
-  setWidgetPinnedRoute,
+  resizeWidgetFromNode,
   shouldApplyVirtualWidth,
   WIDGET_DEFAULT_DESIRED,
   WIDGET_AUTO_FIT_MIN_WIDTH,
@@ -49,7 +49,8 @@ const DOT_GAP = 8
 const DRAG_EDGE_ZONE = 48
 const DRAG_PAGE_FLIP_DELAY_MS = 450
 const DRAG_PAGE_FLIP_THROTTLE_MS = 1500
-const WIDGET_PLACEHOLDER_KEY = '__creation_placeholder__'
+const WIDGET_FRESH_WINDOW_MS = 10000
+const WIDGET_SELECTED_WINDOW_MS = 4000
 
 function computeGridSize (el) {
   return computeEffectiveGrid(el?.clientWidth ?? 0, el?.clientHeight ?? 0)
@@ -68,28 +69,14 @@ function placementStyle (placement, grid) {
     `height:${placement.h * cell + (placement.h - 1) * gap}px;`
 }
 
-// Style used inside a viewport-fixed page overlay: the overlay root already
-// starts at the page content area (left margin), so only the page-local column
-// offset plus the global top margin are applied.
-function pageLocalPlacementStyle (placement, grid) {
-  if (!placement || !grid) return null
-  const cell = grid.cell || BASE_CELL
-  const gap = grid.gap || GAP
-  const margin = grid.margin || GAP
-  const col = placement.col % grid.cols
-  return `left:${col * (cell + gap)}px;top:${margin + placement.row * (cell + gap)}px;` +
-    `width:${placement.w * cell + (placement.w - 1) * gap}px;` +
-    `height:${placement.h * cell + (placement.h - 1) * gap}px;`
-}
-
 f('widgets-layer', function () {
   const storage = useWebStorage(localStorage)
   const tabStorage = useWebStorage(sessionStorage)
   const { order$ } = useActiveWorkspaceOrder(storage, tabStorage)
-  const draft$ = useGlobalSignal('widgetsDraft', null)
+  const createRequest$ = useGlobalSignal('widgetsCreateRequest', null)
   const dragDraft$ = useGlobalSignal('widgetDragDraft', null)
   const dragEdge$ = useGlobalSignal('widgetDragEdge', null)
-  const creationDraft$ = useGlobalSignal('widgetCreationDraft', null)
+  const widgetFresh$ = useGlobalSignal('widgetFresh', null)
   const store = useStore(() => ({
     elRef$: null,
     scrollRef$: null,
@@ -143,6 +130,28 @@ f('widgets-layer', function () {
     cleanup(() => el.removeEventListener('scroll', update))
   })
 
+  // Real-widget creation: resolve the menu request on the current page.
+  useTask(({ track }) => {
+    const request = track(() => createRequest$())
+    if (!request) return
+    const grid = store.grid$()
+    const page = store.currentPage$()
+    const col = Math.max(0, page * grid.cols)
+    const widgetKey = addWidget({
+      localStorageArea: localStorage,
+      appId: request.appId,
+      wsKey: request.wsKey,
+      row: 0,
+      col,
+      desired: WIDGET_DEFAULT_DESIRED,
+      pinnedRoute: request.pinnedRoute || ''
+    })
+    writeWidgetSessionValue(sessionStorage, widgetKey, 'route', request.pinnedRoute || '')
+    writeWidgetSessionValue(sessionStorage, widgetKey, 'visibility', 'open')
+    widgetFresh$({ widgetKey, until: Date.now() + WIDGET_FRESH_WINDOW_MS })
+    createRequest$(null)
+  })
+
   const activeWsKey$ = useComputed(() => order$()[0] ?? null)
   const wsWidgets$ = useComputed(() => {
     const wsKey = activeWsKey$()
@@ -155,32 +164,24 @@ f('widgets-layer', function () {
   const layout$ = useComputed(() => {
     const grid = store.grid$()
     const widgets = wsWidgets$()
+    if (widgets.length === 0) return { placements: [], pageCount: 1 }
     const drag = dragDraft$()
-    let entries = drag?.widgetKey
+    const entries = drag?.widgetKey
       ? widgets.map(widget =>
         widget.widgetKey === drag.widgetKey
-          ? { ...widget, row: drag.row, col: drag.col }
+          ? {
+              ...widget,
+              row: drag.row,
+              col: drag.col,
+              ...(drag.desired ? { desired: drag.desired } : {})
+            }
           : widget
       )
       : widgets
-    let anchorKey = drag?.widgetKey ?? null
-    const creation = creationDraft$()
-    if (creation) {
-      entries = [...entries, {
-        widgetKey: WIDGET_PLACEHOLDER_KEY,
-        row: creation.row,
-        col: creation.col,
-        desired: { w: creation.w, h: creation.h },
-        createdAt: 0,
-        order: -1
-      }]
-      anchorKey = WIDGET_PLACEHOLDER_KEY
-    }
-    if (widgets.length === 0 && !creation) return { placements: [], pageCount: 1 }
     return fitWidgets(entries, {
       viewportCols: grid.cols,
       viewportRows: grid.rows,
-      anchorKey
+      anchorKey: drag?.widgetKey ?? null
     })
   })
   const placementsByKey$ = useComputed(() => {
@@ -221,7 +222,6 @@ f('widgets-layer', function () {
     contentWidth,
     (grid.viewportWidth || 0) + (pageCount - 1) * pageStep
   )
-  const draft = draft$()
   const goToPage = page => {
     const el = store.scrollRef$()
     if (!el) return
@@ -352,15 +352,6 @@ f('widgets-layer', function () {
           visible: dragEdge$() === 'right'
         }}
       ></div>
-      ${draft
-        ? this.h`<widget-creation-overlay props=${{
-          appId: draft.appId,
-          wsKey: draft.wsKey,
-          pinnedRoute: draft.pinnedRoute,
-          pageWidth,
-          grid$: store.grid$
-        }} />`
-        : ''}
       <div id='widgets-scroll' ref=${store.scrollRef$}>
         <div id='widgets-grid'>
           <div style="display: contents"></div>
@@ -407,6 +398,7 @@ f('widget-window', function () {
   const grid$ = this.props.grid$
   const dragDraft$ = useGlobalSignal('widgetDragDraft', null)
   const dragEdge$ = useGlobalSignal('widgetDragEdge', null)
+  const widgetFresh$ = useGlobalSignal('widgetFresh', null)
   const { askVault } = useVaultActor()
   const { requestPermission } = usePermissionDialogStore()
   const { requestConfirmation } = useConfirmationDialogStore()
@@ -424,7 +416,8 @@ f('widget-window', function () {
     },
     inView$: false,
     minimizedAt$: null,
-    controls$: false,
+    selected$: false,
+    freshUntil$: 0,
     dragging$: false,
     elRef$: null,
     appIframeRef$: null,
@@ -443,7 +436,10 @@ f('widget-window', function () {
     autoRetried: false,
     appCleanup: null,
     routeVersion: 0,
-    loadedRouteVersion: -1
+    loadedRouteVersion: -1,
+    bridgeState: null,
+    selectionTimer: null,
+    freshTimer: null
   }))
 
   const placement$ = useComputed(() => layout$()[widgetKey] ?? null)
@@ -452,6 +448,75 @@ f('widget-window', function () {
     if (!placement) return null
     const grid = grid$()
     return placement.w * (grid.cell + grid.gap) - grid.gap
+  })
+
+  const syncSelectMode = () => {
+    const enabled = store.selected$() || store.freshUntil$() > Date.now()
+    const port = runtime.bridgeState?.windows.get(widgetKey)?.widgetPort
+    if (port) tell(port, { code: 'WIDGET_SELECT_MODE', payload: { enabled } })
+  }
+  const deselect = () => {
+    clearTimeout(runtime.selectionTimer)
+    runtime.selectionTimer = null
+    if (store.selected$()) {
+      store.selected$(false)
+      syncSelectMode()
+    }
+  }
+  const startSelectionTimer = () => {
+    clearTimeout(runtime.selectionTimer)
+    store.selected$(true)
+    syncSelectMode()
+    runtime.selectionTimer = setTimeout(() => {
+      runtime.selectionTimer = null
+      store.selected$(false)
+      syncSelectMode()
+    }, WIDGET_SELECTED_WINDOW_MS)
+  }
+
+  // Track the fresh (post-creation) window from the layer.
+  useTask(({ track, cleanup }) => {
+    const fresh = track(() => widgetFresh$())
+    const until = fresh?.widgetKey === widgetKey ? Number(fresh.until) || 0 : 0
+    clearTimeout(runtime.freshTimer)
+    runtime.freshTimer = null
+    store.freshUntil$(until)
+    if (until > Date.now()) {
+      runtime.freshTimer = setTimeout(() => {
+        runtime.freshTimer = null
+        store.freshUntil$(0)
+        syncSelectMode()
+      }, until - Date.now())
+    }
+    syncSelectMode()
+    cleanup(() => clearTimeout(runtime.freshTimer))
+  })
+
+  // Deselect when another widget starts dragging.
+  useTask(({ track }) => {
+    const draft = track(() => dragDraft$())
+    if (draft?.widgetKey && draft.widgetKey !== widgetKey && store.selected$()) {
+      deselect()
+    }
+  })
+
+  // Deselect on Escape or a launcher-side click outside the widget.
+  useTask(({ cleanup }) => {
+    const onPointerDown = event => {
+      if (!store.selected$()) return
+      const root = store.elRef$()
+      if (root && root.contains(event.target)) return
+      deselect()
+    }
+    const onKeyDown = event => {
+      if (event.key === 'Escape') deselect()
+    }
+    window.addEventListener('pointerdown', onPointerDown, true)
+    window.addEventListener('keydown', onKeyDown)
+    cleanup(() => {
+      window.removeEventListener('pointerdown', onPointerDown, true)
+      window.removeEventListener('keydown', onKeyDown)
+    })
   })
 
   // Apply/re-evaluate the virtual width whenever the cell width or the app's
@@ -579,10 +644,17 @@ f('widget-window', function () {
       const ac = new AbortController()
       cleanup(() => ac.abort())
       const bridgeState = ensureAppBridgeState(appSubdomain, { userPk, appId })
+      runtime.bridgeState = bridgeState
+      syncSelectMode()
       const unregister = registerAppBridgeWindow(bridgeState, {
         appKey: widgetKey,
         onClose () {
           if (store.visibility$() === 'open') setVisibility('minimized')
+        },
+        onWidgetDrag ({ op, x, y }) {
+          if (op === 'start') beginDragFromPointer(x, y)
+          else if (op === 'move') moveDragFromPointer(x, y)
+          else if (op === 'end') endDragFromPointer(x, y)
         },
         onSetMinWidth (minWidth) {
           const value = Math.round(Number(minWidth))
@@ -671,30 +743,25 @@ f('widget-window', function () {
     { after: 'rendering' }
   )
 
-  // Hide controls when the user interacts elsewhere.
-  useTask(({ cleanup }) => {
-    const onPointerDown = event => {
-      const root = store.elRef$()
-      if (root && root.contains(event.target)) return
-      if (store.controls$()) store.controls$(false)
-    }
-    window.addEventListener('pointerdown', onPointerDown, true)
-    cleanup(() => window.removeEventListener('pointerdown', onPointerDown, true))
-  })
-
-  // Long-press (touch) and context menu (mouse) reveal the overlay controls.
+  // Closed widgets have no iframe, so the root itself can detect long-press.
   const longPressTimer = useMemo(() => ({ id: null }))
-  const onRootPointerDown = event => {
-    if (event.pointerType !== 'touch') return
+  const onClosedPointerDown = event => {
+    if (store.visibility$() !== 'closed') return
     clearTimeout(longPressTimer.id)
     longPressTimer.id = setTimeout(() => {
-      store.controls$(true)
+      beginDragFromPointer(event.clientX, event.clientY)
+      window.addEventListener('pointermove', onClosedPointerMove, { capture: true })
+      window.addEventListener('pointerup', onClosedPointerEnd, { capture: true })
     }, LONG_PRESS_MS)
   }
-  const onRootPointerUp = () => clearTimeout(longPressTimer.id)
-  const onRootContextMenu = event => {
-    event.preventDefault()
-    store.controls$(true)
+  const onClosedPointerMove = event => {
+    if (drag.active) moveDragFromPointer(event.clientX, event.clientY)
+  }
+  const onClosedPointerEnd = _event => {
+    clearTimeout(longPressTimer.id)
+    window.removeEventListener('pointermove', onClosedPointerMove, { capture: true })
+    window.removeEventListener('pointerup', onClosedPointerEnd, { capture: true })
+    if (drag.active) endDragFromPointer()
   }
 
   const removeWidgetNow = () => {
@@ -706,20 +773,6 @@ f('widget-window', function () {
       widgetKey
     })
   }
-  const pinCurrentRoute = () => {
-    const route = store.route$()
-    if (!route) return
-    setWidgetPinnedRoute({
-      localStorageArea: localStorage,
-      widgetKey,
-      pinnedRoute: route
-    })
-  }
-  const canPin$ = useComputed(() => {
-    const record = store.record$()
-    const route = store.route$()
-    return Boolean(record && route && route !== record.pinnedRoute)
-  })
 
   // Drag to move the widget.
   const drag = useMemo(() => ({
@@ -787,37 +840,32 @@ f('widget-window', function () {
     }
     drag.flipTimer = setTimeout(flipPage, DRAG_PAGE_FLIP_DELAY_MS)
   }
-  const beginDrag = event => {
-    if (drag.active || event.button === 2) return
+  const beginDragFromPointer = (x, y) => {
+    if (drag.active) return
     const placement = placement$()
     if (!placement) return
-    event.preventDefault()
-    event.stopPropagation()
     drag.active = true
-    drag.startX = event.clientX
-    drag.startY = event.clientY
+    drag.startX = x
+    drag.startY = y
     drag.startRow = placement.row
     drag.startCol = placement.col
-    store.controls$(false)
+    clearTimeout(runtime.selectionTimer)
     dragDraft$({
       widgetKey,
       col: placement.col,
       row: placement.row,
-      w: placement.w,
-      h: placement.h
+      desired: { w: placement.w, h: placement.h }
     })
     store.dragging$(true)
-    window.addEventListener('pointermove', onDragMove, { capture: true })
-    window.addEventListener('pointerup', onDragEnd, { capture: true })
   }
-  const onDragMove = event => {
+  const moveDragFromPointer = (x, y) => {
     if (!drag.active) return
     const grid = grid$()
     const size = placement$()
     if (!size || !grid) return
     const cell = grid.cell + grid.gap
-    let row = drag.startRow + Math.round((event.clientY - drag.startY) / cell)
-    let col = drag.startCol + Math.round((event.clientX - drag.startX) / cell)
+    let row = drag.startRow + Math.round((y - drag.startY) / cell)
+    let col = drag.startCol + Math.round((x - drag.startX) / cell)
     row = Math.max(0, Math.min(row, grid.rows - size.h))
     // Confine the pointer movement to the widget's current draft page; page
     // changes are handled exclusively by the auto-flip (which shifts the draft
@@ -839,11 +887,11 @@ f('widget-window', function () {
       : draft)
     const scrollEl = store.elRef$()?.closest?.('#widgets-scroll')
     if (!scrollEl) return
-    drag.lastClientX = event.clientX
+    drag.lastClientX = x
     const rect = scrollEl.getBoundingClientRect()
-    const dir = event.clientX >= rect.right - DRAG_EDGE_ZONE
+    const dir = x >= rect.right - DRAG_EDGE_ZONE
       ? 1
-      : event.clientX <= rect.left + DRAG_EDGE_ZONE
+      : x <= rect.left + DRAG_EDGE_ZONE
         ? -1
         : 0
     if (dir !== 0) {
@@ -856,12 +904,10 @@ f('widget-window', function () {
       stopDragAutoFlip()
     }
   }
-  const onDragEnd = () => {
+  const endDragFromPointer = () => {
     if (!drag.active) return
     drag.active = false
     stopDragAutoFlip()
-    window.removeEventListener('pointermove', onDragMove, { capture: true })
-    window.removeEventListener('pointerup', onDragEnd, { capture: true })
     const preview = dragDraft$()
     store.dragging$(false)
     dragDraft$(null)
@@ -891,6 +937,79 @@ f('widget-window', function () {
         col: position.col
       }))
     })
+    startSelectionTimer()
+  }
+
+  // Resize via the four edge nodes (shown while selected).
+  const resize = useMemo(() => ({
+    active: false,
+    node: null,
+    startX: 0,
+    startY: 0,
+    startRow: 0,
+    startCol: 0,
+    startW: 1,
+    startH: 1
+  }))
+  const beginResize = (node, event) => {
+    if (resize.active || !store.selected$()) return
+    const record = store.record$()
+    if (!record) return
+    event.preventDefault()
+    event.stopPropagation()
+    resize.active = true
+    resize.node = node
+    resize.startX = event.clientX
+    resize.startY = event.clientY
+    resize.startRow = record.row
+    resize.startCol = record.col
+    resize.startW = Math.max(1, Math.floor(Number(record.desired?.w) || 1))
+    resize.startH = Math.max(1, Math.floor(Number(record.desired?.h) || 1))
+    clearTimeout(runtime.selectionTimer)
+    window.addEventListener('pointermove', onResizeMove, { capture: true })
+    window.addEventListener('pointerup', onResizeEnd, { capture: true })
+  }
+  const onResizeMove = event => {
+    if (!resize.active) return
+    const grid = grid$()
+    if (!grid) return
+    const cell = grid.cell + grid.gap
+    const result = resizeWidgetFromNode({
+      widget: {
+        row: resize.startRow,
+        col: resize.startCol,
+        desired: { w: resize.startW, h: resize.startH }
+      },
+      node: resize.node,
+      deltaCols: (event.clientX - resize.startX) / cell,
+      deltaRows: (event.clientY - resize.startY) / cell,
+      viewportCols: grid.cols,
+      viewportRows: grid.rows
+    })
+    dragDraft$({
+      widgetKey,
+      row: result.row,
+      col: result.col,
+      desired: result.desired
+    })
+  }
+  const onResizeEnd = () => {
+    if (!resize.active) return
+    resize.active = false
+    window.removeEventListener('pointermove', onResizeMove, { capture: true })
+    window.removeEventListener('pointerup', onResizeEnd, { capture: true })
+    const preview = dragDraft$()
+    if (preview?.widgetKey === widgetKey) {
+      applyWidgetResize({
+        localStorageArea: localStorage,
+        widgetKey,
+        row: preview.row,
+        col: preview.col,
+        desired: preview.desired
+      })
+    }
+    dragDraft$(null)
+    startSelectionTimer()
   }
 
   const record = store.record$()
@@ -912,6 +1031,9 @@ f('widget-window', function () {
       `transform:scale(${cellWidth / virtualWidth});` +
       `transform-origin:top left;${iframeVisibility ? `visibility:${iframeVisibility};` : ''}`
     : (iframeVisibility ? `visibility:${iframeVisibility};` : '')
+  const isFresh = store.freshUntil$() > Date.now()
+  const showSolidBorder = store.selected$() || store.dragging$()
+  const showNodes = store.selected$() && !store.dragging$()
 
   return this.h`
     <div
@@ -920,28 +1042,26 @@ f('widget-window', function () {
         'widget-window-open': visibility === 'open',
         'widget-window-minimized': visibility === 'minimized',
         'widget-window-closed': isClosed,
-        'widget-controls-visible': store.controls$() || store.dragging$()
+        'widget-window-selected': showSolidBorder,
+        'widget-window-fresh': isFresh && !showSolidBorder
       }}
       style=${store.dragging$() ? `${style}z-index:1000;` : style}
       ref=${store.elRef$}
-      onpointerdown=${onRootPointerDown}
-      onpointerup=${onRootPointerUp}
-      oncontextmenu=${onRootContextMenu}
+      onpointerdown=${onClosedPointerDown}
     >
       <style>${/* css */`
         .widget-window-root {
           position: absolute;
+          box-sizing: border-box;
           overflow: hidden;
-          clip-path: inset(0);
-          border-radius: 8px;
-          background-color: ${cssVars.colors.bg};
-          box-shadow: 0 2px 8px ${cssVars.colors.shadow};
           cursor: default;
         }
         .widget-window-root.widget-window-closed {
-          background-color: transparent;
-          box-shadow: none;
           border: 1px dashed ${cssVars.colors.fg3};
+        }
+        .widget-window-root.widget-window-selected {
+          border: 2px solid ${cssVars.colors.bgAccentPrimary};
+          border-radius: 10px;
         }
         .widget-window-root iframe {
           width: 100%;
@@ -955,61 +1075,78 @@ f('widget-window', function () {
           z-index: 1;
           background-color: ${cssVars.colors.bg};
         }
-        .widget-window-root .widget-controls {
+        .widget-window-root .widget-remove-button {
           position: absolute;
           top: 4px;
           right: 4px;
-          display: flex;
-          gap: 4px;
-          opacity: 0;
-          transition: opacity .15s ease;
-          z-index: 2;
-        }
-        .widget-window-root:hover .widget-controls,
-        .widget-window-root.widget-controls-visible .widget-controls,
-        .widget-window-root:focus-within .widget-controls {
-          opacity: 1;
-        }
-        .widget-window-root .widget-control-button {
           width: 26px;
           height: 26px;
           display: grid;
           place-items: center;
-          border: 0;
-          border-radius: 6px;
-          background-color: ${cssVars.colors.bg2Lighter};
-          color: ${cssVars.colors.fg2};
+          border: 1px solid ${cssVars.colors.bgAccentPrimary};
+          border-radius: 8px;
+          background-color: transparent;
+          color: ${cssVars.colors.bgAccentPrimary};
           cursor: pointer;
-          box-shadow: 0 1px 4px ${cssVars.colors.shadow};
+          z-index: 4;
         }
-        .widget-window-root .widget-grip {
+        .widget-window-root .widget-fresh-border {
           position: absolute;
-          top: 4px;
-          left: 4px;
-          width: 26px;
-          height: 26px;
-          display: grid;
-          place-items: center;
-          border: 0;
-          border-radius: 6px;
-          background-color: ${cssVars.colors.bg2Lighter};
-          color: ${cssVars.colors.fg2};
-          cursor: grab;
-          opacity: 0;
-          transition: opacity .15s ease;
-          z-index: 2;
+          inset: 0;
+          width: 100%;
+          height: 100%;
+          pointer-events: none;
+          z-index: 3;
+        }
+        .widget-window-root .widget-fresh-border rect {
+          fill: none;
+          stroke: ${cssVars.colors.bgAccentPrimary};
+          stroke-width: 2px;
+          vector-effect: non-scaling-stroke;
+          stroke-dasharray: 25 75;
+          animation: widgetFreshBorder 2.4s linear infinite;
+        }
+        @keyframes widgetFreshBorder {
+          to {
+            stroke-dashoffset: -100;
+          }
+        }
+        .widget-window-root .widget-resize-node {
+          position: absolute;
+          width: 12px;
+          height: 12px;
+          border-radius: 50%;
+          background-color: ${cssVars.colors.bgAccentPrimary};
+          border: 2px solid ${cssVars.colors.bg};
+          z-index: 5;
+          pointer-events: auto;
           touch-action: none;
         }
-        .widget-window-root:hover .widget-grip,
-        .widget-window-root.widget-controls-visible .widget-grip {
-          opacity: 1;
+        .widget-window-root .widget-resize-node.top {
+          top: 4px;
+          left: calc(50% - 6px);
+          cursor: ns-resize;
         }
-        .widget-window-root .widget-grip:active {
-          cursor: grabbing;
+        .widget-window-root .widget-resize-node.bottom {
+          bottom: 4px;
+          left: calc(50% - 6px);
+          cursor: ns-resize;
         }
-        .widget-window-root.widget-window-closed .widget-controls,
-        .widget-window-root.widget-window-closed .widget-grip {
-          opacity: 1;
+        .widget-window-root .widget-resize-node.left {
+          left: 4px;
+          top: calc(50% - 6px);
+          cursor: ew-resize;
+        }
+        .widget-window-root .widget-resize-node.right {
+          right: 4px;
+          top: calc(50% - 6px);
+          cursor: ew-resize;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .widget-window-root .widget-fresh-border rect {
+            animation: none;
+            stroke-dasharray: none;
+          }
         }
       `}</style>
       ${!isClosed
@@ -1034,283 +1171,29 @@ f('widget-window', function () {
             : ''}
         `
         : ''}
-      <button class='widget-grip' onpointerdown=${beginDrag} aria-label=${t('Move widget')}>
-        <icon-grip-vertical props=${{ size: '16px' }} />
-      </button>
-      <div class='widget-controls'>
-        ${canPin$()
-          ? this.h`
-            <button class='widget-control-button' onclick=${pinCurrentRoute} aria-label=${t('Pin URL')}>
-              <icon-pin props=${{ size: '16px' }} />
-            </button>
-          `
-          : ''}
-        <button class='widget-control-button' onclick=${removeWidgetNow} aria-label=${t('Remove Widget')}>
+      ${isFresh && !showSolidBorder
+        ? this.h`
+          <svg class='widget-fresh-border' viewBox='0 0 100 100' preserveAspectRatio='none' aria-hidden='true'>
+            <rect x='1' y='1' width='98' height='98' rx='10' pathLength='100' />
+          </svg>
+        `
+        : ''}
+      ${store.selected$() || isClosed
+        ? this.h`
+          <button class='widget-remove-button' onclick=${removeWidgetNow} aria-label=${t('Remove Widget')}>
           <icon-close props=${{ size: '16px' }} />
-        </button>
-      </div>
-    </div>
-  `
-})
-
-f('widget-creation-overlay', function () {
-  const draft$ = useGlobalSignal('widgetsDraft', null)
-  const creationDraft$ = useGlobalSignal('widgetCreationDraft', null)
-  const dragEdge$ = useGlobalSignal('widgetDragEdge', null)
-  const store = useStore(() => ({
-    elRef$: null,
-    preview$: null,
-    dragging$: false
-  }))
-
-  useTask(({ cleanup }) => {
-    const onKeyDown = event => {
-      if (event.key === 'Escape') cancelDrag()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    cleanup(() => window.removeEventListener('keydown', onKeyDown))
-  })
-
-  const drag = useMemo(() => ({
-    active: false,
-    startX: 0,
-    startY: 0,
-    startRow: 0,
-    startCol: 0,
-    lastClientX: 0,
-    flipTimer: null,
-    flipDir: 0,
-    lastFlipAt: 0
-  }))
-  const stopDragAutoFlip = () => {
-    clearTimeout(drag.flipTimer)
-    drag.flipTimer = null
-    drag.flipDir = 0
-    dragEdge$(null)
-  }
-  const scheduleDragAutoFlip = (scrollEl, dir) => {
-    if (drag.flipDir === dir && drag.flipTimer) return
-    drag.flipDir = dir
-    clearTimeout(drag.flipTimer)
-    const flipPage = () => {
-      drag.flipTimer = null
-      const elapsed = Date.now() - drag.lastFlipAt
-      if (elapsed < DRAG_PAGE_FLIP_THROTTLE_MS) {
-        if (drag.flipDir === dir) {
-          drag.flipTimer = setTimeout(flipPage, DRAG_PAGE_FLIP_THROTTLE_MS - elapsed)
-        }
-        return
-      }
-      const grid = this.props.grid$()
-      if (!grid || !scrollEl.isConnected) return
-      const step = grid.pageWidth + grid.gap
-      const current = Math.round(scrollEl.scrollLeft / step)
-      const next = Math.max(0, current + dir)
-      if (next === current) return
-      drag.lastFlipAt = Date.now()
-      drag.startCol += dir * grid.cols
-      creationDraft$(draft => draft
-        ? { ...draft, col: draft.col + dir * grid.cols }
-        : draft)
-      const scrollToPageAfterRender = () => {
-        if (!scrollEl.isConnected) return
-        scrollEl.scrollTo({ left: next * step, behavior: 'smooth' })
-        requestAnimationFrame(() => {
-          if (!scrollEl.isConnected) return
-          if (Math.round(scrollEl.scrollLeft / step) < next) {
-            scrollEl.scrollTo({ left: next * step, behavior: 'smooth' })
-          }
-        })
-      }
-      requestAnimationFrame(() => requestAnimationFrame(scrollToPageAfterRender))
-      const rect = scrollEl.getBoundingClientRect()
-      const stillInZone = dir > 0
-        ? drag.lastClientX >= rect.right - DRAG_EDGE_ZONE
-        : drag.lastClientX <= rect.left + DRAG_EDGE_ZONE
-      if (stillInZone) scheduleDragAutoFlip(scrollEl, dir)
-    }
-    drag.flipTimer = setTimeout(flipPage, DRAG_PAGE_FLIP_DELAY_MS)
-  }
-
-  const grid = this.props.grid$()
-  const pageWidth = Math.max(this.props.pageWidth ?? 1, 1)
-  const desired = grid.cols >= WIDGET_DEFAULT_DESIRED.w && grid.rows >= WIDGET_DEFAULT_DESIRED.h
-    ? WIDGET_DEFAULT_DESIRED
-    : { w: 1, h: 1 }
-  const initialPreview = { col: 0, row: 0, ...desired }
-
-  const beginDrag = event => {
-    if (drag.active) return
-    event.preventDefault()
-    event.stopPropagation()
-    const currentGrid = this.props.grid$()
-    const scrollEl = store.elRef$()?.closest?.('#widgets-scroll')
-    const step = currentGrid.pageWidth + currentGrid.gap
-    const currentPage = scrollEl && step > 0
-      ? Math.max(0, Math.round(scrollEl.scrollLeft / step))
-      : 0
-    drag.active = true
-    drag.startX = event.clientX
-    drag.startY = event.clientY
-    drag.startRow = 0
-    drag.startCol = currentPage * currentGrid.cols
-    creationDraft$({
-      col: drag.startCol,
-      row: 0,
-      w: desired.w,
-      h: desired.h
-    })
-    store.preview$({ ...initialPreview })
-    store.dragging$(true)
-    window.addEventListener('pointermove', onMove, { capture: true })
-    window.addEventListener('pointerup', onEnd, { capture: true })
-  }
-  const onMove = event => {
-    if (!drag.active) return
-    const currentGrid = this.props.grid$()
-    if (!currentGrid) return
-    const cell = currentGrid.cell + currentGrid.gap
-    let row = Math.round((event.clientY - drag.startY) / cell)
-    let col = drag.startCol + Math.round((event.clientX - drag.startX) / cell)
-    row = Math.max(0, Math.min(row, currentGrid.rows - desired.h))
-    const currentDraft = creationDraft$()
-    const currentPage = Math.max(
-      0,
-      Math.floor((currentDraft?.col ?? col) / currentGrid.cols)
-    )
-    const minCol = currentPage * currentGrid.cols
-    const maxCol = currentPage * currentGrid.cols +
-      Math.max(0, currentGrid.cols - desired.w)
-    col = Math.max(minCol, Math.min(col, maxCol))
-    creationDraft$(draft => draft
-      ? { ...draft, col, row }
-      : draft)
-    store.preview$({
-      col: col % currentGrid.cols,
-      row,
-      w: desired.w,
-      h: desired.h
-    })
-    const scrollEl = store.elRef$()?.closest?.('#widgets-scroll')
-    if (!scrollEl) return
-    drag.lastClientX = event.clientX
-    const rect = scrollEl.getBoundingClientRect()
-    const dir = event.clientX >= rect.right - DRAG_EDGE_ZONE
-      ? 1
-      : event.clientX <= rect.left + DRAG_EDGE_ZONE
-        ? -1
-        : 0
-    if (dir !== 0) {
-      const step = currentGrid.pageWidth + currentGrid.gap
-      const current = Math.round(scrollEl.scrollLeft / step)
-      dragEdge$(dir === 1 ? 'right' : current > 0 ? 'left' : null)
-      scheduleDragAutoFlip(scrollEl, dir)
-    } else {
-      dragEdge$(null)
-      stopDragAutoFlip()
-    }
-  }
-  const onEnd = () => {
-    if (!drag.active) return
-    drag.active = false
-    stopDragAutoFlip()
-    window.removeEventListener('pointermove', onMove, { capture: true })
-    window.removeEventListener('pointerup', onEnd, { capture: true })
-    const currentGrid = this.props.grid$()
-    const creation = creationDraft$()
-    store.dragging$(false)
-    store.preview$(null)
-    creationDraft$(null)
-    const draft = draft$()
-    if (!draft || !creation || !currentGrid) return
-    const widgetKey = addWidget({
-      localStorageArea: localStorage,
-      appId: draft.appId,
-      wsKey: draft.wsKey,
-      row: creation.row,
-      col: creation.col,
-      desired: { w: creation.w, h: creation.h },
-      pinnedRoute: draft.pinnedRoute || ''
-    })
-    writeWidgetSessionValue(sessionStorage, widgetKey, 'route', draft.pinnedRoute || '')
-    writeWidgetSessionValue(sessionStorage, widgetKey, 'visibility', 'open')
-    draft$(null)
-  }
-  const cancelDrag = () => {
-    if (drag.active) {
-      drag.active = false
-      stopDragAutoFlip()
-      window.removeEventListener('pointermove', onMove, { capture: true })
-      window.removeEventListener('pointerup', onEnd, { capture: true })
-    }
-    store.dragging$(false)
-    store.preview$(null)
-    creationDraft$(null)
-    dragEdge$(null)
-    draft$(null)
-  }
-
-  if (!store.dragging$()) {
-    return this.h`
-      <div
-        class='widget-creation-overlay'
-        ref=${store.elRef$}
-        onclick=${cancelDrag}
-        style=${`position:absolute;left:${this.props.grid$().margin}px;top:0;bottom:${GAP}px;width:${pageWidth}px;`}
-      >
-        <style>${/* css */`
-          .widget-creation-overlay {
-            position: absolute;
-            z-index: 100;
-            background-color: color-mix(in srgb, ${cssVars.colors.shadow} 35%, transparent);
-            cursor: crosshair;
-            pointer-events: auto;
-          }
-        `}</style>
-        <button
-          class='widget-creation-placeholder'
-          style=${pageLocalPlacementStyle({ col: initialPreview.col, row: initialPreview.row, ...desired }, grid)}
-          onpointerdown=${beginDrag}
-        >
-          <style>${/* css */`
-            .widget-creation-overlay .widget-creation-placeholder {
-              position: absolute;
-              border: 2px dashed ${cssVars.colors.bgAccentPrimary};
-              border-radius: 8px;
-              background-color: ${cssVars.colors.bgAccentSecondary}33;
-              cursor: grab;
-              touch-action: none;
-            }
-          `}</style>
-        </button>
-      </div>
-    `
-  }
-  return this.h`
-    <div
-      class='widget-creation-overlay widget-creation-dragging'
-      ref=${store.elRef$}
-      style=${`position:absolute;left:${this.props.grid$().margin}px;top:0;bottom:${GAP}px;width:${pageWidth}px;`}
-    >
-      <style>${/* css */`
-        .widget-creation-overlay.widget-creation-dragging {
-          position: absolute;
-          z-index: 100;
-          background-color: color-mix(in srgb, ${cssVars.colors.shadow} 20%, transparent);
-          cursor: grabbing;
-          pointer-events: auto;
-        }
-        .widget-creation-overlay.widget-creation-dragging .widget-creation-preview {
-          position: absolute;
-          border: 2px solid ${cssVars.colors.bgAccentPrimary};
-          border-radius: 8px;
-          background-color: ${cssVars.colors.bgAccentSecondary}55;
-        }
-      `}</style>
-      <div
-        class='widget-creation-preview'
-        style=${pageLocalPlacementStyle(store.preview$() || initialPreview, this.props.grid$())}
-      ></div>
+          </button>
+        `
+        : ''}
+      ${showNodes
+        ? ['top', 'right', 'bottom', 'left'].map(node => this.h({ key: node })`
+          <button
+            class=${`widget-resize-node ${node}`}
+            aria-label=${`Resize ${node}`}
+            onpointerdown=${event => beginResize(node, event)}
+          ></button>
+        `)
+        : ''}
     </div>
   `
 })
@@ -1326,16 +1209,6 @@ function getLocales () {
       en: 'Remove Widget', fr: 'Retirer le widget', it: 'Rimuovi widget', de: 'Widget entfernen',
       es: 'Quitar widget', 'pt-BR': 'Remover Widget', ru: 'Удалить виджет', 'zh-CN': '移除小组件',
       'zh-TW': '移除小工具', ja: 'ウィジェットを削除', ko: '위젯 제거'
-    },
-    'Pin URL': {
-      en: 'Pin URL', fr: 'Épingler l’URL', it: 'Fissa URL', de: 'URL anheften',
-      es: 'Fijar URL', 'pt-BR': 'Fixar URL', ru: 'Закрепить URL', 'zh-CN': '固定网址',
-      'zh-TW': '釘選網址', ja: 'URLを固定', ko: 'URL 고정'
-    },
-    'Move widget': {
-      en: 'Move widget', fr: 'Déplacer le widget', it: 'Sposta widget', de: 'Widget verschieben',
-      es: 'Mover widget', 'pt-BR': 'Mover Widget', ru: 'Переместить виджет', 'zh-CN': '移动小组件',
-      'zh-TW': '移動小工具', ja: 'ウィジェットを移動', ko: '위젯 이동'
     },
     'Opening app...': {
       en: 'Opening app...', fr: 'Ouverture de l’application…', it: 'Apertura app…', de: 'App wird geöffnet…',

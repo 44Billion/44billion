@@ -410,3 +410,66 @@ export function applyWidgetPositions ({ localStorageArea, positions, now = Date.
   }
   if (changed) writeWidgets(localStorageArea, widgets)
 }
+
+// Resize math for the four edge nodes. `deltaCols`/`deltaRows` are pointer
+// deltas in cells (positive = right/down). Left/top nodes extend the widget in
+// the opposite direction and adjust row/col so the opposite edge stays fixed.
+// Minimum is 1 cell; maximum is the remaining space on the widget's page.
+export function resizeWidgetFromNode ({
+  widget,
+  node,
+  deltaCols = 0,
+  deltaRows = 0,
+  viewportCols,
+  viewportRows
+}) {
+  const cols = Math.max(1, Math.floor(Number(viewportCols) || 1))
+  const rows = Math.max(1, Math.floor(Number(viewportRows) || 1))
+  const row = Math.max(0, Math.floor(Number(widget.row) || 0))
+  const col = Math.max(0, Math.floor(Number(widget.col) || 0))
+  const startW = Math.max(1, Math.floor(Number(widget.desired?.w) || 1))
+  const startH = Math.max(1, Math.floor(Number(widget.desired?.h) || 1))
+  const pageCol = col % cols
+  const page = Math.floor(col / cols)
+  const maxW = Math.max(1, cols - pageCol)
+  const maxH = Math.max(1, rows - row)
+  const clamp = (value, min, max) => Math.max(min, Math.min(value, max))
+  const deltaW = Math.round(deltaCols)
+  const deltaH = Math.round(deltaRows)
+  let nextRow = row
+  let nextCol = col
+  let w = startW
+  let h = startH
+
+  if (node === 'right') {
+    w = clamp(startW + deltaW, 1, maxW)
+  } else if (node === 'left') {
+    w = clamp(startW - deltaW, 1, Math.min(maxW, pageCol + startW))
+    nextCol = page * cols + pageCol + startW - w
+  } else if (node === 'bottom') {
+    h = clamp(startH + deltaH, 1, maxH)
+  } else if (node === 'top') {
+    h = clamp(startH - deltaH, 1, Math.min(maxH, row + startH))
+    nextRow = row + startH - h
+  }
+
+  return { row: nextRow, col: nextCol, desired: { w, h } }
+}
+
+export function applyWidgetResize ({
+  localStorageArea,
+  widgetKey,
+  row,
+  col,
+  desired,
+  now = Date.now()
+}) {
+  const widgets = readWidgets(localStorageArea)
+  const widget = widgets[widgetKey]
+  if (!widget) return
+  widget.row = Math.max(0, Math.floor(Number(row) || 0))
+  widget.col = Math.max(0, Math.floor(Number(col) || 0))
+  widget.desired = normalizeDesired(desired)
+  widget.updatedAt = now
+  writeWidgets(localStorageArea, widgets)
+}

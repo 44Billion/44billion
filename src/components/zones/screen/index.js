@@ -1767,7 +1767,7 @@ f('appLaunchersMenu', function () {
   const store = useClosestStore('<a-menu>')
   const storage = useWebStorage(localStorage)
   const tabStorage = useWebStorage(sessionStorage)
-  const draft$ = useGlobalSignal('widgetsDraft', null)
+  const createRequest$ = useGlobalSignal('widgetsCreateRequest', null)
   const { requestConfirmation } = useConfirmationDialogStore()
   const { openNewAppInstance } = useGlobalStore('useAppRouter')
   const menuProps = useStore(() => ({
@@ -1896,7 +1896,7 @@ f('appLaunchersMenu', function () {
       const { id: appId, key: appKey, workspaceKey } = this.app$()
       const pinnedRoute = storage[`session_appByKey_${appKey}_route$`]() || ''
       this.close() // close menu
-      draft$({
+      createRequest$({
         appId,
         wsKey: workspaceKey,
         pinnedRoute

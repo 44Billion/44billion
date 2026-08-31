@@ -92,6 +92,7 @@ function tellParentImReady (p) {
   browserPort.addEventListener('message', e => {
     if (e.data.code !== 'BROWSER_READY') return p.reject()
     autoFitEnabled = true
+    autoFitIsWidget = e.data.payload?.isWidget === true
     autoFitPort = browserPort
     localeClient.setLocale(e.data.payload?.locale)
     const bridgeId = e.data.payload?.bridgeId
@@ -107,6 +108,9 @@ function tellParentImReady (p) {
   }, { once: true })
   browserPort.addEventListener('message', e => {
     if (e.data.code === 'LOCALE_CHANGED') localeClient.setLocale(e.data.payload?.locale)
+    else if (e.data.code === 'WIDGET_SELECT_MODE') {
+      widgetSelectModeEnabled = e.data.payload?.enabled === true
+    }
   })
   browserPort.start()
   tell(window.parent, readyMsg, { targetOrigin: '*', transfer: [appPagePortForBrowser] })
@@ -126,6 +130,7 @@ const AUTO_FIT_FIRST_FIT_TIMEOUT_MS = 5000
 const AUTO_FIT_STABLE_MS = 300
 const AUTO_FIT_SETTLE_TIMEOUT_MS = 500
 let autoFitEnabled = false
+let autoFitIsWidget = false
 let autoFitRevealTimer = null
 let autoFitDebounceTimer = null
 let autoFitFirstFitRetryTimer = null
@@ -137,6 +142,7 @@ let autoFitLastMutationAt = 0
 let autoFitMutationObserver = null
 let autoFitTransitionActive = false
 let autoFitPort = null
+let widgetSelectModeEnabled = false
 
 function setAutoFitHidden (hidden) {
   document.documentElement.style.visibility = hidden ? 'hidden' : ''
@@ -256,6 +262,98 @@ function scheduleAutoFitFit () {
   autoFitDebounceTimer = setTimeout(fitAutoFit, AUTO_FIT_DEBOUNCE_MS)
 }
 
+// Widget drag: the launcher cannot receive pointer events from inside the
+// cross-origin app iframe, so this injected listener detects long-press (or a
+// plain press while the launcher has selection mode enabled) and forwards
+// start/move/end to the launcher through the bridge port.
+const WIDGET_DRAG_LONG_PRESS_MS = 600
+const WIDGET_DRAG_MOVE_TOLERANCE = 10
+
+function sendWidgetDrag (op, x, y) {
+  if (autoFitPort) {
+    tell(autoFitPort, {
+      code: 'WIDGET_DRAG',
+      payload: { op, x, y }
+    })
+  }
+}
+
+function startWidgetDragListener () {
+  if (!autoFitIsWidget) return
+  const state = {
+    pointerId: null,
+    startX: 0,
+    startY: 0,
+    timer: null,
+    active: false,
+    lastSentX: 0,
+    lastSentY: 0
+  }
+  const clearTimer = () => {
+    clearTimeout(state.timer)
+    state.timer = null
+  }
+  const onPointerDown = event => {
+    if (state.pointerId !== null) return
+    state.pointerId = event.pointerId
+    state.startX = event.clientX
+    state.startY = event.clientY
+    state.active = false
+    clearTimer()
+    if (widgetSelectModeEnabled) {
+      state.active = true
+      state.lastSentX = event.clientX
+      state.lastSentY = event.clientY
+      sendWidgetDrag('start', event.clientX, event.clientY)
+      return
+    }
+    state.timer = setTimeout(() => {
+      state.timer = null
+      state.active = true
+      state.lastSentX = event.clientX
+      state.lastSentY = event.clientY
+      sendWidgetDrag('start', event.clientX, event.clientY)
+    }, WIDGET_DRAG_LONG_PRESS_MS)
+  }
+  const onPointerMove = event => {
+    if (event.pointerId !== state.pointerId) return
+    if (state.timer) {
+      const dx = event.clientX - state.startX
+      const dy = event.clientY - state.startY
+      if (Math.abs(dx) > WIDGET_DRAG_MOVE_TOLERANCE || Math.abs(dy) > WIDGET_DRAG_MOVE_TOLERANCE) {
+        clearTimer()
+      }
+      return
+    }
+    if (!state.active) return
+    event.preventDefault()
+    if (
+      Math.abs(event.clientX - state.lastSentX) >= 2 ||
+      Math.abs(event.clientY - state.lastSentY) >= 2
+    ) {
+      state.lastSentX = event.clientX
+      state.lastSentY = event.clientY
+      sendWidgetDrag('move', event.clientX, event.clientY)
+    }
+  }
+  const onPointerEnd = event => {
+    if (event.pointerId !== state.pointerId) return
+    clearTimer()
+    const wasActive = state.active
+    state.pointerId = null
+    state.active = false
+    if (wasActive) sendWidgetDrag('end', event.clientX, event.clientY)
+  }
+  const onContextMenu = event => {
+    if (state.active) event.preventDefault()
+  }
+  document.addEventListener('pointerdown', onPointerDown, true)
+  document.addEventListener('pointermove', onPointerMove, true)
+  document.addEventListener('pointerup', onPointerEnd, true)
+  document.addEventListener('pointercancel', onPointerEnd, true)
+  document.addEventListener('contextmenu', onContextMenu, true)
+}
+
 function fitAutoFit () {
   clearTimeout(autoFitDebounceTimer)
   const target = computeAutoFitZoom()
@@ -370,6 +468,7 @@ function startAutoFit () {
   window.addEventListener('load', scheduleAutoFitFit)
   document.addEventListener('load', scheduleAutoFitFit, true)
   fitAutoFit()
+  startWidgetDragListener()
 }
 
 function injectNip07 (promise) {
