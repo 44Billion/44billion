@@ -6,6 +6,42 @@ export const SESSION_WIDGET_PREFIX = 'session_widgetByKey_'
 export const WIDGET_DEFAULT_DESIRED = { w: 4, h: 6 }
 export const WIDGET_MINIMIZED_TTL_MS = 5 * 60 * 1000
 export const WIDGET_AUTO_FIT_MIN_WIDTH = 360
+export const BASE_CELL = 40
+export const BASE_GAP = 20
+export const WIDGET_MARGIN = BASE_GAP
+
+// Fluid grid geometry: cells scale to fill the available content
+// width exactly; gap and corner margins stay fixed. The horizontal area
+// dictates the scale; vertical leftover space stays empty.
+export function computeEffectiveGrid (viewportWidth, viewportHeight) {
+  const w = Number(viewportWidth) || 0
+  const h = Number(viewportHeight) || 0
+  const contentWidth = Math.max(0, w - 2 * WIDGET_MARGIN)
+  const cols = Math.max(1, Math.floor((contentWidth + BASE_GAP) / (BASE_CELL + BASE_GAP)))
+  // With a fixed gap, the cell scale that fills the content width exactly is
+  // derived from the remaining width after the (cols-1) fixed gaps.
+  const scale = Math.max(
+    1,
+    (contentWidth - (cols - 1) * BASE_GAP) / (cols * BASE_CELL)
+  )
+  const cell = BASE_CELL * scale
+  const gap = BASE_GAP
+  const margin = WIDGET_MARGIN
+  const contentHeight = Math.max(0, h - margin)
+  const rows = Math.max(1, Math.floor((contentHeight + gap) / (cell + gap)))
+  return {
+    cols,
+    rows,
+    cell,
+    gap,
+    margin,
+    scale,
+    pageWidth: cols * cell + (cols - 1) * gap,
+    pageHeight: rows * cell + (rows - 1) * gap,
+    viewportWidth: w,
+    viewportHeight: h
+  }
+}
 
 // Virtual-width decision shared by widgets and regular windows: the launcher
 // emulates `minWidth` (iframe resize + scale) only when the real area is

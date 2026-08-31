@@ -25,6 +25,8 @@ import { formatAssetBudgetBytes } from '#services/app-asset-budget/index.js'
 import { getT } from '#i18n/index.js'
 import {
   addWidget,
+  BASE_CELL,
+  computeEffectiveGrid,
   fitWidgets,
   removeWidget,
   readWidgetSessionValue,
@@ -40,34 +42,26 @@ import {
 export const widgetsLocales = getLocales()
 const t = getT(widgetsLocales)
 
-const CELL = 40
 const GAP = 20
 const LONG_PRESS_MS = 600
 const DOT_SIZE = 8
 const DOT_GAP = 8
 
 function computeGridSize (el) {
-  const w = el?.clientWidth ?? 0
-  const h = el?.clientHeight ?? 0
-  const cols = Math.max(1, Math.floor((w - GAP) / (CELL + GAP)))
-  const rows = Math.max(1, Math.floor(h / (CELL + GAP)))
-  return {
-    cols,
-    rows,
-    pageWidth: cols * CELL + (cols - 1) * GAP,
-    pageHeight: rows * CELL + (rows - 1) * GAP,
-    viewportWidth: w,
-    viewportHeight: h
-  }
+  return computeEffectiveGrid(el?.clientWidth ?? 0, el?.clientHeight ?? 0)
 }
 
 function placementStyle (placement, grid) {
   if (!placement || !grid) return null
   // `col` is absolute across pages; the grid width and page step keep each
   // page aligned, so no modulo is applied here.
-  return `left:${GAP + placement.col * (CELL + GAP)}px;top:${GAP + placement.row * (CELL + GAP)}px;` +
-    `width:${placement.w * CELL + (placement.w - 1) * GAP}px;` +
-    `height:${placement.h * CELL + (placement.h - 1) * GAP}px`
+  const cell = grid.cell || BASE_CELL
+  const gap = grid.gap || GAP
+  const margin = grid.margin || GAP
+  return `left:${margin + placement.col * (cell + gap)}px;` +
+    `top:${margin + placement.row * (cell + gap)}px;` +
+    `width:${placement.w * cell + (placement.w - 1) * gap}px;` +
+    `height:${placement.h * cell + (placement.h - 1) * gap}px`
 }
 
 f('widgets-layer', function () {
@@ -79,7 +73,18 @@ f('widgets-layer', function () {
     elRef$: null,
     scrollRef$: null,
     dotsRef$: null,
-    grid$: { cols: 1, rows: 1, pageWidth: 0, pageHeight: 0, viewportWidth: 0, viewportHeight: 0 },
+    grid$: {
+      cols: 1,
+      rows: 1,
+      cell: BASE_CELL,
+      gap: GAP,
+      margin: GAP,
+      scale: 1,
+      pageWidth: 0,
+      pageHeight: 0,
+      viewportWidth: 0,
+      viewportHeight: 0
+    },
     currentPage$: 0,
     dotsWidth$: 0
   }))
@@ -108,7 +113,7 @@ f('widgets-layer', function () {
     const el = track(() => store.scrollRef$())
     if (!el) return
     const update = () => {
-      const step = store.grid$().pageWidth + GAP
+      const step = store.grid$().pageWidth + store.grid$().gap
       if (step <= 0) return
       store.currentPage$(Math.round(el.scrollLeft / step))
     }
@@ -141,7 +146,9 @@ f('widgets-layer', function () {
     return map
   })
   const pageCount$ = useComputed(() => layout$().pageCount)
-  const pageStep$ = useComputed(() => Math.max(store.grid$().pageWidth + GAP, 1))
+  const pageStep$ = useComputed(() =>
+    Math.max(store.grid$().pageWidth + store.grid$().gap, 1)
+  )
   const maxDots$ = useComputed(() =>
     Math.max(1, Math.floor((store.dotsWidth$() + DOT_GAP) / (DOT_SIZE + DOT_GAP)))
   )
@@ -163,8 +170,8 @@ f('widgets-layer', function () {
   const grid = store.grid$()
   const pageWidth = Math.max(grid.pageWidth, 1)
   const pageCount = Math.max(1, pageCount$())
-  const pageStep = pageWidth + GAP
-  const contentWidth = pageCount * pageWidth + (pageCount + 1) * GAP
+  const pageStep = pageWidth + grid.gap
+  const contentWidth = pageCount * pageWidth + (pageCount + 1) * grid.margin
   // Keep enough trailing space so every page (including the last) can align
   // its left margin to the viewport edge instead of being clamped mid-page.
   const gridWidth = Math.max(
@@ -357,7 +364,9 @@ f('widget-window', function () {
   const placement$ = useComputed(() => layout$()[widgetKey] ?? null)
   const cellWidth$ = useComputed(() => {
     const placement = placement$()
-    return placement ? placement.w * (CELL + GAP) - GAP : null
+    if (!placement) return null
+    const grid = grid$()
+    return placement.w * (grid.cell + grid.gap) - grid.gap
   })
 
   // Apply/re-evaluate the virtual width whenever the cell width or the app's
@@ -663,7 +672,7 @@ f('widget-window', function () {
     const pageCount = pageCount$()
     const size = placement$()
     if (!size || !grid) return
-    const cell = CELL + GAP
+    const cell = grid.cell + grid.gap
     let row = drag.startRow + Math.round((event.clientY - drag.startY) / cell)
     let col = drag.startCol + Math.round((event.clientX - drag.startX) / cell)
     let page = Math.floor(col / grid.cols)
@@ -730,8 +739,9 @@ f('widget-window', function () {
   const visibility = store.visibility$()
   const isClosed = visibility === 'closed'
   const wide = store.wideMode$() && placement?.w && placement?.h
-  const cellWidth = placement.w * (CELL + GAP) - GAP
-  const cellHeight = placement.h * (CELL + GAP) - GAP
+  const gridForStyle = grid$()
+  const cellWidth = placement.w * (gridForStyle.cell + gridForStyle.gap) - gridForStyle.gap
+  const cellHeight = placement.h * (gridForStyle.cell + gridForStyle.gap) - gridForStyle.gap
   const iframeVisibility = store.iframeReevalHidden$() ? 'hidden' : ''
   const virtualWidth = store.minWidth$()
   const iframeStyle = wide && cellWidth > 0 && virtualWidth > 0
@@ -923,7 +933,7 @@ f('widget-creation-overlay', function () {
     if (!drag.active) return
     const currentGrid = this.props.grid$()
     if (!currentGrid) return
-    const cell = CELL + GAP
+    const cell = currentGrid.cell + currentGrid.gap
     let row = Math.round((event.clientY - drag.startY) / cell)
     let col = Math.round((event.clientX - drag.startX) / cell)
     row = Math.max(0, Math.min(row, currentGrid.rows - desired.h))
@@ -964,7 +974,7 @@ f('widget-creation-overlay', function () {
         class='widget-creation-overlay'
         ref=${store.elRef$}
         onclick=${cancel}
-        style=${`position:absolute;left:${GAP}px;top:0;width:${pageWidth}px;height:100%;`}
+        style=${`position:absolute;left:${this.props.grid$().margin}px;top:0;width:${pageWidth}px;height:100%;`}
       >
         <style>${/* css */`
           .widget-creation-overlay {
@@ -998,7 +1008,7 @@ f('widget-creation-overlay', function () {
     <div
       class='widget-creation-overlay widget-creation-dragging'
       ref=${store.elRef$}
-      style=${`position:absolute;left:${GAP}px;top:0;width:${pageWidth}px;height:100%;`}
+      style=${`position:absolute;left:${this.props.grid$().margin}px;top:0;width:${pageWidth}px;height:100%;`}
     >
       <style>${/* css */`
         .widget-creation-overlay.widget-creation-dragging {

@@ -13,6 +13,7 @@ mock.module('#f', {
 
 const {
   addWidget,
+  computeEffectiveGrid,
   derivePage,
   fitSize,
   fitWidgets,
@@ -219,5 +220,33 @@ describe('widgets service', () => {
     assert.equal(shouldApplyVirtualWidth(200, 0), false)
     assert.equal(shouldApplyVirtualWidth(200, -10), false)
     assert.equal(shouldApplyVirtualWidth(200, '360'), false)
+  })
+
+  it('computeEffectiveGrid fills the content width exactly with fixed gaps', () => {
+    const one = computeEffectiveGrid(100, 100)
+    assert.equal(one.cols, 1)
+    assert.equal(one.cell, 60)
+    assert.equal(one.gap, 20)
+    assert.equal(one.margin, 20)
+    assert.equal(one.pageWidth, 60)
+
+    const exact = computeEffectiveGrid(140, 100)
+    assert.equal(exact.cols, 2)
+    assert.equal(exact.scale, 1)
+    assert.equal(exact.cell, 40)
+    assert.equal(exact.pageWidth, 100)
+
+    const grown = computeEffectiveGrid(150, 100)
+    assert.equal(grown.cols, 2)
+    assert.equal(grown.cell, 45)
+    assert.equal(grown.pageWidth, 110)
+  })
+
+  it('computeEffectiveGrid keeps rows >= 1 and leaves vertical leftover empty', () => {
+    const grid = computeEffectiveGrid(1000, 120)
+    assert.ok(grid.rows >= 1)
+    assert.ok(grid.pageHeight <= grid.viewportHeight - grid.margin)
+    const tiny = computeEffectiveGrid(1000, 40)
+    assert.ok(tiny.rows >= 1)
   })
 })

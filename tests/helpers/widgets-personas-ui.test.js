@@ -69,7 +69,7 @@ describe('widgets and personas wiring', () => {
     assert.match(widgets, /widget-page-dot/)
     assert.match(widgets, /scrollbar-width: none/)
     assert.match(widgets, /currentPage/)
-    assert.match(widgets, /GAP \+ placement\.col \* \(CELL \+ GAP\)/)
+    assert.match(widgets, /margin \+ placement\.col \* \(cell \+ gap\)/)
     assert.doesNotMatch(widgets, /placement\.col % grid\.cols/)
   })
 
