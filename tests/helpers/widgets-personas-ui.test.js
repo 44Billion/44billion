@@ -78,6 +78,8 @@ describe('widgets and personas wiring', () => {
     assert.match(widgets, /DRAG_PAGE_FLIP_DELAY_MS/)
     assert.match(widgets, /DRAG_PAGE_FLIP_THROTTLE_MS/)
     assert.match(widgets, /scheduleDragAutoFlip/)
+    assert.match(widgets, /widgetDragEdge/)
+    assert.match(widgets, /widget-edge-gradient/)
   })
 
   it('keeps compact loading and the mini ostrich theme', async () => {

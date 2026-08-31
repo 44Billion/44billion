@@ -73,6 +73,7 @@ f('widgets-layer', function () {
   const { order$ } = useActiveWorkspaceOrder(storage, tabStorage)
   const draft$ = useGlobalSignal('widgetsDraft', null)
   const dragDraft$ = useGlobalSignal('widgetDragDraft', null)
+  const dragEdge$ = useGlobalSignal('widgetDragEdge', null)
   const store = useStore(() => ({
     elRef$: null,
     scrollRef$: null,
@@ -278,7 +279,50 @@ f('widgets-layer', function () {
           background-color: ${cssVars.colors.bgAccentPrimary};
           opacity: 1;
         }
+        .widgets-layer-scope#widgets-layer .widget-edge-gradient {
+          position: absolute;
+          top: 0;
+          bottom: 0;
+          width: ${DRAG_EDGE_ZONE}px;
+          pointer-events: none;
+          z-index: 2000;
+          opacity: 0;
+          transition: opacity .15s ease;
+        }
+        .widgets-layer-scope#widgets-layer .widget-edge-gradient.left {
+          left: 0;
+          background: linear-gradient(
+            to right,
+            color-mix(in srgb, ${cssVars.colors.bgAccentPrimary} 55%, transparent),
+            transparent
+          );
+        }
+        .widgets-layer-scope#widgets-layer .widget-edge-gradient.right {
+          right: 0;
+          background: linear-gradient(
+            to left,
+            color-mix(in srgb, ${cssVars.colors.bgAccentPrimary} 55%, transparent),
+            transparent
+          );
+        }
+        .widgets-layer-scope#widgets-layer .widget-edge-gradient.visible {
+          opacity: 1;
+        }
       `}</style>
+      <div
+        class=${{
+          'widget-edge-gradient': true,
+          left: true,
+          visible: dragEdge$() === 'left'
+        }}
+      ></div>
+      <div
+        class=${{
+          'widget-edge-gradient': true,
+          right: true,
+          visible: dragEdge$() === 'right'
+        }}
+      ></div>
       <div id='widgets-scroll' ref=${store.scrollRef$}>
         <div id='widgets-grid'>
           <div style="display: contents"></div>
@@ -333,6 +377,7 @@ f('widget-window', function () {
   const layout$ = this.props.layout$
   const grid$ = this.props.grid$
   const dragDraft$ = useGlobalSignal('widgetDragDraft', null)
+  const dragEdge$ = useGlobalSignal('widgetDragEdge', null)
   const { askVault } = useVaultActor()
   const { requestPermission } = usePermissionDialogStore()
   const { requestConfirmation } = useConfirmationDialogStore()
@@ -663,6 +708,7 @@ f('widget-window', function () {
     clearTimeout(drag.flipTimer)
     drag.flipTimer = null
     drag.flipDir = 0
+    dragEdge$(null)
   }
   const scheduleDragAutoFlip = (scrollEl, dir) => {
     if (drag.flipDir === dir && drag.flipTimer) return
@@ -771,8 +817,15 @@ f('widget-window', function () {
       : event.clientX <= rect.left + DRAG_EDGE_ZONE
         ? -1
         : 0
-    if (dir !== 0) scheduleDragAutoFlip(scrollEl, dir)
-    else stopDragAutoFlip()
+    if (dir !== 0) {
+      const step = grid.pageWidth + grid.gap
+      const current = Math.round(scrollEl.scrollLeft / step)
+      dragEdge$(dir === 1 ? 'right' : current > 0 ? 'left' : null)
+      scheduleDragAutoFlip(scrollEl, dir)
+    } else {
+      dragEdge$(null)
+      stopDragAutoFlip()
+    }
   }
   const onDragEnd = () => {
     if (!drag.active) return
