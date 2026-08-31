@@ -46,6 +46,9 @@ const GAP = 20
 const LONG_PRESS_MS = 600
 const DOT_SIZE = 8
 const DOT_GAP = 8
+const DRAG_EDGE_ZONE = 48
+const DRAG_PAGE_FLIP_DELAY_MS = 450
+const DRAG_PAGE_FLIP_THROTTLE_MS = 1500
 
 function computeGridSize (el) {
   return computeEffectiveGrid(el?.clientWidth ?? 0, el?.clientHeight ?? 0)
@@ -284,8 +287,7 @@ f('widgets-layer', function () {
               props=${{
                 widgetKey: key,
                 layout$: placementsByKey$,
-                grid$: store.grid$,
-                pageCount$
+                grid$: store.grid$
               }}
             />
           `)}
@@ -330,7 +332,6 @@ f('widget-window', function () {
   const widgetKey = this.props.widgetKey
   const layout$ = this.props.layout$
   const grid$ = this.props.grid$
-  const pageCount$ = this.props.pageCount$
   const dragDraft$ = useGlobalSignal('widgetDragDraft', null)
   const { askVault } = useVaultActor()
   const { requestPermission } = usePermissionDialogStore()
@@ -652,8 +653,65 @@ f('widget-window', function () {
     startX: 0,
     startY: 0,
     startRow: 0,
-    startCol: 0
+    startCol: 0,
+    lastClientX: 0,
+    flipTimer: null,
+    flipDir: 0,
+    lastFlipAt: 0
   }))
+  const stopDragAutoFlip = () => {
+    clearTimeout(drag.flipTimer)
+    drag.flipTimer = null
+    drag.flipDir = 0
+  }
+  const scheduleDragAutoFlip = (scrollEl, dir) => {
+    if (drag.flipDir === dir && drag.flipTimer) return
+    drag.flipDir = dir
+    clearTimeout(drag.flipTimer)
+    const flipPage = () => {
+      drag.flipTimer = null
+      const elapsed = Date.now() - drag.lastFlipAt
+      if (elapsed < DRAG_PAGE_FLIP_THROTTLE_MS) {
+        if (drag.flipDir === dir) {
+          drag.flipTimer = setTimeout(flipPage, DRAG_PAGE_FLIP_THROTTLE_MS - elapsed)
+        }
+        return
+      }
+      const grid = grid$()
+      if (!grid || !scrollEl.isConnected) return
+      const step = grid.pageWidth + grid.gap
+      const current = Math.round(scrollEl.scrollLeft / step)
+      // Allow creating new pages to the right while dragging; only the first
+      // page bounds the left direction.
+      const next = Math.max(0, current + dir)
+      if (next === current) return
+      drag.lastFlipAt = Date.now()
+      drag.startCol += dir * grid.cols
+      dragDraft$(draft => draft
+        ? { ...draft, col: draft.col + dir * grid.cols }
+        : draft)
+      // Wait two frames so the layer re-renders the (possibly grown) grid
+      // width before scrolling; otherwise the browser clamps scrollLeft to the
+      // old width and the page never moves. Retry once if it still clamped.
+      const scrollToPageAfterRender = () => {
+        if (!scrollEl.isConnected) return
+        scrollEl.scrollTo({ left: next * step, behavior: 'smooth' })
+        requestAnimationFrame(() => {
+          if (!scrollEl.isConnected) return
+          if (Math.round(scrollEl.scrollLeft / step) < next) {
+            scrollEl.scrollTo({ left: next * step, behavior: 'smooth' })
+          }
+        })
+      }
+      requestAnimationFrame(() => requestAnimationFrame(scrollToPageAfterRender))
+      const rect = scrollEl.getBoundingClientRect()
+      const stillInZone = dir > 0
+        ? drag.lastClientX >= rect.right - DRAG_EDGE_ZONE
+        : drag.lastClientX <= rect.left + DRAG_EDGE_ZONE
+      if (stillInZone) scheduleDragAutoFlip(scrollEl, dir)
+    }
+    drag.flipTimer = setTimeout(flipPage, DRAG_PAGE_FLIP_DELAY_MS)
+  }
   const beginDrag = event => {
     if (drag.active || event.button === 2) return
     const placement = placement$()
@@ -680,35 +738,46 @@ f('widget-window', function () {
   const onDragMove = event => {
     if (!drag.active) return
     const grid = grid$()
-    const pageCount = pageCount$()
     const size = placement$()
     if (!size || !grid) return
     const cell = grid.cell + grid.gap
     let row = drag.startRow + Math.round((event.clientY - drag.startY) / cell)
     let col = drag.startCol + Math.round((event.clientX - drag.startX) / cell)
-    let page = Math.floor(col / grid.cols)
-    col = col % grid.cols
-    if (col < 0) {
-      page -= 1
-      col += grid.cols
-    }
-    if (col + size.w > grid.cols) {
-      page += 1
-      col = 0
-    }
-    page = Math.max(0, Math.min(page, pageCount - 1))
     row = Math.max(0, Math.min(row, grid.rows - size.h))
+    // Confine the pointer movement to the widget's current draft page; page
+    // changes are handled exclusively by the auto-flip (which shifts the draft
+    // column by ±cols together with the smooth scroll).
+    const currentDraft = dragDraft$()
+    const currentPage = Math.max(
+      0,
+      Math.floor((currentDraft?.col ?? drag.startCol) / grid.cols)
+    )
+    const minCol = currentPage * grid.cols
+    const maxCol = currentPage * grid.cols + Math.max(0, grid.cols - size.w)
+    col = Math.max(minCol, Math.min(col, maxCol))
     dragDraft$(draft => draft
       ? {
           ...draft,
-          col: page * grid.cols + col,
+          col,
           row
         }
       : draft)
+    const scrollEl = store.elRef$()?.closest?.('#widgets-scroll')
+    if (!scrollEl) return
+    drag.lastClientX = event.clientX
+    const rect = scrollEl.getBoundingClientRect()
+    const dir = event.clientX >= rect.right - DRAG_EDGE_ZONE
+      ? 1
+      : event.clientX <= rect.left + DRAG_EDGE_ZONE
+        ? -1
+        : 0
+    if (dir !== 0) scheduleDragAutoFlip(scrollEl, dir)
+    else stopDragAutoFlip()
   }
   const onDragEnd = () => {
     if (!drag.active) return
     drag.active = false
+    stopDragAutoFlip()
     window.removeEventListener('pointermove', onDragMove, { capture: true })
     window.removeEventListener('pointerup', onDragEnd, { capture: true })
     const preview = dragDraft$()
