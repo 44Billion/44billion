@@ -51,6 +51,7 @@ const DRAG_PAGE_FLIP_DELAY_MS = 450
 const DRAG_PAGE_FLIP_THROTTLE_MS = 1500
 const WIDGET_FRESH_WINDOW_MS = 10000
 const WIDGET_SELECTED_WINDOW_MS = 4000
+const WIDGET_REEVAL_REVEAL_TIMEOUT_MS = 1500
 
 function computeGridSize (el) {
   return computeEffectiveGrid(el?.clientWidth ?? 0, el?.clientHeight ?? 0)
@@ -439,7 +440,8 @@ f('widget-window', function () {
     ac: null,
     unregister: null,
     selectionTimer: null,
-    freshTimer: null
+    freshTimer: null,
+    reevalRevealTimer: null
   }))
 
   const placement$ = useComputed(() => layout$()[widgetKey] ?? null)
@@ -551,6 +553,11 @@ f('widget-window', function () {
     // `done` message to become visible.
     if ((cellChanged || minWidthChanged) && (modeChanged || applyWide)) {
       store.iframeReevalHidden$(true)
+      clearTimeout(runtime.reevalRevealTimer)
+      runtime.reevalRevealTimer = setTimeout(() => {
+        runtime.reevalRevealTimer = null
+        store.iframeReevalHidden$(false)
+      }, WIDGET_REEVAL_REVEAL_TIMEOUT_MS)
     }
   })
 
@@ -642,6 +649,8 @@ f('widget-window', function () {
         store.wideMode$(false)
         store.iframeReevalHidden$(false)
         store.minWidth$(WIDGET_AUTO_FIT_MIN_WIDTH)
+        clearTimeout(runtime.reevalRevealTimer)
+        runtime.reevalRevealTimer = null
         runtime.ac?.abort()
         runtime.unregister?.()
         runtime.appCleanup?.()
@@ -696,6 +705,8 @@ f('widget-window', function () {
             store.minWidth$(value)
           },
           onAutoFitDone () {
+            clearTimeout(runtime.reevalRevealTimer)
+            runtime.reevalRevealTimer = null
             store.iframeReevalHidden$(false)
           }
         })
@@ -991,6 +1002,8 @@ f('widget-window', function () {
   const resize = useMemo(() => ({
     active: false,
     node: null,
+    nodeEl: null,
+    pointerId: null,
     startX: 0,
     startY: 0,
     startRow: 0,
@@ -1004,8 +1017,11 @@ f('widget-window', function () {
     if (!record) return
     event.preventDefault()
     event.stopPropagation()
+    const root = store.elRef$()
     resize.active = true
     resize.node = node
+    resize.nodeEl = root
+    resize.pointerId = event.pointerId
     resize.startX = event.clientX
     resize.startY = event.clientY
     resize.startRow = record.row
@@ -1013,8 +1029,14 @@ f('widget-window', function () {
     resize.startW = Math.max(1, Math.floor(Number(record.desired?.w) || 1))
     resize.startH = Math.max(1, Math.floor(Number(record.desired?.h) || 1))
     clearTimeout(runtime.selectionTimer)
+    try {
+      if (root?.setPointerCapture) root.setPointerCapture(event.pointerId)
+    } catch (error) {
+      console.warn('[widget-window] Failed to capture pointer for resize', error)
+    }
     window.addEventListener('pointermove', onResizeMove, { capture: true })
     window.addEventListener('pointerup', onResizeEnd, { capture: true })
+    window.addEventListener('pointercancel', onResizeEnd, { capture: true })
   }
   const onResizeMove = event => {
     if (!resize.active) return
@@ -1045,6 +1067,16 @@ f('widget-window', function () {
     resize.active = false
     window.removeEventListener('pointermove', onResizeMove, { capture: true })
     window.removeEventListener('pointerup', onResizeEnd, { capture: true })
+    window.removeEventListener('pointercancel', onResizeEnd, { capture: true })
+    try {
+      if (resize.nodeEl?.hasPointerCapture?.(resize.pointerId)) {
+        resize.nodeEl.releasePointerCapture(resize.pointerId)
+      }
+    } catch (error) {
+      console.warn('[widget-window] Failed to release pointer capture', error)
+    }
+    resize.nodeEl = null
+    resize.pointerId = null
     const preview = dragDraft$()
     if (preview?.widgetKey === widgetKey) {
       applyWidgetResize({
@@ -1107,9 +1139,16 @@ f('widget-window', function () {
           border: 1px dashed ${cssVars.colors.fg3};
         }
         .widget-window-root.widget-window-selected {
+          overflow: visible;
+        }
+        .widget-window-root.widget-window-selected::before {
+          content: '';
+          position: absolute;
+          inset: 0;
           border: 2px solid ${cssVars.colors.bgAccentPrimary};
           border-radius: 10px;
-          overflow: visible;
+          pointer-events: none;
+          z-index: 4;
         }
         .widget-window-root.widget-window-selected iframe,
         .widget-window-root.widget-window-selected .widget-pending {
@@ -1129,8 +1168,8 @@ f('widget-window', function () {
         }
         .widget-window-root .widget-remove-button {
           position: absolute;
-          top: 4px;
-          right: 4px;
+          top: 6px;
+          right: 6px;
           width: 26px;
           height: 26px;
           display: grid;
@@ -1255,22 +1294,22 @@ f('widget-window', function () {
           clip-path: inset(0 50% 0 0);
         }
         .widget-window-root .widget-resize-node.top {
-          top: -7px;
+          top: -5px;
           left: calc(50% - 6px);
           cursor: ns-resize;
         }
         .widget-window-root .widget-resize-node.bottom {
-          bottom: -7px;
+          bottom: -5px;
           left: calc(50% - 6px);
           cursor: ns-resize;
         }
         .widget-window-root .widget-resize-node.left {
-          left: -7px;
+          left: -5px;
           top: calc(50% - 6px);
           cursor: ew-resize;
         }
         .widget-window-root .widget-resize-node.right {
-          right: -7px;
+          right: -5px;
           top: calc(50% - 6px);
           cursor: ew-resize;
         }
