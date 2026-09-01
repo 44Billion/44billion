@@ -1192,13 +1192,13 @@ f('widget-window', function () {
           pointer-events: none;
           z-index: 4;
         }
-        .widget-window-root.widget-window-selected iframe,
-        .widget-window-root.widget-window-selected .widget-pending {
-          border-radius: 8px;
+        .widget-window-root .widget-clip {
+          position: absolute;
+          inset: 0;
+          overflow: hidden;
         }
-        .widget-window-root.widget-window-fresh iframe,
-        .widget-window-root.widget-window-fresh .widget-pending {
-          border-radius: 8px;
+        .widget-window-root .widget-clip.widget-clip-rounded {
+          border-radius: 10px;
         }
         .widget-window-root iframe {
           width: 100%;
@@ -1380,24 +1380,31 @@ f('widget-window', function () {
       `}</style>
       ${!isClosed
         ? this.h`
-          <iframe
-            class='widget-iframe'
-            style=${iframeStyle}
-            allow='fullscreen; screen-wake-lock; ambient-light-sensor;
-                   autoplay; midi; encrypted-media;
-                   accelerometer; gyroscope; magnetometer; xr-spatial-tracking;
-                   clipboard-read; clipboard-write; web-share;
-                   camera; microphone; geolocation; bluetooth; payment'
-            ref=${store.appIframeRef$}
-            src=${store.appIframeSrc$()}
-          />
-          ${store.showPending$()
-            ? this.h`
-              <div class='widget-pending'>
-                <pending-indicator props=${{ text: t('Opening app...'), compact: true }} />
-              </div>
-            `
-            : ''}
+          <div
+            class=${{
+              'widget-clip': true,
+              'widget-clip-rounded': isFresh || showSolidBorder
+            }}
+          >
+            <iframe
+              class='widget-iframe'
+              style=${iframeStyle}
+              allow='fullscreen; screen-wake-lock; ambient-light-sensor;
+                     autoplay; midi; encrypted-media;
+                     accelerometer; gyroscope; magnetometer; xr-spatial-tracking;
+                     clipboard-read; clipboard-write; web-share;
+                     camera; microphone; geolocation; bluetooth; payment'
+              ref=${store.appIframeRef$}
+              src=${store.appIframeSrc$()}
+            />
+            ${store.showPending$()
+              ? this.h`
+                <div class='widget-pending'>
+                  <pending-indicator props=${{ text: t('Opening app...'), compact: true }} />
+                </div>
+              `
+              : ''}
+          </div>
         `
         : ''}
       ${isFresh && !showSolidBorder
