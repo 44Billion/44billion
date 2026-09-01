@@ -1587,7 +1587,7 @@ f('widget-window', function () {
           </svg>
         `
         : ''}
-      ${store.selected$() || isClosed
+      ${(store.selected$() && !store.dragging$()) || isClosed
         ? this.h`
           <button
             class=${{
