@@ -105,7 +105,26 @@ f('widgets-layer', function () {
   useTask(({ track, cleanup }) => {
     const el = track(() => store.scrollRef$())
     if (!el) return
-    const update = () => store.grid$(computeGridSize(el))
+    const update = () => {
+      const previousGrid = store.grid$()
+      const previousStep = Math.max(previousGrid.pageWidth + previousGrid.gap, 1)
+      const previousPage = Math.max(0, Math.round(el.scrollLeft / previousStep))
+      const nextGrid = computeGridSize(el)
+      store.grid$(nextGrid)
+      const nextStep = Math.max(nextGrid.pageWidth + nextGrid.gap, 1)
+      // Keep the viewport aligned to the page the user was viewing: a resize
+      // changes the page step, and an unaligned scrollLeft would leave widgets
+      // straddling pages. Wait two frames so the grid (and its grown/shrunk
+      // width) re-renders before scrolling, mirroring the drag auto-flip.
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (!el.isConnected) return
+        const target = previousPage * nextStep
+        if (Math.abs(el.scrollLeft - target) >= 1) {
+          el.scrollTo({ left: target, behavior: 'auto' })
+        }
+        store.currentPage$(Math.round(el.scrollLeft / nextStep))
+      }))
+    }
     update()
     const observer = new ResizeObserver(update)
     observer.observe(el)
