@@ -134,6 +134,7 @@ f('aScreen', function () {
 
   useAppRouter()
   const { isSystemRoute$ } = useSystemRouter()
+  const widgetsRevealActive$ = useGlobalSignal('widgetsRevealActive', false)
 
   // Keep the browser tab title in sync with the focused app. System routes
   // always use the default launcher title, and the title only follows an app
@@ -187,6 +188,25 @@ f('aScreen', function () {
 
   const isSingleWindow$ = storage.config_isSingleWindow$
   const { isHidden$: isToolbarHidden$ } = useGlobalStore('toolbarState', { isHidden$: false })
+
+  // While the widget reveal mode is active, the toolbar must stay available:
+  // if the user hides it (which enters fullscreen), bring it back without
+  // leaving fullscreen so the mode can be dismissed.
+  useTask(({ track }) => {
+    const active = track(() => widgetsRevealActive$())
+    const hidden = track(() => isToolbarHidden$())
+    if (active && hidden) isToolbarHidden$.set(false)
+  })
+
+  // Escape dismisses the widget reveal mode.
+  useTask(({ cleanup }) => {
+    const onKeyDown = event => {
+      if (event.key === 'Escape' && widgetsRevealActive$()) widgetsRevealActive$(false)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    cleanup(() => window.removeEventListener('keydown', onKeyDown))
+  })
+
   const style$ = useComputed(() => /* css */`
     /* @scope { */
     #screen {
@@ -255,9 +275,17 @@ f('aScreen', function () {
       /**/
     }
 
-    #screen.system-route-active toolbar-app-launcher > div {
+    #screen.system-route-active toolbar-app-launcher > div,
+    #screen.widgets-reveal-active toolbar-app-launcher > div {
       filter: grayscale(1);
       opacity: .65;
+    }
+    app-window .scope_khjha3.open {
+      transition: opacity 0.25s ease-in-out;
+    }
+    #screen.widgets-reveal-active app-window .scope_khjha3.open {
+      opacity: 0;
+      pointer-events: none;
     }
   `)
 
@@ -266,7 +294,8 @@ f('aScreen', function () {
   return this.h`
     <div id="screen" class=${{
       'multi-window': !isSingleWindow$(),
-      'system-route-active': isSystemRoute$()
+      'system-route-active': isSystemRoute$(),
+      'widgets-reveal-active': widgetsRevealActive$()
     }}>
       <style>${style$()}</style>
       <div id='workspaces'>
@@ -1769,6 +1798,7 @@ f('appLaunchersMenu', function () {
   const storage = useWebStorage(localStorage)
   const tabStorage = useWebStorage(sessionStorage)
   const createRequest$ = useGlobalSignal('widgetsCreateRequest', null)
+  const widgetsRevealActive$ = useGlobalSignal('widgetsRevealActive', false)
   const { requestConfirmation } = useConfirmationDialogStore()
   const { openNewAppInstance } = useGlobalStore('useAppRouter')
   const menuProps = useStore(() => ({
@@ -1902,6 +1932,13 @@ f('appLaunchersMenu', function () {
         wsKey: workspaceKey,
         pinnedRoute
       })
+      // If open app windows would cover the new widget, enter the reveal mode
+      // (windows fade out, toolbar grays out) until the toolbar is clicked.
+      const openAppKeys = tabStorage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]() ?? []
+      const hasOpenWindow = openAppKeys.some(openKey =>
+        tabStorage[`session_appByKey_${openKey}_visibility$`]() === 'open'
+      )
+      if (hasOpenWindow) widgetsRevealActive$(true)
     },
     async deleteApp () {
       try {
@@ -2068,6 +2105,7 @@ f('toolbarAppLauncher', function () {
   const tabStorage = useWebStorage(sessionStorage)
   const { order$: activeWsOrder$ } = useActiveWorkspaceOrder(storage, tabStorage)
   const { isSystemRoute$, closeSystemViews } = useSystemRouter()
+  const widgetsRevealActive$ = useGlobalSignal('widgetsRevealActive', false)
   const newAppIdsObj$ = useGlobalSignal('hardcoded_newAppIdsObj')
   const appIndex$ = useStateSignal(this.props.appIndex)
   const appRef$ = useSignal()
@@ -2088,6 +2126,10 @@ f('toolbarAppLauncher', function () {
   // useLongPress(unifiedToolbarRef$, appRef$)
   const { toggleMenu, app$: currApp$ } = useClosestStore('<a-menu>')
   const handleClick = () => {
+    if (widgetsRevealActive$()) {
+      widgetsRevealActive$(false)
+      return
+    }
     if (isSystemRoute$()) {
       closeSystemViews()
       return

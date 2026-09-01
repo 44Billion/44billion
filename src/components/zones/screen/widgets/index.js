@@ -166,6 +166,29 @@ f('widgets-layer', function () {
       .filter(([, widget]) => widget?.wsKey === wsKey)
       .map(([widgetKey, widget]) => ({ ...widget, widgetKey }))
   })
+
+  // Dismiss the widget reveal mode when the active workspace changes or when
+  // the active workspace no longer has widgets (e.g. the last one is removed).
+  // The pending creation request keeps the mode alive until the widget exists.
+  const widgetsRevealActive$ = useGlobalSignal('widgetsRevealActive', false)
+  const revealWorkspaceKey = useMemo(() => ({ key: null }))
+  useTask(({ track }) => {
+    const active = track(() => widgetsRevealActive$())
+    const request = track(() => createRequest$())
+    const wsKey = track(() => activeWsKey$())
+    const widgets = track(() => wsWidgets$())
+    if (!active) {
+      revealWorkspaceKey.key = null
+      return
+    }
+    if (revealWorkspaceKey.key !== null && revealWorkspaceKey.key !== wsKey) {
+      widgetsRevealActive$(false)
+      return
+    }
+    revealWorkspaceKey.key = wsKey
+    if (!request && widgets.length === 0) widgetsRevealActive$(false)
+  })
+
   const layout$ = useComputed(() => {
     const grid = store.grid$()
     const widgets = wsWidgets$()

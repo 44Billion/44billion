@@ -1,4 +1,4 @@
-import { f, useStore, useGlobalStore, useComputed, useSignal, useTask } from '#f'
+import { f, useStore, useGlobalStore, useGlobalSignal, useComputed, useSignal, useTask } from '#f'
 import { cssVars } from '#assets/styles/theme.js'
 import '#shared/menu.js'
 import '#shared/icons/icon-dots.js'
@@ -45,6 +45,7 @@ function exitToolbarFullscreen () {
 
 f('toolbar-more-menu', function () {
   const { isHidden$ } = useGlobalStore('toolbarState', { isHidden$: false })
+  const widgetsRevealActive$ = useGlobalSignal('widgetsRevealActive', false)
   const { openApp } = useGlobalStore('useAppRouter')
   const { isOpen$, anchorRef$ } = useStore({
     isOpen$: false,
@@ -187,7 +188,10 @@ f('toolbar-more-menu', function () {
     <div
       id='toolbar-more-menu-button'
       ref=${anchorRef$}
-      onclick=${() => isOpen$.set(!isOpen$.get())}
+      onclick=${() => {
+        widgetsRevealActive$(false)
+        isOpen$.set(!isOpen$.get())
+      }}
       style=${`
         anchor-name: --toolbar-more-menu;
         cursor: pointer;
