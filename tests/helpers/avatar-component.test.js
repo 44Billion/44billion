@@ -34,7 +34,7 @@ mock.module('#helpers/avatar.js', {
   }
 })
 mock.module('#shared/icons/icon-user-circle.js', { namedExports: {} })
-mock.module('#shared/svg.js', { namedExports: {} })
+mock.module('thenameisf/components/f-svg.js', { namedExports: {} })
 mock.module('libp2r2p/base62', { namedExports: { base62ToBase16: value => value } })
 mock.module('#assets/styles/theme.js', {
   namedExports: { cssVars: { colors: { bgAvatar: 'black', bgAvatarLoading: 'gray' } } }

@@ -1,5 +1,5 @@
 import { f, useStore } from '#f'
-import '#shared/svg.js'
+import 'thenameisf/components/f-svg.js'
 
 f('icon-help-hexagon-filled', function () {
   // https://tabler.io/icons/icon/help-hexagon
@@ -17,7 +17,7 @@ f('icon-help-hexagon-filled', function () {
     }
   })
 
-  return this.h`<a-svg
+  return this.h`<f-svg
     props=${{
       ...store,
       ...this.props

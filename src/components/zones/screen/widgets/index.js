@@ -1384,6 +1384,7 @@ f('widget-window', function () {
           border-radius: 8px;
           background-color: transparent;
           color: ${cssVars.colors.bgAccentPrimary};
+          box-shadow: 0 0 0 1px ${cssVars.colors.bg};
           cursor: pointer;
           z-index: 4;
         }
@@ -1438,7 +1439,7 @@ f('widget-window', function () {
           position: absolute;
           inset: 0;
           border-radius: 50%;
-          border: 2px solid ${cssVars.colors.bg};
+          border: 1px solid ${cssVars.colors.bg};
           pointer-events: none;
         }
         .widget-window-root .widget-resize-node.top::before,
@@ -1597,7 +1598,14 @@ f('widget-window', function () {
             onclick=${removeWidgetNow}
             aria-label=${t('Remove Widget')}
           >
-            <icon-close props=${{ size: '16px', strokeWidth: 3 }} />
+            <icon-close
+              props=${{
+                size: '16px',
+                strokeWidth: 3,
+                outlineColor: cssVars.colors.bg,
+                outlineWidth: 1
+              }}
+            />
           </button>
         `
         : ''}

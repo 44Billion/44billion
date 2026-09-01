@@ -6,7 +6,7 @@ import {
   isValidAvatarPicture
 } from '#helpers/avatar.js'
 import '#shared/icons/icon-user-circle.js'
-import '#shared/svg.js'
+import 'thenameisf/components/f-svg.js'
 import { base62ToBase16 } from 'libp2r2p/base62'
 import { useWebStorage } from '#f'
 import { cssVars } from '#assets/styles/theme.js'
@@ -190,7 +190,7 @@ f('a-avatar', ({ h, props }) => {
       : h`<icon-user-circle props=${props} />`
   }
 
-  return h`<a-svg props=${{ ...props, svg: store.svg$() }} />`
+  return h`<f-svg props=${{ ...props, svg: store.svg$() }} />`
 })
 
 function getLocales () {

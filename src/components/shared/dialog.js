@@ -317,7 +317,7 @@ f('a-dialog', ({ h, props }) => {
           }
 
           & .a-dialog__close icon-x,
-          & .a-dialog__close a-svg {
+          & .a-dialog__close f-svg {
             display: block;
             width: 100%;
             height: 100%;

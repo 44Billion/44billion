@@ -1,5 +1,5 @@
 import { f, useStore } from '#f'
-import '#shared/svg.js'
+import 'thenameisf/components/f-svg.js'
 
 f('icon-dots', function () {
   // https://tabler.io/icons/icon/dots
@@ -12,7 +12,7 @@ f('icon-dots', function () {
     viewBox$: '2 2 20 20'
   })
 
-  return this.h`<a-svg
+  return this.h`<f-svg
     props=${{
       ...store,
       ...this.props
