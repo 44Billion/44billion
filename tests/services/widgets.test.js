@@ -90,7 +90,7 @@ describe('widgets service', () => {
       wsKey: 'ws1',
       row: 1,
       col: 2,
-      desired: { w: 4, h: 6 },
+      desired: { w: 5, h: 5 },
       pinnedRoute: '/x',
       createdAt: 100,
       updatedAt: 100

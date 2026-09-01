@@ -482,6 +482,15 @@ f('widget-window', function () {
   const startSelectionTimer = () => {
     clearTimeout(runtime.selectionTimer)
     store.selected$(true)
+    // The first interaction ends the fresh (post-creation) window: once the
+    // solid selection border takes over, the animated border must not come
+    // back when selection expires or is dismissed.
+    clearTimeout(runtime.freshTimer)
+    runtime.freshTimer = null
+    if (store.freshUntil$() > 0) {
+      store.freshUntil$(0)
+      widgetFresh$(null)
+    }
     syncSelectMode()
     runtime.selectionTimer = setTimeout(() => {
       runtime.selectionTimer = null
