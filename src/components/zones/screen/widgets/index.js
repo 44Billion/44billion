@@ -1161,6 +1161,18 @@ f('widget-window', function () {
           cursor: pointer;
           z-index: 4;
         }
+        .widget-window-root .widget-remove-button.widget-remove-center-x {
+          right: auto;
+          left: 50%;
+          transform: translateX(-50%);
+        }
+        .widget-window-root .widget-remove-button.widget-remove-center-y {
+          top: 50%;
+          transform: translateY(-50%);
+        }
+        .widget-window-root .widget-remove-button.widget-remove-center-x.widget-remove-center-y {
+          transform: translate(-50%, -50%);
+        }
         .widget-window-root .widget-fresh-border {
           position: absolute;
           inset: 0;
@@ -1331,8 +1343,16 @@ f('widget-window', function () {
         : ''}
       ${store.selected$() || isClosed
         ? this.h`
-          <button class='widget-remove-button' onclick=${removeWidgetNow} aria-label=${t('Remove Widget')}>
-          <icon-close props=${{ size: '16px' }} />
+          <button
+            class=${{
+              'widget-remove-button': true,
+              'widget-remove-center-x': placement.w === 1,
+              'widget-remove-center-y': placement.h === 1
+            }}
+            onclick=${removeWidgetNow}
+            aria-label=${t('Remove Widget')}
+          >
+            <icon-close props=${{ size: '16px' }} />
           </button>
         `
         : ''}
