@@ -8,6 +8,23 @@ import {
   NEXT_SITE_MANIFEST
 } from 'libp2r2p/kind'
 
+// Apps (and widgets, which are app instances) run in this document, and their
+// console output is often noisy. Route their log methods through
+// `console.debug` so they only appear at the verbose level, while keeping our
+// own messages on the original methods below.
+const originalConsole = {
+  log: console.log.bind(console),
+  info: console.info.bind(console),
+  warn: console.warn.bind(console),
+  error: console.error.bind(console),
+  debug: console.debug.bind(console)
+}
+const appConsoleDebug = originalConsole.debug || originalConsole.log
+console.log = (...args) => appConsoleDebug(...args)
+console.info = (...args) => appConsoleDebug(...args)
+console.warn = (...args) => appConsoleDebug(...args)
+console.error = (...args) => appConsoleDebug(...args)
+
 const SITE_MANIFEST_KINDS = new Set([
   MAIN_SITE_MANIFEST,
   NEXT_SITE_MANIFEST,
@@ -15,7 +32,7 @@ const SITE_MANIFEST_KINDS = new Set([
 ])
 
 const localeClient = createAppLocaleClient({
-  reportError: error => console.error('window.napp locale listener failed', error)
+  reportError: error => originalConsole.error('window.napp locale listener failed', error)
 })
 
 function injectLocale () {
@@ -37,7 +54,11 @@ function injectLocale () {
   interceptNavigations(p.promise)
   reportRouteChanges(p.promise)
   tellParentImReady(p)
-  await preventSwUsage()
+  try {
+    await preventSwUsage()
+  } catch (error) {
+    originalConsole.warn('[app-page] Failed to prevent service worker usage', error)
+  }
   await p.promise
   startAutoFit()
 })()
@@ -59,25 +80,25 @@ async function preventSwUsage () {
   Object.defineProperties(registration, {
     unregister: {
       value () {
-        console.warn('Napps can\'t unregister service workers')
+        originalConsole.warn('Napps can\'t unregister service workers')
         return Promise.resolve(true)
       }
     },
     addEventListener: {
-      value () { console.warn('Napps can\'t add event listeners to service worker registrations') }
+      value () { originalConsole.warn('Napps can\'t add event listeners to service worker registrations') }
     },
     removeEventListener: {
-      value () { console.warn('Napps can\'t remove event listeners from service worker registrations') }
+      value () { originalConsole.warn('Napps can\'t remove event listeners from service worker registrations') }
     }
   })
 
   navigator.serviceWorker.register = function () {
-    console.warn('Napps can\'t register service workers')
+    originalConsole.warn('Napps can\'t register service workers')
     return Promise.resolve(registration)
   }
   Object.defineProperty(navigator.serviceWorker, 'ready', {
     get () {
-      console.warn('Napps can\'t wait for service worker activation')
+      originalConsole.warn('Napps can\'t wait for service worker activation')
       return Promise.resolve(registration)
     }
   })
@@ -94,6 +115,10 @@ function tellParentImReady (p) {
     autoFitEnabled = true
     autoFitIsWidget = e.data.payload?.isWidget === true
     autoFitPort = browserPort
+    originalConsole.log('[widget-drag] browser-ready', {
+      isWidget: autoFitIsWidget,
+      hasPort: !!autoFitPort
+    })
     localeClient.setLocale(e.data.payload?.locale)
     const bridgeId = e.data.payload?.bridgeId
     if (bridgeId) {
@@ -143,6 +168,7 @@ let autoFitMutationObserver = null
 let autoFitTransitionActive = false
 let autoFitPort = null
 let widgetSelectModeEnabled = false
+let widgetDragListenerStarted = false
 
 function setAutoFitHidden (hidden) {
   document.documentElement.style.visibility = hidden ? 'hidden' : ''
@@ -270,6 +296,10 @@ const WIDGET_DRAG_LONG_PRESS_MS = 600
 const WIDGET_DRAG_MOVE_TOLERANCE = 10
 
 function sendWidgetDrag (op, x, y) {
+  originalConsole.log('[widget-drag] send', op, x, y, {
+    hasPort: !!autoFitPort,
+    isWidget: autoFitIsWidget
+  })
   if (autoFitPort) {
     tell(autoFitPort, {
       code: 'WIDGET_DRAG',
@@ -278,8 +308,9 @@ function sendWidgetDrag (op, x, y) {
   }
 }
 
-function startWidgetDragListener () {
-  if (!autoFitIsWidget) return
+function installWidgetDragListener () {
+  if (widgetDragListenerStarted) return
+  widgetDragListenerStarted = true
   const state = {
     pointerId: null,
     startX: 0,
@@ -294,6 +325,13 @@ function startWidgetDragListener () {
     state.timer = null
   }
   const onPointerDown = event => {
+    if (!autoFitIsWidget) return
+    originalConsole.log('[widget-drag] pointerdown', {
+      x: event.clientX,
+      y: event.clientY,
+      pointerId: event.pointerId,
+      selectMode: widgetSelectModeEnabled
+    })
     if (state.pointerId !== null) return
     state.pointerId = event.pointerId
     state.startX = event.clientX
@@ -312,10 +350,15 @@ function startWidgetDragListener () {
       state.active = true
       state.lastSentX = event.clientX
       state.lastSentY = event.clientY
+      originalConsole.log('[widget-drag] long-press fired', {
+        x: event.clientX,
+        y: event.clientY
+      })
       sendWidgetDrag('start', event.clientX, event.clientY)
     }, WIDGET_DRAG_LONG_PRESS_MS)
   }
   const onPointerMove = event => {
+    if (!autoFitIsWidget) return
     if (event.pointerId !== state.pointerId) return
     if (state.timer) {
       const dx = event.clientX - state.startX
@@ -337,22 +380,31 @@ function startWidgetDragListener () {
     }
   }
   const onPointerEnd = event => {
+    if (!autoFitIsWidget) return
     if (event.pointerId !== state.pointerId) return
     clearTimer()
     const wasActive = state.active
     state.pointerId = null
     state.active = false
+    originalConsole.log('[widget-drag] pointerend', {
+      x: event.clientX,
+      y: event.clientY,
+      wasActive
+    })
     if (wasActive) sendWidgetDrag('end', event.clientX, event.clientY)
   }
   const onContextMenu = event => {
+    if (!autoFitIsWidget) return
     if (state.active) event.preventDefault()
   }
-  document.addEventListener('pointerdown', onPointerDown, true)
-  document.addEventListener('pointermove', onPointerMove, true)
-  document.addEventListener('pointerup', onPointerEnd, true)
-  document.addEventListener('pointercancel', onPointerEnd, true)
-  document.addEventListener('contextmenu', onContextMenu, true)
+  window.addEventListener('pointerdown', onPointerDown, true)
+  window.addEventListener('pointermove', onPointerMove, true)
+  window.addEventListener('pointerup', onPointerEnd, true)
+  window.addEventListener('pointercancel', onPointerEnd, true)
+  window.addEventListener('contextmenu', onContextMenu, true)
 }
+
+installWidgetDragListener()
 
 function fitAutoFit () {
   clearTimeout(autoFitDebounceTimer)
@@ -398,7 +450,7 @@ function fitAutoFit () {
     if (needsOpaqueBg) root.style.backgroundColor = solidBg
     const finishTransition = error => {
       autoFitTransitionActive = false
-      if (error) console.warn('[app-page] Auto-fit view transition failed', error)
+      if (error) originalConsole.warn('[app-page] Auto-fit view transition failed', error)
       scheduleAutoFitFit()
     }
     try {
@@ -410,7 +462,7 @@ function fitAutoFit () {
         try {
           await waitForAutoFitSettle()
         } catch (err) {
-          console.error('Error occurred while waiting for auto-fit settle', err)
+          originalConsole.error('Error occurred while waiting for auto-fit settle', err)
         } finally {
           if (needsOpaqueBg) root.style.backgroundColor = previousBg
         }
@@ -421,7 +473,7 @@ function fitAutoFit () {
       )
     } catch (error) {
       autoFitTransitionActive = false
-      console.warn('[app-page] Auto-fit view transition failed', error)
+      originalConsole.warn('[app-page] Auto-fit view transition failed', error)
       if (needsOpaqueBg) root.style.backgroundColor = previousBg
       apply()
     }
@@ -469,7 +521,6 @@ function startAutoFit () {
   window.addEventListener('load', finalizeFirstFit)
   document.addEventListener('load', scheduleAutoFitFit, true)
   fitAutoFit()
-  startWidgetDragListener()
 }
 
 // First fit must never stay hidden forever: `window.load` is the hard deadline
@@ -586,7 +637,7 @@ function injectNip07 (promise) {
   napp.setMinWidth = minWidth => {
     const value = Math.round(Number(minWidth))
     if (!Number.isFinite(value) || value < 0) {
-      console.warn('[app-page] Invalid setMinWidth value', minWidth)
+      originalConsole.warn('[app-page] Invalid setMinWidth value', minWidth)
       return
     }
     if (autoFitPort) {
@@ -661,7 +712,7 @@ function interceptNavigations (browserPortPromise) {
     const displayUrl = typeof url === 'string'
       ? url
       : (typeof url?.href === 'string' ? url.href : (typeof url?.url === 'string' ? url.url : `${url}`))
-    console.log(`${kind} to`, displayUrl, 'was intercepted and canceled')
+    originalConsole.log(`${kind} to`, displayUrl, 'was intercepted and canceled')
     sendOpenAppMessage(displayUrl)
     return true
   }
@@ -727,7 +778,7 @@ function interceptNavigations (browserPortPromise) {
     if (anchor && anchor.href) {
       if (shouldInterceptUrl(anchor.href)) {
         e.preventDefault()
-        console.log('Link click to', anchor.href, 'was intercepted and canceled')
+        originalConsole.log('Link click to', anchor.href, 'was intercepted and canceled')
         sendOpenAppMessage(anchor.href)
       }
     }
@@ -739,7 +790,7 @@ function interceptNavigations (browserPortPromise) {
     if (form.action) {
       if (shouldInterceptUrl(form.action)) {
         e.preventDefault()
-        console.log('Form submission to', form.action, 'was intercepted and canceled')
+        originalConsole.log('Form submission to', form.action, 'was intercepted and canceled')
         sendOpenAppMessage(form.action)
       }
     }
@@ -754,10 +805,10 @@ function interceptNavigations (browserPortPromise) {
           payload: { href: url }
         })
       }).catch(error => {
-        console.error('Failed to send OPEN_APP message:', error)
+        originalConsole.error('Failed to send OPEN_APP message:', error)
       })
     } catch (error) {
-      console.error('Error sending OPEN_APP message:', error)
+      originalConsole.error('Error sending OPEN_APP message:', error)
     }
   }
 }
@@ -781,7 +832,7 @@ function reportRouteChanges (browserPortPromise) {
         payload: { href: route }
       })
     }).catch(error => {
-      console.error('Failed to send APP_ROUTE_CHANGED:', error)
+      originalConsole.error('Failed to send APP_ROUTE_CHANGED:', error)
     })
   }
 

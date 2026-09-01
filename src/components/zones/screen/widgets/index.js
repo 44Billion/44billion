@@ -373,18 +373,16 @@ f('widgets-layer', function () {
         onpointerup=${onDotsPointerUp}
       >
         <div style="display: contents"></div>
-        ${pageCount > 1
-          ? visiblePages$().map(page => this.h({ key: page })`
-            <button
-              class=${{
-                'widget-page-dot': true,
-                active: page === store.currentPage$()
-              }}
-              aria-label=${`Page ${page + 1}`}
-              onclick=${() => onDotClick(page)}
-            ></button>
-          `)
-          : ''}
+        ${(pageCount > 1 ? visiblePages$() : []).map(page => this.h({ key: page })`
+          <button
+            class=${{
+              'widget-page-dot': true,
+              active: page === store.currentPage$()
+            }}
+            aria-label=${`Page ${page + 1}`}
+            onclick=${() => onDotClick(page)}
+          ></button>
+        `)}
       </div>
     </div>
   `
@@ -438,6 +436,8 @@ f('widget-window', function () {
     routeVersion: 0,
     loadedRouteVersion: -1,
     bridgeState: null,
+    ac: null,
+    unregister: null,
     selectionTimer: null,
     freshTimer: null
   }))
@@ -449,10 +449,22 @@ f('widget-window', function () {
     const grid = grid$()
     return placement.w * (grid.cell + grid.gap) - grid.gap
   })
+  const appSubdomain$ = useComputed(() => {
+    const record = store.record$()
+    if (!record) return null
+    const userPk = storage[`session_workspaceByKey_${record.wsKey}_userPk$`]()
+    if (!userPk || !record.appId) return null
+    return storage[`session_subdomainByUserAndApp_${userPk}_${record.appId}$`]()
+  })
 
   const syncSelectMode = () => {
     const enabled = store.selected$() || store.freshUntil$() > Date.now()
     const port = runtime.bridgeState?.windows.get(widgetKey)?.widgetPort
+    console.log('[widget-drag] select-mode', {
+      enabled,
+      widgetKey,
+      hasPort: !!port
+    })
     if (port) tell(port, { code: 'WIDGET_SELECT_MODE', payload: { enabled } })
   }
   const deselect = () => {
@@ -615,11 +627,9 @@ f('widget-window', function () {
       const appId = track(() => store.record$()?.appId)
       const wsKey = track(() => store.record$()?.wsKey)
       const iframeRef = track(() => store.appIframeRef$())
+      const appSubdomain = track(() => appSubdomain$())
       if (!appId || !wsKey) return
       const userPk = storage[`session_workspaceByKey_${wsKey}_userPk$`]()
-      const appSubdomain = userPk && appId
-        ? storage[`session_subdomainByUserAndApp_${userPk}_${appId}$`]()
-        : null
       const pinnedRoute = store.record$()?.pinnedRoute ?? ''
       const route = readWidgetSessionValue(sessionStorage, widgetKey, 'route') ?? pinnedRoute
       store.launchError$(null)
@@ -632,7 +642,11 @@ f('widget-window', function () {
         store.wideMode$(false)
         store.iframeReevalHidden$(false)
         store.minWidth$(WIDGET_AUTO_FIT_MIN_WIDTH)
+        runtime.ac?.abort()
+        runtime.unregister?.()
         runtime.appCleanup?.()
+        runtime.ac = null
+        runtime.unregister = null
         runtime.appCleanup = null
         runtime.startedGeneration = null
         runtime.appReady = false
@@ -646,39 +660,51 @@ f('widget-window', function () {
         return
       }
 
-      const ac = new AbortController()
-      cleanup(() => ac.abort())
-      const bridgeState = ensureAppBridgeState(appSubdomain, { userPk, appId })
-      runtime.bridgeState = bridgeState
-      syncSelectMode()
-      const unregister = registerAppBridgeWindow(bridgeState, {
-        appKey: widgetKey,
-        onClose () {
-          if (store.visibility$() === 'open') setVisibility('minimized')
-        },
-        onWidgetDrag ({ op, x, y }) {
-          if (op === 'start') beginDragFromPointer(x, y)
-          else if (op === 'move') moveDragFromPointer(x, y)
-          else if (op === 'end') endDragFromPointer(x, y)
-        },
-        onSetMinWidth (minWidth) {
-          const value = Math.round(Number(minWidth))
-          if (!Number.isFinite(value) || value < 0) {
-            console.warn('[widget-window] Invalid minWidth', minWidth)
-            return
-          }
-          store.minWidth$(value)
-        },
-        onAutoFitDone () {
-          store.iframeReevalHidden$(false)
-        }
-      })
-      cleanup(unregister)
+      // Once the app page window port is live, never tear it down on bridge
+      // re-runs (retries/toggles): a new port would require the app page to
+      // re-handshake, which it only does once per load.
+      if (runtime.appCleanup && runtime.appReady) return
 
-      const [bridgeReady, bridgeError, bridgeRetryCount] = track(() => [
+      if (!runtime.ac || !runtime.bridgeState || !runtime.unregister) {
+        runtime.ac = new AbortController()
+        runtime.bridgeState = ensureAppBridgeState(appSubdomain, { userPk, appId })
+        syncSelectMode()
+        runtime.unregister = registerAppBridgeWindow(runtime.bridgeState, {
+          appKey: widgetKey,
+          onClose () {
+            if (store.visibility$() === 'open') setVisibility('minimized')
+          },
+          onWidgetDrag ({ op, x, y }) {
+            console.log('[widget-drag] launcher onWidgetDrag', {
+              op,
+              x,
+              y,
+              widgetKey,
+              hasPlacement: !!placement$(),
+              dragActive: drag.active
+            })
+            if (op === 'start') beginDragFromPointer(x, y)
+            else if (op === 'move') moveDragFromPointer(x, y)
+            else if (op === 'end') endDragFromPointer(x, y)
+          },
+          onSetMinWidth (minWidth) {
+            const value = Math.round(Number(minWidth))
+            if (!Number.isFinite(value) || value < 0) {
+              console.warn('[widget-window] Invalid minWidth', minWidth)
+              return
+            }
+            store.minWidth$(value)
+          },
+          onAutoFitDone () {
+            store.iframeReevalHidden$(false)
+          }
+        })
+      }
+      const bridgeState = runtime.bridgeState
+      const ac = runtime.ac
+      const [bridgeReady, bridgeError] = track(() => [
         bridgeState.ready$(),
-        bridgeState.error$(),
-        bridgeState.retryCount$()
+        bridgeState.error$()
       ])
       if (bridgeError) {
         store.showPending$(false)
@@ -705,15 +731,10 @@ f('widget-window', function () {
         store.appReady$(false)
         return
       }
-      if (
-        runtime.startedGeneration === bridgeRetryCount &&
-        runtime.appReady &&
-        runtime.loadedRouteVersion === runtime.routeVersion
-      ) return
+      if (runtime.appCleanup && runtime.appReady) return
 
       runtime.appCleanup?.()
       runtime.appCleanup = null
-      runtime.startedGeneration = bridgeRetryCount
       runtime.appReady = false
       store.appReady$(false)
       store.launchError$(null)
@@ -722,6 +743,7 @@ f('widget-window', function () {
         store.showPending$(false)
         runtime.appReady = true
         store.appReady$(true)
+        syncSelectMode()
       }
       runtime.loadedRouteVersion = runtime.routeVersion
       const cleanupApp = initAppWindow(bridgeState, {
@@ -743,10 +765,24 @@ f('widget-window', function () {
         signal: ac.signal
       })
       runtime.appCleanup = cleanupApp
-      cleanup(cleanupApp)
     },
     { after: 'rendering' }
   )
+
+  // Unmount-only teardown for the manually managed bridge lifecycle (the
+  // iframe task above intentionally does not register these with its own
+  // cleanup, so bridge re-runs never close the live window port).
+  useTask(({ cleanup }) => {
+    cleanup(() => {
+      runtime.ac?.abort()
+      runtime.unregister?.()
+      runtime.appCleanup?.()
+      runtime.ac = null
+      runtime.unregister = null
+      runtime.appCleanup = null
+      runtime.bridgeState = null
+    })
+  })
 
   // Closed widgets have no iframe, so the root itself can detect long-press.
   const longPressTimer = useMemo(() => ({ id: null }))
@@ -846,9 +882,15 @@ f('widget-window', function () {
     drag.flipTimer = setTimeout(flipPage, DRAG_PAGE_FLIP_DELAY_MS)
   }
   const beginDragFromPointer = (x, y) => {
-    if (drag.active) return
+    if (drag.active) {
+      console.log('[widget-drag] begin skipped: already active', { widgetKey })
+      return
+    }
     const placement = placement$()
-    if (!placement) return
+    if (!placement) {
+      console.log('[widget-drag] begin skipped: no placement', { widgetKey })
+      return
+    }
     drag.active = true
     drag.startX = x
     drag.startY = y
@@ -1067,6 +1109,11 @@ f('widget-window', function () {
         .widget-window-root.widget-window-selected {
           border: 2px solid ${cssVars.colors.bgAccentPrimary};
           border-radius: 10px;
+          overflow: visible;
+        }
+        .widget-window-root.widget-window-selected iframe,
+        .widget-window-root.widget-window-selected .widget-pending {
+          border-radius: 8px;
         }
         .widget-window-root iframe {
           width: 100%;
@@ -1122,28 +1169,108 @@ f('widget-window', function () {
           height: 12px;
           border-radius: 50%;
           background-color: ${cssVars.colors.bgAccentPrimary};
-          border: 2px solid ${cssVars.colors.bg};
+          border: 0;
+          padding: 0;
           z-index: 5;
           pointer-events: auto;
           touch-action: none;
         }
+        .widget-window-root .widget-resize-node::before,
+        .widget-window-root .widget-resize-node::after {
+          content: '';
+          position: absolute;
+          inset: 0;
+          border-radius: 50%;
+          border: 2px solid ${cssVars.colors.bg};
+          pointer-events: none;
+        }
+        .widget-window-root .widget-resize-node.top::before,
+        .widget-window-root .widget-resize-node.top::after,
+        .widget-window-root .widget-resize-node.bottom::before,
+        .widget-window-root .widget-resize-node.bottom::after {
+          -webkit-mask-image: linear-gradient(
+            to bottom,
+            black 0%,
+            black 34%,
+            transparent 38%,
+            transparent 62%,
+            black 66%,
+            black 100%
+          );
+          mask-image: linear-gradient(
+            to bottom,
+            black 0%,
+            black 34%,
+            transparent 38%,
+            transparent 62%,
+            black 66%,
+            black 100%
+          );
+        }
+        .widget-window-root .widget-resize-node.left::before,
+        .widget-window-root .widget-resize-node.left::after,
+        .widget-window-root .widget-resize-node.right::before,
+        .widget-window-root .widget-resize-node.right::after {
+          -webkit-mask-image: linear-gradient(
+            to right,
+            black 0%,
+            black 34%,
+            transparent 38%,
+            transparent 62%,
+            black 66%,
+            black 100%
+          );
+          mask-image: linear-gradient(
+            to right,
+            black 0%,
+            black 34%,
+            transparent 38%,
+            transparent 62%,
+            black 66%,
+            black 100%
+          );
+        }
+        .widget-window-root .widget-resize-node.top::before {
+          clip-path: inset(0 0 50% 0);
+        }
+        .widget-window-root .widget-resize-node.bottom::before {
+          clip-path: inset(50% 0 0 0);
+        }
+        .widget-window-root .widget-resize-node.left::before {
+          clip-path: inset(0 50% 0 0);
+        }
+        .widget-window-root .widget-resize-node.right::before {
+          clip-path: inset(0 0 0 50%);
+        }
+        .widget-window-root .widget-resize-node.top::after {
+          clip-path: inset(50% 0 0 0);
+        }
+        .widget-window-root .widget-resize-node.bottom::after {
+          clip-path: inset(0 0 50% 0);
+        }
+        .widget-window-root .widget-resize-node.left::after {
+          clip-path: inset(0 0 0 50%);
+        }
+        .widget-window-root .widget-resize-node.right::after {
+          clip-path: inset(0 50% 0 0);
+        }
         .widget-window-root .widget-resize-node.top {
-          top: 4px;
+          top: -7px;
           left: calc(50% - 6px);
           cursor: ns-resize;
         }
         .widget-window-root .widget-resize-node.bottom {
-          bottom: 4px;
+          bottom: -7px;
           left: calc(50% - 6px);
           cursor: ns-resize;
         }
         .widget-window-root .widget-resize-node.left {
-          left: 4px;
+          left: -7px;
           top: calc(50% - 6px);
           cursor: ew-resize;
         }
         .widget-window-root .widget-resize-node.right {
-          right: 4px;
+          right: -7px;
           top: calc(50% - 6px);
           cursor: ew-resize;
         }
@@ -1190,15 +1317,13 @@ f('widget-window', function () {
           </button>
         `
         : ''}
-      ${showNodes
-        ? ['top', 'right', 'bottom', 'left'].map(node => this.h({ key: node })`
-          <button
-            class=${`widget-resize-node ${node}`}
-            aria-label=${`Resize ${node}`}
-            onpointerdown=${event => beginResize(node, event)}
-          ></button>
-        `)
-        : ''}
+      ${(showNodes ? ['top', 'right', 'bottom', 'left'] : []).map(node => this.h({ key: node })`
+        <button
+          class=${`widget-resize-node ${node}`}
+          aria-label=${`Resize ${node}`}
+          onpointerdown=${event => beginResize(node, event)}
+        ></button>
+      `)}
     </div>
   `
 })

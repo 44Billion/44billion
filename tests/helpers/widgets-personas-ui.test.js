@@ -23,8 +23,10 @@ describe('widgets and personas wiring', () => {
     assert.doesNotMatch(appPage, /reportOverflow/)
     assert.match(appPage, /WIDGET_DRAG/)
     assert.match(appPage, /WIDGET_SELECT_MODE/)
-    assert.match(appPage, /startWidgetDragListener/)
+    assert.match(appPage, /installWidgetDragListener/)
     assert.match(appPage, /finalizeFirstFit/)
+    assert.match(appPage, /originalConsole/)
+    assert.match(appPage, /appConsoleDebug/)
   })
 
   it('routes persona requests and scoped NIP07 calls through the app bridge', async () => {
