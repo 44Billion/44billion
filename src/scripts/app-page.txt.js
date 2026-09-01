@@ -25,6 +25,11 @@ console.info = (...args) => appConsoleDebug(...args)
 console.warn = (...args) => appConsoleDebug(...args)
 console.error = (...args) => appConsoleDebug(...args)
 
+// Temporary widget-drag instrumentation: only log in development builds.
+const widgetDragLog = (...args) => {
+  if (IS_DEVELOPMENT) originalConsole.log(...args)
+}
+
 const SITE_MANIFEST_KINDS = new Set([
   MAIN_SITE_MANIFEST,
   NEXT_SITE_MANIFEST,
@@ -115,7 +120,7 @@ function tellParentImReady (p) {
     autoFitEnabled = true
     autoFitIsWidget = e.data.payload?.isWidget === true
     autoFitPort = browserPort
-    originalConsole.log('[widget-drag] browser-ready', {
+    widgetDragLog('[widget-drag] browser-ready', {
       isWidget: autoFitIsWidget,
       hasPort: !!autoFitPort
     })
@@ -296,7 +301,7 @@ const WIDGET_DRAG_LONG_PRESS_MS = 600
 const WIDGET_DRAG_MOVE_TOLERANCE = 10
 
 function sendWidgetDrag (op, x, y, screenX, screenY) {
-  originalConsole.log('[widget-drag] send', op, x, y, {
+  widgetDragLog('[widget-drag] send', op, x, y, {
     hasPort: !!autoFitPort,
     isWidget: autoFitIsWidget,
     screenX,
@@ -328,7 +333,7 @@ function installWidgetDragListener () {
   }
   const onPointerDown = event => {
     if (!autoFitIsWidget) return
-    originalConsole.log('[widget-drag] pointerdown', {
+    widgetDragLog('[widget-drag] pointerdown', {
       x: event.clientX,
       y: event.clientY,
       pointerId: event.pointerId,
@@ -352,7 +357,7 @@ function installWidgetDragListener () {
       state.active = true
       state.lastSentX = event.clientX
       state.lastSentY = event.clientY
-      originalConsole.log('[widget-drag] long-press fired', {
+      widgetDragLog('[widget-drag] long-press fired', {
         x: event.clientX,
         y: event.clientY
       })
@@ -388,7 +393,7 @@ function installWidgetDragListener () {
     const wasActive = state.active
     state.pointerId = null
     state.active = false
-    originalConsole.log('[widget-drag] pointerend', {
+    widgetDragLog('[widget-drag] pointerend', {
       x: event.clientX,
       y: event.clientY,
       wasActive

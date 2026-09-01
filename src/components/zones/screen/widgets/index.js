@@ -52,6 +52,11 @@ const DRAG_PAGE_FLIP_THROTTLE_MS = 1500
 const WIDGET_FRESH_WINDOW_MS = 10000
 const WIDGET_SELECTED_WINDOW_MS = 4000
 
+// Temporary widget-drag instrumentation: only log in development builds.
+const widgetDragLog = (...args) => {
+  if (IS_DEVELOPMENT) console.log(...args)
+}
+
 function computeGridSize (el) {
   return computeEffectiveGrid(el?.clientWidth ?? 0, el?.clientHeight ?? 0)
 }
@@ -459,7 +464,7 @@ f('widget-window', function () {
   const syncSelectMode = () => {
     const enabled = store.selected$() || store.freshUntil$() > Date.now()
     const port = runtime.bridgeState?.windows.get(widgetKey)?.widgetPort
-    console.log('[widget-drag] select-mode', {
+    widgetDragLog('[widget-drag] select-mode', {
       enabled,
       widgetKey,
       hasPort: !!port
@@ -696,7 +701,7 @@ f('widget-window', function () {
               const point = toViewportPoint(x, y)
               drag.screenOffsetX = hasScreen ? point.x - screenX : 0
               drag.screenOffsetY = hasScreen ? point.y - screenY : 0
-              console.log('[widget-drag] launcher onWidgetDrag', {
+              widgetDragLog('[widget-drag] launcher onWidgetDrag', {
                 op,
                 x,
                 y,
@@ -714,7 +719,7 @@ f('widget-window', function () {
             const point = hasScreen
               ? { x: screenX + drag.screenOffsetX, y: screenY + drag.screenOffsetY }
               : toViewportPoint(x, y)
-            console.log('[widget-drag] launcher onWidgetDrag', {
+            widgetDragLog('[widget-drag] launcher onWidgetDrag', {
               op,
               x,
               y,
@@ -928,12 +933,12 @@ f('widget-window', function () {
       return
     }
     if (drag.active) {
-      console.log('[widget-drag] begin skipped: already active', { widgetKey })
+      widgetDragLog('[widget-drag] begin skipped: already active', { widgetKey })
       return
     }
     const placement = placement$()
     if (!placement) {
-      console.log('[widget-drag] begin skipped: no placement', { widgetKey })
+      widgetDragLog('[widget-drag] begin skipped: no placement', { widgetKey })
       return
     }
     drag.active = true

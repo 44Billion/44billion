@@ -950,15 +950,17 @@ function createAppPageMessageListener ({
         case 'WIDGET_DRAG': {
           const entry = state.windows.get(appKey)
           const { op, x, y, screenX, screenY } = e.data.payload || {}
-          console.log('[widget-drag] bridge received', {
-            op,
-            x,
-            y,
-            screenX,
-            screenY,
-            appKey,
-            hasEntry: !!entry
-          })
+          if (IS_DEVELOPMENT) {
+            console.log('[widget-drag] bridge received', {
+              op,
+              x,
+              y,
+              screenX,
+              screenY,
+              appKey,
+              hasEntry: !!entry
+            })
+          }
           try {
             entry?.onWidgetDrag?.({ op, x, y, screenX, screenY })
           } catch (error) {
