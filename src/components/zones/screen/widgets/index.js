@@ -47,6 +47,7 @@ const LONG_PRESS_MS = 600
 const DOT_SIZE = 8
 const DOT_GAP = 8
 const DRAG_EDGE_ZONE = 48
+const DRAG_DOTS_REVEAL_PX = 16
 const DRAG_PAGE_FLIP_DELAY_MS = 450
 const DRAG_PAGE_FLIP_THROTTLE_MS = 1500
 const WIDGET_FRESH_WINDOW_MS = 10000
@@ -82,6 +83,8 @@ f('widgets-layer', function () {
   const dragDraft$ = useGlobalSignal('widgetDragDraft', null)
   const dragEdge$ = useGlobalSignal('widgetDragEdge', null)
   const widgetFresh$ = useGlobalSignal('widgetFresh', null)
+  const widgetDragging$ = useGlobalSignal('widgetDragging', false)
+  const widgetDragMoved$ = useGlobalSignal('widgetDragMoved', false)
   const store = useStore(() => ({
     elRef$: null,
     scrollRef$: null,
@@ -297,6 +300,32 @@ f('widgets-layer', function () {
     if (!wsKey) return []
     return Object.keys(widgets).filter(key => widgets[key]?.wsKey === wsKey)
   })
+
+  // Grid junction dots shown while a widget is being dragged: the interior
+  // vertices of each page (where four cells meet), excluding the outer edges
+  // and the seams between pages.
+  const gridDots$ = useComputed(() => {
+    const grid = store.grid$()
+    const count = Math.max(1, pageCount$())
+    const cell = grid.cell || BASE_CELL
+    const gap = grid.gap || GAP
+    const margin = grid.margin || GAP
+    const cols = Math.max(1, grid.cols)
+    const rows = Math.max(1, grid.rows)
+    const dots = []
+    for (let page = 0; page < count; page++) {
+      for (let c = page * cols + 1; c < (page + 1) * cols; c++) {
+        for (let r = 1; r < rows; r++) {
+          dots.push({
+            left: margin + c * cell + (c - 0.5) * gap,
+            top: margin + r * cell + (r - 0.5) * gap
+          })
+        }
+      }
+    }
+    return dots
+  })
+
   const grid = store.grid$()
   const pageWidth = Math.max(grid.pageWidth, 1)
   const pageCount = Math.max(1, pageCount$())
@@ -423,6 +452,24 @@ f('widgets-layer', function () {
         .widgets-layer-scope#widgets-layer .widget-edge-gradient.visible {
           opacity: 1;
         }
+        .widgets-layer-scope#widgets-layer .widgets-grid-dots {
+          position: absolute;
+          inset: 0;
+          pointer-events: none;
+          opacity: 0;
+          transition: opacity .2s ease-in-out;
+        }
+        .widgets-layer-scope#widgets-layer .widgets-grid-dots.visible {
+          opacity: 1;
+        }
+        .widgets-layer-scope#widgets-layer .widgets-grid-dot {
+          position: absolute;
+          width: 4px;
+          height: 4px;
+          margin: -2px 0 0 -2px;
+          border-radius: 50%;
+          background-color: ${cssVars.colors.bgAccentPrimary};
+        }
       `}</style>
       <div
         class=${{
@@ -441,6 +488,17 @@ f('widgets-layer', function () {
       <div id='widgets-scroll' ref=${store.scrollRef$}>
         <div id='widgets-grid'>
           <div style="display: contents"></div>
+          <div
+            class=${{
+              'widgets-grid-dots': true,
+              visible: widgetDragging$() && widgetDragMoved$()
+            }}
+            aria-hidden='true'
+          >
+            ${gridDots$().map(dot => this.h`
+              <div class='widgets-grid-dot' style=${`left:${dot.left}px;top:${dot.top}px;`}></div>
+            `)}
+          </div>
           ${widgetKeys$().map(key => this.h({ key })`
             <widget-window
               props=${{
@@ -483,6 +541,8 @@ f('widget-window', function () {
   const dragDraft$ = useGlobalSignal('widgetDragDraft', null)
   const dragEdge$ = useGlobalSignal('widgetDragEdge', null)
   const widgetFresh$ = useGlobalSignal('widgetFresh', null)
+  const widgetDragging$ = useGlobalSignal('widgetDragging', false)
+  const widgetDragMoved$ = useGlobalSignal('widgetDragMoved', false)
   const { askVault } = useVaultActor()
   const { requestPermission } = usePermissionDialogStore()
   const { requestConfirmation } = useConfirmationDialogStore()
@@ -1044,6 +1104,8 @@ f('widget-window', function () {
       desired: { w: placement.w, h: placement.h }
     })
     store.dragging$(true)
+    widgetDragging$(true)
+    widgetDragMoved$(false)
   }
   const moveDragFromPointer = (x, y) => {
     if (!Number.isFinite(x) || !Number.isFinite(y)) {
@@ -1051,6 +1113,12 @@ f('widget-window', function () {
       return
     }
     if (!drag.active) return
+    if (
+      !widgetDragMoved$() &&
+      Math.hypot(x - drag.startX, y - drag.startY) >= DRAG_DOTS_REVEAL_PX
+    ) {
+      widgetDragMoved$(true)
+    }
     const grid = grid$()
     const size = placement$()
     if (!size || !grid) return
@@ -1101,6 +1169,8 @@ f('widget-window', function () {
     stopDragAutoFlip()
     const preview = dragDraft$()
     store.dragging$(false)
+    widgetDragging$(false)
+    widgetDragMoved$(false)
     dragDraft$(null)
     if (!preview) return
     const grid = grid$()
