@@ -295,15 +295,17 @@ function scheduleAutoFitFit () {
 const WIDGET_DRAG_LONG_PRESS_MS = 600
 const WIDGET_DRAG_MOVE_TOLERANCE = 10
 
-function sendWidgetDrag (op, x, y) {
+function sendWidgetDrag (op, x, y, screenX, screenY) {
   originalConsole.log('[widget-drag] send', op, x, y, {
     hasPort: !!autoFitPort,
-    isWidget: autoFitIsWidget
+    isWidget: autoFitIsWidget,
+    screenX,
+    screenY
   })
   if (autoFitPort) {
     tell(autoFitPort, {
       code: 'WIDGET_DRAG',
-      payload: { op, x, y }
+      payload: { op, x, y, screenX, screenY }
     })
   }
 }
@@ -342,7 +344,7 @@ function installWidgetDragListener () {
       state.active = true
       state.lastSentX = event.clientX
       state.lastSentY = event.clientY
-      sendWidgetDrag('start', event.clientX, event.clientY)
+      sendWidgetDrag('start', event.clientX, event.clientY, event.screenX, event.screenY)
       return
     }
     state.timer = setTimeout(() => {
@@ -354,7 +356,7 @@ function installWidgetDragListener () {
         x: event.clientX,
         y: event.clientY
       })
-      sendWidgetDrag('start', event.clientX, event.clientY)
+      sendWidgetDrag('start', event.clientX, event.clientY, event.screenX, event.screenY)
     }, WIDGET_DRAG_LONG_PRESS_MS)
   }
   const onPointerMove = event => {
@@ -376,7 +378,7 @@ function installWidgetDragListener () {
     ) {
       state.lastSentX = event.clientX
       state.lastSentY = event.clientY
-      sendWidgetDrag('move', event.clientX, event.clientY)
+      sendWidgetDrag('move', event.clientX, event.clientY, event.screenX, event.screenY)
     }
   }
   const onPointerEnd = event => {
@@ -391,7 +393,9 @@ function installWidgetDragListener () {
       y: event.clientY,
       wasActive
     })
-    if (wasActive) sendWidgetDrag('end', event.clientX, event.clientY)
+    if (wasActive) {
+      sendWidgetDrag('end', event.clientX, event.clientY, event.screenX, event.screenY)
+    }
   }
   const onContextMenu = event => {
     if (!autoFitIsWidget) return

@@ -485,6 +485,27 @@ f('widget-window', function () {
     }, WIDGET_SELECTED_WINDOW_MS)
   }
 
+  // The injected app-page listener reports pointer coordinates relative to
+  // the iframe's own viewport, which moves together with the widget. Convert
+  // them to viewport coordinates using the iframe's current bounding rect
+  // (including the wide-mode transform scale) so drag math is stable while
+  // the widget itself is being moved.
+  const toViewportPoint = (x, y) => {
+    const iframeEl = store.appIframeRef$()
+    if (!iframeEl) return { x, y }
+    const rect = iframeEl.getBoundingClientRect()
+    const scaleX = rect.width > 0 && iframeEl.offsetWidth > 0
+      ? rect.width / iframeEl.offsetWidth
+      : 1
+    const scaleY = rect.height > 0 && iframeEl.offsetHeight > 0
+      ? rect.height / iframeEl.offsetHeight
+      : 1
+    return {
+      x: rect.left + x * scaleX,
+      y: rect.top + y * scaleY
+    }
+  }
+
   // Track the fresh (post-creation) window from the layer.
   useTask(({ track, cleanup }) => {
     const fresh = track(() => widgetFresh$())
@@ -669,18 +690,44 @@ f('widget-window', function () {
           onClose () {
             if (store.visibility$() === 'open') setVisibility('minimized')
           },
-          onWidgetDrag ({ op, x, y }) {
+          onWidgetDrag ({ op, x, y, screenX, screenY }) {
+            const hasScreen = Number.isFinite(screenX) && Number.isFinite(screenY)
+            if (op === 'start') {
+              const point = toViewportPoint(x, y)
+              drag.screenOffsetX = hasScreen ? point.x - screenX : 0
+              drag.screenOffsetY = hasScreen ? point.y - screenY : 0
+              console.log('[widget-drag] launcher onWidgetDrag', {
+                op,
+                x,
+                y,
+                screenX,
+                screenY,
+                viewportX: point.x,
+                viewportY: point.y,
+                widgetKey,
+                hasPlacement: !!placement$(),
+                dragActive: drag.active
+              })
+              beginDragFromPointer(point.x, point.y)
+              return
+            }
+            const point = hasScreen
+              ? { x: screenX + drag.screenOffsetX, y: screenY + drag.screenOffsetY }
+              : toViewportPoint(x, y)
             console.log('[widget-drag] launcher onWidgetDrag', {
               op,
               x,
               y,
+              screenX,
+              screenY,
+              viewportX: point.x,
+              viewportY: point.y,
               widgetKey,
               hasPlacement: !!placement$(),
               dragActive: drag.active
             })
-            if (op === 'start') beginDragFromPointer(x, y)
-            else if (op === 'move') moveDragFromPointer(x, y)
-            else if (op === 'end') endDragFromPointer(x, y)
+            if (op === 'move') moveDragFromPointer(point.x, point.y)
+            else if (op === 'end') endDragFromPointer()
           },
           onSetMinWidth (minWidth) {
             const value = Math.round(Number(minWidth))
@@ -814,6 +861,8 @@ f('widget-window', function () {
     startY: 0,
     startRow: 0,
     startCol: 0,
+    screenOffsetX: 0,
+    screenOffsetY: 0,
     lastClientX: 0,
     flipTimer: null,
     flipDir: 0,
@@ -874,6 +923,10 @@ f('widget-window', function () {
     drag.flipTimer = setTimeout(flipPage, DRAG_PAGE_FLIP_DELAY_MS)
   }
   const beginDragFromPointer = (x, y) => {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      console.warn('[widget-drag] begin skipped: non-finite pointer', { x, y, widgetKey })
+      return
+    }
     if (drag.active) {
       console.log('[widget-drag] begin skipped: already active', { widgetKey })
       return
@@ -898,6 +951,10 @@ f('widget-window', function () {
     store.dragging$(true)
   }
   const moveDragFromPointer = (x, y) => {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      console.warn('[widget-drag] move skipped: non-finite pointer', { x, y, widgetKey })
+      return
+    }
     if (!drag.active) return
     const grid = grid$()
     const size = placement$()
