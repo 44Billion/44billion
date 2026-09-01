@@ -64,7 +64,7 @@ describe('widgets and personas wiring', () => {
     assert.match(widgets, /WIDGET_AUTO_FIT_MIN_WIDTH/)
     assert.match(widgets, /shouldApplyVirtualWidth/)
     assert.match(widgets, /onSetMinWidth/)
-    assert.match(widgets, /onAutoFitDone/)
+    assert.doesNotMatch(widgets, /onAutoFitDone/)
     assert.match(screen, /shouldApplyVirtualWidth/)
     assert.match(screen, /onSetMinWidth/)
     assert.match(widgets, /Remove Widget/)

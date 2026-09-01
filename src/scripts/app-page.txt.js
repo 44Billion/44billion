@@ -408,7 +408,6 @@ installWidgetDragListener()
 
 function fitAutoFit () {
   clearTimeout(autoFitDebounceTimer)
-  if (!autoFitFirstFit) scheduleAutoFitReveal(AUTO_FIT_REVEAL_TIMEOUT_MS)
   const target = computeAutoFitZoom()
   const current = autoFitZoomApplied ?? 1
   const unchanged = Math.abs(target - current) < AUTO_FIT_ZOOM_EPSILON

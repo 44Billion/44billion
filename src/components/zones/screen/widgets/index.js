@@ -51,7 +51,6 @@ const DRAG_PAGE_FLIP_DELAY_MS = 450
 const DRAG_PAGE_FLIP_THROTTLE_MS = 1500
 const WIDGET_FRESH_WINDOW_MS = 10000
 const WIDGET_SELECTED_WINDOW_MS = 4000
-const WIDGET_REEVAL_REVEAL_TIMEOUT_MS = 1500
 
 function computeGridSize (el) {
   return computeEffectiveGrid(el?.clientWidth ?? 0, el?.clientHeight ?? 0)
@@ -425,7 +424,6 @@ f('widget-window', function () {
     showPending$: false,
     launchError$: null,
     wideMode$: false,
-    iframeReevalHidden$: false,
     minWidth$: WIDGET_AUTO_FIT_MIN_WIDTH
   }))
 
@@ -440,8 +438,7 @@ f('widget-window', function () {
     ac: null,
     unregister: null,
     selectionTimer: null,
-    freshTimer: null,
-    reevalRevealTimer: null
+    freshTimer: null
   }))
 
   const placement$ = useComputed(() => layout$()[widgetKey] ?? null)
@@ -534,7 +531,10 @@ f('widget-window', function () {
   })
 
   // Apply/re-evaluate the virtual width whenever the cell width or the app's
-  // minWidth changes; toggles happen under cover (iframe hidden until `done`).
+  // minWidth changes. The app page re-measures on its own viewport changes
+  // and covers zoom switches with its view transition; scale-only changes in
+  // wide mode need no re-measure at all, so the iframe must never be hidden
+  // here (that would also hide the app page's transition snapshot).
   const reeval = useMemo(() => ({ lastCellWidth: null, lastMinWidth: null }))
   useTask(({ track }) => {
     const cellWidth = track(() => cellWidth$())
@@ -548,17 +548,6 @@ f('widget-window', function () {
     const modeChanged = store.wideMode$() !== applyWide
     if (!cellChanged && !minWidthChanged && !modeChanged) return
     store.wideMode$(applyWide)
-    // Cover only real changes after mount; the initial wide application is
-    // applied from the first render, so it must not depend on the app's
-    // `done` message to become visible.
-    if ((cellChanged || minWidthChanged) && (modeChanged || applyWide)) {
-      store.iframeReevalHidden$(true)
-      clearTimeout(runtime.reevalRevealTimer)
-      runtime.reevalRevealTimer = setTimeout(() => {
-        runtime.reevalRevealTimer = null
-        store.iframeReevalHidden$(false)
-      }, WIDGET_REEVAL_REVEAL_TIMEOUT_MS)
-    }
   })
 
   const setVisibility = (visibility, { now = Date.now() } = {}) => {
@@ -647,10 +636,7 @@ f('widget-window', function () {
         store.appReady$(false)
         store.showPending$(false)
         store.wideMode$(false)
-        store.iframeReevalHidden$(false)
         store.minWidth$(WIDGET_AUTO_FIT_MIN_WIDTH)
-        clearTimeout(runtime.reevalRevealTimer)
-        runtime.reevalRevealTimer = null
         runtime.ac?.abort()
         runtime.unregister?.()
         runtime.appCleanup?.()
@@ -703,11 +689,6 @@ f('widget-window', function () {
               return
             }
             store.minWidth$(value)
-          },
-          onAutoFitDone () {
-            clearTimeout(runtime.reevalRevealTimer)
-            runtime.reevalRevealTimer = null
-            store.iframeReevalHidden$(false)
           }
         })
       }
@@ -1102,14 +1083,13 @@ f('widget-window', function () {
   const gridForStyle = grid$()
   const cellWidth = placement.w * (gridForStyle.cell + gridForStyle.gap) - gridForStyle.gap
   const cellHeight = placement.h * (gridForStyle.cell + gridForStyle.gap) - gridForStyle.gap
-  const iframeVisibility = store.iframeReevalHidden$() ? 'hidden' : ''
   const virtualWidth = store.minWidth$()
   const iframeStyle = wide && cellWidth > 0 && virtualWidth > 0
     ? `position:absolute;top:0;left:0;width:${virtualWidth}px;` +
       `height:${Math.round(cellHeight * virtualWidth / cellWidth)}px;` +
       `transform:scale(${cellWidth / virtualWidth});` +
-      `transform-origin:top left;${iframeVisibility ? `visibility:${iframeVisibility};` : ''}`
-    : (iframeVisibility ? `visibility:${iframeVisibility};` : '')
+      'transform-origin:top left;'
+    : ''
   const isFresh = store.freshUntil$() > Date.now()
   const showSolidBorder = store.selected$() || store.dragging$()
   const showNodes = store.selected$() && !store.dragging$()
