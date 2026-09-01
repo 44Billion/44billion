@@ -221,6 +221,45 @@ f('widgets-layer', function () {
   const pageStep$ = useComputed(() =>
     Math.max(store.grid$().pageWidth + store.grid$().gap, 1)
   )
+
+  // After creation, follow the widget to the page where the fit actually
+  // placed it: the requested page may not have room, and `fitWidgets` moves
+  // the widget to a later (possibly new) page without scrolling there.
+  const createdScroll = useMemo(() => ({ widgetKey: null }))
+  useTask(({ track }) => {
+    const fresh = track(() => widgetFresh$())
+    if (!fresh?.widgetKey) {
+      createdScroll.widgetKey = null
+      return
+    }
+    const placement = track(() => placementsByKey$()[fresh.widgetKey])
+    if (!placement) return
+    if (createdScroll.widgetKey === fresh.widgetKey) return
+    createdScroll.widgetKey = fresh.widgetKey
+    const cols = store.grid$().cols
+    const page = Math.max(0, Math.floor(placement.col / Math.max(1, cols)))
+    if (page === store.currentPage$()) return
+    const el = store.scrollRef$()
+    if (!el) return
+    const targetPage = Math.min(page, pageCount$() - 1)
+    const step = pageStep$()
+    // Wait two frames so the layer re-renders the (possibly grown) grid
+    // width before scrolling; otherwise the browser clamps scrollLeft to the
+    // old width and a newly created page never scrolls into view. Retry once
+    // if it still clamped, mirroring the drag auto-flip.
+    const scrollToPageAfterRender = () => {
+      if (!el.isConnected) return
+      el.scrollTo({ left: targetPage * step, behavior: 'smooth' })
+      requestAnimationFrame(() => {
+        if (!el.isConnected) return
+        if (Math.round(el.scrollLeft / step) < targetPage) {
+          el.scrollTo({ left: targetPage * step, behavior: 'smooth' })
+        }
+      })
+    }
+    requestAnimationFrame(() => requestAnimationFrame(scrollToPageAfterRender))
+  })
+
   const maxDots$ = useComputed(() =>
     Math.max(1, Math.floor((store.dotsWidth$() + DOT_GAP) / (DOT_SIZE + DOT_GAP)))
   )

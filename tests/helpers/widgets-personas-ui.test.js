@@ -89,6 +89,7 @@ describe('widgets and personas wiring', () => {
     assert.match(widgets, /widgetDragDraft/)
     assert.match(widgets, /anchorKey/)
     assert.match(widgets, /applyWidgetPositions/)
+    assert.match(widgets, /createdScroll/)
     assert.match(widgets, /z-index:1000/)
     assert.match(widgets, /DRAG_PAGE_FLIP_DELAY_MS/)
     assert.match(widgets, /DRAG_PAGE_FLIP_THROTTLE_MS/)
