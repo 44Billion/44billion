@@ -1196,6 +1196,10 @@ f('widget-window', function () {
         .widget-window-root.widget-window-selected .widget-pending {
           border-radius: 8px;
         }
+        .widget-window-root.widget-window-fresh iframe,
+        .widget-window-root.widget-window-fresh .widget-pending {
+          border-radius: 8px;
+        }
         .widget-window-root iframe {
           width: 100%;
           height: 100%;
@@ -1398,8 +1402,20 @@ f('widget-window', function () {
         : ''}
       ${isFresh && !showSolidBorder
         ? this.h`
-          <svg class='widget-fresh-border' viewBox='0 0 100 100' preserveAspectRatio='none' aria-hidden='true'>
-            <rect x='1' y='1' width='98' height='98' rx='10' pathLength='100' />
+          <svg
+            class='widget-fresh-border'
+            viewBox=${`0 0 ${Math.max(1, cellWidth)} ${Math.max(1, cellHeight)}`}
+            preserveAspectRatio='none'
+            aria-hidden='true'
+          >
+            <rect
+              x='1'
+              y='1'
+              width=${Math.max(0, cellWidth - 2)}
+              height=${Math.max(0, cellHeight - 2)}
+              rx='10'
+              pathLength='100'
+            />
           </svg>
         `
         : ''}
