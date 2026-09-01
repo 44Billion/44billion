@@ -57,6 +57,7 @@ import '#shared/icons/icon-minimize.js'
 import '#shared/icons/icon-maximize.js'
 import '#shared/icons/icon-stack-front.js'
 import '#shared/icons/icon-remove.js'
+import '#shared/icons/icon-wash-dry-shade.js'
 import '#shared/icons/icon-delete.js'
 import '#shared/icons/icon-lock.js'
 import '#shared/icons/icon-library-plus.js'
@@ -65,7 +66,7 @@ import '#shared/icons/icon-copy.js'
 import '#shared/icons/icon-pencil-off.js'
 import '#shared/signer-request-tooltip.js'
 import { getAssetBudgetConfirmation } from '#i18n/asset-budget.js'
-import { getT } from '#i18n/index.js'
+import { getEffectiveLocale, getT } from '#i18n/index.js'
 import {
   clearSignerRequestAttention,
   signerRequestAttention$
@@ -2000,8 +2001,13 @@ f('appLaunchersMenu', function () {
           <div class='menu-label' onclick=${removeApp}>${t('Remove Window')}</div>
         </div>
         <div>
-          <div class='icon-wrapper-271yiduh'><icon-dots props=${{ size: '16px' }} /></div>
-          <div class='menu-label' onclick=${addWidget}>${t('Add Widget')}</div>
+          <div class='icon-wrapper-271yiduh'><icon-wash-dry-shade props=${{ size: '16px' }} /></div>
+          <div
+            class='menu-label'
+            role='button'
+            aria-label=${t('Add Widget')}
+            onclick=${addWidget}
+          >${getEffectiveLocale() === 'en' ? t('Add Widget') : t('Add Widget (short)')}</div>
         </div>
         <div class=${{ invisible: visibility !== 'open' }}>
           <div class='icon-wrapper-271yiduh'><icon-minimize props=${{ size: '16px' }} /></div>
@@ -2228,6 +2234,7 @@ function getLocales () {
     Close: { en: 'Close', fr: 'Fermer', it: 'Chiudi', de: 'Schließen', es: 'Cerrar', 'pt-BR': 'Fechar', ru: 'Закрыть', 'zh-CN': '关闭', 'zh-TW': '關閉', ja: '閉じる', ko: '닫기' },
     'Remove Window': { en: 'Remove Window', fr: 'Retirer la fenêtre', it: 'Rimuovi finestra', de: 'Fenster entfernen', es: 'Quitar ventana', 'pt-BR': 'Remover Janela', ru: 'Убрать окно', 'zh-CN': '移除窗口', 'zh-TW': '移除視窗', ja: 'ウィンドウを取り除く', ko: '창 제거' },
     'Add Widget': { en: 'Add Widget', fr: 'Ajouter un widget', it: 'Aggiungi widget', de: 'Widget hinzufügen', es: 'Añadir widget', 'pt-BR': 'Adicionar Widget', ru: 'Добавить виджет', 'zh-CN': '添加小组件', 'zh-TW': '新增小工具', ja: 'ウィジェットを追加', ko: '위젯 추가' },
+    'Add Widget (short)': { en: 'Add Widget (short)', fr: 'Ajouter un widget', it: 'Aggiungi widget', de: 'Widget hinzuf.', es: 'Añadir widget', 'pt-BR': 'Adic. Widget', ru: 'Добавить виджет', 'zh-CN': '添加小组件', 'zh-TW': '新增小工具', ja: 'ウィジェットを追加', ko: '위젯 추가' },
     Delete: { en: 'Delete', fr: 'Supprimer', it: 'Elimina', de: 'Löschen', es: 'Eliminar', 'pt-BR': 'Excluir', ru: 'Удалить', 'zh-CN': '删除', 'zh-TW': '刪除', ja: '削除', ko: '삭제' }
   }
 }

@@ -3,7 +3,7 @@ import { setWebStorageItem } from '#f'
 
 export const LOCAL_WIDGETS = 'local_widgets'
 export const SESSION_WIDGET_PREFIX = 'session_widgetByKey_'
-export const WIDGET_DEFAULT_DESIRED = { w: 4, h: 6 }
+export const WIDGET_DEFAULT_DESIRED = { w: 5, h: 5 }
 export const WIDGET_MINIMIZED_TTL_MS = 5 * 60 * 1000
 export const WIDGET_AUTO_FIT_MIN_WIDTH = 360
 export const BASE_CELL = 40
