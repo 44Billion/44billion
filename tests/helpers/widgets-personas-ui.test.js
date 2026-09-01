@@ -86,6 +86,7 @@ describe('widgets and personas wiring', () => {
     assert.match(widgets, /widgetFresh\$/)
     assert.match(widgets, /WIDGET_SELECT_MODE/)
     assert.match(widgets, /widget-remove-button/)
+    assert.match(widgets, /strokeWidth: 3/)
     assert.match(widgets, /widgetDragDraft/)
     assert.match(widgets, /anchorKey/)
     assert.match(widgets, /applyWidgetPositions/)

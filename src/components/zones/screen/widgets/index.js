@@ -1380,7 +1380,7 @@ f('widget-window', function () {
           height: 26px;
           display: grid;
           place-items: center;
-          border: 1px solid ${cssVars.colors.bgAccentPrimary};
+          border: 2px solid ${cssVars.colors.bgAccentPrimary};
           border-radius: 8px;
           background-color: transparent;
           color: ${cssVars.colors.bgAccentPrimary};
@@ -1597,7 +1597,7 @@ f('widget-window', function () {
             onclick=${removeWidgetNow}
             aria-label=${t('Remove Widget')}
           >
-            <icon-close props=${{ size: '16px' }} />
+            <icon-close props=${{ size: '16px', strokeWidth: 3 }} />
           </button>
         `
         : ''}
