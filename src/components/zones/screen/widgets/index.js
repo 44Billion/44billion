@@ -1339,6 +1339,7 @@ f('widget-window', function () {
         }
         .widget-window-root.widget-window-closed {
           border: 1px dashed ${cssVars.colors.fg3};
+          border-radius: 10px;
         }
         .widget-window-root.widget-window-selected {
           overflow: visible;
@@ -1587,7 +1588,7 @@ f('widget-window', function () {
           </svg>
         `
         : ''}
-      ${(store.selected$() && !store.dragging$()) || isClosed
+      ${store.selected$() && !store.dragging$()
         ? this.h`
           <button
             class=${{
