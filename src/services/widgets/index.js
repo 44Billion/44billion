@@ -444,12 +444,12 @@ export function resizeWidgetFromNode ({
   if (node === 'right') {
     w = clamp(startW + deltaW, 1, maxW)
   } else if (node === 'left') {
-    w = clamp(startW - deltaW, 1, Math.min(maxW, pageCol + startW))
+    w = clamp(startW - deltaW, 1, pageCol + startW)
     nextCol = page * cols + pageCol + startW - w
   } else if (node === 'bottom') {
     h = clamp(startH + deltaH, 1, maxH)
   } else if (node === 'top') {
-    h = clamp(startH - deltaH, 1, Math.min(maxH, row + startH))
+    h = clamp(startH - deltaH, 1, row + startH)
     nextRow = row + startH - h
   }
 

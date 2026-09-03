@@ -365,6 +365,8 @@ f('windowsBackground', function () {
           background-position: center;
           background-repeat: no-repeat;
           background-size: contain;
+          user-select: none;
+          -webkit-user-select: none;
 
           @media ${jsVars.breakpoints.desktop} {
             background-origin: content-box;

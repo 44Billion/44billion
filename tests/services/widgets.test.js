@@ -342,6 +342,19 @@ describe('widgets service', () => {
     )
   })
 
+  it('resizeWidgetFromNode left/top expand fully from the far edge', () => {
+    const farRight = { row: 0, col: 5, desired: { w: 1, h: 1 } }
+    assert.deepEqual(
+      resizeWidgetFromNode({ widget: farRight, node: 'left', deltaCols: -99, viewportCols: 6, viewportRows: 8 }),
+      { row: 0, col: 0, desired: { w: 6, h: 1 } }
+    )
+    const farBottom = { row: 7, col: 0, desired: { w: 1, h: 1 } }
+    assert.deepEqual(
+      resizeWidgetFromNode({ widget: farBottom, node: 'top', deltaRows: -99, viewportCols: 6, viewportRows: 8 }),
+      { row: 0, col: 0, desired: { w: 1, h: 8 } }
+    )
+  })
+
   it('applyWidgetResize writes row, col and desired in one update', () => {
     const { local } = widgetState()
     applyWidgetResize({

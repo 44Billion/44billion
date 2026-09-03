@@ -406,6 +406,8 @@ f('widgets-layer', function () {
           flex-direction: column;
           overflow: hidden;
           pointer-events: none;
+          user-select: none;
+          -webkit-user-select: none;
         }
         .widgets-layer-scope#widgets-layer #widgets-scroll {
           flex: 1;
@@ -415,6 +417,7 @@ f('widgets-layer', function () {
           overflow-y: hidden;
           pointer-events: none;
           scrollbar-width: none;
+          overscroll-behavior: contain;
         }
         .widgets-layer-scope#widgets-layer #widgets-scroll::-webkit-scrollbar {
           display: none;
@@ -772,23 +775,31 @@ f('widget-window', function () {
     if (visibility === 'closed') store.minimizedAt$(null)
   }
 
+  // A widget is on the active page when its fitted page equals the page being
+  // viewed. While a page navigation is in flight, only the target page counts
+  // (never intermediate pages).
+  const pageActiveNow = () => {
+    const placement = layout$()[widgetKey]
+    const grid = grid$()
+    if (!placement || !grid?.cols) return false
+    const page = Math.max(0, Math.floor(placement.col / Math.max(1, grid.cols)))
+    const activePage = targetPage$() !== null ? targetPage$() : currentPage$()
+    return page === activePage
+  }
+  const shouldOpenNow = () => tabVisible$() && pageActiveNow()
+
   // Lifecycle: a widget should be open only while the tab is visible and its
-  // fitted page is the active page (current or navigation target). open <->
+  // fitted page is the active page. open <->
   // minimized only touches session state (src is preserved while minimized);
   // minimized closes after the TTL; closed reloads its route on open.
   const lifecycle = useMemo(() => ({ normalized: false }))
   useTask(({ track }) => {
-    const placement = track(() => layout$()[widgetKey])
-    const cols = track(() => grid$().cols)
-    const currentPage = track(() => currentPage$())
-    const targetPage = track(() => targetPage$())
     const tabVisible = track(() => tabVisible$())
     const dragging = track(() => widgetDragging$())
     const record = track(() => store.record$())
-    if (!record || !placement) return
+    const pageActive = track(() => pageActiveNow())
+    if (!record) return
     if (dragging) return
-    const page = Math.max(0, Math.floor(placement.col / Math.max(1, cols)))
-    const pageActive = page === currentPage || page === targetPage
 
     // Mount normalization (page only, not tab visibility): a fresh mount
     // starts open on the active page and closed anywhere else.
@@ -819,6 +830,12 @@ f('widget-window', function () {
     if (visibility !== 'minimized' || !minimizedAt || !record) return
     const timer = setTimeout(() => {
       if (store.visibility$() !== 'minimized') return
+      // If the tab is back and the widget is on the active page, reopen
+      // instead of closing: a frozen timer must not blank a visible widget.
+      if (shouldOpenNow()) {
+        setVisibility('open')
+        return
+      }
       writeWidgetSessionValue(sessionStorage, widgetKey, 'route', record.pinnedRoute || '')
       setVisibility('closed')
     }, WIDGET_MINIMIZED_TTL_MS)
@@ -1231,6 +1248,20 @@ f('widget-window', function () {
         col: position.col
       }))
     })
+    // Snap the viewport to the page where the widget ended up; an auto-flip
+    // smooth scroll may have been interrupted by the release, leaving the
+    // scroll straddling two pages.
+    const scrollEl = store.elRef$()?.closest?.('#widgets-scroll')
+    if (scrollEl && grid) {
+      const finalPage = Math.max(0, Math.floor(preview.col / Math.max(1, grid.cols)))
+      const targetLeft = finalPage * Math.max(grid.pageWidth + grid.gap, 1)
+      if (Math.abs(scrollEl.scrollLeft - targetLeft) >= 1) {
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          if (!scrollEl.isConnected) return
+          scrollEl.scrollTo({ left: targetLeft, behavior: 'smooth' })
+        }))
+      }
+    }
     startSelectionTimer()
   }
 
