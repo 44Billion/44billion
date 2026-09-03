@@ -85,6 +85,7 @@ f('widgets-layer', function () {
   const widgetFresh$ = useGlobalSignal('widgetFresh', null)
   const widgetDragging$ = useGlobalSignal('widgetDragging', false)
   const widgetDragMoved$ = useGlobalSignal('widgetDragMoved', false)
+  const tabVisible$ = useGlobalSignal('widgetsTabVisible', document.visibilityState === 'visible')
   const store = useStore(() => ({
     elRef$: null,
     scrollRef$: null,
@@ -102,8 +103,15 @@ f('widgets-layer', function () {
       viewportHeight: 0
     },
     currentPage$: 0,
+    targetPage$: null,
     dotsWidth$: 0
   }))
+
+  useTask(({ cleanup }) => {
+    const update = () => tabVisible$(document.visibilityState === 'visible')
+    document.addEventListener('visibilitychange', update)
+    cleanup(() => document.removeEventListener('visibilitychange', update))
+  })
 
   useTask(({ track, cleanup }) => {
     const el = track(() => store.scrollRef$())
@@ -126,6 +134,8 @@ f('widgets-layer', function () {
           el.scrollTo({ left: target, behavior: 'auto' })
         }
         store.currentPage$(Math.round(el.scrollLeft / nextStep))
+        // A resize overrides any in-flight page navigation.
+        store.targetPage$(null)
       }))
     }
     update()
@@ -150,7 +160,22 @@ f('widgets-layer', function () {
     const update = () => {
       const step = store.grid$().pageWidth + store.grid$().gap
       if (step <= 0) return
-      store.currentPage$(Math.round(el.scrollLeft / step))
+      const next = Math.round(el.scrollLeft / step)
+      const previous = store.currentPage$()
+      store.currentPage$(next)
+      const target = store.targetPage$()
+      if (target === null) return
+      if (next === target) {
+        store.targetPage$(null)
+        return
+      }
+      // The user scrolled away from the navigation target: abandon it so the
+      // destination page does not stay open.
+      const direction = Math.sign(target - previous)
+      const movement = Math.sign(next - previous)
+      if (movement !== 0 && direction !== 0 && movement !== direction) {
+        store.targetPage$(null)
+      }
     }
     update()
     el.addEventListener('scroll', update, { passive: true })
@@ -264,6 +289,7 @@ f('widgets-layer', function () {
     const el = store.scrollRef$()
     if (!el) return
     const targetPage = Math.min(page, pageCount$() - 1)
+    store.targetPage$(targetPage)
     const step = pageStep$()
     // Wait two frames so the layer re-renders the (possibly grown) grid
     // width before scrolling; otherwise the browser clamps scrollLeft to the
@@ -340,8 +366,11 @@ f('widgets-layer', function () {
   const goToPage = page => {
     const el = store.scrollRef$()
     if (!el) return
+    const clamped = Math.max(0, Math.min(page, pageCount - 1))
+    if (clamped === store.currentPage$()) return
+    store.targetPage$(clamped)
     el.scrollTo({
-      left: Math.max(0, Math.min(page, pageCount - 1)) * pageStep$(),
+      left: clamped * pageStep$(),
       behavior: 'smooth'
     })
   }
@@ -504,7 +533,9 @@ f('widgets-layer', function () {
               props=${{
                 widgetKey: key,
                 layout$: placementsByKey$,
-                grid$: store.grid$
+                grid$: store.grid$,
+                currentPage$: store.currentPage$,
+                targetPage$: store.targetPage$
               }}
             />
           `)}
@@ -538,11 +569,14 @@ f('widget-window', function () {
   const widgetKey = this.props.widgetKey
   const layout$ = this.props.layout$
   const grid$ = this.props.grid$
+  const currentPage$ = this.props.currentPage$
+  const targetPage$ = this.props.targetPage$
   const dragDraft$ = useGlobalSignal('widgetDragDraft', null)
   const dragEdge$ = useGlobalSignal('widgetDragEdge', null)
   const widgetFresh$ = useGlobalSignal('widgetFresh', null)
   const widgetDragging$ = useGlobalSignal('widgetDragging', false)
   const widgetDragMoved$ = useGlobalSignal('widgetDragMoved', false)
+  const tabVisible$ = useGlobalSignal('widgetsTabVisible', document.visibilityState === 'visible')
   const { askVault } = useVaultActor()
   const { requestPermission } = usePermissionDialogStore()
   const { requestConfirmation } = useConfirmationDialogStore()
@@ -558,7 +592,6 @@ f('widget-window', function () {
     route$ () {
       return tabStorage[`session_widgetByKey_${widgetKey}_route$`]() ?? ''
     },
-    inView$: false,
     minimizedAt$: null,
     selected$: false,
     freshUntil$: 0,
@@ -739,57 +772,57 @@ f('widget-window', function () {
     if (visibility === 'closed') store.minimizedAt$(null)
   }
 
-  // Track whether the widget cell is inside the useful viewport.
-  useTask(({ track, cleanup }) => {
-    const el = track(() => store.elRef$())
-    const layer = el?.closest?.('#widgets-layer')
-    if (!el || !layer) return
-    const observer = new IntersectionObserver(entries => {
-      const entry = entries[entries.length - 1]
-      store.inView$(entry.isIntersecting)
-    }, { root: layer, rootMargin: '0px', threshold: 0.05 })
-    observer.observe(el)
-    cleanup(() => observer.disconnect())
-  }, { after: 'rendering' })
-
-  // Close/minimize automatically when the tab is hidden.
-  useTask(({ cleanup }) => {
-    const onVisibility = () => {
-      if (document.visibilityState === 'hidden' && store.visibility$() === 'open') {
-        setVisibility('minimized')
-      }
-    }
-    document.addEventListener('visibilitychange', onVisibility)
-    cleanup(() => document.removeEventListener('visibilitychange', onVisibility))
-  })
-
-  // Lifecycle: closed+inView -> open; open+out -> minimized; minimized 5min -> closed.
-  useTask(({ track, cleanup }) => {
-    const visibility = track(() => store.visibility$())
-    const inView = track(() => store.inView$())
+  // Lifecycle: a widget should be open only while the tab is visible and its
+  // fitted page is the active page (current or navigation target). open <->
+  // minimized only touches session state (src is preserved while minimized);
+  // minimized closes after the TTL; closed reloads its route on open.
+  const lifecycle = useMemo(() => ({ normalized: false }))
+  useTask(({ track }) => {
+    const placement = track(() => layout$()[widgetKey])
+    const cols = track(() => grid$().cols)
+    const currentPage = track(() => currentPage$())
+    const targetPage = track(() => targetPage$())
+    const tabVisible = track(() => tabVisible$())
+    const dragging = track(() => widgetDragging$())
     const record = track(() => store.record$())
-    if (!record) return
+    if (!record || !placement) return
+    if (dragging) return
+    const page = Math.max(0, Math.floor(placement.col / Math.max(1, cols)))
+    const pageActive = page === currentPage || page === targetPage
 
-    if (document.visibilityState === 'hidden' && visibility === 'open') {
-      setVisibility('minimized')
+    // Mount normalization (page only, not tab visibility): a fresh mount
+    // starts open on the active page and closed anywhere else.
+    if (!lifecycle.normalized) {
+      lifecycle.normalized = true
+      const desired = pageActive ? 'open' : 'closed'
+      if (store.visibility$() !== desired) setVisibility(desired)
       return
     }
-    if (inView && visibility === 'closed') {
+
+    const shouldOpen = tabVisible && pageActive
+    const visibility = store.visibility$()
+    if (shouldOpen && visibility !== 'open') {
       setVisibility('open')
       return
     }
-    if (!inView && visibility === 'open') {
+    if (!shouldOpen && visibility === 'open') {
       setVisibility('minimized')
-      return
     }
-    if (visibility === 'minimized' && store.minimizedAt$()) {
-      const timer = setTimeout(() => {
-        if (store.visibility$() !== 'minimized') return
-        writeWidgetSessionValue(sessionStorage, widgetKey, 'route', record.pinnedRoute || '')
-        setVisibility('closed')
-      }, WIDGET_MINIMIZED_TTL_MS)
-      cleanup(() => clearTimeout(timer))
-    }
+  })
+
+  // Minimized widgets close after the TTL (runtime only; minimized is
+  // normalized away on mount). The route is reset to the pinned route first.
+  useTask(({ track, cleanup }) => {
+    const visibility = track(() => store.visibility$())
+    const minimizedAt = track(() => store.minimizedAt$())
+    const record = track(() => store.record$())
+    if (visibility !== 'minimized' || !minimizedAt || !record) return
+    const timer = setTimeout(() => {
+      if (store.visibility$() !== 'minimized') return
+      writeWidgetSessionValue(sessionStorage, widgetKey, 'route', record.pinnedRoute || '')
+      setVisibility('closed')
+    }, WIDGET_MINIMIZED_TTL_MS)
+    cleanup(() => clearTimeout(timer))
   })
 
   // Load/unload the app iframe.
