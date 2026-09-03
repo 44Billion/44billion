@@ -266,7 +266,11 @@ f('widgets-layer', function () {
     for (const placement of layout$().placements) map[placement.widgetKey] = placement
     return map
   })
-  const pageCount$ = useComputed(() => layout$().pageCount)
+  // The default grid (1 column) has not been measured yet; using it would
+  // report one page per widget and flash a wrong dot count. Keep a single
+  // page until the real grid geometry arrives.
+  const gridReady$ = useComputed(() => (store.grid$().viewportWidth || 0) > 0)
+  const pageCount$ = useComputed(() => gridReady$() ? layout$().pageCount : 1)
   // Let a removed trailing page linger long enough for a smooth left flip to
   // complete before the grid width shrinks (otherwise the browser clamps the
   // scroll instantly and the transition is lost).
