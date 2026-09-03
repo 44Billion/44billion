@@ -4,6 +4,7 @@ import {
   useGlobalStore,
   useGlobalSignal,
   useMemo,
+  useSignal,
   useStore,
   useTask
 } from '#f'
@@ -48,6 +49,7 @@ const DOT_SIZE = 8
 const DOT_GAP = 8
 const DRAG_EDGE_ZONE = 48
 const DRAG_DOTS_REVEAL_PX = 16
+const PAGE_COUNT_SHRINK_DELAY_MS = 400
 const DRAG_PAGE_FLIP_DELAY_MS = 450
 const DRAG_PAGE_FLIP_THROTTLE_MS = 1500
 const WIDGET_FRESH_WINDOW_MS = 10000
@@ -265,6 +267,26 @@ f('widgets-layer', function () {
     return map
   })
   const pageCount$ = useComputed(() => layout$().pageCount)
+  // Let a removed trailing page linger long enough for a smooth left flip to
+  // complete before the grid width shrinks (otherwise the browser clamps the
+  // scroll instantly and the transition is lost).
+  const renderPageCount$ = useSignal(1)
+  const pageCountShrinkTimer = useMemo(() => ({ id: null }))
+  useTask(({ track }) => {
+    const next = track(() => pageCount$())
+    const current = renderPageCount$()
+    if (next >= current) {
+      clearTimeout(pageCountShrinkTimer.id)
+      pageCountShrinkTimer.id = null
+      renderPageCount$(next)
+      return
+    }
+    if (pageCountShrinkTimer.id) return
+    pageCountShrinkTimer.id = setTimeout(() => {
+      pageCountShrinkTimer.id = null
+      renderPageCount$(pageCount$())
+    }, PAGE_COUNT_SHRINK_DELAY_MS)
+  })
   const pageStep$ = useComputed(() =>
     Math.max(store.grid$().pageWidth + store.grid$().gap, 1)
   )
@@ -312,7 +334,7 @@ f('widgets-layer', function () {
     Math.max(1, Math.floor((store.dotsWidth$() + DOT_GAP) / (DOT_SIZE + DOT_GAP)))
   )
   const visiblePages$ = useComputed(() => {
-    const total = Math.max(1, pageCount$())
+    const total = Math.max(1, renderPageCount$())
     const current = Math.min(Math.max(0, store.currentPage$()), total - 1)
     const max = maxDots$()
     if (total <= max) return Array.from({ length: total }, (_, index) => index)
@@ -332,7 +354,7 @@ f('widgets-layer', function () {
   // and the seams between pages.
   const gridDots$ = useComputed(() => {
     const grid = store.grid$()
-    const count = Math.max(1, pageCount$())
+    const count = Math.max(1, renderPageCount$())
     const cell = grid.cell || BASE_CELL
     const gap = grid.gap || GAP
     const margin = grid.margin || GAP
@@ -354,7 +376,7 @@ f('widgets-layer', function () {
 
   const grid = store.grid$()
   const pageWidth = Math.max(grid.pageWidth, 1)
-  const pageCount = Math.max(1, pageCount$())
+  const pageCount = Math.max(1, renderPageCount$())
   const pageStep = pageWidth + grid.gap
   const contentWidth = pageCount * pageWidth + (pageCount + 1) * grid.margin
   // Keep enough trailing space so every page (including the last) can align
