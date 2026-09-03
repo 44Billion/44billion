@@ -776,18 +776,25 @@ f('widget-window', function () {
   // and covers zoom switches with its view transition; scale-only changes in
   // wide mode need no re-measure at all, so the iframe must never be hidden
   // here (that would also hide the app page's transition snapshot).
-  const reeval = useMemo(() => ({ lastCellWidth: null, lastMinWidth: null }))
+  const reeval = useMemo(() => ({
+    lastCellWidth: null,
+    lastMinWidth: null,
+    lastClosed: null
+  }))
   useTask(({ track }) => {
     const cellWidth = track(() => cellWidth$())
     const minWidth = track(() => store.minWidth$())
+    const isClosed = track(() => store.visibility$() === 'closed')
     if (cellWidth == null) return
     const applyWide = shouldApplyVirtualWidth(cellWidth, minWidth)
     const cellChanged = reeval.lastCellWidth !== null && cellWidth !== reeval.lastCellWidth
     const minWidthChanged = reeval.lastMinWidth !== null && minWidth !== reeval.lastMinWidth
+    const reopened = reeval.lastClosed !== null && !isClosed && reeval.lastClosed
     reeval.lastCellWidth = cellWidth
     reeval.lastMinWidth = minWidth
+    reeval.lastClosed = isClosed
     const modeChanged = store.wideMode$() !== applyWide
-    if (!cellChanged && !minWidthChanged && !modeChanged) return
+    if (!cellChanged && !minWidthChanged && !modeChanged && !reopened) return
     store.wideMode$(applyWide)
   })
 
