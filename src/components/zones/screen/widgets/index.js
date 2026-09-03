@@ -408,6 +408,7 @@ f('widgets-layer', function () {
           pointer-events: none;
           user-select: none;
           -webkit-user-select: none;
+          touch-action: none;
         }
         .widgets-layer-scope#widgets-layer #widgets-scroll {
           flex: 1;
@@ -418,6 +419,7 @@ f('widgets-layer', function () {
           pointer-events: none;
           scrollbar-width: none;
           overscroll-behavior: contain;
+          touch-action: none;
         }
         .widgets-layer-scope#widgets-layer #widgets-scroll::-webkit-scrollbar {
           display: none;
@@ -464,6 +466,7 @@ f('widgets-layer', function () {
           z-index: 2000;
           opacity: 0;
           transition: opacity .15s ease;
+          touch-action: none;
         }
         .widgets-layer-scope#widgets-layer .widget-edge-gradient.left {
           left: 0;

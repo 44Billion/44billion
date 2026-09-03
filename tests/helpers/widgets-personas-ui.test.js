@@ -24,6 +24,8 @@ describe('widgets and personas wiring', () => {
     assert.match(appPage, /WIDGET_DRAG/)
     assert.match(appPage, /WIDGET_SELECT_MODE/)
     assert.match(appPage, /installWidgetDragListener/)
+    assert.match(appPage, /selectstart/)
+    assert.match(appPage, /dragstart/)
     assert.match(appPage, /finalizeFirstFit/)
     assert.match(appPage, /originalConsole/)
     assert.match(appPage, /appConsoleDebug/)

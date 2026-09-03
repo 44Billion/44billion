@@ -318,6 +318,15 @@ function sendWidgetDrag (op, x, y, screenX, screenY) {
 function installWidgetDragListener () {
   if (widgetDragListenerStarted) return
   widgetDragListenerStarted = true
+  const setWidgetDragSelectionLocked = locked => {
+    const root = document.documentElement
+    const body = document.body
+    for (const el of [root, body]) {
+      if (!el) continue
+      el.style.userSelect = locked ? 'none' : ''
+      el.style.webkitUserSelect = locked ? 'none' : ''
+    }
+  }
   const state = {
     pointerId: null,
     startX: 0,
@@ -347,6 +356,7 @@ function installWidgetDragListener () {
     clearTimer()
     if (widgetSelectModeEnabled) {
       state.active = true
+      setWidgetDragSelectionLocked(true)
       state.lastSentX = event.clientX
       state.lastSentY = event.clientY
       sendWidgetDrag('start', event.clientX, event.clientY, event.screenX, event.screenY)
@@ -355,6 +365,7 @@ function installWidgetDragListener () {
     state.timer = setTimeout(() => {
       state.timer = null
       state.active = true
+      setWidgetDragSelectionLocked(true)
       state.lastSentX = event.clientX
       state.lastSentY = event.clientY
       widgetDragLog('[widget-drag] long-press fired', {
@@ -393,6 +404,7 @@ function installWidgetDragListener () {
     const wasActive = state.active
     state.pointerId = null
     state.active = false
+    setWidgetDragSelectionLocked(false)
     widgetDragLog('[widget-drag] pointerend', {
       x: event.clientX,
       y: event.clientY,
@@ -406,11 +418,19 @@ function installWidgetDragListener () {
     if (!autoFitIsWidget) return
     if (state.active) event.preventDefault()
   }
+  const onSelectStart = event => {
+    if (state.active) event.preventDefault()
+  }
+  const onDragStart = event => {
+    if (state.active) event.preventDefault()
+  }
   window.addEventListener('pointerdown', onPointerDown, true)
   window.addEventListener('pointermove', onPointerMove, true)
   window.addEventListener('pointerup', onPointerEnd, true)
   window.addEventListener('pointercancel', onPointerEnd, true)
   window.addEventListener('contextmenu', onContextMenu, true)
+  window.addEventListener('selectstart', onSelectStart, true)
+  window.addEventListener('dragstart', onDragStart, true)
 }
 
 installWidgetDragListener()
