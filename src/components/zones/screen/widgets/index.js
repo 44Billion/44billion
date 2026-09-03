@@ -1406,14 +1406,18 @@ f('widget-window', function () {
   const cellWidth = placement.w * (gridForStyle.cell + gridForStyle.gap) - gridForStyle.gap
   const cellHeight = placement.h * (gridForStyle.cell + gridForStyle.gap) - gridForStyle.gap
   const virtualWidth = store.minWidth$()
-  const iframeStyle = wide && cellWidth > 0 && virtualWidth > 0
-    ? `position:absolute;top:0;left:0;width:${virtualWidth}px;` +
-      `height:${Math.round(cellHeight * virtualWidth / cellWidth)}px;` +
-      `transform:scale(${cellWidth / virtualWidth});` +
-      'transform-origin:top left;'
-    : ''
   const isFresh = store.freshUntil$() > Date.now()
   const showSolidBorder = store.selected$() || store.dragging$()
+  const rounded = isFresh || showSolidBorder
+  const roundedClip = rounded
+    ? `clip-path:inset(0 round ${wide && virtualWidth > 0 && cellWidth > 0 ? 10 * virtualWidth / cellWidth : 10}px);`
+    : ''
+  const iframeStyle = wide && cellWidth > 0 && virtualWidth > 0
+    ? `position:absolute;top:0;left:0;width:${virtualWidth}px;` +
+       `height:${Math.round(cellHeight * virtualWidth / cellWidth)}px;` +
+       `transform:scale(${cellWidth / virtualWidth});` +
+      'transform-origin:top left;' + roundedClip
+    : roundedClip
   const showNodes = store.selected$() && !store.dragging$()
 
   return this.h`
@@ -1442,7 +1446,11 @@ f('widget-window', function () {
           border-radius: 10px;
         }
         .widget-window-root.widget-window-selected {
+          /* Keep the iframe clipped so scaled content stays crisp; the clip
+             margin lets the resize nodes protrude over the border. */
           overflow: visible;
+          overflow: clip;
+          overflow-clip-margin: 8px;
         }
         .widget-window-root.widget-window-selected::before {
           content: '';
@@ -1458,7 +1466,8 @@ f('widget-window', function () {
           inset: 0;
           overflow: hidden;
         }
-        .widget-window-root .widget-clip.widget-clip-rounded {
+        .widget-window-root.widget-window-selected .widget-pending,
+        .widget-window-root.widget-window-fresh .widget-pending {
           border-radius: 10px;
         }
         .widget-window-root iframe {
@@ -1643,10 +1652,7 @@ f('widget-window', function () {
       ${!isClosed
         ? this.h`
           <div
-            class=${{
-              'widget-clip': true,
-              'widget-clip-rounded': isFresh || showSolidBorder
-            }}
+            class='widget-clip'
           >
             <iframe
               class='widget-iframe'
