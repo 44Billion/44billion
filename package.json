@@ -8,6 +8,7 @@
   "scripts": {
     "_start": "NODE_ENV=development npm run _build & NODE_ENV=development node server/dev-server.js",
     "start": "cd ../ez-vault && npm run start & npm run _start",
+    "start:adb": "node bin/dev-adb.js",
     "build": "NODE_ENV=production npm run _build",
     "_build": "node bin/build.js",
     "test": "node --test --experimental-test-module-mocks 'tests/**/*.test.js'",
