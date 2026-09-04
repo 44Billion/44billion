@@ -752,16 +752,25 @@ f('widget-window', function () {
     }
   })
 
-  // Safety net: when the tab is hidden mid-drag the pointer stream is gone —
-  // end the drag instead of leaving the widget stuck in dragging state.
+  // Safety net: when the tab is hidden mid-drag/mid-resize the pointer stream
+  // is gone — end the gesture instead of leaving the widget stuck.
   useTask(({ cleanup }) => {
+    const endActiveGesture = reason => {
+      if (drag.active) endDragFromPointer()
+      if (resize.active) forceEndResize(reason)
+    }
     const onVisibilityChange = () => {
-      if (document.visibilityState === 'hidden' && drag.active) {
-        endDragFromPointer()
+      if (document.visibilityState === 'hidden') {
+        endActiveGesture('visibilitychange')
       }
     }
+    const onPageHide = () => endActiveGesture('pagehide')
     document.addEventListener('visibilitychange', onVisibilityChange)
-    cleanup(() => document.removeEventListener('visibilitychange', onVisibilityChange))
+    window.addEventListener('pagehide', onPageHide)
+    cleanup(() => {
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.removeEventListener('pagehide', onPageHide)
+    })
   })
 
   // Deselect on Escape or a launcher-side click outside the widget.
@@ -1067,6 +1076,7 @@ f('widget-window', function () {
   // cleanup, so bridge re-runs never close the live window port).
   useTask(({ cleanup }) => {
     cleanup(() => {
+      if (resize.active) forceEndResize('unmount', { apply: false })
       runtime.ac?.abort()
       runtime.unregister?.()
       runtime.appCleanup?.()
@@ -1353,9 +1363,11 @@ f('widget-window', function () {
     window.addEventListener('pointermove', onResizeMove, { capture: true })
     window.addEventListener('pointerup', onResizeEnd, { capture: true })
     window.addEventListener('pointercancel', onResizeEnd, { capture: true })
+    window.addEventListener('lostpointercapture', onResizeLostCapture, { capture: true })
+    window.addEventListener('contextmenu', onResizeContextMenu, { capture: true })
   }
   const onResizeMove = event => {
-    if (!resize.active) return
+    if (!resize.active || event.pointerId !== resize.pointerId) return
     const grid = grid$()
     if (!grid) return
     const cell = grid.cell + grid.gap
@@ -1378,12 +1390,20 @@ f('widget-window', function () {
       desired: result.desired
     })
   }
-  const onResizeEnd = () => {
-    if (!resize.active) return
-    resize.active = false
+  const removeResizeListeners = () => {
     window.removeEventListener('pointermove', onResizeMove, { capture: true })
     window.removeEventListener('pointerup', onResizeEnd, { capture: true })
     window.removeEventListener('pointercancel', onResizeEnd, { capture: true })
+    window.removeEventListener('lostpointercapture', onResizeLostCapture, { capture: true })
+    window.removeEventListener('contextmenu', onResizeContextMenu, { capture: true })
+  }
+  // Mirrors the widget-drag safety nets: a lost pointerup/pointercancel
+  // (native long-press claim, screen lock, app switch) must not leave the
+  // resize stuck with the draft unapplied and the nodes ignoring new presses.
+  const forceEndResize = (reason, { apply = true } = {}) => {
+    if (!resize.active) return
+    resize.active = false
+    removeResizeListeners()
     try {
       if (resize.nodeEl?.hasPointerCapture?.(resize.pointerId)) {
         resize.nodeEl.releasePointerCapture(resize.pointerId)
@@ -1394,7 +1414,7 @@ f('widget-window', function () {
     resize.nodeEl = null
     resize.pointerId = null
     const preview = dragDraft$()
-    if (preview?.widgetKey === widgetKey) {
+    if (apply && preview?.widgetKey === widgetKey) {
       applyWidgetResize({
         localStorageArea: localStorage,
         widgetKey,
@@ -1404,7 +1424,27 @@ f('widget-window', function () {
       })
     }
     dragDraft$(null)
-    startSelectionTimer()
+    widgetDragLog('[widget-resize] forced end', {
+      reason,
+      widgetKey
+    })
+    if (apply) startSelectionTimer()
+  }
+  const onResizeEnd = event => {
+    if (event.pointerId !== resize.pointerId) return
+    forceEndResize('pointerend')
+  }
+  const onResizeLostCapture = event => {
+    if (event.pointerId !== resize.pointerId) return
+    // On a normal pointerup/pointercancel, onResizeEnd runs first and clears
+    // resize.pointerId; reaching here means capture was released without a
+    // delivered end event.
+    forceEndResize('lostpointercapture')
+  }
+  const onResizeContextMenu = event => {
+    if (!resize.active) return
+    event.preventDefault()
+    forceEndResize('contextmenu')
   }
 
   const record = store.record$()
