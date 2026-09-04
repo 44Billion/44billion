@@ -752,6 +752,18 @@ f('widget-window', function () {
     }
   })
 
+  // Safety net: when the tab is hidden mid-drag the pointer stream is gone —
+  // end the drag instead of leaving the widget stuck in dragging state.
+  useTask(({ cleanup }) => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden' && drag.active) {
+        endDragFromPointer()
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    cleanup(() => document.removeEventListener('visibilitychange', onVisibilityChange))
+  })
+
   // Deselect on Escape or a launcher-side click outside the widget.
   useTask(({ cleanup }) => {
     const onPointerDown = event => {
@@ -929,6 +941,7 @@ f('widget-window', function () {
         runtime.unregister = registerAppBridgeWindow(runtime.bridgeState, {
           appKey: widgetKey,
           onClose () {
+            if (drag.active) endDragFromPointer()
             if (store.visibility$() === 'open') setVisibility('minimized')
           },
           onWidgetDrag ({ op, x, y, screenX, screenY }) {
