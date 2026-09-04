@@ -97,6 +97,7 @@ describe('widgets and personas wiring', () => {
     assert.match(widgets, /margin \+ placement\.col \* \(cell \+ gap\)/)
     assert.match(widgets, /resizeWidgetFromNode/)
     assert.match(widgets, /widget-resize-node/)
+    assert.match(widgets, /widget-resize-node-hit/)
     assert.match(widgets, /forceEndResize/)
     assert.match(widgets, /onResizeLostCapture/)
     assert.match(widgets, /onResizeContextMenu/)

@@ -1503,7 +1503,7 @@ f('widget-window', function () {
              margin lets the resize nodes protrude over the border. */
           overflow: visible;
           overflow: clip;
-          overflow-clip-margin: 8px;
+          overflow-clip-margin: 16px;
         }
         .widget-window-root.widget-window-selected::before {
           content: '';
@@ -1695,6 +1695,39 @@ f('widget-window', function () {
           top: calc(50% - 6px);
           cursor: ew-resize;
         }
+        /* Invisible hit-area extension: the nodes stay 12px visually, but a
+           transparent child widens the catch zone both inward and outward,
+           so aiming near the edge no longer misses the node (starting a drag
+           or deselecting) instead of resizing. */
+        .widget-window-root .widget-resize-node-hit {
+          position: absolute;
+          pointer-events: auto;
+          touch-action: none;
+        }
+        .widget-window-root .widget-resize-node.top .widget-resize-node-hit {
+          top: -8px;
+          right: -6px;
+          bottom: -10px;
+          left: -6px;
+        }
+        .widget-window-root .widget-resize-node.bottom .widget-resize-node-hit {
+          top: -10px;
+          right: -6px;
+          bottom: -8px;
+          left: -6px;
+        }
+        .widget-window-root .widget-resize-node.left .widget-resize-node-hit {
+          top: -6px;
+          right: -10px;
+          bottom: -6px;
+          left: -8px;
+        }
+        .widget-window-root .widget-resize-node.right .widget-resize-node-hit {
+          top: -6px;
+          right: -8px;
+          bottom: -6px;
+          left: -10px;
+        }
         @media (prefers-reduced-motion: reduce) {
           .widget-window-root .widget-fresh-border rect {
             animation: none;
@@ -1774,7 +1807,7 @@ f('widget-window', function () {
           class=${`widget-resize-node ${node}`}
           aria-label=${`Resize ${node}`}
           onpointerdown=${event => beginResize(node, event)}
-        ></button>
+        ><span class="widget-resize-node-hit"></span></button>
       `)}
     </div>
   `
