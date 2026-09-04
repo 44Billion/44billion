@@ -402,10 +402,12 @@ f('widgets-layer', function () {
   }
   const swipe = useMemo(() => ({ startX: null, suppressClick: false }))
   const onDotsPointerDown = event => {
+    if (event.pointerType === 'mouse') return
     swipe.startX = event.clientX
     swipe.suppressClick = false
   }
   const onDotsPointerUp = event => {
+    if (event.pointerType === 'mouse') return
     if (swipe.startX == null) return
     const dx = event.clientX - swipe.startX
     swipe.startX = null
@@ -419,6 +421,17 @@ f('widgets-layer', function () {
       return
     }
     goToPage(page)
+  }
+  const onWheel = event => {
+    event.preventDefault()
+    // One page transition per wheel gesture: ignore new wheels while a
+    // navigation is in flight or a widget is being dragged.
+    if (widgetDragging$() || store.targetPage$() !== null) return
+    const direction = Math.abs(event.deltaX) > Math.abs(event.deltaY)
+      ? Math.sign(event.deltaX)
+      : Math.sign(event.deltaY)
+    if (direction === 0) return
+    goToPage(store.currentPage$() + direction)
   }
 
   return this.h`
@@ -442,10 +455,14 @@ f('widgets-layer', function () {
           position: relative;
           overflow-x: auto;
           overflow-y: hidden;
-          pointer-events: none;
+          pointer-events: auto;
           scrollbar-width: none;
           overscroll-behavior: contain;
-          touch-action: none;
+          touch-action: pan-x;
+          user-select: none;
+          -webkit-user-select: none;
+          -webkit-touch-callout: none;
+          scroll-snap-type: x mandatory;
         }
         .widgets-layer-scope#widgets-layer #widgets-scroll::-webkit-scrollbar {
           display: none;
@@ -455,6 +472,16 @@ f('widgets-layer', function () {
           height: 100%;
           width: ${gridWidth}px;
           pointer-events: none;
+        }
+        .widgets-layer-scope#widgets-layer .widgets-page-snap-row {
+          display: flex;
+          height: 0;
+          pointer-events: none;
+        }
+        .widgets-layer-scope#widgets-layer .widgets-page-snap {
+          width: 1px;
+          height: 0;
+          scroll-snap-align: start;
         }
         .widgets-layer-scope#widgets-layer widget-window {
           pointer-events: auto;
@@ -546,9 +573,18 @@ f('widgets-layer', function () {
           visible: dragEdge$() === 'right'
         }}
       ></div>
-      <div id='widgets-scroll' ref=${store.scrollRef$}>
+      <div id='widgets-scroll' ref=${store.scrollRef$} onwheel=${onWheel}>
         <div id='widgets-grid'>
           <div style="display: contents"></div>
+          <div
+            class='widgets-page-snap-row'
+            style=${`gap:${Math.max(pageStep$() - 1, 0)}px`}
+            aria-hidden='true'
+          >
+            ${Array.from({ length: renderPageCount$() }, (_, page) => page).map(page => this.h({ key: `snap:${page}` })`
+              <div class='widgets-page-snap'></div>
+            `)}
+          </div>
           <div
             class=${{
               'widgets-grid-dots': true,
@@ -578,6 +614,7 @@ f('widgets-layer', function () {
         ref=${store.dotsRef$}
         onpointerdown=${onDotsPointerDown}
         onpointerup=${onDotsPointerUp}
+        onwheel=${onWheel}
       >
         <div style="display: contents"></div>
         ${(pageCount > 1 ? visiblePages$() : []).map(page => this.h({ key: page })`
