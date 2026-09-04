@@ -37,6 +37,7 @@ describe('widgets and personas wiring', () => {
     assert.match(appPage, /visibilitychange/)
     assert.match(appPage, /pagehide/)
     assert.match(appPage, /stale-pointerdown/)
+    assert.doesNotMatch(appPage, /state\.active\) forceEndWidgetDrag\('contextmenu'\)/)
     assert.match(appPage, /finalizeFirstFit/)
     assert.match(appPage, /originalConsole/)
     assert.match(appPage, /appConsoleDebug/)

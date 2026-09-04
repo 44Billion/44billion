@@ -463,10 +463,10 @@ function installWidgetDragListener () {
   const onContextMenu = event => {
     if (!autoFitIsWidget) return
     if (state.pointerId === null) return
+    // Prevent the native long-press menu while a pointer is tracked. The
+    // pointer stream survives preventDefault, so do NOT end an active drag
+    // here: that was canceling select-mode drags right after they started.
     event.preventDefault()
-    // If the native long-press gesture claimed the pointer while a drag was
-    // already active, the stream is gone: release our side too.
-    if (state.active) forceEndWidgetDrag('contextmenu')
   }
   const onSelectStart = event => {
     if (state.active) event.preventDefault()

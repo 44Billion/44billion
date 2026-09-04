@@ -1443,8 +1443,10 @@ f('widget-window', function () {
   }
   const onResizeContextMenu = event => {
     if (!resize.active) return
+    // Keep the native long-press menu out of the way. The pointer stream
+    // survives preventDefault, so the resize keeps going — ending here would
+    // cancel a resize whose pointer is simply being held still.
     event.preventDefault()
-    forceEndResize('contextmenu')
   }
 
   const record = store.record$()
