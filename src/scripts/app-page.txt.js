@@ -318,13 +318,19 @@ function sendWidgetDrag (op, x, y, screenX, screenY) {
 function installWidgetDragListener () {
   if (widgetDragListenerStarted) return
   widgetDragListenerStarted = true
-  const setWidgetDragSelectionLocked = locked => {
+  // Two-phase lock: selection/callout are disabled as soon as a touch/pen
+  // press starts (before the native long-press gesture can claim it), while
+  // touch-action is only locked once our drag activates so normal app
+  // scrolling keeps working during taps and swipes.
+  const setWidgetDragLocked = (locked, { touchAction = false } = {}) => {
     const root = document.documentElement
     const body = document.body
     for (const el of [root, body]) {
       if (!el) continue
       el.style.userSelect = locked ? 'none' : ''
       el.style.webkitUserSelect = locked ? 'none' : ''
+      el.style.webkitTouchCallout = locked ? 'none' : ''
+      if (touchAction) el.style.touchAction = locked ? 'none' : ''
     }
   }
   const state = {
@@ -354,9 +360,11 @@ function installWidgetDragListener () {
     state.startY = event.clientY
     state.active = false
     clearTimer()
+    const isTouchPointer = event.pointerType === 'touch' || event.pointerType === 'pen'
+    if (isTouchPointer) setWidgetDragLocked(true)
     if (widgetSelectModeEnabled) {
       state.active = true
-      setWidgetDragSelectionLocked(true)
+      setWidgetDragLocked(true, { touchAction: true })
       state.lastSentX = event.clientX
       state.lastSentY = event.clientY
       sendWidgetDrag('start', event.clientX, event.clientY, event.screenX, event.screenY)
@@ -365,7 +373,7 @@ function installWidgetDragListener () {
     state.timer = setTimeout(() => {
       state.timer = null
       state.active = true
-      setWidgetDragSelectionLocked(true)
+      setWidgetDragLocked(true, { touchAction: true })
       state.lastSentX = event.clientX
       state.lastSentY = event.clientY
       widgetDragLog('[widget-drag] long-press fired', {
@@ -404,7 +412,7 @@ function installWidgetDragListener () {
     const wasActive = state.active
     state.pointerId = null
     state.active = false
-    setWidgetDragSelectionLocked(false)
+    setWidgetDragLocked(false, { touchAction: true })
     widgetDragLog('[widget-drag] pointerend', {
       x: event.clientX,
       y: event.clientY,
@@ -416,12 +424,15 @@ function installWidgetDragListener () {
   }
   const onContextMenu = event => {
     if (!autoFitIsWidget) return
-    if (state.active) event.preventDefault()
+    if (state.pointerId !== null) event.preventDefault()
   }
   const onSelectStart = event => {
     if (state.active) event.preventDefault()
   }
   const onDragStart = event => {
+    if (state.active) event.preventDefault()
+  }
+  const onTouchMove = event => {
     if (state.active) event.preventDefault()
   }
   window.addEventListener('pointerdown', onPointerDown, true)
@@ -431,6 +442,7 @@ function installWidgetDragListener () {
   window.addEventListener('contextmenu', onContextMenu, true)
   window.addEventListener('selectstart', onSelectStart, true)
   window.addEventListener('dragstart', onDragStart, true)
+  window.addEventListener('touchmove', onTouchMove, { capture: true, passive: false })
 }
 
 installWidgetDragListener()
