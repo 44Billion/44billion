@@ -122,7 +122,8 @@ function tellParentImReady (p) {
     autoFitPort = browserPort
     widgetDragLog('[widget-drag] browser-ready', {
       isWidget: autoFitIsWidget,
-      hasPort: !!autoFitPort
+      hasPort: !!autoFitPort,
+      host: location.hostname
     })
     localeClient.setLocale(e.data.payload?.locale)
     const bridgeId = e.data.payload?.bridgeId
@@ -374,7 +375,8 @@ function installWidgetDragListener () {
     setWidgetDragLocked(false, { touchAction: true })
     widgetDragLog('[widget-drag] forced end', {
       reason,
-      wasActive
+      wasActive,
+      host: location.hostname
     })
     if (wasActive) {
       sendWidgetDrag('end', state.lastSentX, state.lastSentY)
@@ -386,7 +388,8 @@ function installWidgetDragListener () {
       x: event.clientX,
       y: event.clientY,
       pointerId: event.pointerId,
-      selectMode: widgetSelectModeEnabled
+      selectMode: widgetSelectModeEnabled,
+      host: location.hostname
     })
     // Self-heal a stale pointer: if the previous stream died silently, a new
     // press after a quiet period resets it instead of being ignored forever.

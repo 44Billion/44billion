@@ -857,6 +857,13 @@ f('widget-window', function () {
   })
 
   const setVisibility = (visibility, { now = Date.now() } = {}) => {
+    widgetDragLog('[widget-lifecycle] transition', {
+      widgetKey,
+      from: store.visibility$(),
+      to: visibility,
+      currentPage: currentPage$(),
+      targetPage: targetPage$()
+    })
     writeWidgetSessionValue(sessionStorage, widgetKey, 'visibility', visibility)
     if (visibility === 'open') {
       store.minimizedAt$(null)
