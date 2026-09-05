@@ -17,6 +17,7 @@ function updateSpecs () {
     if (state.windows.size > 0) {
       specs.push({
         key: state.key,
+        bridgeId: state.bridgeId,
         appId: state.appId,
         userPk: state.userPk,
         appSubdomain: state.appSubdomain

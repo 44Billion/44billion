@@ -678,6 +678,7 @@ f('widget-window', function () {
   const runtime = useMemo(() => ({
     startedGeneration: null,
     appReady: false,
+    appStarting: false,
     autoRetried: false,
     appCleanup: null,
     routeVersion: 0,
@@ -703,6 +704,13 @@ f('widget-window', function () {
     if (!userPk || !record.appId) return null
     return storage[`session_subdomainByUserAndApp_${userPk}_${record.appId}$`]()
   })
+  // Stable primitive views of the widget record. `record$` gets a new object
+  // reference whenever any widget is written (e.g. APP_ROUTE_CHANGED pinning
+  // a route), so subscribing to it directly re-runs the load task for every
+  // write. These computeds only notify when their primitive actually changes.
+  const appId$ = useComputed(() => store.record$()?.appId ?? null)
+  const wsKey$ = useComputed(() => store.record$()?.wsKey ?? null)
+  const hasRecord$ = useComputed(() => !!store.record$())
 
   const syncSelectMode = () => {
     const enabled = store.selected$() || store.freshUntil$() > Date.now()
@@ -947,8 +955,8 @@ f('widget-window', function () {
   useTask(
     async ({ track, cleanup }) => {
       const isClosed = track(() => store.visibility$() === 'closed')
-      const appId = track(() => store.record$()?.appId)
-      const wsKey = track(() => store.record$()?.wsKey)
+      const appId = track(() => appId$())
+      const wsKey = track(() => wsKey$())
       const iframeRef = track(() => store.appIframeRef$())
       const appSubdomain = track(() => appSubdomain$())
       if (!appId || !wsKey) return
@@ -959,7 +967,6 @@ f('widget-window', function () {
 
       if (isClosed || !appId || !userPk) {
         store.appIframeSrc$('about:blank')
-        store.appIframeRef$(null)
         store.appReady$(false)
         store.showPending$(false)
         store.wideMode$(false)
@@ -972,6 +979,7 @@ f('widget-window', function () {
         runtime.appCleanup = null
         runtime.startedGeneration = null
         runtime.appReady = false
+        runtime.appStarting = false
         runtime.routeVersion++
         runtime.loadedRouteVersion = -1
         return
@@ -1053,10 +1061,16 @@ f('widget-window', function () {
         bridgeState.error$()
       ])
       if (bridgeError) {
+        widgetDragLog('[widget-bridge] error', {
+          widgetKey,
+          bridgeKey: bridgeState.key,
+          error: String(bridgeError?.message || bridgeError)
+        })
         store.showPending$(false)
         store.launchError$('Failed to load widget')
         runtime.startedGeneration = null
         runtime.appReady = false
+        runtime.appStarting = false
         store.appReady$(false)
         return
       }
@@ -1078,9 +1092,13 @@ f('widget-window', function () {
         return
       }
       if (runtime.appCleanup && runtime.appReady) return
+      if (runtime.appStarting) {
+        return
+      }
 
       runtime.appCleanup?.()
       runtime.appCleanup = null
+      runtime.appStarting = true
       runtime.appReady = false
       store.appReady$(false)
       store.launchError$(null)
@@ -1088,10 +1106,16 @@ f('widget-window', function () {
       const onAppReady = () => {
         store.showPending$(false)
         runtime.appReady = true
+        runtime.appStarting = false
         store.appReady$(true)
         syncSelectMode()
       }
       runtime.loadedRouteVersion = runtime.routeVersion
+      widgetDragLog('[widget-bridge] loading-route', {
+        widgetKey,
+        bridgeKey: bridgeState.key,
+        hasRoute: typeof route === 'string' && route.length > 0
+      })
       const cleanupApp = initAppWindow(bridgeState, {
         appKey: widgetKey,
         wsKey,
@@ -1131,7 +1155,8 @@ f('widget-window', function () {
     })
   })
 
-  // Closed widgets have no iframe, so the root itself can detect long-press.
+  // The closed iframe is kept mounted but hidden, so the root still receives
+  // long-press events for dragging the placeholder.
   const longPressTimer = useMemo(() => ({ id: null }))
   const onClosedPointerDown = event => {
     if (store.visibility$() !== 'closed') return
@@ -1493,8 +1518,7 @@ f('widget-window', function () {
     event.preventDefault()
   }
 
-  const record = store.record$()
-  if (!record) return
+  if (!hasRecord$()) return
   const placement = placement$()
   const style = placementStyle(placement, grid$())
   if (!style) return
@@ -1517,6 +1541,7 @@ f('widget-window', function () {
        `transform:scale(${cellWidth / virtualWidth});` +
       'transform-origin:top left;' + roundedClip
     : roundedClip
+  const srcIsBlank = store.appIframeSrc$() === 'about:blank'
   const showNodes = store.selected$() && !store.dragging$()
 
   return this.h`
@@ -1565,6 +1590,11 @@ f('widget-window', function () {
           inset: 0;
           overflow: hidden;
         }
+        .widget-window-root.widget-window-closed .widget-clip {
+          /* Keep the iframe mounted (stable ref and no re-mount race across
+             tab visibility changes); about:blank is transparent anyway. */
+          visibility: hidden;
+        }
         .widget-window-root.widget-window-selected .widget-pending,
         .widget-window-root.widget-window-fresh .widget-pending {
           border-radius: 10px;
@@ -1574,6 +1604,11 @@ f('widget-window', function () {
           height: 100%;
           border: 0;
           display: block;
+        }
+        .widget-window-root iframe.widget-iframe-blank {
+          /* Keep the white about:blank frame out of view; the pending overlay
+             stays visible above it while the app loads. */
+          visibility: hidden;
         }
         .widget-window-root .widget-pending {
           position: absolute;
@@ -1781,32 +1816,31 @@ f('widget-window', function () {
           }
         }
       `}</style>
-      ${!isClosed
-        ? this.h`
-          <div
-            class='widget-clip'
-          >
-            <iframe
-              class='widget-iframe'
-              style=${iframeStyle}
-              allow='fullscreen; screen-wake-lock; ambient-light-sensor;
-                     autoplay; midi; encrypted-media;
-                     accelerometer; gyroscope; magnetometer; xr-spatial-tracking;
-                     clipboard-read; clipboard-write; web-share;
-                     camera; microphone; geolocation; bluetooth; payment'
-              ref=${store.appIframeRef$}
-              src=${store.appIframeSrc$()}
-            />
-            ${store.showPending$()
-              ? this.h`
-                <div class='widget-pending'>
-                  <pending-indicator props=${{ text: t('Opening app...'), compact: true }} />
-                </div>
-              `
-              : ''}
-          </div>
-        `
-        : ''}
+      <div
+        class='widget-clip'
+      >
+        <iframe
+          class=${{
+            'widget-iframe': true,
+            'widget-iframe-blank': srcIsBlank
+          }}
+          style=${iframeStyle}
+          allow='fullscreen; screen-wake-lock; ambient-light-sensor;
+                 autoplay; midi; encrypted-media;
+                 accelerometer; gyroscope; magnetometer; xr-spatial-tracking;
+                 clipboard-read; clipboard-write; web-share;
+                 camera; microphone; geolocation; bluetooth; payment'
+          ref=${store.appIframeRef$}
+          src=${store.appIframeSrc$()}
+        />
+        ${store.showPending$()
+          ? this.h`
+            <div class='widget-pending'>
+              <pending-indicator props=${{ text: t('Opening app...'), compact: true }} />
+            </div>
+          `
+          : ''}
+      </div>
       ${isFresh && !showSolidBorder
         ? this.h`
           <svg

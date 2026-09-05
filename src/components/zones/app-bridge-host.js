@@ -1,4 +1,4 @@
-import { f, useSignal, useTask } from '#f'
+import { f, useComputed, useSignal, useTask } from '#f'
 import { initAppBridge, retryAppBridge } from '#helpers/window-message/app-bridge.js'
 import {
   ensureAppBridgeState,
@@ -43,28 +43,41 @@ f('app-bridge-host', function () {
         }
       `}</style>
       <div style='display: contents'></div>
-      ${specs.map(spec => this.h({ key: spec.key })`
-        <app-bridge-manager props=${{ appSubdomain: spec.appSubdomain, userPk: spec.userPk, appId: spec.appId }} />
+      ${specs.map(spec => this.h({ key: spec.bridgeId })`
+        <app-bridge-manager props=${{ appSubdomain: spec.appSubdomain, userPk: spec.userPk, appId: spec.appId, bridgeId: spec.bridgeId }} />
       `)}
     </div>
   `
 })
 
 f('app-bridge-manager', function () {
-  const state = ensureAppBridgeState(this.props.appSubdomain, {
-    userPk: this.props.userPk,
-    appId: this.props.appId
-  })
+  const appSubdomain = this.props.appSubdomain
+  const userPk = this.props.userPk
+  const appId = this.props.appId
+  const bridgeId = this.props.bridgeId
   const { askVault } = useVaultActor()
   const { requestConfirmation } = useConfirmationDialogStore()
   const { requestAction: requestFileNotCachedAction } = useFileNotCachedDialogStore()
 
-  useTask(async ({ cleanup }) => {
+  // The registry can dispose and recreate a bridge state (same subdomain key)
+  // while this manager stays mounted, and a keyed list may reuse this instance
+  // after the host briefly rendered without it. Derive the current state from
+  // the specs signal so both the template and the bridge init follow it.
+  const state$ = useComputed(() => {
+    const spec = getAppBridgeSpecs()().find(item => item.appSubdomain === appSubdomain)
+    return spec ? ensureAppBridgeState(appSubdomain, { userPk, appId }) : null
+  })
+  const state = state$()
+
+  useTask(async ({ track, cleanup }) => {
+    const currentBridgeId = track(() => state$()?.bridgeId ?? null)
+    if (!currentBridgeId || currentBridgeId !== bridgeId) return
+    const currentState = ensureAppBridgeState(appSubdomain, { userPk, appId })
     const ac = new AbortController()
     cleanup(() => ac.abort())
-    const cleanupBridge = await initAppBridge(state, {
+    const cleanupBridge = await initAppBridge(currentState, {
       signal: ac.signal,
-      cachingProgress$: state.cachingProgress$,
+      cachingProgress$: currentState.cachingProgress$,
       askVault,
       requestPermission: () => {},
       onFileNotCached: details => {
@@ -80,7 +93,7 @@ f('app-bridge-manager', function () {
         const onlinePromise = isCritical
           ? isOnline().catch(() => false)
           : Promise.resolve(false)
-        const storedNameRaw = localStorage.getItem(`session_appById_${state.appId}_name`)
+        const storedNameRaw = localStorage.getItem(`session_appById_${currentState.appId}_name`)
         let storedAppName = ''
         if (storedNameRaw) {
           try {
@@ -92,9 +105,9 @@ f('app-bridge-manager', function () {
         return requestFileNotCachedAction({
           appName: payload.appName || storedAppName || getFileNotCachedText('App Download'),
           message
-        }).then(() => retryAppBridge(state)).catch(async () => {
+        }).then(() => retryAppBridge(currentState)).catch(async () => {
           const online = await onlinePromise
-          for (const entry of Array.from(state.windows.values())) {
+          for (const entry of Array.from(currentState.windows.values())) {
             try {
               if (online && isCritical) {
                 const action = entry.onRemove?.() ?? entry.onClose?.()
@@ -115,6 +128,8 @@ f('app-bridge-manager', function () {
     })
     cleanup(() => cleanupBridge?.())
   }, { after: 'rendering' })
+
+  if (!state || state.bridgeId !== bridgeId) return undefined
 
   return this.h`
     <iframe

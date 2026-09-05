@@ -169,7 +169,9 @@ export function setWidgetPinnedRoute ({
   const widgets = readWidgets(localStorageArea)
   const widget = widgets[widgetKey]
   if (!widget) throw new Error(`Widget not found: ${widgetKey}`)
-  widget.pinnedRoute = typeof pinnedRoute === 'string' ? pinnedRoute : ''
+  const nextPinnedRoute = typeof pinnedRoute === 'string' ? pinnedRoute : ''
+  if (widget.pinnedRoute === nextPinnedRoute) return widget
+  widget.pinnedRoute = nextPinnedRoute
   widget.updatedAt = now
   writeWidgets(localStorageArea, widgets)
   return widget

@@ -210,7 +210,8 @@ function printConsole (target, { type, args = [] }) {
   const highlight =
     text.includes('[widget-drag]') ||
     text.includes('[widget-resize]') ||
-    text.includes('[widget-lifecycle]')
+    text.includes('[widget-lifecycle]') ||
+    text.includes('[widget-bridge]')
   emitLine(target, text, highlight)
 }
 

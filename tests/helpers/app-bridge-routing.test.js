@@ -36,6 +36,6 @@ describe('app bridge routing marker', () => {
     assert.match(sw, /findReadyBridgeClient\(clients, readyClients, bridgeId, \{ strict \}\)/)
 
     // Dialog falls back to the stored app name instead of only "App Download".
-    assert.match(host, /session_appById_\$\{state\.appId\}_name/)
+    assert.match(host, /session_appById_\$\{currentState\.appId\}_name/)
   })
 })
