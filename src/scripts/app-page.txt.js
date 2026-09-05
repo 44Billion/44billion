@@ -1,6 +1,7 @@
 import { tell, ask } from '#helpers/window-message/index.js'
 import { injectEventStore } from '#helpers/window-message/nostrdb-client.js'
 import { createAppLocaleClient } from '#helpers/window-message/app-locale-client.js'
+import { createWidgetDragClient } from '#helpers/window-message/widget-drag-client.js'
 import { naddrDecode } from 'libp2r2p/nip19'
 import {
   DRAFT_SITE_MANIFEST,
@@ -140,7 +141,7 @@ function tellParentImReady (p) {
   browserPort.addEventListener('message', e => {
     if (e.data.code === 'LOCALE_CHANGED') localeClient.setLocale(e.data.payload?.locale)
     else if (e.data.code === 'WIDGET_SELECT_MODE') {
-      widgetSelectModeEnabled = e.data.payload?.enabled === true
+      widgetDragClient.setSelectMode(e.data.payload?.enabled === true)
     }
   })
   browserPort.start()
@@ -173,8 +174,6 @@ let autoFitLastMutationAt = 0
 let autoFitMutationObserver = null
 let autoFitTransitionActive = false
 let autoFitPort = null
-let widgetSelectModeEnabled = false
-let widgetDragListenerStarted = false
 
 function setAutoFitHidden (hidden) {
   document.documentElement.style.visibility = hidden ? 'hidden' : ''
@@ -298,10 +297,6 @@ function scheduleAutoFitFit () {
 // cross-origin app iframe, so this injected listener detects long-press (or a
 // plain press while the launcher has selection mode enabled) and forwards
 // start/move/end to the launcher through the bridge port.
-const WIDGET_DRAG_LONG_PRESS_MS = 600
-const WIDGET_DRAG_MOVE_TOLERANCE = 10
-const WIDGET_DRAG_STALE_MS = 2000
-
 function sendWidgetDrag (op, x, y, screenX, screenY) {
   widgetDragLog('[widget-drag] send', op, x, y, {
     hasPort: !!autoFitPort,
@@ -317,209 +312,13 @@ function sendWidgetDrag (op, x, y, screenX, screenY) {
   }
 }
 
-function installWidgetDragListener () {
-  if (widgetDragListenerStarted) return
-  widgetDragListenerStarted = true
-  // Two-phase lock: selection/callout are disabled as soon as a touch/pen
-  // press starts (before the native long-press gesture can claim it), while
-  // touch-action is only locked once our drag activates so normal app
-  // scrolling keeps working during taps and swipes.
-  const setWidgetDragLocked = (locked, { touchAction = false } = {}) => {
-    const root = document.documentElement
-    const body = document.body
-    for (const el of [root, body]) {
-      if (!el) continue
-      el.style.userSelect = locked ? 'none' : ''
-      el.style.webkitUserSelect = locked ? 'none' : ''
-      el.style.webkitTouchCallout = locked ? 'none' : ''
-      if (touchAction) el.style.touchAction = locked ? 'none' : ''
-    }
-  }
-  const state = {
-    pointerId: null,
-    pointerType: null,
-    captureTarget: null,
-    startX: 0,
-    startY: 0,
-    timer: null,
-    active: false,
-    lastSentX: 0,
-    lastSentY: 0,
-    lastEventAt: 0
-  }
-  const clearTimer = () => {
-    clearTimeout(state.timer)
-    state.timer = null
-  }
-  // Only claim capture once our drag activates (and only for touch/pen): doing
-  // it on every pointerdown would steal the app's own pointer capture for
-  // sliders and other internal gestures. Capture gives us a lostpointercapture
-  // signal when the browser kills the stream without a pointercancel.
-  const claimPointerCapture = () => {
-    if (state.pointerType !== 'touch' && state.pointerType !== 'pen') return
-    try { state.captureTarget?.setPointerCapture?.(state.pointerId) } catch { /* pointer may already be gone */ }
-  }
-  // The pointer stream can be lost without a pointerup/pointercancel being
-  // delivered (native long-press gesture, screen lock, app switch). Without
-  // this, the state stays active forever: touch-action remains locked and new
-  // pointerdowns are ignored. Every "stream gone" signal funnels through here.
-  const forceEndWidgetDrag = reason => {
-    if (state.pointerId === null) return
-    const wasActive = state.active
-    try { state.captureTarget?.releasePointerCapture?.(state.pointerId) } catch { /* pointer may already be gone */ }
-    clearTimer()
-    state.pointerId = null
-    state.pointerType = null
-    state.captureTarget = null
-    state.active = false
-    setWidgetDragLocked(false, { touchAction: true })
-    widgetDragLog('[widget-drag] forced end', {
-      reason,
-      wasActive,
-      host: location.hostname
-    })
-    if (wasActive) {
-      sendWidgetDrag('end', state.lastSentX, state.lastSentY)
-    }
-  }
-  const onPointerDown = event => {
-    if (!autoFitIsWidget) return
-    widgetDragLog('[widget-drag] pointerdown', {
-      x: event.clientX,
-      y: event.clientY,
-      pointerId: event.pointerId,
-      selectMode: widgetSelectModeEnabled,
-      host: location.hostname
-    })
-    // Self-heal a stale pointer: if the previous stream died silently, a new
-    // press after a quiet period resets it instead of being ignored forever.
-    if (
-      state.pointerId !== null &&
-      event.pointerId !== state.pointerId &&
-      Date.now() - state.lastEventAt > WIDGET_DRAG_STALE_MS
-    ) {
-      forceEndWidgetDrag('stale-pointerdown')
-    }
-    if (state.pointerId !== null) return
-    state.pointerId = event.pointerId
-    state.pointerType = event.pointerType
-    state.captureTarget = event.target
-    state.startX = event.clientX
-    state.startY = event.clientY
-    state.active = false
-    state.lastEventAt = Date.now()
-    clearTimer()
-    const isTouchPointer = event.pointerType === 'touch' || event.pointerType === 'pen'
-    if (isTouchPointer) setWidgetDragLocked(true)
-    if (widgetSelectModeEnabled) {
-      claimPointerCapture()
-      state.active = true
-      setWidgetDragLocked(true, { touchAction: true })
-      state.lastSentX = event.clientX
-      state.lastSentY = event.clientY
-      sendWidgetDrag('start', event.clientX, event.clientY, event.screenX, event.screenY)
-      return
-    }
-    state.timer = setTimeout(() => {
-      state.timer = null
-      claimPointerCapture()
-      state.active = true
-      setWidgetDragLocked(true, { touchAction: true })
-      state.lastSentX = event.clientX
-      state.lastSentY = event.clientY
-      widgetDragLog('[widget-drag] long-press fired', {
-        x: event.clientX,
-        y: event.clientY
-      })
-      sendWidgetDrag('start', event.clientX, event.clientY, event.screenX, event.screenY)
-    }, WIDGET_DRAG_LONG_PRESS_MS)
-  }
-  const onPointerMove = event => {
-    if (!autoFitIsWidget) return
-    if (event.pointerId !== state.pointerId) return
-    state.lastEventAt = Date.now()
-    if (state.timer) {
-      const dx = event.clientX - state.startX
-      const dy = event.clientY - state.startY
-      if (Math.abs(dx) > WIDGET_DRAG_MOVE_TOLERANCE || Math.abs(dy) > WIDGET_DRAG_MOVE_TOLERANCE) {
-        clearTimer()
-      }
-      return
-    }
-    if (!state.active) return
-    event.preventDefault()
-    if (
-      Math.abs(event.clientX - state.lastSentX) >= 2 ||
-      Math.abs(event.clientY - state.lastSentY) >= 2
-    ) {
-      state.lastSentX = event.clientX
-      state.lastSentY = event.clientY
-      sendWidgetDrag('move', event.clientX, event.clientY, event.screenX, event.screenY)
-    }
-  }
-  const onPointerEnd = event => {
-    if (!autoFitIsWidget) return
-    if (event.pointerId !== state.pointerId) return
-    state.lastEventAt = Date.now()
-    forceEndWidgetDrag('pointerend')
-  }
-  const onContextMenu = event => {
-    if (!autoFitIsWidget) return
-    if (state.pointerId === null) return
-    // Prevent the native long-press menu while a pointer is tracked. The
-    // pointer stream survives preventDefault, so do NOT end an active drag
-    // here: that was canceling select-mode drags right after they started.
-    event.preventDefault()
-  }
-  const onSelectStart = event => {
-    if (state.active) event.preventDefault()
-  }
-  const onDragStart = event => {
-    if (state.active) event.preventDefault()
-  }
-  const onTouchMove = event => {
-    if (state.active) event.preventDefault()
-  }
-  const onTouchCancel = () => {
-    if (!autoFitIsWidget) return
-    forceEndWidgetDrag('touchcancel')
-  }
-  const onLostPointerCapture = event => {
-    if (!autoFitIsWidget) return
-    if (event.pointerId !== state.pointerId) return
-    // On a normal pointerup/pointercancel, onPointerEnd runs first and clears
-    // state.pointerId; reaching here means capture was released without a
-    // delivered end event.
-    forceEndWidgetDrag('lostpointercapture')
-  }
-  const onVisibilityChange = () => {
-    if (!autoFitIsWidget) return
-    if (document.visibilityState === 'hidden') forceEndWidgetDrag('visibilitychange')
-  }
-  const onWindowBlur = () => {
-    if (!autoFitIsWidget) return
-    forceEndWidgetDrag('blur')
-  }
-  const onPageHide = () => {
-    if (!autoFitIsWidget) return
-    forceEndWidgetDrag('pagehide')
-  }
-  window.addEventListener('pointerdown', onPointerDown, true)
-  window.addEventListener('pointermove', onPointerMove, true)
-  window.addEventListener('pointerup', onPointerEnd, true)
-  window.addEventListener('pointercancel', onPointerEnd, true)
-  window.addEventListener('contextmenu', onContextMenu, true)
-  window.addEventListener('selectstart', onSelectStart, true)
-  window.addEventListener('dragstart', onDragStart, true)
-  window.addEventListener('touchmove', onTouchMove, { capture: true, passive: false })
-  window.addEventListener('touchcancel', onTouchCancel, true)
-  window.addEventListener('lostpointercapture', onLostPointerCapture, true)
-  document.addEventListener('visibilitychange', onVisibilityChange)
-  window.addEventListener('blur', onWindowBlur, true)
-  window.addEventListener('pagehide', onPageHide, true)
-}
-
-installWidgetDragListener()
+const widgetDragClient = createWidgetDragClient({
+  window,
+  document,
+  isWidget: () => autoFitIsWidget,
+  sendDrag: sendWidgetDrag,
+  log: widgetDragLog
+})
 
 function fitAutoFit () {
   clearTimeout(autoFitDebounceTimer)
