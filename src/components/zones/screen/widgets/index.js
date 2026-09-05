@@ -1,4 +1,6 @@
 import { createWidgetEditing } from '#helpers/widget-editing.js'
+import { createWidgetDragSurface } from '#helpers/widget-drag-surface.js'
+import { getWidgetResizeHitInsets } from '#helpers/widget-resize-hit-area.js'
 import { isInstanceSurfaceDisplayed } from '#helpers/instance-presentation.js'
 import { useInstanceMetadataSurface } from '#hooks/use-instance-metadata.js'
 import {
@@ -61,6 +63,8 @@ const DRAG_PAGE_FLIP_DELAY_MS = 450
 const DRAG_PAGE_FLIP_THROTTLE_MS = 1500
 const WIDGET_FRESH_WINDOW_MS = 10000
 const WIDGET_SELECTED_WINDOW_MS = 4000
+const WIDGET_CONTROL_SIZE = 26
+const WIDGET_CONTROL_INSET = 6
 
 // Temporary widget-drag instrumentation: only log in development builds.
 const widgetDragLog = (...args) => {
@@ -753,6 +757,14 @@ f('widget-window', function () {
     onMenu: store.menuOpen$
   }))
   const deselect = editing.deselect
+  const dragSurface = useMemo(() => createWidgetDragSurface({
+    window,
+    canStart: () => store.selected$() && !drag.active && !resize.active,
+    getCaptureTarget: () => store.elRef$(),
+    onStart: (x, y) => beginDragFromPointer(x, y),
+    onMove: (x, y) => moveDragFromPointer(x, y),
+    onEnd: () => endDragFromPointer()
+  }))
   const startSelectionTimer = () => {
     // The first interaction ends the fresh (post-creation) window: once the
     // solid selection border takes over, the animated border must not come
@@ -1175,6 +1187,7 @@ f('widget-window', function () {
   useTask(({ cleanup }) => {
     cleanup(() => {
       if (resize.active) forceEndResize('unmount', { apply: false })
+      dragSurface.release()
       if (drag.active) {
         drag.active = false
         stopDragAutoFlip()
@@ -1463,6 +1476,7 @@ f('widget-window', function () {
   }
   const endDragFromPointer = () => {
     if (!drag.active) return
+    dragSurface.release()
     drag.active = false
     stopDragAutoFlip()
     const preview = dragDraft$()
@@ -1663,6 +1677,17 @@ f('widget-window', function () {
     : roundedClip
   const srcIsBlank = store.appIframeSrc$() === 'about:blank'
   const showNodes = store.selected$() && !store.dragging$()
+  const controlLeft = placement.w === 1
+    ? (cellWidth - WIDGET_CONTROL_SIZE) / 2
+    : cellWidth - WIDGET_CONTROL_INSET - WIDGET_CONTROL_SIZE
+  const controlTops = placement.h === 1
+    ? [(cellHeight - WIDGET_CONTROL_SIZE) / 2]
+    : [WIDGET_CONTROL_INSET, cellHeight - WIDGET_CONTROL_INSET - WIDGET_CONTROL_SIZE]
+  const resizeHitInsets = getWidgetResizeHitInsets({
+    width: cellWidth,
+    height: cellHeight,
+    controls: controlTops.map(top => ({ left: controlLeft, top, width: WIDGET_CONTROL_SIZE, height: WIDGET_CONTROL_SIZE }))
+  })
   const controls = []
   if (showNodes) {
     if (placement.h === 1) {
@@ -1744,6 +1769,15 @@ f('widget-window', function () {
           inset: 0;
           overflow: hidden;
         }
+        widget-window .widget-drag-surface {
+          position: absolute;
+          inset: 0;
+          z-index: 2;
+          touch-action: none;
+          user-select: none;
+          -webkit-user-select: none;
+          -webkit-touch-callout: none;
+        }
         .widget-window-root.widget-window-closed .widget-clip {
           /* Keep the iframe mounted (stable ref and no re-mount race across
              tab visibility changes); about:blank is transparent anyway. */
@@ -1772,10 +1806,10 @@ f('widget-window', function () {
         }
         .widget-window-root .widget-remove-button {
           position: absolute;
-          top: 6px;
-          right: 6px;
-          width: 26px;
-          height: 26px;
+          top: ${WIDGET_CONTROL_INSET}px;
+          right: ${WIDGET_CONTROL_INSET}px;
+          width: ${WIDGET_CONTROL_SIZE}px;
+          height: ${WIDGET_CONTROL_SIZE}px;
           display: grid;
           place-items: center;
           border: 2px solid ${cssVars.colors.bgAccentPrimary};
@@ -1788,7 +1822,7 @@ f('widget-window', function () {
         }
         .widget-window-root .widget-pin-button {
           top: auto;
-          bottom: 6px;
+          bottom: ${WIDGET_CONTROL_INSET}px;
         }
         .widget-window-root .widget-remove-button.widget-remove-center-x {
           right: auto;
@@ -1832,7 +1866,8 @@ f('widget-window', function () {
           border: 0;
           padding: 0;
           z-index: 5;
-          pointer-events: auto;
+          /* The span owns hit testing, including any inward contraction. */
+          pointer-events: none;
           touch-action: none;
         }
         .widget-window-root .widget-resize-node::before,
@@ -1946,18 +1981,18 @@ f('widget-window', function () {
         .widget-window-root .widget-resize-node.top .widget-resize-node-hit {
           top: -8px;
           right: -6px;
-          bottom: -10px;
+          bottom: var(--widget-node-inward-inset, -10px);
           left: -6px;
         }
         .widget-window-root .widget-resize-node.bottom .widget-resize-node-hit {
-          top: -10px;
+          top: var(--widget-node-inward-inset, -10px);
           right: -6px;
           bottom: -8px;
           left: -6px;
         }
         .widget-window-root .widget-resize-node.left .widget-resize-node-hit {
           top: -6px;
-          right: -10px;
+          right: var(--widget-node-inward-inset, -10px);
           bottom: -6px;
           left: -8px;
         }
@@ -1965,7 +2000,7 @@ f('widget-window', function () {
           top: -6px;
           right: -8px;
           bottom: -6px;
-          left: -10px;
+          left: var(--widget-node-inward-inset, -10px);
         }
         @media (prefers-reduced-motion: reduce) {
           .widget-window-root .widget-fresh-border rect {
@@ -2018,11 +2053,19 @@ f('widget-window', function () {
           </svg>
         `
         : ''}
+      ${store.selected$()
+        ? this.h`<div class='widget-drag-surface'
+            aria-hidden='true'
+            onpointerdown=${dragSurface.onPointerDown}
+            oncontextmenu=${event => event.preventDefault()}
+          ></div>`
+        : ''}
       ${controls}
       <a-menu props=${menuProps} />
       ${(showNodes ? ['top', 'right', 'bottom', 'left'] : []).map(node => this.h({ key: node })`
         <button
           class=${`widget-resize-node ${node}`}
+          style=${`--widget-node-inward-inset:${resizeHitInsets[node]}px;`}
           aria-label=${`Resize ${node}`}
           onpointerdown=${event => beginResize(node, event)}
         ><span class="widget-resize-node-hit"></span></button>

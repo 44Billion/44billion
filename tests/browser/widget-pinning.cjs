@@ -2,7 +2,9 @@ const { spawn } = require('node:child_process')
 const { readFileSync, writeFileSync, mkdtempSync, rmSync } = require('node:fs')
 const path = require('node:path')
 const esbuild = require('esbuild')
+const http = require('node:http')
 const assert = require('node:assert/strict')
+let fixtureServer
 const profile = mkdtempSync('/tmp/widget-chrome-')
 const chrome = spawn(process.env.CHROME_BIN || '/usr/bin/google-chrome', ['--headless=new', '--no-sandbox', '--allow-file-access-from-files', '--disable-gpu', '--disable-dev-shm-usage', '--remote-debugging-pipe', `--user-data-dir=${profile}`, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'] })
 let seq = 0; let buffer = ''; let errors = ''
@@ -80,6 +82,51 @@ const timeout = setTimeout(() => { console.error('Chrome verification timed out'
         return connection.disconnect;
       }`
   }
+  let fixtureUrl = 'file://' + path.join(profile, 'fixture.html')
+  if (process.argv.includes('--gestures')) {
+    fixtureServer = http.createServer((request, response) => {
+      const filename = new URL(request.url, 'http://localhost').pathname.slice(1)
+      if (!['fixture.html', 'fixture-frame.html', 'frame.js'].includes(filename)) { response.writeHead(404).end(); return }
+      response.setHeader('Content-Type', filename.endsWith('.js') ? 'text/javascript' : 'text/html')
+      response.end(readFileSync(path.join(profile, filename)))
+    })
+    await new Promise(resolve => fixtureServer.listen(0, '127.0.0.1', resolve))
+    const port = fixtureServer.address().port
+    fixtureUrl = `http://127.0.0.1:${port}/fixture.html`
+    stubs['#helpers/window-message/app-bridge.js'] = `
+      import {instanceMetadata} from '#services/instance-metadata/index.js';
+      export const APP_PENDING_INDICATOR_DELAY_MS=50;
+      export const initAppWindow=(state,options)=>{
+        const frame=options.appIframeRef$();frame.dataset.key=options.appKey;
+        const connection=instanceMetadata.connect({instanceKey:options.appKey,appId:'app',userPk:'user',isWidget:true},()=>{});
+        const receive=event=>{
+          if(event.source!==frame.contentWindow)return;
+          if(event.data.code==='ready')options.onAppReady();
+          if(event.data.code==='drag')fixture.registrations[options.appKey]?.onWidgetDrag(event.data.payload);
+        };
+        window.addEventListener('message',receive);
+        options.appIframeSrc$('http://localhost:${port}/fixture-frame.html');
+        return ()=>{connection.disconnect();window.removeEventListener('message',receive)};
+      }`
+    await esbuild.build({
+      absWorkingDir: repo,
+      stdin: {
+        contents: `
+        import {createWidgetDragClient} from './src/helpers/window-message/widget-drag-client.js';
+        const client=createWidgetDragClient({window,document,isWidget:()=>true,sendDrag:(op,x,y,screenX,screenY)=>parent.postMessage({code:'drag',payload:{op,x,y,screenX,screenY}},'${new URL(fixtureUrl).origin}')});
+        window.addEventListener('message',event=>{
+          if(event.source!==parent)return;
+          if(event.data.code==='WIDGET_SELECT_MODE')client.setSelectMode(event.data.payload.enabled);
+          if(event.data.code==='fixture-reset')window.dispatchEvent(new Event('pagehide'));
+        });
+        parent.postMessage({code:'ready'},'${new URL(fixtureUrl).origin}');
+      `,
+        resolveDir: repo
+      },
+      bundle: true,
+      outfile: path.join(profile, 'frame.js')
+    })
+  }
   await esbuild.build({
     absWorkingDir: repo,
     entryPoints: ['tests/browser/widget-pinning-fixture.js'],
@@ -95,10 +142,10 @@ const timeout = setTimeout(() => { console.error('Chrome verification timed out'
     }]
   })
   writeFileSync(path.join(profile, 'fixture.html'), '<!doctype html><html><body></body></html>')
-  writeFileSync(path.join(profile, 'fixture-frame.html'), '<!doctype html><html><body style="margin:0"><a href="#activated">Link</a><div style="height:100vh;overflow:auto"><p style="height:400vh">Scrollable text</p></div></body></html>')
+  writeFileSync(path.join(profile, 'fixture-frame.html'), '<!doctype html><html><body style="margin:0"><a href="#activated">Link</a><div style="height:100vh;overflow:auto"><p style="height:400vh">Scrollable text</p></div>' + (fixtureServer ? '<script src="frame.js"></script>' : '') + '</body></html>')
   await cdp('Page.enable')
   await cdp('Emulation.setDeviceMetricsOverride', { width: 800, height: 600, deviceScaleFactor: 1, mobile: false })
-  await cdp('Page.navigate', { url: 'file://' + path.join(profile, 'fixture.html') })
+  await cdp('Page.navigate', { url: fixtureUrl })
   await wait(100)
   const widget = (row, col, w, h, isPinned = false) => ({ appId: 'app', wsKey: 'ws', row, col, desired: { w, h }, pinnedRoute: '', isPinned, createdAt: 1, updatedAt: 1 })
   const data = {
@@ -124,6 +171,10 @@ const timeout = setTimeout(() => { console.error('Chrome verification timed out'
   }
   const select = async key => { await gesture(key, 'start'); await gesture(key, 'end') }
   const hit = key => evaluate(`(()=>{const r=${root(key)}.getBoundingClientRect();return document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)?.tagName})()`)
+  if (process.argv.includes('--gestures')) {
+    await require('./widget-gesture-regressions.cjs')({ cdp, evaluate, wait, root, select })
+    return
+  }
   await evaluate('window.framesBefore=[...document.querySelectorAll(\'iframe\')].map(f=>({frame:f,win:f.contentWindow,doc:f.contentDocument}));fixture.instanceMetadata.connect({instanceKey:\'window\',appId:\'app\',userPk:\'user\'},()=>{});fixture.state.window$(true);fixture.state.system$(true)')
   await wait(120)
   assert.equal(await hit('tiny'), 'IFRAME', 'pin above windows and system')
@@ -309,4 +360,4 @@ const timeout = setTimeout(() => { console.error('Chrome verification timed out'
   assert.equal(await evaluate("document.querySelector('iframe[data-key=\"tall\"]')===null"), true)
   console.log('Chrome: stacking, menus/anchors/fallback, resize (four edges), touch drag/swipe, page clipping/edge flip, reveal lifecycle, iframe continuity and cross-tab metadata passed')
   assert.deepEqual(await evaluate('fixtureErrors'), [])
-})().catch(error => { console.error(error); process.exitCode = 1 }).finally(() => { clearTimeout(timeout); chrome.kill(); chrome.once('exit', () => rmSync(profile, { recursive: true, force: true })) })
+})().catch(error => { console.error(error); process.exitCode = 1 }).finally(() => { clearTimeout(timeout); fixtureServer?.close(); chrome.kill(); chrome.once('exit', () => rmSync(profile, { recursive: true, force: true })) })
