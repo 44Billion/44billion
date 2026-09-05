@@ -1,5 +1,6 @@
 import { tell, ask } from '#helpers/window-message/index.js'
 import { injectEventStore } from '#helpers/window-message/nostrdb-client.js'
+import { createInstanceMetadataClient } from '#helpers/window-message/instance-metadata-client.js'
 import { createAppLocaleClient } from '#helpers/window-message/app-locale-client.js'
 import { createWidgetDragClient } from '#helpers/window-message/widget-drag-client.js'
 import { naddrDecode } from 'libp2r2p/nip19'
@@ -41,6 +42,10 @@ const localeClient = createAppLocaleClient({
   reportError: error => originalConsole.error('window.napp locale listener failed', error)
 })
 
+const instanceMetadataClient = createInstanceMetadataClient({
+  reportError: error => originalConsole.error('window.napp instance metadata listener failed', error)
+})
+
 function injectLocale () {
   Object.assign(window.napp, {
     getLocale: localeClient.getLocale,
@@ -56,6 +61,10 @@ function injectLocale () {
   const p = Promise.withResolvers()
   injectNip07(p.promise) // first thing
   injectLocale()
+  Object.assign(window.napp, {
+    getInstanceMetadata: instanceMetadataClient.getInstanceMetadata,
+    onInstanceMetadataChanged: instanceMetadataClient.onInstanceMetadataChanged
+  })
   injectEventStore(window, p.promise)
   interceptNavigations(p.promise)
   reportRouteChanges(p.promise)
@@ -127,6 +136,7 @@ function tellParentImReady (p) {
       host: location.hostname
     })
     localeClient.setLocale(e.data.payload?.locale)
+    instanceMetadataClient.setMetadata(e.data.payload?.instanceMetadata)
     const bridgeId = e.data.payload?.bridgeId
     if (bridgeId) {
       navigator.serviceWorker?.controller?.postMessage({
@@ -140,9 +150,13 @@ function tellParentImReady (p) {
   }, { once: true })
   browserPort.addEventListener('message', e => {
     if (e.data.code === 'LOCALE_CHANGED') localeClient.setLocale(e.data.payload?.locale)
+    else if (e.data.code === 'INSTANCE_METADATA_CHANGED') instanceMetadataClient.setMetadata(e.data.payload)
     else if (e.data.code === 'WIDGET_SELECT_MODE') {
       widgetDragClient.setSelectMode(e.data.payload?.enabled === true)
     }
+  })
+  window.addEventListener('pagehide', event => {
+    if (!event.persisted) tell(browserPort, { code: 'INSTANCE_DOCUMENT_UNLOADED', payload: null })
   })
   browserPort.start()
   tell(window.parent, readyMsg, { targetOrigin: '*', transfer: [appPagePortForBrowser] })

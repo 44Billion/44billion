@@ -79,6 +79,11 @@ ephemeral and intentionally not persisted; they do not belong here or in
 
 ### Per app instance (`<appKey>`)
 
+The instance metadata API exposes existing `appKey`/`widgetKey` values as
+`instanceKey`. Its runtime flags and listeners are in memory only; see
+[Instance metadata](instance-metadata.md). Closing an iframe does not remove its
+registered instance identity.
+
 - `session_appByKey_<appKey>_id`
 - `session_appByKey_<appKey>_route`
 

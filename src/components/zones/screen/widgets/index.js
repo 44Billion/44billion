@@ -1,3 +1,4 @@
+import { useInstanceMetadataSurface } from '#hooks/use-instance-metadata.js'
 import {
   f,
   useComputed,
@@ -896,6 +897,12 @@ f('widget-window', function () {
     return page === activePage
   }
   const shouldOpenNow = () => tabVisible$() && pageActiveNow()
+  useInstanceMetadataSurface(widgetKey, () => ({
+    element: store.elRef$(),
+    isWidget: true,
+    eligible: store.visibility$() !== 'closed' && pageActiveNow(),
+    contentVisible: !store.showPending$() && !store.launchError$() && store.appIframeSrc$() !== 'about:blank'
+  }))
 
   // Lifecycle: a widget should be open only while the tab is visible and its
   // fitted page is the active page. open <->

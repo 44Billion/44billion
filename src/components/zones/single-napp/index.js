@@ -1,5 +1,6 @@
 import { f, useClosestStore, useSignal, useTask, useComputed, useMemo } from '#f'
 import { useWebStorage } from '#f'
+import { useInitInstanceMetadata, useInstanceMetadataSurface } from '#hooks/use-instance-metadata.js'
 import { appDecode } from 'libp2r2p/nip19'
 import { addressObjToAppId } from '#helpers/app.js'
 import { base62ToBase16 } from 'libp2r2p/base62'
@@ -40,6 +41,7 @@ f('singleNapp', function () {
   // realm, so providers needed by this embedded launcher must be mounted here.
   const storage = useWebStorage(localStorage)
   const tabStorage = useWebStorage(sessionStorage)
+  useInitInstanceMetadata({ storage })
   const { order$: openWorkspaceKeys$ } = useActiveWorkspaceOrder(storage, tabStorage)
   const wsKey = openWorkspaceKeys$()[0]
   if (!wsKey) throw new Error('User n/a')
@@ -116,6 +118,12 @@ f('singleNappLauncher', function () {
     retentionRecorded: false
   }))
   const instanceId = useMemo(() => getRandomId())
+  useInstanceMetadataSurface(() => `single-napp:${appId}:${userPk$()}:${instanceId}`, () => ({
+    element: appIframeRef$(),
+    isWidget: false,
+    eligible: !launchError$(),
+    contentVisible: !showPending$() && appIframeSrc$() !== 'about:blank'
+  }))
 
   useTask(
     async ({ track, cleanup }) => {
@@ -277,6 +285,7 @@ f('singleNappLauncher', function () {
       }
       const cleanupApp = initAppWindow(bridgeState, {
         appKey,
+        wsKey,
         initialRoute: currentRoute,
         appIframeRef$,
         appIframeSrc$,

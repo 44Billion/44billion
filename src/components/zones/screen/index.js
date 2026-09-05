@@ -1,3 +1,4 @@
+import { useInitInstanceMetadata, useInstanceMetadataSurface } from '#hooks/use-instance-metadata.js'
 import { f, useCallback, useComputed, useStore, useGlobalStore, useGlobalSignal, useStateSignal, useSignal, useClosestSignal, useClosestStore, useTask, useMemo } from '#f'
 import AppUpdater from '#services/app-updater/index.js'
 import useInitOrResetScreen from './use-init-or-reset-screen.js'
@@ -135,6 +136,7 @@ f('aScreen', function () {
   useAppRouter()
   const { isSystemRoute$ } = useSystemRouter()
   const widgetsRevealActive$ = useGlobalSignal('widgetsRevealActive', false)
+  useInitInstanceMetadata({ storage, isSystemRoute: isSystemRoute$, revealWidgets: widgetsRevealActive$ })
 
   // Keep the browser tab title in sync with the focused app. System routes
   // always use the default launcher title, and the title only follows an app
@@ -486,6 +488,13 @@ f('appWindow', function () {
   const { requestConfirmation } = useConfirmationDialogStore()
   const appKey = this.props.appKey
   const wsKey = this.props.wsKey
+  useInstanceMetadataSurface(appKey, () => ({
+    element: windowRootRef$(),
+    isWidget: false,
+    eligible: appVisibility$() === 'open',
+    contentVisible: !showPending$() && !launchError$() && !iframeReevalHidden$()
+  }))
+
   const runtime = useMemo(() => ({
     startedGeneration: null,
     appReady: false,

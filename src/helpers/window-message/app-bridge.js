@@ -1,3 +1,5 @@
+import { instanceMetadata } from '#services/instance-metadata/index.js'
+import { connectInstanceMetadataPort } from './instance-metadata-port.js'
 import { toSignal } from '#f'
 import { tell, reply } from './index.js'
 import {
@@ -640,7 +642,16 @@ function createAppPageMessageListener ({
   const appMetadataCache = new Map()
   const appFetchingState = new Map()
 
-  return function (appPagePort) {
+  return function (appPagePort, documentSignal = signal) {
+    const metadata = connectInstanceMetadataPort(instanceMetadata, {
+      record: {
+        instanceKey: appKey, appId, wsKey, userPk: state.userPk,
+        personaId: getAppPersonaSelection({ localStorageArea: localStorage, wsKey, appId }),
+        isWidget: instanceKind === 'widget'
+      },
+      port: appPagePort,
+      signal: documentSignal
+    })
     appPagePort.addEventListener('message', async e => {
       switch (e.data.code) {
         case 'OPEN_APP': {
@@ -1084,7 +1095,7 @@ function createAppPageMessageListener ({
           break
         }
       }
-    }, { signal })
+    }, { signal: documentSignal })
     appPagePort.start()
     const widgetEntry = state.windows.get(appKey)
     if (widgetEntry) widgetEntry.widgetPort = appPagePort
@@ -1093,13 +1104,14 @@ function createAppPageMessageListener ({
       payload: {
         locale: getEffectiveLocale(),
         bridgeId: state.bridgeId,
-        isWidget: instanceKind === 'widget'
+        isWidget: instanceKind === 'widget',
+        instanceMetadata: metadata
       }
     })
     const unsubscribeLocale = subscribeLocaleChanged(locale => {
       tell(appPagePort, { code: 'LOCALE_CHANGED', payload: { locale } })
     })
-    signal.addEventListener('abort', () => {
+    documentSignal.addEventListener('abort', () => {
       unsubscribeLocale()
       const entry = state.windows.get(appKey)
       if (entry?.widgetPort === appPagePort) entry.widgetPort = null
@@ -1188,9 +1200,15 @@ export function initAppWindow (state, {
     ac = new AbortController()
     currentAppPagePort?.close()
     currentAppPagePort = e.ports[0]
-    listen(currentAppPagePort)
+    listen(currentAppPagePort, ac.signal)
     onAppReady?.()
   }
+  const abortDocument = () => {
+    ac?.abort()
+    currentAppPagePort?.close()
+    currentAppPagePort = null
+  }
+  signal.addEventListener('abort', abortDocument, { once: true })
   window.addEventListener('message', onAppReadyMessage, { signal })
 
   const route = withBridgeMarker(
@@ -1201,8 +1219,7 @@ export function initAppWindow (state, {
 
   return function cleanup () {
     window.removeEventListener('message', onAppReadyMessage)
-    ac?.abort()
-    currentAppPagePort?.close()
-    currentAppPagePort = null
+    signal.removeEventListener('abort', abortDocument)
+    abortDocument()
   }
 }
