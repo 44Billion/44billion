@@ -1,3 +1,5 @@
+import { createWidgetEditing } from '#helpers/widget-editing.js'
+import { isInstanceSurfaceDisplayed } from '#helpers/instance-presentation.js'
 import { useInstanceMetadataSurface } from '#hooks/use-instance-metadata.js'
 import {
   f,
@@ -15,6 +17,9 @@ import { useActiveWorkspaceOrder } from '#hooks/use-active-workspace-order.js'
 import { tell } from '#helpers/window-message/index.js'
 import '#shared/pending-indicator.js'
 import '#shared/icons/icon-close.js'
+import '#shared/icons/icon-pinned.js'
+import '#shared/icons/icon-dots.js'
+import '#shared/menu.js'
 import { APP_PENDING_INDICATOR_DELAY_MS, initAppWindow } from '#helpers/window-message/app-bridge.js'
 import { ensureAppBridgeState, registerAppBridgeWindow } from '#helpers/window-message/app-bridge-registry.js'
 import { allocateAppSubdomain } from '#helpers/subdomain-mapping.js'
@@ -32,6 +37,7 @@ import {
   computeEffectiveGrid,
   fitWidgets,
   removeWidget,
+  setWidgetPinned,
   readWidgetSessionValue,
   resizeWidgetFromNode,
   shouldApplyVirtualWidth,
@@ -86,6 +92,7 @@ f('widgets-layer', function () {
   const dragDraft$ = useGlobalSignal('widgetDragDraft', null)
   const dragEdge$ = useGlobalSignal('widgetDragEdge', null)
   const widgetFresh$ = useGlobalSignal('widgetFresh', null)
+  const widgetEditReveal$ = useGlobalSignal('widgetEditReveal', null)
   const widgetDragging$ = useGlobalSignal('widgetDragging', false)
   const widgetDragMoved$ = useGlobalSignal('widgetDragMoved', false)
   const tabVisible$ = useGlobalSignal('widgetsTabVisible', document.visibilityState === 'visible')
@@ -221,6 +228,15 @@ f('widgets-layer', function () {
   // the active workspace no longer has widgets (e.g. the last one is removed).
   // The pending creation request keeps the mode alive until the widget exists.
   const widgetsRevealActive$ = useGlobalSignal('widgetsRevealActive', false)
+  useTask(({ track }) => {
+    const session = track(() => widgetEditReveal$())
+    const wsKey = track(() => activeWsKey$())
+    const widgets = track(() => wsWidgets$())
+    const visible = track(() => tabVisible$())
+    if (session && (!visible || session.wsKey !== wsKey || !widgets.some(widget => widget.widgetKey === session.widgetKey))) {
+      widgetEditReveal$(null)
+    }
+  })
   const revealWorkspaceKey = useMemo(() => ({ key: null }))
   useTask(({ track }) => {
     const active = track(() => widgetsRevealActive$())
@@ -441,7 +457,6 @@ f('widgets-layer', function () {
         .widgets-layer-scope#widgets-layer {
           position: absolute;
           inset: 0;
-          z-index: 1;
           display: flex;
           flex-direction: column;
           overflow: hidden;
@@ -488,6 +503,8 @@ f('widgets-layer', function () {
           pointer-events: auto;
         }
         .widgets-layer-scope#widgets-layer #widgets-dots {
+          position: relative;
+          z-index: 1;
           flex: 0 0 ${GAP}px;
           height: ${GAP}px;
           display: flex;
@@ -517,7 +534,7 @@ f('widgets-layer', function () {
           bottom: 0;
           width: ${DRAG_EDGE_ZONE}px;
           pointer-events: none;
-          z-index: 2000;
+          z-index: 6;
           opacity: 0;
           transition: opacity .15s ease;
           touch-action: none;
@@ -644,6 +661,7 @@ f('widget-window', function () {
   const dragDraft$ = useGlobalSignal('widgetDragDraft', null)
   const dragEdge$ = useGlobalSignal('widgetDragEdge', null)
   const widgetFresh$ = useGlobalSignal('widgetFresh', null)
+  const widgetEditReveal$ = useGlobalSignal('widgetEditReveal', null)
   const widgetDragging$ = useGlobalSignal('widgetDragging', false)
   const widgetDragMoved$ = useGlobalSignal('widgetDragMoved', false)
   const tabVisible$ = useGlobalSignal('widgetsTabVisible', document.visibilityState === 'visible')
@@ -664,6 +682,7 @@ f('widget-window', function () {
     },
     minimizedAt$: null,
     selected$: false,
+    menuOpen$: false,
     freshUntil$: 0,
     dragging$: false,
     elRef$: null,
@@ -687,7 +706,6 @@ f('widget-window', function () {
     bridgeState: null,
     ac: null,
     unregister: null,
-    selectionTimer: null,
     freshTimer: null
   }))
 
@@ -723,17 +741,19 @@ f('widget-window', function () {
     })
     if (port) tell(port, { code: 'WIDGET_SELECT_MODE', payload: { enabled } })
   }
-  const deselect = () => {
-    clearTimeout(runtime.selectionTimer)
-    runtime.selectionTimer = null
-    if (store.selected$()) {
-      store.selected$(false)
+  const editing = useMemo(() => createWidgetEditing({
+    widgetKey,
+    readReveal: widgetEditReveal$,
+    writeReveal: widgetEditReveal$,
+    duration: WIDGET_SELECTED_WINDOW_MS,
+    onSelected: enabled => {
+      store.selected$(enabled)
       syncSelectMode()
-    }
-  }
+    },
+    onMenu: store.menuOpen$
+  }))
+  const deselect = editing.deselect
   const startSelectionTimer = () => {
-    clearTimeout(runtime.selectionTimer)
-    store.selected$(true)
     // The first interaction ends the fresh (post-creation) window: once the
     // solid selection border takes over, the animated border must not come
     // back when selection expires or is dismissed.
@@ -743,12 +763,7 @@ f('widget-window', function () {
       store.freshUntil$(0)
       widgetFresh$(null)
     }
-    syncSelectMode()
-    runtime.selectionTimer = setTimeout(() => {
-      runtime.selectionTimer = null
-      store.selected$(false)
-      syncSelectMode()
-    }, WIDGET_SELECTED_WINDOW_MS)
+    editing.select()
   }
 
   // The injected app-page listener reports pointer coordinates relative to
@@ -804,6 +819,7 @@ f('widget-window', function () {
     const endActiveGesture = reason => {
       if (drag.active) endDragFromPointer()
       if (resize.active) forceEndResize(reason)
+      deselect()
     }
     const onVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
@@ -828,7 +844,13 @@ f('widget-window', function () {
       deselect()
     }
     const onKeyDown = event => {
-      if (event.key === 'Escape') deselect()
+      if (event.key !== 'Escape') return
+      if (store.menuOpen$()) editing.setMenuOpen(false)
+      else {
+        if (drag.active) endDragFromPointer()
+        if (resize.active) forceEndResize('escape')
+        deselect()
+      }
     }
     window.addEventListener('pointerdown', onPointerDown, true)
     window.addEventListener('keydown', onKeyDown)
@@ -1010,6 +1032,7 @@ f('widget-window', function () {
           appKey: widgetKey,
           onClose () {
             if (drag.active) endDragFromPointer()
+            deselect()
             if (store.visibility$() === 'open') setVisibility('minimized')
           },
           onWidgetDrag ({ op, x, y, screenX, screenY }) {
@@ -1152,6 +1175,19 @@ f('widget-window', function () {
   useTask(({ cleanup }) => {
     cleanup(() => {
       if (resize.active) forceEndResize('unmount', { apply: false })
+      if (drag.active) {
+        drag.active = false
+        stopDragAutoFlip()
+        if (dragDraft$()?.widgetKey === widgetKey) {
+          dragDraft$(null)
+          widgetDragging$(false)
+          widgetDragMoved$(false)
+        }
+      }
+      clearTimeout(longPressTimer.id)
+      window.removeEventListener('pointermove', onClosedPointerMove, true)
+      window.removeEventListener('pointerup', onClosedPointerEnd, true)
+      deselect()
       runtime.ac?.abort()
       runtime.unregister?.()
       runtime.appCleanup?.()
@@ -1187,12 +1223,83 @@ f('widget-window', function () {
   const removeWidgetNow = () => {
     const record = store.record$()
     if (!record) return
+    deselect()
     removeWidget({
       localStorageArea: localStorage,
       sessionStorageArea: sessionStorage,
       widgetKey
     })
   }
+
+  const menuAnchor = useMemo(() => `--widget-actions-${Math.random().toString(36).slice(2)}`)
+  const pinIconProps = useStore({
+    size: '16px',
+    weight$: () => store.record$()?.isPinned === true ? 'fill' : 'regular',
+    outlineColor: cssVars.colors.bg,
+    outlineWidth: 1
+  })
+  const actionIcon = action => action.id === 'pin'
+    ? this.h`<icon-pinned props=${pinIconProps} />`
+    : this.h`<icon-close props=${{ size: '16px', strokeWidth: 3, outlineColor: cssVars.colors.bg, outlineWidth: 1 }} />`
+  // Both presentations consume the same actions; future actions belong here.
+  const actions = () => [
+    {
+      id: 'pin',
+      label: t(store.record$()?.isPinned === true ? 'Unpin Widget' : 'Pin Widget'),
+      run: () => {
+        if (!store.record$()) return
+        setWidgetPinned({ localStorageArea: localStorage, widgetKey, isPinned: store.record$().isPinned !== true })
+        startSelectionTimer()
+      }
+    },
+    { id: 'remove', label: t('Remove Widget'), run: removeWidgetNow }
+  ]
+  const stopControlPointer = event => event.stopPropagation()
+  const menuProps = useStore({
+    isOpen$: store.menuOpen$,
+    anchorRef$: store.elRef$,
+    constrainToViewport: true,
+    close: () => editing.setMenuOpen(false),
+    style$: () => `& {
+      position: fixed;
+      ${CSS.supports('position-anchor', '--test')
+? `
+        position-anchor: ${menuAnchor};
+        position-area: bottom span-left;
+        position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+      `
+: ''}
+      margin: 6px;
+      max-width: calc(100vw - 24px);
+      max-height: calc(100dvh - 24px);
+      overflow: auto;
+      background-color: ${cssVars.colors.bg2};
+      color: ${cssVars.colors.fg2};
+      border-radius: 8px;
+      box-shadow: 0 4px 12px ${cssVars.colors.shadowStrong};
+    }
+    &:not(:popover-open) { display: none; }
+    & .widget-action-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      padding: 12px;
+      text-align: start;
+      background: transparent;
+      color: inherit;
+      border: 0;
+      cursor: pointer;
+    }
+    & .widget-action-item:hover { background-color: ${cssVars.colors.bg3}; }`,
+    render: () => this.h`<div onpointerdown=${stopControlPointer}>
+      ${actions().map(action => this.h`<button
+        type='button'
+        class='widget-action-item'
+        onclick=${() => { action.run(); editing.setMenuOpen(false) }}
+      >${actionIcon(action)}<span>${action.label}</span></button>`)}
+    </div>`
+  })
 
   // Drag to move the widget.
   const drag = useMemo(() => ({
@@ -1276,12 +1383,18 @@ f('widget-window', function () {
       widgetDragLog('[widget-drag] begin skipped: no placement', { widgetKey })
       return
     }
+    const screen = store.elRef$()?.closest('#screen')
+    const isObstructed = [
+      screen?.querySelector('#system-views'),
+      ...(screen?.querySelectorAll('app-window .scope_khjha3.open') ?? [])
+    ].some(element => isInstanceSurfaceDisplayed(element, window))
+    editing.begin({ wsKey: wsKey$(), isPinned: store.record$()?.isPinned === true, isObstructed })
     drag.active = true
     drag.startX = x
     drag.startY = y
     drag.startRow = placement.row
     drag.startCol = placement.col
-    clearTimeout(runtime.selectionTimer)
+    editing.pause()
     dragDraft$({
       widgetKey,
       col: placement.col,
@@ -1430,7 +1543,7 @@ f('widget-window', function () {
     resize.startCol = record.col
     resize.startW = Math.max(1, Math.floor(Number(record.desired?.w) || 1))
     resize.startH = Math.max(1, Math.floor(Number(record.desired?.h) || 1))
-    clearTimeout(runtime.selectionTimer)
+    editing.pause()
     try {
       if (root?.setPointerCapture) root.setPointerCapture(event.pointerId)
     } catch (error) {
@@ -1550,6 +1663,35 @@ f('widget-window', function () {
     : roundedClip
   const srcIsBlank = store.appIframeSrc$() === 'about:blank'
   const showNodes = store.selected$() && !store.dragging$()
+  const controls = []
+  if (showNodes) {
+    if (placement.h === 1) {
+      controls.push(this.h`<button
+        type='button'
+        class=${{ 'widget-remove-button': true, 'widget-remove-center-x': placement.w === 1, 'widget-remove-center-y': true }}
+        onpointerdown=${stopControlPointer}
+        onclick=${() => editing.setMenuOpen(!store.menuOpen$())}
+        aria-label=${t('Widget Options')}
+        aria-haspopup='dialog'
+        aria-expanded=${String(store.menuOpen$())}
+      ><icon-dots props=${{ size: '16px', strokeWidth: 3, outlineColor: cssVars.colors.bg, outlineWidth: 1 }} /></button>`)
+    } else {
+      for (const action of actions()) {
+        controls.push(this.h`<button
+          type='button'
+          class=${{
+            'widget-remove-button': true,
+            'widget-pin-button': action.id === 'pin',
+            'widget-remove-center-x': placement.w === 1
+          }}
+          onpointerdown=${stopControlPointer}
+          onclick=${action.run}
+          aria-label=${action.label}
+          aria-pressed=${action.id === 'pin' ? String(store.record$()?.isPinned === true) : null}
+        >${actionIcon(action)}</button>`)
+      }
+    }
+  }
 
   return this.h`
     <div
@@ -1559,9 +1701,11 @@ f('widget-window', function () {
         'widget-window-minimized': visibility === 'minimized',
         'widget-window-closed': isClosed,
         'widget-window-selected': showSolidBorder,
+        'widget-window-pinned': store.record$()?.isPinned === true && pageActiveNow(),
+        'widget-window-dragging': store.dragging$(),
         'widget-window-fresh': isFresh && !showSolidBorder
       }}
-      style=${store.dragging$() ? `${style}z-index:1000;` : style}
+      style=${`${style}anchor-name:${menuAnchor};`}
       ref=${store.elRef$}
       onpointerdown=${onClosedPointerDown}
     >
@@ -1569,6 +1713,7 @@ f('widget-window', function () {
         .widget-window-root {
           position: absolute;
           box-sizing: border-box;
+          z-index: 1;
           overflow: hidden;
           cursor: default;
         }
@@ -1576,6 +1721,8 @@ f('widget-window', function () {
           border: 1px dashed ${cssVars.colors.fg3};
           border-radius: 10px;
         }
+        .widget-window-root.widget-window-pinned { z-index: 4; }
+        .widget-window-root.widget-window-dragging { z-index: 5; }
         .widget-window-root.widget-window-selected {
           /* Keep the iframe clipped so scaled content stays crisp; the clip
              margin lets the resize nodes protrude over the border. */
@@ -1638,6 +1785,10 @@ f('widget-window', function () {
           box-shadow: 0 0 0 1px ${cssVars.colors.bg};
           cursor: pointer;
           z-index: 4;
+        }
+        .widget-window-root .widget-pin-button {
+          top: auto;
+          bottom: 6px;
         }
         .widget-window-root .widget-remove-button.widget-remove-center-x {
           right: auto;
@@ -1867,28 +2018,8 @@ f('widget-window', function () {
           </svg>
         `
         : ''}
-      ${store.selected$() && !store.dragging$()
-        ? this.h`
-          <button
-            class=${{
-              'widget-remove-button': true,
-              'widget-remove-center-x': placement.w === 1,
-              'widget-remove-center-y': placement.h === 1
-            }}
-            onclick=${removeWidgetNow}
-            aria-label=${t('Remove Widget')}
-          >
-            <icon-close
-              props=${{
-                size: '16px',
-                strokeWidth: 3,
-                outlineColor: cssVars.colors.bg,
-                outlineWidth: 1
-              }}
-            />
-          </button>
-        `
-        : ''}
+      ${controls}
+      <a-menu props=${menuProps} />
       ${(showNodes ? ['top', 'right', 'bottom', 'left'] : []).map(node => this.h({ key: node })`
         <button
           class=${`widget-resize-node ${node}`}
@@ -1911,6 +2042,21 @@ function getLocales () {
       en: 'Remove Widget', fr: 'Retirer le widget', it: 'Rimuovi widget', de: 'Widget entfernen',
       es: 'Quitar widget', 'pt-BR': 'Remover Widget', ru: 'Удалить виджет', 'zh-CN': '移除小组件',
       'zh-TW': '移除小工具', ja: 'ウィジェットを削除', ko: '위젯 제거'
+    },
+    'Pin Widget': {
+      en: 'Pin Widget', fr: 'Épingler le widget', it: 'Fissa widget', de: 'Widget anheften',
+      es: 'Fijar widget', 'pt-BR': 'Fixar Widget', ru: 'Закрепить виджет', 'zh-CN': '置顶小组件',
+      'zh-TW': '置頂小工具', ja: 'ウィジェットを固定', ko: '위젯 고정'
+    },
+    'Unpin Widget': {
+      en: 'Unpin Widget', fr: 'Détacher le widget', it: 'Sblocca widget', de: 'Widget lösen',
+      es: 'Desfijar widget', 'pt-BR': 'Desafixar Widget', ru: 'Открепить виджет', 'zh-CN': '取消置顶小组件',
+      'zh-TW': '取消置頂小工具', ja: 'ウィジェットの固定を解除', ko: '위젯 고정 해제'
+    },
+    'Widget Options': {
+      en: 'Widget Options', fr: 'Options du widget', it: 'Opzioni widget', de: 'Widget-Optionen',
+      es: 'Opciones del widget', 'pt-BR': 'Opções do Widget', ru: 'Параметры виджета', 'zh-CN': '小组件选项',
+      'zh-TW': '小工具選項', ja: 'ウィジェットのオプション', ko: '위젯 옵션'
     },
     'Opening app...': {
       en: 'Opening app...', fr: 'Ouverture de l’application…', it: 'Apertura app…', de: 'App wird geöffnet…',

@@ -101,6 +101,7 @@ export function createWidgetRecord ({
   col = 0,
   desired = WIDGET_DEFAULT_DESIRED,
   pinnedRoute = '',
+  isPinned = false,
   now = Date.now()
 }) {
   if (typeof appId !== 'string' || !appId) throw new Error('Widget requires an appId')
@@ -113,6 +114,7 @@ export function createWidgetRecord ({
     col: Math.max(0, Math.floor(Number(col) || 0)),
     desired: safeDesired,
     pinnedRoute: typeof pinnedRoute === 'string' ? pinnedRoute : '',
+    isPinned: isPinned === true,
     createdAt: now,
     updatedAt: now
   }
@@ -126,6 +128,7 @@ export function addWidget ({
   col = 0,
   desired = WIDGET_DEFAULT_DESIRED,
   pinnedRoute = '',
+  isPinned = false,
   widgetKey = getRandomId(),
   now = Date.now()
 }) {
@@ -137,6 +140,7 @@ export function addWidget ({
     col,
     desired,
     pinnedRoute,
+    isPinned,
     now
   })
   writeWidgets(localStorageArea, widgets)
@@ -155,6 +159,19 @@ export function updateWidgetPosition ({
   if (!widget) throw new Error(`Widget not found: ${widgetKey}`)
   widget.row = Math.max(0, Math.floor(Number(row) || 0))
   widget.col = Math.max(0, Math.floor(Number(col) || 0))
+  widget.updatedAt = now
+  writeWidgets(localStorageArea, widgets)
+  return widget
+}
+
+// Visual pinning is independent of the route restored when the app unloads.
+export function setWidgetPinned ({ localStorageArea, widgetKey, isPinned, now = Date.now() }) {
+  const widgets = readWidgets(localStorageArea)
+  const widget = widgets[widgetKey]
+  if (!widget) throw new Error(`Widget not found: ${widgetKey}`)
+  const next = isPinned === true
+  if ((widget.isPinned === true) === next) return widget
+  widget.isPinned = next
   widget.updatedAt = now
   writeWidgets(localStorageArea, widgets)
   return widget

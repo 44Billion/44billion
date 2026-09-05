@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createInstanceMetadataClient } from '../../src/helpers/window-message/instance-metadata-client.js'
 
-const metadata = extra => ({ instanceKey: 'self', isWidget: true, isLoaded: true, isVisible: false, otherInstances: [], ...extra })
+const metadata = extra => ({ instanceKey: 'self', isWidget: true, isPinned: false, isLoaded: true, isVisible: false, otherInstances: [], ...extra })
 const tick = () => new Promise(resolve => queueMicrotask(resolve))
 
 test('getter waits for handshake and returns the latest independent snapshot on every call', async () => {
@@ -11,7 +11,7 @@ test('getter waits for handshake and returns the latest independent snapshot on 
   const initial = client.getInstanceMetadata().then(value => { resolved = true; return value })
   await tick()
   assert.equal(resolved, false)
-  const source = metadata({ otherInstances: [{ instanceKey: 'other', isWidget: false, isLoaded: false, isVisible: false }] })
+  const source = metadata({ otherInstances: [{ instanceKey: 'other', isWidget: false, isPinned: false, isLoaded: false, isVisible: false }] })
   client.setMetadata(source)
   source.otherInstances[0].instanceKey = 'mutated-source'
   const first = await initial

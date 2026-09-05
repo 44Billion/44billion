@@ -127,7 +127,8 @@ function auditWidgetsAndPersonas (local, session, plan, issue, setLocal, setSess
     installedAppsByWs.get(wsKey)?.has(appId) === true
 
   // Widgets: drop invalid records, records of removed/missing workspaces and
-  // records whose app is no longer installed in that workspace.
+  // records whose app is no longer installed in that workspace. Preserve whole
+  // valid records, including optional isPinned; legacy records omit that flag.
   const widgetsRaw = getValue(local, 'local_widgets')
   if (widgetsRaw !== undefined && widgetsRaw !== null) {
     const widgets = toPlainObject(widgetsRaw) ?? {}

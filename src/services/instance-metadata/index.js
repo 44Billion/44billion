@@ -14,10 +14,10 @@ export function readInstanceCatalog (read) {
       ...array(read(`session_workspaceByKey_${wsKey}_unpinnedAppIds`)),
       ...Object.keys(read(`session_workspaceByKey_${wsKey}_unpinnedCoreAppIdsObj`) ?? {})
     ])
-    const add = (instanceKey, appId, isWidget) => {
+    const add = (instanceKey, appId, isWidget, isPinned = false) => {
       const selection = selections[wsKey]?.[appId]
       records.push({
-        instanceKey, appId, wsKey, userPk, isWidget,
+        instanceKey, appId, wsKey, userPk, isWidget, isPinned,
         personaId: typeof selection === 'string' && selection ? selection : null
       })
     }
@@ -27,7 +27,7 @@ export function readInstanceCatalog (read) {
       }
     }
     for (const [key, widget] of Object.entries(widgets)) {
-      if (widget?.wsKey === wsKey && appIds.has(widget.appId)) add(key, widget.appId, true)
+      if (widget?.wsKey === wsKey && appIds.has(widget.appId)) add(key, widget.appId, true, widget.isPinned === true)
     }
   }
   return records
@@ -50,11 +50,13 @@ export function createInstanceMetadataService ({ reportError = console.error } =
     const isLoaded = documents.has(record.instanceKey)
     const surface = presentation.get(record.instanceKey)
     const windowsCoverWidgets = !environment.revealWidgets && hasDisplayedWindow
-    const allowed = environment.tabVisible && !environment.systemRoute &&
-      (record.isWidget ? !windowsCoverWidgets : !environment.revealWidgets)
+    const isPinned = record.isWidget === true && record.isPinned === true
+    const allowed = environment.tabVisible && (isPinned || (!environment.systemRoute &&
+      (record.isWidget ? !windowsCoverWidgets : !environment.revealWidgets)))
     return {
       instanceKey: record.instanceKey,
       isWidget: record.isWidget === true,
+      isPinned,
       isLoaded,
       isVisible: !!(isLoaded && allowed && surface?.isDisplayed && surface.contentVisible)
     }

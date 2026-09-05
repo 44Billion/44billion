@@ -55,7 +55,11 @@ ephemeral and intentionally not persisted; they do not belong here or in
   app instances and removing the tombstone; leftovers are garbage-collected
   after 24 hours.
 - `local_widgets` — widgets per workspace:
-  `{ [widgetKey]: { appId, wsKey, row, col, desired: { w, h }, pinnedRoute, createdAt, updatedAt } }`.
+  `{ [widgetKey]: { appId, wsKey, row, col, desired: { w, h }, pinnedRoute, isPinned, createdAt, updatedAt } }`.
+  `isPinned` is a boolean (missing means `false` for older records). It elevates
+  the same widget above windows and system screens only on its active page and
+  workspace. It is independent of `pinnedRoute`, survives layout normalization
+  and storage repairs, and is shared between tabs through this existing key.
   `widgetKey` is a random instance id; `row`/`col` are the top-left grid cell
   (col is absolute across pages; page = `floor(col / viewportCols)`);
   `desired` is the preferred size in cells (minimum 1x1); `pinnedRoute` is the

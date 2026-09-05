@@ -5,6 +5,55 @@ import { createInstanceMetadataService, readInstanceCatalog } from '../../src/se
 const record = (instanceKey, extra = {}) => ({ instanceKey, appId: 'app', wsKey: 'ws', userPk: 'user', personaId: null, isWidget: false, ...extra })
 const tick = () => new Promise(resolve => queueMicrotask(resolve))
 
+test('visual pins notify self and peers and remain subject to loading, page geometry and tab visibility', async () => {
+  const service = createInstanceMetadataService()
+  const window = record('window', { isPinned: true }) // toolbar pin must not leak
+  const widget = record('widget', { isWidget: true })
+  const seen = []
+  const peers = []
+  service.setCatalog([window, widget])
+  service.connect(window, value => peers.push(value))
+  const document = service.connect(widget, value => seen.push(value))
+  service.setPresentation(new Map([
+    ['window', { isWidget: false, isDisplayed: true, contentVisible: true }],
+    ['widget', { isWidget: true, isDisplayed: true, contentVisible: true }]
+  ]))
+  service.setEnvironment({ systemRoute: true })
+  await tick()
+  assert.equal(service.getMetadata('widget').isVisible, false)
+  assert.equal(service.getMetadata('window').isPinned, false)
+  widget.isPinned = true
+  service.setCatalog([window, widget])
+  await tick()
+  assert.equal(seen.at(-1).isPinned, true)
+  assert.equal(seen.at(-1).isVisible, true)
+  assert.equal(peers.at(-1).otherInstances[0].isPinned, true)
+  service.setEnvironment({ tabVisible: false })
+  assert.equal(service.getMetadata('widget').isVisible, false)
+  service.setEnvironment({ tabVisible: true })
+  service.setPresentation(new Map([['widget', { isWidget: true, isDisplayed: false, contentVisible: true }]]))
+  assert.equal(service.getMetadata('widget').isVisible, false)
+  service.setPresentation(new Map([['widget', { isWidget: true, isDisplayed: true, contentVisible: true }]]))
+  document.disconnect()
+  assert.equal(service.getMetadata('widget').isVisible, false)
+  assert.equal(service.getMetadata('widget').isPinned, true, 'unloaded retains its persisted preference')
+})
+
+test('catalog treats legacy and window pins as false and reads shared widget pins', () => {
+  const data = {
+    session_workspaceKeys: ['ws'],
+    session_workspaceByKey_ws_pinnedAppIds: ['app'],
+    session_workspaceByKey_ws_appById_app_appKeys: ['window'],
+    local_widgets: {
+      legacy: { wsKey: 'ws', appId: 'app' },
+      pinned: { wsKey: 'ws', appId: 'app', isPinned: true }
+    }
+  }
+  assert.deepEqual(readInstanceCatalog(key => data[key]).map(({ instanceKey, isPinned }) => ({ instanceKey, isPinned })), [
+    { instanceKey: 'window', isPinned: false }, { instanceKey: 'legacy', isPinned: false }, { instanceKey: 'pinned', isPinned: true }
+  ])
+})
+
 test('catalog includes closed windows and widgets across workspaces using their existing keys', () => {
   const data = {
     session_workspaceKeys: ['ws', 'other'],
@@ -36,8 +85,8 @@ test('peers require the same app and active identity, exclude self and are sorte
     record('other-persona', { personaId: 'other-persona' })
   ])
   assert.deepEqual(service.getMetadata('self').otherInstances, [
-    { instanceKey: 'a', isWidget: true, isLoaded: false, isVisible: false },
-    { instanceKey: 'z', isWidget: false, isLoaded: false, isVisible: false }
+    { instanceKey: 'a', isWidget: true, isPinned: false, isLoaded: false, isVisible: false },
+    { instanceKey: 'z', isWidget: false, isPinned: false, isLoaded: false, isVisible: false }
   ])
   assert.deepEqual(service.getMetadata('persona-a').otherInstances.map(r => r.instanceKey), ['persona-b'])
 })

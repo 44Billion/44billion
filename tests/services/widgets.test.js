@@ -26,6 +26,7 @@ const {
   resizeWidgetFromNode,
   shouldApplyVirtualWidth,
   setWidgetPinnedRoute,
+  setWidgetPinned,
   updateWidgetPosition,
   widgetSessionKey
 } = await import('#services/widgets/index.js')
@@ -92,9 +93,32 @@ describe('widgets service', () => {
       col: 2,
       desired: { w: 5, h: 5 },
       pinnedRoute: '/x',
+      isPinned: false,
       createdAt: 100,
       updatedAt: 100
     })
+  })
+
+  it('toggles visual pin on legacy records without changing identity, geometry, route or session', () => {
+    const { local, session } = widgetState()
+    const before = JSON.parse(local.getItem('local_widgets')).w1
+    const sessionBefore = [...session._data]
+    setWidgetPinned({ localStorageArea: local, widgetKey: 'w1', isPinned: false, now: 100 })
+    assert.deepEqual(JSON.parse(local.getItem('local_widgets')).w1, before, 'missing pin is false; unchanged writes are avoided')
+    setWidgetPinned({ localStorageArea: local, widgetKey: 'w1', isPinned: true, now: 200 })
+    assert.deepEqual(JSON.parse(local.getItem('local_widgets')).w1, { ...before, isPinned: true, updatedAt: 200 })
+    setWidgetPinned({ localStorageArea: local, widgetKey: 'w1', isPinned: true, now: 300 })
+    assert.equal(JSON.parse(local.getItem('local_widgets')).w1.updatedAt, 200)
+    const removed = normalizeWidgets({ localStorageArea: local, workspaceKeys: ['ws1'], isAppInstalledInWorkspace: () => true })
+    assert.deepEqual(removed, [])
+    assert.equal(JSON.parse(local.getItem('local_widgets')).w1.isPinned, true)
+    applyWidgetPositions({ localStorageArea: local, positions: [{ widgetKey: 'w1', row: 1, col: 2 }] })
+    applyWidgetResize({ localStorageArea: local, widgetKey: 'w1', row: 1, col: 2, desired: { w: 1, h: 1 } })
+    setWidgetPinnedRoute({ localStorageArea: local, widgetKey: 'w1', pinnedRoute: '/new' })
+    assert.equal(JSON.parse(local.getItem('local_widgets')).w1.isPinned, true)
+    setWidgetPinned({ localStorageArea: local, widgetKey: 'w1', isPinned: false, now: 400 })
+    assert.equal(JSON.parse(local.getItem('local_widgets')).w1.isPinned, false)
+    assert.deepEqual([...session._data], sessionBefore)
   })
 
   it('updates position and pinned route', () => {

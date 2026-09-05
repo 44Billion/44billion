@@ -59,6 +59,14 @@ function validState (overrides = {}) {
 }
 
 describe('storage audit', () => {
+  it('preserves visual pins and legacy records when repairing the widget catalog', () => {
+    const legacy = { appId: 'app1', wsKey: 'ws1', row: 0, col: 0, desired: { w: 1, h: 1 }, pinnedRoute: '/route' }
+    const pinned = { ...legacy, isPinned: true }
+    const state = validState({ local: { local_widgets: { legacy, pinned, invalid: { ...pinned, wsKey: 'missing' } } } })
+    const result = auditPersistedState(state.local, state.session)
+    assert.deepEqual(result.plan.local.local_widgets, { legacy, pinned })
+  })
+
   it('reports a valid state with no repair actions', () => {
     const state = validState()
     const result = auditPersistedState(state.local, state.session)
@@ -463,7 +471,7 @@ describe('storage audit', () => {
         local_personas: {
           p1: { userPks: ['user'], createdAt: 1, updatedAt: 1 },
           p2: { userPks: [], createdAt: 1, updatedAt: 1 },
-          '__default__': { userPks: ['user'], createdAt: 1, updatedAt: 1 }
+          __default__: { userPks: ['user'], createdAt: 1, updatedAt: 1 }
         },
         local_appPersonaSelections: {
           ws1: { app1: 'p1', app2: 'p2', app3: 'missing', app4: '__default__' }

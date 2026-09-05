@@ -38,7 +38,7 @@ export const GLOBAL_LOCAL_KEYS = [
   'local_stickySessionClaims',
   'local_stickySessionSeenIds',
   'local_stickySessionDeletions',
-  'local_widgets',
+  'local_widgets', // Records include optional isPinned (legacy default: false).
   'local_personas',
   'local_appPersonaSelections'
 ]

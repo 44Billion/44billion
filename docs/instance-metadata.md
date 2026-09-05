@@ -20,12 +20,14 @@ Both methods deliver objects with this shape:
 {
   "instanceKey": "current-instance-key",
   "isWidget": true,
+  "isPinned": true,
   "isLoaded": true,
   "isVisible": true,
   "otherInstances": [
     {
       "instanceKey": "another-instance-key",
       "isWidget": false,
+      "isPinned": false,
       "isLoaded": true,
       "isVisible": false
     }
@@ -50,7 +52,7 @@ still distinct from that user without a persona. Different personas with
 overlapping public keys are not equivalent.
 
 The current instance is excluded. Peers are sorted by `instanceKey`, and each
-contains only `instanceKey`, `isWidget`, `isLoaded` and `isVisible`.
+contains only `instanceKey`, `isWidget`, `isPinned`, `isLoaded` and `isVisible`.
 
 Standalone embedded single-napp launchers have temporary runtime keys rather
 than registered persistent instances. They expose their existing key for the
@@ -67,7 +69,7 @@ aggregate running instances from other browser tabs or embedded launcher realms.
   does not promise that the app finished loading all its resources or data.
   Minimized documents remain loaded until actually unloaded.
 - `isVisible` means loaded content is displayed by the launcher. It is false
-  when the browser tab is hidden, a system route covers the screen, the document
+  when the browser tab is hidden, a system route covers the instance, the document
   is unloaded, or its content is behind the launcher's loading/error overlay.
 - Windows follow the actual CSS layout, including single/multi-window mode,
   ordering, viewport dimensions, clipping and widget reveal mode. An `open`
@@ -75,6 +77,15 @@ aggregate running instances from other browser tabs or embedded launcher realms.
 - Widgets must be on the active widget page and not covered by a displayed
   window. A loading window also covers widgets. Revealing widgets hides windows
   and removes this obstruction.
+- `isPinned` is the widget's persisted visual pin preference, including when
+  unloaded or off-page. Regular windows always report `false`; toolbar app
+  pinning is unrelated. Pinning preserves the iframe and `instanceKey`.
+  Active pinned widgets appear above windows and system screens, below menus
+  and dialogs. They still require loaded content, visible geometry and a visible
+  browser tab to report `isVisible: true`.
+- Editing an obstructed pinned widget temporarily reveals the grid, hiding
+  windows and system screens until selection ends. Visibility follows those
+  displayed layers without navigating or unloading the covered documents.
 
 These flags describe launcher presentation, not occlusion by operating-system
 windows. Changes are batched; the API is not a frame-by-frame visibility trace.
@@ -93,6 +104,7 @@ without preventing delivery to the remaining listeners. Repeated registrations
 of the same function can be cancelled independently.
 
 Creating/removing instances, changing identity, loading/unloading documents and
-changing presentation can produce updates. The bridge subscription belongs to
+changing presentation or a widget's pin can produce updates, including in
+related instances. The bridge subscription belongs to
 the current document and is removed when it unloads or is replaced. No additional
 persistent keys, stores or migrations are introduced.

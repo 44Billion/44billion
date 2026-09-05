@@ -52,6 +52,14 @@ function storageMock (entries = {}) {
 }
 
 describe('storage repair plan', () => {
+  it('writes repaired widget records without dropping visual pins or adding flags to legacy records', async () => {
+    const local = storageMock()
+    const legacy = { appId: 'app', wsKey: 'ws', row: 0, col: 0, desired: { w: 1, h: 1 }, pinnedRoute: '/route' }
+    const records = { legacy, pinned: { ...legacy, isPinned: true } }
+    await applyStorageRepairPlan({ local: { local_widgets: records } }, { localStorageArea: local, sessionStorageArea: storageMock() })
+    assert.deepEqual(JSON.parse(local.getItem('local_widgets')), records)
+  })
+
   it('applies local/session writes and the explicit cleanup actions', async () => {
     const ownerPubkey = 'ab'.repeat(32)
     const local = storageMock({

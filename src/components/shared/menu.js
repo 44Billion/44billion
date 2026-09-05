@@ -26,7 +26,7 @@ f('aMenu', function () {
   }))
 
   // Fallback positioning for browsers that don't support CSS anchor positioning
-  useTask(({ track }) => {
+  useTask(({ track, cleanup }) => {
     const isOpen = track(() => store.isOpen$.get())
     const anchorRef = track(() => store.anchorRef$())
     if (!isOpen || !anchorRef || CSS.supports('position-anchor', '--test')) return
@@ -37,8 +37,10 @@ f('aMenu', function () {
       }
     `) // reset position and hide before moving
     // Wait a bit to ensure dialog is shown and has dimensions
-    setTimeout(() => {
-      requestAnimationFrame(() => {
+    let frame
+    const position = () => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => {
         const anchorRect = anchorRef.getBoundingClientRect()
         const dialogRect = store.dialogRef$().getBoundingClientRect()
         const isLandscape = window.innerWidth > window.innerHeight
@@ -63,6 +65,10 @@ f('aMenu', function () {
         const offset = (isLandscape ? fallbackOffset.landscape : fallbackOffset.portrait) || {}
         left += (offset.x || 0)
         top += (offset.y || 0)
+        if (this.props.constrainToViewport) {
+          left = Math.max(margin, Math.min(left, window.innerWidth - dialogRect.width - margin))
+          top = Math.max(margin, Math.min(top, window.innerHeight - dialogRect.height - margin))
+        }
 
         store.fallbackPositioningStyle$(`
           & {
@@ -73,7 +79,18 @@ f('aMenu', function () {
           }
         `)
       })
-    }, 100) // or else dialogRect.height may be 0
+    }
+    const timer = setTimeout(position, 100) // or else dialogRect.height may be 0
+    if (this.props.constrainToViewport) {
+      window.addEventListener('resize', position)
+      window.addEventListener('scroll', position, true)
+    }
+    cleanup(() => {
+      window.removeEventListener('resize', position)
+      window.removeEventListener('scroll', position, true)
+      clearTimeout(timer)
+      cancelAnimationFrame(frame)
+    })
   }, { after: 'rendering' })
 
   useTask(({ track }) => {

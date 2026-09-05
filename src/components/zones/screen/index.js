@@ -136,7 +136,13 @@ f('aScreen', function () {
   useAppRouter()
   const { isSystemRoute$ } = useSystemRouter()
   const widgetsRevealActive$ = useGlobalSignal('widgetsRevealActive', false)
-  useInitInstanceMetadata({ storage, isSystemRoute: isSystemRoute$, revealWidgets: widgetsRevealActive$ })
+  const widgetEditReveal$ = useGlobalSignal('widgetEditReveal', null)
+  const revealWidgets$ = useComputed(() => widgetsRevealActive$() || !!widgetEditReveal$())
+  useInitInstanceMetadata({
+    storage,
+    isSystemRoute: () => isSystemRoute$() && !widgetEditReveal$(),
+    revealWidgets: revealWidgets$
+  })
 
   // Keep the browser tab title in sync with the focused app. System routes
   // always use the default launcher title, and the title only follows an app
@@ -195,7 +201,7 @@ f('aScreen', function () {
   // if the user hides it (which enters fullscreen), bring it back without
   // leaving fullscreen so the mode can be dismissed.
   useTask(({ track }) => {
-    const active = track(() => widgetsRevealActive$())
+    const active = track(() => revealWidgets$())
     const hidden = track(() => isToolbarHidden$())
     if (active && hidden) isToolbarHidden$.set(false)
   })
@@ -203,6 +209,9 @@ f('aScreen', function () {
   // Escape dismisses the widget reveal mode.
   useTask(({ cleanup }) => {
     const onKeyDown = event => {
+      // Let the widget close its menu/selection first, preserving a manual
+      // reveal that was already active when editing began.
+      if (document.querySelector('#screen .widget-window-selected')) return
       if (event.key === 'Escape' && widgetsRevealActive$()) widgetsRevealActive$(false)
     }
     window.addEventListener('keydown', onKeyDown)
@@ -231,16 +240,17 @@ f('aScreen', function () {
     #workspaces {
       flex: 1;
       position: relative;
+      isolation: isolate;
 
-      /* system views stay above the whole #windows stack (z-index 1 here).
-         Inside #windows: background 0, widgets 1, workspace windows 2. */
+      /* One stack: background -1, widgets 1, windows 2, system 3,
+         active pins 4, drag 5, edge indicators 6. */
       #system-views {
         display: ${isSystemRoute$() ? 'flex' : 'none'} !important;
         justify-content: center;
         background-color: ${cssVars.colors.bg};
         position: absolute;
         inset: 0;
-        z-index: 1;
+        z-index: 3;
         overflow: hidden;
       }
 
@@ -251,7 +261,6 @@ f('aScreen', function () {
         }
         position: absolute;
         inset: 0;
-        z-index: 0;
         overflow: hidden;
       }
     }
@@ -289,6 +298,16 @@ f('aScreen', function () {
       opacity: 0;
       pointer-events: none;
     }
+    #screen.widgets-edit-reveal-active #system-views,
+    #screen.widgets-edit-reveal-active app-window .scope_khjha3.open {
+      opacity: 0;
+      pointer-events: none;
+      transition: none;
+    }
+    #screen.widgets-edit-reveal-active #system-views *,
+    #screen.widgets-edit-reveal-active app-window .scope_khjha3.open * {
+      pointer-events: none !important;
+    }
   `)
 
   const unifiedToolbarRef$ = useClosestSignal('unifiedToolbarRef', null)
@@ -297,7 +316,8 @@ f('aScreen', function () {
     <div id="screen" class=${{
       'multi-window': !isSingleWindow$(),
       'system-route-active': isSystemRoute$(),
-      'widgets-reveal-active': widgetsRevealActive$()
+      'widgets-reveal-active': revealWidgets$(),
+      'widgets-edit-reveal-active': !!widgetEditReveal$()
     }}>
       <style>${style$()}</style>
       <div id='workspaces'>
@@ -356,7 +376,7 @@ f('windowsBackground', function () {
         text-align: center;
         padding: clamp(24px, 6vmin, 80px);
         color: ${cssVars.colors.fg2};
-        z-index: 0;
+        z-index: -1;
         inset: 0;
         position: absolute;
       `}
