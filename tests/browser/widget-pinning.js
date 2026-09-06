@@ -1,9 +1,12 @@
-const { spawn } = require('node:child_process')
-const { readFileSync, writeFileSync, mkdtempSync, rmSync } = require('node:fs')
-const path = require('node:path')
-const esbuild = require('esbuild')
-const http = require('node:http')
-const assert = require('node:assert/strict')
+import { spawn } from 'node:child_process'
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import * as esbuild from 'esbuild'
+import http from 'node:http'
+import assert from 'node:assert/strict'
+import checkGestures from './widget-gesture-regressions.js'
+import checkMenus from './widget-menu-regressions.js'
 let fixtureServer
 const profile = mkdtempSync('/tmp/widget-chrome-')
 const chrome = spawn(process.env.CHROME_BIN || '/usr/bin/google-chrome', ['--headless=new', '--no-sandbox', '--allow-file-access-from-files', '--disable-gpu', '--disable-dev-shm-usage', '--remote-debugging-pipe', `--user-data-dir=${profile}`, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'] })
@@ -38,7 +41,7 @@ const timeout = setTimeout(() => { console.error('Chrome verification timed out'
     if (response.exceptionDetails) throw new Error(JSON.stringify(response.exceptionDetails))
     return response.result.value
   }
-  const repo = path.resolve(__dirname, '../..')
+  const repo = fileURLToPath(new URL('../..', import.meta.url))
   const source = readFileSync(path.join(repo, 'src/components/zones/screen/index.js'), 'utf8')
   const start = source.indexOf('const style$ = useComputed(() => /* css */`') + 'const style$ = useComputed(() => /* css */'.length
   const template = source.slice(start, source.indexOf('`)', start) + 1)
@@ -81,6 +84,9 @@ const timeout = setTimeout(() => { console.error('Chrome verification timed out'
         options.appIframeSrc$('fixture-frame.html');
         return connection.disconnect;
       }`
+  }
+  if (process.argv.includes('--menus')) {
+    stubs['#i18n/index.js'] = "export const getT = locales => key => locales?.[key]?.['pt-BR'] ?? key"
   }
   let fixtureUrl = 'file://' + path.join(profile, 'fixture.html')
   if (process.argv.includes('--gestures')) {
@@ -172,7 +178,12 @@ const timeout = setTimeout(() => { console.error('Chrome verification timed out'
   const select = async key => { await gesture(key, 'start'); await gesture(key, 'end') }
   const hit = key => evaluate(`(()=>{const r=${root(key)}.getBoundingClientRect();return document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)?.tagName})()`)
   if (process.argv.includes('--gestures')) {
-    await require('./widget-gesture-regressions.cjs')({ cdp, evaluate, wait, root, select })
+    await checkGestures({ cdp, evaluate, wait, root, select })
+    return
+  }
+  if (process.argv.includes('--menus')) {
+    await evaluate(`(()=>{const style=document.createElement('style');style.textContent=${JSON.stringify(readFileSync(path.join(repo, 'src/assets/styles/reset.css'), 'utf8'))};document.head.append(style)})()`)
+    await checkMenus({ cdp, evaluate, wait, root, select })
     return
   }
   await evaluate('window.framesBefore=[...document.querySelectorAll(\'iframe\')].map(f=>({frame:f,win:f.contentWindow,doc:f.contentDocument}));fixture.instanceMetadata.connect({instanceKey:\'window\',appId:\'app\',userPk:\'user\'},()=>{});fixture.state.window$(true);fixture.state.system$(true)')

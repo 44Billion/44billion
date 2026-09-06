@@ -1,6 +1,6 @@
-const assert = require('node:assert/strict')
+import assert from 'node:assert/strict'
 
-module.exports = async ({ cdp, evaluate, wait, root, select }) => {
+export default async ({ cdp, evaluate, wait, root, select }) => {
   const results = []
   for (const pointerType of ['mouse', 'touch']) {
     await evaluate('fixture.storage.local_widgets$(all=>({...all,tall:{...all.tall,row:3,col:3,desired:{w:3,h:3}}}))')

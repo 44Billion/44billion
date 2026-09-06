@@ -1283,6 +1283,9 @@ f('widget-window', function () {
       `
 : ''}
       margin: 6px;
+      /* Let anchor fallbacks choose a side using the content's natural width,
+         rather than squeezing the options into the first anchor area. */
+      width: max-content;
       max-width: calc(100vw - 24px);
       max-height: calc(100dvh - 24px);
       overflow: auto;
@@ -1290,6 +1293,14 @@ f('widget-window', function () {
       color: ${cssVars.colors.fg2};
       border-radius: 8px;
       box-shadow: 0 4px 12px ${cssVars.colors.shadowStrong};
+    }
+    & .widget-action-icon {
+      /* Reserve space before the icon's custom elements finish rendering. */
+      display: grid;
+      place-items: center;
+      flex: 0 0 16px;
+      width: 16px;
+      height: 16px;
     }
     &:not(:popover-open) { display: none; }
     & .widget-action-item {
@@ -1310,7 +1321,7 @@ f('widget-window', function () {
         type='button'
         class='widget-action-item'
         onclick=${() => { action.run(); editing.setMenuOpen(false) }}
-      >${actionIcon(action)}<span>${action.label}</span></button>`)}
+      ><span class='widget-action-icon'>${actionIcon(action)}</span><span>${action.label}</span></button>`)}
     </div>`
   })
 
