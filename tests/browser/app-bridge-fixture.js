@@ -1,3 +1,5 @@
+import { setAppPersonaSelection, updatePersonaUserPks } from '#services/personas/index.js'
+import { useInitPersonas } from '#hooks/use-personas.js'
 // Real components, registry, MessagePorts, app file cache and metadata. Only
 // interactive vault/permission/dialog providers are substituted by the runner.
 import '#config/polyfills.js'
@@ -23,15 +25,30 @@ provideAppI18n()
 const pubkey = '11'.repeat(32)
 const userPk = base16ToBase62(pubkey, { mode: 'integer', minLength: 43 })
 const appId = addressObjToAppId({ kind: 35128, pubkey, dTag: 'bridge-test' })
-const fixture = window.fixture = { appId, userPk, instanceMetadata, getAppBridgeState, getAppBridgeSpecs, retryAppBridge, disposeAppBridge, AppUpdater, dialogs: [], loaded: [] }
+const fixture = window.fixture = { appId, userPk, instanceMetadata, getAppBridgeState, getAppBridgeSpecs, retryAppBridge, disposeAppBridge, AppUpdater, toBase62: hex => base16ToBase62(hex, { mode: 'integer', minLength: 43 }), setAppPersonaSelection, updatePersonaUserPks, dialogs: [], loaded: [] }
 
 const bytes = new TextEncoder().encode(`<!doctype html><html><head><title>Bridge Test</title></head><body>Cached app loaded<script>
 window.documentToken = Math.random().toString(36);
+window.personaChanges = [];
+window.scopedSigners = new Map();
+window.napp.onPersonaPublicKeysChanged(keys => window.personaChanges.push(keys));
 window.napp.getInstanceMetadata().then(metadata => {
   parent.postMessage({code:'FIXTURE_LOADED', metadata, token:documentToken}, '${location.origin}');
 });
 window.addEventListener('message', async event => {
   if(event.origin !== '${location.origin}' || event.source !== parent) return;
+  if(event.data.code === 'FIXTURE_PERSONA_QUERY') {
+    const signers = [];
+    for (const pk of event.data.pubkeys) {
+      if (!scopedSigners.has(pk)) scopedSigners.set(pk, window.napp.getWindowNostrFor(pk));
+      try { signers.push(await scopedSigners.get(pk).getPublicKey()); }
+      catch (error) { signers.push({error:error.code}); }
+    }
+    parent.postMessage({code:'FIXTURE_PERSONA_REPLY', requestId:event.data.requestId, payload:{
+      keys:await window.napp.getPersonaPublicKeys(), changes:personaChanges,
+      metadata:await window.napp.getInstanceMetadata(), token:documentToken, signers
+    }}, event.origin);
+  }
   if(event.data.code === 'FIXTURE_MIN_WIDTH') window.napp.setMinWidth(event.data.width);
   if(event.data.code === 'FIXTURE_NAVIGATE') location.href = event.data.path;
 });
@@ -59,12 +76,18 @@ window.addEventListener('message', event => {
 f('bridge-test-screen', ({ h }) => {
   const storage = useWebStorage(localStorage)
   const tabStorage = useWebStorage(sessionStorage)
-  const state = useStore({ single$: false, windows$: true })
+  const state = useStore({ single$: false, windows$: true, menuAnchor$: null })
+  const menu = useClosestStore('<a-menu>', () => ({
+    isOpen$: false, page$: 'actions',
+    app$ () { return { id: appId, key: 'window', workspaceKey: 'ws', visibility: tabStorage.session_appByKey_window_visibility$(), ref: state.menuAnchor$() } },
+    close () { this.isOpen$(false); this.page$('actions') }
+  }))
   useGlobalStore('useAppRouter', { openApp () {} })
   useClosestStore('napp', { wsKey: 'ws', appId, initialRoute: '/embedded' })
+  useInitPersonas({ storage })
   useInitInstanceMetadata({ storage })
-  Object.assign(fixture, { storage, tabStorage, state })
-  return h`<div id='screen' class='multi-window'>
+  Object.assign(fixture, { storage, tabStorage, state, menu })
+  return h`<button id='fixture-menu-anchor' style='position:fixed;left:450px;top:400px;anchor-name:--app-launchers-menu' ref=${state.menuAnchor$} onclick=${() => menu.isOpen$(true)}>App menu</button><app-launchers-menu /><div id='screen' class='multi-window'>
     <div id='workspaces'><div id='windows' style='position:relative;width:800px;height:600px'>
       <widgets-layer />
       ${state.windows$() && h`<app-window props=${{ appKey: 'window', wsKey: 'ws', mruRank: '1-1' }} /><app-window props=${{ appKey: 'peer', wsKey: 'ws', mruRank: '1-2' }} />`}

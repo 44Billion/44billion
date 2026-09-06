@@ -40,6 +40,7 @@ export const GLOBAL_LOCAL_KEYS = [
   'local_stickySessionDeletions',
   'local_widgets', // Records include optional isPinned (legacy default: false).
   'local_personas',
+  // Persona membership must include the workspace user; enforced by model/audit.
   'local_appPersonaSelections'
 ]
 

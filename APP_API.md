@@ -1,11 +1,122 @@
 # Injected app API
 
-Apps launched by 44billion receive the `window.napp` object before their own
-scripts run.
+Windows and widgets launched by 44billion receive `window.napp` and
+`window.nostr` before their own scripts run. Promise-returning bridge methods
+wait for the launcher handshake, including `setMinWidth`. These APIs also exist
+in standalone embedded apps.
+
+## Users and personas
+
+```js
+const publicKeys = await window.napp.getPersonaPublicKeys() // Promise<string[]>
+const signer = window.napp.getWindowNostrFor(publicKeys[0]) // synchronous object
+const publicKey = await signer.getPublicKey()
+
+const unsubscribe = window.napp.onPersonaPublicKeysChanged(publicKeys => {
+  updateAvailableUsers(publicKeys)
+})
+unsubscribe() // safe to call repeatedly
+```
+
+Public keys are 64-character hexadecimal strings. A selection belongs to an
+**app and workspace**, so every current and future window/widget of that app in
+that workspace shares it. Without a persona, only the workspace user's key is
+returned. “All Users” resolves the current connected real accounts, falling back
+to the anonymous user only when there are no real accounts.
+
+A persona can be selected only if it includes the workspace user. Removing that
+user, deleting the persona or otherwise losing eligibility resets the selection
+to the workspace user automatically. The launcher validates reads immediately,
+including before the persisted selection is cleaned up.
+
+`onPersonaPublicKeysChanged(listener)` returns an unsubscribe function. It calls
+the listener asynchronously with the initial keys once known, then whenever the
+**set** of keys changes. Reordering keys, selecting an equivalent set, or resetting
+a single-user persona to that same user does not emit another notification.
+Late subscribers receive the current list. Each delivery is an independent
+array; synchronous throws and rejected promises from one listener are reported
+without interrupting others. Passing a non-function throws `TypeError`.
+Unsubscribing also cancels queued deliveries for that subscription.
+
+`getPersonaPublicKeys()` reads the current selection on each call. The event
+tracks member/account changes as well as selections, without reloading apps.
+Closed/unloaded documents receive current state when they load again.
+
+`getWindowNostrFor(pubkey)` returns the same method surface as `window.nostr`,
+including `ns` and `withSharedKey`, targeting the specified key. Every method call
+revalidates membership, including calls on previously created signer objects.
+Malformed or no-longer-available keys reject with `error.code ===
+'PUBKEY_NOT_IN_PERSONA'`. Creating the object does not grant signing permission;
+normal permissions and locked/read-only account checks still apply.
+
+## Nostr signer
+
+`window.nostr` targets the instance's workspace account. To use another member of
+the selected persona, obtain its signer with `getWindowNostrFor`.
+
+The injected methods below return promises and forward their arguments to the
+vault signer:
+
+| Methods | Purpose |
+| --- | --- |
+| `peekPublicKey()`, `getPublicKey()` | Read the signing public key. |
+| `signEvent(event)`, `doubleSignEvent(...params)` | Sign event data. |
+| `nip04.encrypt(pubkey, plaintext)`, `nip04.decrypt(pubkey, ciphertext)` | NIP-04 encryption/decryption. |
+| `nip44.encrypt(pubkey, plaintext)`, `nip44.decrypt(pubkey, ciphertext)` | NIP-44 encryption/decryption. |
+| `nip44v3.encrypt(...params)`, `nip44v3.decrypt(...params)` | Vault NIP-44 v3 extension. |
+| `nip44v3.encryptDoubleDH(...params)`, `nip44v3.decryptDoubleDH(...params)` | Vault double-DH extension. |
+| `obfuscate(...params)` | Vault obfuscation extension. |
+
+`ns(name, ...namespaceParams)` returns a method object using that namespace.
+`withSharedKey(...sharedKeyParams)` returns a method object using a shared-key
+context. Their arguments and extension-specific formats are forwarded to the
+configured vault; the launcher does not implement those cryptographic operations.
+The ordinary, unnamespaced public-key getters are answered directly by the
+launcher. Other operations may require the vault, account unlock and permission.
+Bridge errors reject the returned promise; inspect their `code` when provided.
+
+## Instance metadata
+
+```js
+const metadata = await window.napp.getInstanceMetadata()
+const unsubscribe = window.napp.onInstanceMetadataChanged(metadata => {
+  renderInstanceState(metadata)
+})
+unsubscribe()
+```
+
+Snapshots contain `instanceKey`, `isWidget`, `isPinned`, `isLoaded`, `isVisible`
+and `otherInstances`. Each peer contains the same fields except `otherInstances`.
+The opaque key survives navigation, closure and reopening of a registered
+instance. Peers are registered instances of the same app and effective identity,
+including closed instances and matching identities in other workspaces.
+
+Subscriptions receive the initial snapshot asynchronously and then changed
+snapshots, with independent copies and idempotent cancellation. Runtime visibility
+and loading describe this launcher context, not a cross-tab aggregate. See
+[Instance metadata](docs/instance-metadata.md) for identity matching, visual
+coverage, widget pins and standalone runtime-key rules.
+
+## Minimum layout width
+
+```js
+await window.napp.setMinWidth(640) // safe to call before the handshake
+await window.napp.setMinWidth(0) // disable the minimum-width override
+```
+
+`setMinWidth(value)` returns `Promise<void>`. It converts the value to a number and
+rounds to whole CSS pixels; negative or non-finite results are ignored with a
+warning. A positive minimum allows the launcher to render the app at a wider
+virtual width and scale it into a narrow window/widget. It does not resize the
+widget's grid placement. The value is runtime state, not a persisted preference.
+Calls before the handshake wait for the connection and are sent in call order.
+The promise resolves when the command is sent, without waiting for the layout to
+finish updating. Invalid values resolve without sending a command.
 
 ## Locale
 
-`getLocale()` resolves to the launcher's current effective locale. The value is
+`getLocale()` resolves to the effective locale received at the handshake. Use
+`onLocaleChanged()` to follow later changes. The value is
 always one of `en`, `fr`, `it`, `de`, `es`, `pt-BR`, `ru`, `zh-CN`, `zh-TW`,
 `ja`, or `ko`; the internal `auto` preference is never exposed.
 
@@ -47,7 +158,9 @@ const features = await eventStore.supports()
 
 The public methods are `add`, `addPersonalCopy`, `query`, `count`, `subscribe`,
 and `supports`. Reads and writes may request the corresponding launcher
-permission.
+permission. The event store remains scoped to the instance's workspace account
+and app; selecting a persona does not merge its members' event stores. Bridge
+errors reject method promises or the iterator's `next()` promise.
 
 `subscribe()` returns an async iterator. Exiting a `for await` loop normally
 invokes the iterator's `return()` method and cancels the remote subscription;

@@ -1,3 +1,4 @@
+import { useInitPersonas } from '#hooks/use-personas.js'
 import { f, useClosestStore, useStore, useSignal, useTask, useComputed, useMemo } from '#f'
 import { useWebStorage } from '#f'
 import { useInitInstanceMetadata, useInstanceMetadataSurface } from '#hooks/use-instance-metadata.js'
@@ -38,6 +39,7 @@ f('singleNapp', function () {
   // realm, so providers needed by this embedded launcher must be mounted here.
   const storage = useWebStorage(localStorage)
   const tabStorage = useWebStorage(sessionStorage)
+  useInitPersonas({ storage })
   useInitInstanceMetadata({ storage })
   const { order$: openWorkspaceKeys$ } = useActiveWorkspaceOrder(storage, tabStorage)
   const wsKey = openWorkspaceKeys$()[0]

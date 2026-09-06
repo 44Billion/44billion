@@ -27,6 +27,7 @@ f('aMenu', function () {
 
   // Fallback positioning for browsers that don't support CSS anchor positioning
   useTask(({ track, cleanup }) => {
+    track(() => this.props.contentKey$?.())
     const isOpen = track(() => store.isOpen$.get())
     const anchorRef = track(() => store.anchorRef$())
     if (!isOpen || !anchorRef || CSS.supports('position-anchor', '--test')) return
@@ -80,7 +81,11 @@ f('aMenu', function () {
         `)
       })
     }
-    const timer = setTimeout(position, 100) // or else dialogRect.height may be 0
+    const observer = new ResizeObserver(position)
+    const timer = setTimeout(() => {
+      position()
+      observer.observe(store.dialogRef$())
+    }, 100) // or else dialogRect.height may be 0
     if (this.props.constrainToViewport) {
       window.addEventListener('resize', position)
       window.addEventListener('scroll', position, true)
@@ -88,6 +93,7 @@ f('aMenu', function () {
     cleanup(() => {
       window.removeEventListener('resize', position)
       window.removeEventListener('scroll', position, true)
+      observer.disconnect()
       clearTimeout(timer)
       cancelAnimationFrame(frame)
     })

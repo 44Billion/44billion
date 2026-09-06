@@ -71,7 +71,13 @@ ephemeral and intentionally not persisted; they do not belong here or in
 - `local_appPersonaSelections` — active persona per app per workspace:
   `{ [wsKey]: { [appId]: personaId | null } }`. `null`/absent means no persona
   (only the workspace user). `__default__` resolves to all current users and
-  is derived at read time.
+  is derived at read time. A selected persona must include the workspace's
+  current user, including the virtual persona. Invalid selections are removed
+  when personas, connected accounts or workspace users change, and by the storage
+  audit. Reads immediately fall back to the workspace user even before cleanup.
+  The shared selection applies to every current and future window/widget of that
+  app in the workspace. Live documents receive `onPersonaPublicKeysChanged` only
+  when their effective set of keys changes; no reload is required.
 
 ### Per workspace (`<wsKey>`)
 

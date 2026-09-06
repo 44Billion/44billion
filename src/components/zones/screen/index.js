@@ -1,3 +1,7 @@
+import { useAppPersona } from '#hooks/use-app-persona.js'
+import { personaT } from '#i18n/personas.js'
+import '#shared/app-persona.js'
+import { useInitPersonas } from '#hooks/use-personas.js'
 import { useInitInstanceMetadata, useInstanceMetadataSurface } from '#hooks/use-instance-metadata.js'
 import { f, useCallback, useComputed, useStore, useGlobalStore, useGlobalSignal, useStateSignal, useSignal, useClosestSignal, useClosestStore, useTask, useMemo } from '#f'
 import AppUpdater from '#services/app-updater/index.js'
@@ -135,6 +139,7 @@ f('aScreen', function () {
   const widgetsRevealActive$ = useGlobalSignal('widgetsRevealActive', false)
   const widgetEditReveal$ = useGlobalSignal('widgetEditReveal', null)
   const revealWidgets$ = useComputed(() => widgetsRevealActive$() || !!widgetEditReveal$())
+  useInitPersonas({ storage })
   useInitInstanceMetadata({
     storage,
     isSystemRoute: () => isSystemRoute$() && !widgetEditReveal$(),
@@ -1732,10 +1737,12 @@ f('toolbarAppList', function () {
   useClosestStore('<a-menu>', () => ({
     isOpenedByLongPress: false,
     isOpen$: false,
+    page$: 'actions',
     open () { this.isOpen$(true) },
-    close () { this.isOpen$(false) },
+    close () { this.page$('actions'); this.isOpen$(false) },
     app$: { key: '' },
     toggleMenu (nextApp) {
+      this.page$('actions')
       const isSameApp = this.app$().key === nextApp.key
       if (isSameApp) {
         this.app$(nextApp)
@@ -1827,6 +1834,9 @@ f('toolbarUnpinnedApps', function () {
 })
 f('appLaunchersMenu', function () {
   const store = useClosestStore('<a-menu>')
+  const wsKey$ = () => store.app$().workspaceKey
+  const appId$ = () => store.app$().id
+  const persona = useAppPersona({ wsKey$, appId$ })
   const storage = useWebStorage(localStorage)
   const tabStorage = useWebStorage(sessionStorage)
   const createRequest$ = useGlobalSignal('widgetsCreateRequest', null)
@@ -1835,6 +1845,8 @@ f('appLaunchersMenu', function () {
   const { openNewAppInstance } = useGlobalStore('useAppRouter')
   const menuProps = useStore(() => ({
     ...store,
+    contentKey$: store.page$,
+    constrainToViewport: true,
     copiedAppKey$: null,
     openApp () {
       const { visibility, key: appKey, workspaceKey } = this.app$()
@@ -2000,6 +2012,9 @@ f('appLaunchersMenu', function () {
       this.close() // close menu
     },
     render: useCallback(function () {
+      if (menuProps.page$() === 'personas') {
+        return this.h`<app-persona-options props=${{ wsKey$, appId$, onSelect: menuProps.close }} />`
+      }
       const {
         openApp,
         bringToFirst,
@@ -2022,7 +2037,7 @@ f('appLaunchersMenu', function () {
       const openAppKeys = tabStorage[`session_workspaceByKey_${workspaceKey}_openAppKeys$`]() ?? []
       const appKeys = storage[`session_workspaceByKey_${workspaceKey}_appById_${appId}_appKeys$`]()
       const canShare = typeof navigator.share === 'function'
-      const shareLabel = canShare ? t('Share') : t('Copy link')
+      const shareLabel = canShare ? t('Share') : t('Copy Link')
       return this.h`<div id='scope_pfgf892'>
         <style>${`
           #scope_pfgf892 {
@@ -2041,6 +2056,11 @@ f('appLaunchersMenu', function () {
               min-height: 30px;
               padding: 10px 10px 10px 3px;
             }
+            .persona-action {
+              display: flex; align-items: center; width: 100%; padding: 0;
+              color: inherit; background: transparent; border: 0; text-align: start;
+            }
+            .persona-action:focus-visible { outline: 2px solid ${cssVars.colors.bgAccentPrimary}; outline-offset: -2px; }
             .share-label {
               display: grid;
               width: max-content;
@@ -2101,6 +2121,10 @@ f('appLaunchersMenu', function () {
             </span>
           </div>
         </div>
+        <button type='button' class='persona-action' aria-haspopup='menu' onclick=${() => menuProps.page$('personas')}>
+          <span class='icon-wrapper-271yiduh'><app-persona-icon props=${{ personaId$: persona.selectedId$, userPk$: persona.userPk$, toolbar: true }} /></span>
+          <span class='menu-label'>${personaT('Switch User')}</span>
+        </button>
       </div>`
     }),
     style$: () => {
@@ -2121,6 +2145,10 @@ f('appLaunchersMenu', function () {
         background-color: ${cssVars.colors.bg2};
         color: ${cssVars.colors.fg2};
         min-width: 120px;
+        max-width: calc(100vw - 24px);
+        max-height: calc(100dvh - 24px);
+        overflow: auto;
+        position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
         display: flex;
         flex-direction: column;
       `
@@ -2298,17 +2326,17 @@ function getLocales () {
     'Please open an app': { en: 'Please open an app', fr: 'Veuillez ouvrir une application', it: 'Apri un’app', de: 'Bitte eine App öffnen', es: 'Abre una aplicación', 'pt-BR': 'Abra um app', ru: 'Откройте приложение', 'zh-CN': '请打开一个应用', 'zh-TW': '請開啟一個應用程式', ja: 'アプリを開いてください', ko: '앱을 열어 주세요' },
     'Opening app...': { en: 'Opening app...', fr: 'Ouverture de l’application...', it: 'Apertura dell’app...', de: 'App wird geöffnet...', es: 'Abriendo la aplicación...', 'pt-BR': 'Abrindo o app...', ru: 'Открытие приложения...', 'zh-CN': '正在打开应用...', 'zh-TW': '正在開啟應用程式...', ja: 'アプリを開いています…', ko: '앱을 여는 중...' },
     Open: { en: 'Open', fr: 'Ouvrir', it: 'Apri', de: 'Öffnen', es: 'Abrir', 'pt-BR': 'Abrir', ru: 'Открыть', 'zh-CN': '打开', 'zh-TW': '開啟', ja: '開く', ko: '열기' },
-    'New Window': { en: 'New Window', fr: 'Nouvelle fenêtre', it: 'Nuova finestra', de: 'Neues Fenster', es: 'Nueva ventana', 'pt-BR': 'Nova Janela', ru: 'Новое окно', 'zh-CN': '新建窗口', 'zh-TW': '新視窗', ja: '新しいウィンドウ', ko: '새 창' },
+    'New Window': { en: 'New Window', fr: 'Nouvelle Fenêtre', it: 'Nuova Finestra', de: 'Neues Fenster', es: 'Nueva Ventana', 'pt-BR': 'Nova Janela', ru: 'Новое Окно', 'zh-CN': '新建窗口', 'zh-TW': '新視窗', ja: '新しいウィンドウ', ko: '새 창' },
     Share: { en: 'Share', fr: 'Partager', it: 'Condividi', de: 'Teilen', es: 'Compartir', 'pt-BR': 'Compartilhar', ru: 'Поделиться', 'zh-CN': '分享', 'zh-TW': '分享', ja: '共有', ko: '공유' },
-    'Copy link': { en: 'Copy link', fr: 'Copier le lien', it: 'Copia link', de: 'Link kopieren', es: 'Copiar enlace', 'pt-BR': 'Copiar link', ru: 'Скопировать ссылку', 'zh-CN': '复制链接', 'zh-TW': '複製連結', ja: 'リンクをコピー', ko: '링크 복사' },
+    'Copy Link': { en: 'Copy Link', fr: 'Copier le Lien', it: 'Copia Link', de: 'Link Kopieren', es: 'Copiar Enlace', 'pt-BR': 'Copiar Link', ru: 'Скопировать Ссылку', 'zh-CN': '复制链接', 'zh-TW': '複製連結', ja: 'リンクをコピー', ko: '링크 복사' },
     'Copied!': { en: 'Copied!', fr: 'Copié !', it: 'Copiato!', de: 'Kopiert!', es: '¡Copiado!', 'pt-BR': 'Copiado!', ru: 'Скопировано!', 'zh-CN': '已复制！', 'zh-TW': '已複製！', ja: 'コピーしました！', ko: '복사됨!' },
     Maximize: { en: 'Maximize', fr: 'Agrandir', it: 'Ingrandisci', de: 'Maximieren', es: 'Maximizar', 'pt-BR': 'Maximizar', ru: 'Развернуть', 'zh-CN': '最大化', 'zh-TW': '最大化', ja: '最大化', ko: '최대화' },
-    'Bring to First': { en: 'Bring to First', fr: 'Mettre au premier plan', it: 'Porta in primo piano', de: 'In den Vordergrund', es: 'Traer al frente', 'pt-BR': 'Trazer para frente', ru: 'На передний план', 'zh-CN': '置于最前', 'zh-TW': '移至最前', ja: '最前面に移動', ko: '맨 앞으로 가져오기' },
+    'Bring to First': { en: 'Bring to First', fr: 'Mettre au Premier Plan', it: 'Porta in Primo Piano', de: 'In den Vordergrund', es: 'Traer al Frente', 'pt-BR': 'Trazer para Frente', ru: 'На Передний План', 'zh-CN': '置于最前', 'zh-TW': '移至最前', ja: '最前面に移動', ko: '맨 앞으로 가져오기' },
     Minimize: { en: 'Minimize', fr: 'Réduire', it: 'Riduci', de: 'Minimieren', es: 'Minimizar', 'pt-BR': 'Minimizar', ru: 'Свернуть', 'zh-CN': '最小化', 'zh-TW': '最小化', ja: '最小化', ko: '최소화' },
     Close: { en: 'Close', fr: 'Fermer', it: 'Chiudi', de: 'Schließen', es: 'Cerrar', 'pt-BR': 'Fechar', ru: 'Закрыть', 'zh-CN': '关闭', 'zh-TW': '關閉', ja: '閉じる', ko: '닫기' },
-    'Remove Window': { en: 'Remove Window', fr: 'Retirer la fenêtre', it: 'Rimuovi finestra', de: 'Fenster entfernen', es: 'Quitar ventana', 'pt-BR': 'Remover Janela', ru: 'Убрать окно', 'zh-CN': '移除窗口', 'zh-TW': '移除視窗', ja: 'ウィンドウを取り除く', ko: '창 제거' },
-    'Add Widget': { en: 'Add Widget', fr: 'Ajouter un widget', it: 'Aggiungi widget', de: 'Widget hinzufügen', es: 'Añadir widget', 'pt-BR': 'Adicionar Widget', ru: 'Добавить виджет', 'zh-CN': '添加小组件', 'zh-TW': '新增小工具', ja: 'ウィジェットを追加', ko: '위젯 추가' },
-    'Add Widget (short)': { en: 'Add Widget (short)', fr: 'Ajouter un widget', it: 'Aggiungi widget', de: 'Widget hinzuf.', es: 'Añadir widget', 'pt-BR': 'Adic. Widget', ru: 'Добавить виджет', 'zh-CN': '添加小组件', 'zh-TW': '新增小工具', ja: 'ウィジェットを追加', ko: '위젯 추가' },
+    'Remove Window': { en: 'Remove Window', fr: 'Retirer la Fenêtre', it: 'Rimuovi Finestra', de: 'Fenster Entfernen', es: 'Quitar Ventana', 'pt-BR': 'Remover Janela', ru: 'Убрать Окно', 'zh-CN': '移除窗口', 'zh-TW': '移除視窗', ja: 'ウィンドウを取り除く', ko: '창 제거' },
+    'Add Widget': { en: 'Add Widget', fr: 'Ajouter un Widget', it: 'Aggiungi Widget', de: 'Widget Hinzufügen', es: 'Añadir Widget', 'pt-BR': 'Adicionar Widget', ru: 'Добавить Виджет', 'zh-CN': '添加小组件', 'zh-TW': '新增小工具', ja: 'ウィジェットを追加', ko: '위젯 추가' },
+    'Add Widget (short)': { en: 'Add Widget (short)', fr: 'Ajouter un Widget', it: 'Aggiungi Widget', de: 'Widget Hinzuf.', es: 'Añadir Widget', 'pt-BR': 'Adic. Widget', ru: 'Добавить Виджет', 'zh-CN': '添加小组件', 'zh-TW': '新增小工具', ja: 'ウィジェットを追加', ko: '위젯 추가' },
     Delete: { en: 'Delete', fr: 'Supprimer', it: 'Elimina', de: 'Löschen', es: 'Eliminar', 'pt-BR': 'Excluir', ru: 'Удалить', 'zh-CN': '删除', 'zh-TW': '刪除', ja: '削除', ko: '삭제' }
   }
 }

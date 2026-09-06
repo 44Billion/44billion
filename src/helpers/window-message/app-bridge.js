@@ -1,3 +1,6 @@
+import { personaPublicKeys, readAppPersonaPublicKeys } from '#services/personas/public-keys.js'
+import { serializeError } from '#helpers/error.js'
+import { connectPersonaPublicKeysPort } from './persona-public-keys-port.js'
 import { instanceMetadata } from '#services/instance-metadata/index.js'
 import { connectInstanceMetadataPort } from './instance-metadata-port.js'
 import { toSignal } from '#f'
@@ -40,10 +43,10 @@ import NFileDownloader from '#services/nfile-downloader/index.js'
 import { getEffectiveLocale, subscribeLocaleChanged } from '#i18n/index.js'
 import { askNip07 } from './browser/nip07.js'
 import {
-  getAppPersonaSelection,
-  readPersonas,
   readJson as readPersonaJson,
-  resolvePersonaUserPks
+  resolvePersonaUserPks,
+  readAppPersonaContext,
+  resolveSelectedPersonaId
 } from '#services/personas/index.js'
 import { setWidgetPinnedRoute } from '#services/widgets/index.js'
 import {
@@ -72,18 +75,9 @@ function notifySignerRequestAttention ({ kind, userPk }) {
 }
 
 function resolveActivePersonaUserPks ({ appId, wsKey, instanceUserPk }) {
-  const local = globalThis.localStorage
-  const personaId = getAppPersonaSelection({ localStorageArea: local, wsKey, appId })
-  const accountUserPks = readPersonaJson(local, 'session_accountUserPks', [])
-  const defaultUserPk = readPersonaJson(local, 'session_defaultUserPk', null)
-  const personas = readPersonas(local)
-  return resolvePersonaUserPks({
-    personaId,
-    personas,
-    accountUserPks,
-    defaultUserPk,
-    workspaceUserPk: instanceUserPk
-  })
+  return resolvePersonaUserPks(readAppPersonaContext(
+    key => readPersonaJson(globalThis.localStorage, key), { appId, wsKey, instanceUserPk }
+  ))
 }
 
 export function retryAppBridge (state, { isAutomatic = false } = {}) {
@@ -647,10 +641,14 @@ function createAppPageMessageListener ({
   const appFetchingState = new Map()
 
   return function (appPagePort, documentSignal = signal) {
+    const record = { instanceKey: appKey, appId, wsKey, instanceUserPk: state.userPk }
+    const initialPublicKeys = connectPersonaPublicKeysPort(personaPublicKeys, {
+      record, port: appPagePort, signal: documentSignal
+    })
     const metadata = connectInstanceMetadataPort(instanceMetadata, {
       record: {
         instanceKey: appKey, appId, wsKey, userPk: state.userPk,
-        personaId: getAppPersonaSelection({ localStorageArea: localStorage, wsKey, appId }),
+        personaId: resolveSelectedPersonaId(readAppPersonaContext(key => readPersonaJson(localStorage, key), record)),
         isWidget: instanceKind === 'widget'
       },
       port: appPagePort,
@@ -721,7 +719,8 @@ function createAppPageMessageListener ({
           break
         }
         case 'NIP07': {
-          const scopedUserPkHex = typeof e.data.payload?.userPk === 'string' ? e.data.payload.userPk : null
+          const hasScopedUserPk = Object.hasOwn(e.data.payload ?? {}, 'userPk')
+          const scopedUserPkHex = e.data.payload?.userPk
           const isPeekOrGet = ['peek_public_key', 'get_public_key'].includes(e.data.payload.method)
           const isDefaultScope = e.data.payload.ns[0] === '' &&
             e.data.payload.ns.length === 1 &&
@@ -732,12 +731,12 @@ function createAppPageMessageListener ({
             wsKey,
             instanceUserPk: state.userPk
           })
-          const personaError = () => Object.assign(
+          const personaError = () => serializeError(
             new Error('Pubkey is not part of the app active persona'),
             { code: 'PUBKEY_NOT_IN_PERSONA' }
           )
           if (isPeekOrGet && isDefaultScope) {
-            if (!scopedUserPkHex || scopedUserPkHex === userPkB16) {
+            if (!hasScopedUserPk) {
               reply(e, { payload: userPkB16 }, { to: appPagePort })
               break
             }
@@ -755,7 +754,7 @@ function createAppPageMessageListener ({
           }
           let targetUserPkB16 = userPkB16
           let targetUserPkB62 = state.userPk
-          if (scopedUserPkHex) {
+          if (hasScopedUserPk) {
             if (!isHexPubkey(scopedUserPkHex)) {
               reply(e, { error: personaError() }, { to: appPagePort })
               break
@@ -779,7 +778,7 @@ function createAppPageMessageListener ({
               app: appMetadata,
               permissionMeta: {
                 ...(instanceKind === 'widget' ? { isWidget: true } : {}),
-                ...(scopedUserPkHex ? { accountUserPk: scopedUserPkHex } : {})
+                ...(hasScopedUserPk ? { accountUserPk: scopedUserPkHex } : {})
               }
             })
           } catch (err) {
@@ -913,19 +912,8 @@ function createAppPageMessageListener ({
         case 'WINDOW_NAPP': {
           const { op } = e.data.payload || {}
           if (op === 'getPersonaPublicKeys') {
-            const personaPks = resolveActivePersonaUserPks({
-              appId,
-              wsKey,
-              instanceUserPk: state.userPk
-            })
             reply(e, {
-              payload: personaPks.map(pk => {
-                try {
-                  return base62ToBase16(pk, { mode: 'integer', byteLength: 32 }).toLowerCase()
-                } catch {
-                  return null
-                }
-              }).filter(pk => typeof pk === 'string')
+              payload: readAppPersonaPublicKeys({ appId, wsKey, instanceUserPk: state.userPk })
             }, { to: appPagePort })
             break
           }
@@ -1109,7 +1097,8 @@ function createAppPageMessageListener ({
         locale: getEffectiveLocale(),
         bridgeId: state.bridgeId,
         isWidget: instanceKind === 'widget',
-        instanceMetadata: metadata
+        instanceMetadata: metadata,
+        personaPublicKeys: initialPublicKeys
       }
     })
     const unsubscribeLocale = subscribeLocaleChanged(locale => {

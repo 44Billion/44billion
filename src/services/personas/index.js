@@ -2,7 +2,8 @@ import { getRandomId } from '#helpers/misc.js'
 import { base62ToBase16 } from 'libp2r2p/base62'
 import { setWebStorageItem } from '#f'
 
-export const DEFAULT_PERSONA_ID = '__default__'
+import { normalizeUserPks, resolvePersonaUserPks, resolveSelectedPersonaId, readAppPersonaContext } from './model.js'
+export { DEFAULT_PERSONA_ID, normalizeUserPks, getDefaultPersonaUserPks, resolvePersonaUserPks, isPersonaEligible, resolveSelectedPersonaId, readAppPersonaContext } from './model.js'
 export const LOCAL_PERSONAS = 'local_personas'
 export const LOCAL_APP_PERSONA_SELECTIONS = 'local_appPersonaSelections'
 
@@ -18,40 +19,6 @@ export function readJson (storage, key, fallback = undefined) {
 
 export function writeJson (storage, key, value) {
   setWebStorageItem(storage, key, value === null ? undefined : value)
-}
-
-export function normalizeUserPks (userPks) {
-  if (!Array.isArray(userPks)) return []
-  return [...new Set(userPks.filter(pk => typeof pk === 'string' && pk.length > 0))]
-}
-
-// The default persona is virtual: it always contains the current users, so it
-// can never become stale and cannot be deleted. The default (read-only) user
-// only appears when there are no real connected accounts.
-export function getDefaultPersonaUserPks ({ accountUserPks, defaultUserPk }) {
-  const all = normalizeUserPks(accountUserPks)
-  const real = all.filter(pk => pk !== defaultUserPk)
-  if (real.length > 0) return real
-  return typeof defaultUserPk === 'string' && defaultUserPk ? [defaultUserPk] : []
-}
-
-// Returns the base62 pubkeys of the active persona for an app instance.
-// `workspaceUserPk` is the fallback when no persona is selected.
-export function resolvePersonaUserPks ({
-  personaId,
-  personas,
-  accountUserPks,
-  defaultUserPk,
-  workspaceUserPk
-}) {
-  if (personaId == null || personaId === '') {
-    return typeof workspaceUserPk === 'string' && workspaceUserPk ? [workspaceUserPk] : []
-  }
-  if (personaId === DEFAULT_PERSONA_ID) {
-    return getDefaultPersonaUserPks({ accountUserPks, defaultUserPk })
-  }
-  const persona = personas?.[personaId]
-  return normalizeUserPks(persona?.userPks)
 }
 
 export function isUserPkInActivePersona ({ userPk, ...rest }) {
@@ -77,6 +44,7 @@ export function readPersonas (localStorageArea) {
 
 export function writePersonas (localStorageArea, personas) {
   writeJson(localStorageArea, LOCAL_PERSONAS, personas)
+  cleanupPersonaReferences(localStorageArea)
 }
 
 export function readSelections (localStorageArea) {
@@ -105,13 +73,20 @@ export function setAppPersonaSelection ({
 }) {
   const selections = readSelections(localStorageArea)
   const wsSelections = selections[wsKey] ?? {}
-  if (personaId == null || personaId === '') {
+  personaId = resolveSelectedPersonaId({
+    ...readAppPersonaContext(key => readJson(localStorageArea, key), { wsKey, appId }),
+    personaId
+  })
+  if (personaId == null) {
     delete wsSelections[appId]
   } else {
     wsSelections[appId] = personaId
   }
-  selections[wsKey] = wsSelections
-  writeSelections(localStorageArea, selections)
+  if (Object.keys(wsSelections).length) selections[wsKey] = wsSelections
+  else delete selections[wsKey]
+  if (JSON.stringify(selections) !== JSON.stringify(readSelections(localStorageArea))) {
+    writeSelections(localStorageArea, selections)
+  }
   return now
 }
 
@@ -171,35 +146,24 @@ export function removePersona ({ localStorageArea, personaId }) {
   delete personas[personaId]
   writePersonas(localStorageArea, personas)
 
-  // Clear every selection that referenced the removed persona.
+  // writePersonas also clears selections that no longer have an eligible persona.
+}
+
+export function cleanupPersonaReferences (localStorageArea) {
   const selections = readSelections(localStorageArea)
   let changed = false
-  for (const [, wsSelections] of Object.entries(selections)) {
+  for (const [wsKey, wsSelections] of Object.entries(selections)) {
     if (!wsSelections || typeof wsSelections !== 'object') continue
-    for (const [appId, selectedId] of Object.entries(wsSelections)) {
-      if (selectedId === personaId) {
+    for (const appId of Object.keys(wsSelections)) {
+      const context = readAppPersonaContext(key => readJson(localStorageArea, key), { wsKey, appId })
+      if (!resolveSelectedPersonaId(context)) {
         delete wsSelections[appId]
         changed = true
       }
     }
-  }
-  if (changed) writeSelections(localStorageArea, selections)
-}
-
-export function cleanupPersonaReferences (localStorageArea) {
-  const personas = readPersonas(localStorageArea)
-  const selections = readSelections(localStorageArea)
-  let changed = false
-  for (const [, wsSelections] of Object.entries(selections)) {
-    if (!wsSelections || typeof wsSelections !== 'object') continue
-    for (const [appId, personaId] of Object.entries(wsSelections)) {
-      if (
-        personaId !== DEFAULT_PERSONA_ID &&
-        (!personas[personaId] || normalizeUserPks(personas[personaId].userPks).length === 0)
-      ) {
-        delete wsSelections[appId]
-        changed = true
-      }
+    if (!Object.keys(wsSelections).length) {
+      delete selections[wsKey]
+      changed = true
     }
   }
   if (changed) writeSelections(localStorageArea, selections)

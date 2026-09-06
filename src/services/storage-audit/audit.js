@@ -1,3 +1,4 @@
+import { DEFAULT_PERSONA_ID, isPersonaEligible } from '#services/personas/model.js'
 import { base62ToBase16 } from 'libp2r2p/base62'
 import {
   ACCOUNT_SUFFIXES,
@@ -10,7 +11,6 @@ import {
 } from '#constants/storage-schema.js'
 
 export const STORAGE_REPAIR_PLAN_VERSION = 1
-const DEFAULT_PERSONA_ID = '__default__'
 
 const HEX32 = /^[0-9a-f]{64}$/i
 
@@ -202,7 +202,12 @@ function auditWidgetsAndPersonas (local, session, plan, issue, setLocal, setSess
       for (const [appId, personaId] of Object.entries(wsSelections)) {
         const valid =
           isAppInstalledInWorkspace(appId, wsKey) &&
-          (personaId === DEFAULT_PERSONA_ID || Boolean(personas[personaId]))
+          isPersonaEligible({
+            personaId, personas,
+            workspaceUserPk: getValue(local, `session_workspaceByKey_${wsKey}_userPk`),
+            accountUserPks: getValue(local, 'session_accountUserPks'),
+            defaultUserPk: getValue(local, 'session_defaultUserPk')
+          })
         if (!valid) {
           delete wsSelections[appId]
           changed = true

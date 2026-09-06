@@ -521,3 +521,24 @@ describe('storage audit', () => {
     assert.deepEqual(result.plan.local.local_appPersonaSelections, {})
   })
 })
+
+describe('persona selection membership audit', () => {
+  it('removes a non-member selection while preserving the persona and other valid selections', () => {
+    const state = validState({ local: {
+      local_personas: { team: { userPks: ['different'], createdAt: 1, updatedAt: 1 } },
+      local_appPersonaSelections: { ws1: { app1: 'team' } }
+    } })
+    const before = state.local.getItem('local_appPersonaSelections')
+    const result = auditPersistedState(state.local, state.session)
+    assert.deepEqual(result.plan.local.local_appPersonaSelections, {})
+    assert.equal(result.plan.local.local_personas, undefined)
+    assert.equal(state.local.getItem('local_appPersonaSelections'), before, 'audit stays pure')
+  })
+  it('applies the same membership rule to the virtual persona', () => {
+    const state = validState({ local: {
+      session_accountUserPks: ['user', 'real'],
+      local_appPersonaSelections: { ws1: { app1: '__default__' } }
+    } })
+    assert.deepEqual(auditPersistedState(state.local, state.session).plan.local.local_appPersonaSelections, {})
+  })
+})

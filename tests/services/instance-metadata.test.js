@@ -65,6 +65,7 @@ test('catalog includes closed windows and widgets across workspaces using their 
     'session_workspaceByKey_ws_appById_second-app_appKeys': ['second'],
     session_workspaceByKey_other_unpinnedCoreAppIdsObj: { app: true },
     session_workspaceByKey_other_appById_app_appKeys: ['persona-window'],
+    local_personas: { persona: { userPks: ['other-user'] } },
     local_appPersonaSelections: { other: { app: 'persona' } },
     local_widgets: { widget: { wsKey: 'ws', appId: 'app' }, orphan: { wsKey: 'missing', appId: 'app' } }
   }
@@ -188,4 +189,20 @@ test('visibility distinguishes page/layout placement, loading, coverage and reve
   assert.equal(service.getMetadata('window').isVisible, false, 'minimized or omitted by layout')
   service.setPresentation(new Map([['window', { isWidget: false, isDisplayed: true, contentVisible: true }]]))
   assert.equal(service.getMetadata('window').isVisible, true)
+})
+
+test('catalog uses the workspace identity immediately after eligibility is lost, before persisted cleanup', () => {
+  const data = {
+    session_workspaceKeys: ['ws'], session_workspaceByKey_ws_userPk: 'user',
+    session_workspaceByKey_ws_pinnedAppIds: ['app'], session_workspaceByKey_ws_appById_app_appKeys: ['window'],
+    local_widgets: { widget: { wsKey: 'ws', appId: 'app' } },
+    local_personas: { p: { userPks: ['user', 'other'] } },
+    local_appPersonaSelections: { ws: { app: 'p' } }
+  }
+  assert.ok(readInstanceCatalog(key => data[key]).every(record => record.personaId === 'p'))
+  data.local_personas.p.userPks = ['other']
+  const service = createInstanceMetadataService()
+  service.setCatalog(readInstanceCatalog(key => data[key]))
+  assert.ok(readInstanceCatalog(key => data[key]).every(record => record.personaId === null))
+  assert.deepEqual(service.getMetadata('window').otherInstances.map(peer => peer.instanceKey), ['widget'])
 })

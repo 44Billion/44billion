@@ -51,6 +51,14 @@ and use the same workspace user public key. A persona containing one user is
 still distinct from that user without a persona. Different personas with
 overlapping public keys are not equivalent.
 
+A persona is eligible only while it includes the instance's workspace user.
+Losing that membership or deleting the persona resets the app/workspace selection
+and immediately uses the workspace-user identity for peer matching, even before
+persisted cleanup completes. All windows and widgets of that app/workspace share
+this selection. Peer changes continue to use `onInstanceMetadataChanged`;
+`onPersonaPublicKeysChanged` separately reports effective key-set changes (see
+[Injected app API](../APP_API.md)).
+
 The current instance is excluded. Peers are sorted by `instanceKey`, and each
 contains only `instanceKey`, `isWidget`, `isPinned`, `isLoaded` and `isVisible`.
 

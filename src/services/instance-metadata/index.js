@@ -1,3 +1,5 @@
+import { readAppPersonaContext, resolveSelectedPersonaId } from '#services/personas/model.js'
+
 const array = value => Array.isArray(value) ? value : []
 
 // Accept a reader so the launcher can track these same persisted fields through
@@ -5,7 +7,6 @@ const array = value => Array.isArray(value) ? value : []
 export function readInstanceCatalog (read) {
   const records = []
   const workspaces = array(read('session_workspaceKeys'))
-  const selections = read('local_appPersonaSelections') ?? {}
   const widgets = read('local_widgets') ?? {}
   for (const wsKey of workspaces) {
     const userPk = read(`session_workspaceByKey_${wsKey}_userPk`)
@@ -15,10 +16,10 @@ export function readInstanceCatalog (read) {
       ...Object.keys(read(`session_workspaceByKey_${wsKey}_unpinnedCoreAppIdsObj`) ?? {})
     ])
     const add = (instanceKey, appId, isWidget, isPinned = false) => {
-      const selection = selections[wsKey]?.[appId]
+      const personaId = resolveSelectedPersonaId(readAppPersonaContext(read, { wsKey, appId }))
       records.push({
         instanceKey, appId, wsKey, userPk, isWidget, isPinned,
-        personaId: typeof selection === 'string' && selection ? selection : null
+        personaId
       })
     }
     for (const appId of appIds) {

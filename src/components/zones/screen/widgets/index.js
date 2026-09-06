@@ -1,3 +1,7 @@
+import { useAppPersona } from '#hooks/use-app-persona.js'
+import { personaT } from '#i18n/personas.js'
+import '#shared/app-persona.js'
+import '#shared/icons/icon-chevron-left.js'
 import { createWidgetEditing } from '#helpers/widget-editing.js'
 import { createWidgetDragSurface } from '#helpers/widget-drag-surface.js'
 import { getWidgetResizeHitInsets } from '#helpers/widget-resize-hit-area.js'
@@ -687,6 +691,7 @@ f('widget-window', function () {
     minimizedAt$: null,
     selected$: false,
     menuOpen$: false,
+    menuPage$: 'actions',
     freshUntil$: 0,
     dragging$: false,
     elRef$: null,
@@ -733,6 +738,9 @@ f('widget-window', function () {
   // write. These computeds only notify when their primitive actually changes.
   const appId$ = useComputed(() => store.record$()?.appId ?? null)
   const wsKey$ = useComputed(() => store.record$()?.wsKey ?? null)
+  const persona = useAppPersona({ wsKey$, appId$ })
+  const isDefaultWidgetUser$ = useComputed(() => !persona.selectedId$() &&
+    !!persona.userPk$() && persona.userPk$() === storage.session_defaultUserPk$())
   const hasRecord$ = useComputed(() => !!store.record$())
 
   const syncSelectMode = () => {
@@ -754,7 +762,10 @@ f('widget-window', function () {
       store.selected$(enabled)
       syncSelectMode()
     },
-    onMenu: store.menuOpen$
+    onMenu: enabled => {
+      store.menuOpen$(enabled)
+      if (!enabled) store.menuPage$('actions')
+    }
   }))
   const deselect = editing.deselect
   const dragSurface = useMemo(() => createWidgetDragSurface({
@@ -1251,9 +1262,11 @@ f('widget-window', function () {
     outlineColor: cssVars.colors.bg,
     outlineWidth: 1
   })
-  const actionIcon = action => action.id === 'pin'
-    ? this.h`<icon-pinned props=${pinIconProps} />`
-    : this.h`<icon-close props=${{ size: '16px', strokeWidth: 3, outlineColor: cssVars.colors.bg, outlineWidth: 1 }} />`
+  const actionIcon = action => action.id === 'persona'
+    ? this.h`<app-persona-icon props=${{ personaId$: persona.selectedId$, userPk$: persona.userPk$ }} />`
+    : action.id === 'pin'
+      ? this.h`<icon-pinned props=${pinIconProps} />`
+      : this.h`<icon-close props=${{ size: '16px', strokeWidth: 3, outlineColor: cssVars.colors.bg, outlineWidth: 1 }} />`
   // Both presentations consume the same actions; future actions belong here.
   const actions = () => [
     {
@@ -1265,11 +1278,19 @@ f('widget-window', function () {
         startSelectionTimer()
       }
     },
-    { id: 'remove', label: t('Remove Widget'), run: removeWidgetNow }
+    { id: 'remove', label: t('Remove Widget'), run: removeWidgetNow },
+    {
+      id: 'persona', label: personaT('Switch User'),
+      run: () => {
+        store.menuPage$('personas')
+        editing.setMenuOpen(true)
+      }
+    }
   ]
   const stopControlPointer = event => event.stopPropagation()
   const menuProps = useStore({
     isOpen$: store.menuOpen$,
+    contentKey$: store.menuPage$,
     anchorRef$: store.elRef$,
     constrainToViewport: true,
     close: () => editing.setMenuOpen(false),
@@ -1316,11 +1337,13 @@ f('widget-window', function () {
       cursor: pointer;
     }
     & .widget-action-item:hover { background-color: ${cssVars.colors.bg3}; }`,
-    render: () => this.h`<div onpointerdown=${stopControlPointer}>
+    render: () => store.menuPage$() === 'personas'
+      ? this.h`<app-persona-options props=${{ wsKey$, appId$, onSelect: () => editing.setMenuOpen(false) }} />`
+      : this.h`<div onpointerdown=${stopControlPointer}>
       ${actions().map(action => this.h`<button
         type='button'
         class='widget-action-item'
-        onclick=${() => { action.run(); editing.setMenuOpen(false) }}
+        onclick=${() => { action.run(); if (action.id !== 'persona') editing.setMenuOpen(false) }}
       ><span class='widget-action-icon'>${actionIcon(action)}</span><span>${action.label}</span></button>`)}
     </div>`
   })
@@ -1688,20 +1711,23 @@ f('widget-window', function () {
     : roundedClip
   const srcIsBlank = store.appIframeSrc$() === 'about:blank'
   const showNodes = store.selected$() && !store.dragging$()
-  const controlLeft = placement.w === 1
-    ? (cellWidth - WIDGET_CONTROL_SIZE) / 2
-    : cellWidth - WIDGET_CONTROL_INSET - WIDGET_CONTROL_SIZE
-  const controlTops = placement.h === 1
-    ? [(cellHeight - WIDGET_CONTROL_SIZE) / 2]
-    : [WIDGET_CONTROL_INSET, cellHeight - WIDGET_CONTROL_INSET - WIDGET_CONTROL_SIZE]
-  const resizeHitInsets = getWidgetResizeHitInsets({
-    width: cellWidth,
-    height: cellHeight,
-    controls: controlTops.map(top => ({ left: controlLeft, top, width: WIDGET_CONTROL_SIZE, height: WIDGET_CONTROL_SIZE }))
-  })
+  const compactControls = placement.w < 2 || placement.h < 2
+  const personaWidth = WIDGET_CONTROL_SIZE + (placement.w >= 3 ? 14 : 0)
+  const rightControlLeft = cellWidth - WIDGET_CONTROL_INSET - WIDGET_CONTROL_SIZE
+  const controlRects = compactControls
+    ? [{
+        left: placement.w === 1 ? (cellWidth - WIDGET_CONTROL_SIZE) / 2 : rightControlLeft,
+        top: (cellHeight - WIDGET_CONTROL_SIZE) / 2, width: WIDGET_CONTROL_SIZE, height: WIDGET_CONTROL_SIZE
+      }]
+    : [
+        { left: WIDGET_CONTROL_INSET, top: WIDGET_CONTROL_INSET, width: personaWidth, height: WIDGET_CONTROL_SIZE },
+        { left: rightControlLeft, top: WIDGET_CONTROL_INSET, width: WIDGET_CONTROL_SIZE, height: WIDGET_CONTROL_SIZE },
+        { left: rightControlLeft, top: cellHeight - WIDGET_CONTROL_INSET - WIDGET_CONTROL_SIZE, width: WIDGET_CONTROL_SIZE, height: WIDGET_CONTROL_SIZE }
+      ]
+  const resizeHitInsets = getWidgetResizeHitInsets({ width: cellWidth, height: cellHeight, controls: controlRects })
   const controls = []
   if (showNodes) {
-    if (placement.h === 1) {
+    if (compactControls) {
       controls.push(this.h`<button
         type='button'
         class=${{ 'widget-remove-button': true, 'widget-remove-center-x': placement.w === 1, 'widget-remove-center-y': true }}
@@ -1712,7 +1738,18 @@ f('widget-window', function () {
         aria-expanded=${String(store.menuOpen$())}
       ><icon-dots props=${{ size: '16px', strokeWidth: 3, outlineColor: cssVars.colors.bg, outlineWidth: 1 }} /></button>`)
     } else {
-      for (const action of actions()) {
+      controls.push(this.h`<button
+        type='button' class='widget-persona-button'
+        onpointerdown=${stopControlPointer}
+        onclick=${() => {
+          if (store.menuOpen$()) editing.setMenuOpen(false)
+          else { store.menuPage$('personas'); editing.setMenuOpen(true) }
+        }}
+        aria-label=${personaT('Switch User')} aria-haspopup='menu' aria-expanded=${String(store.menuOpen$())}
+      ><span class=${{ 'widget-persona-avatar': true, 'widget-persona-avatar-default': isDefaultWidgetUser$() }}><app-persona-icon props=${{ personaId$: persona.selectedId$, userPk$: persona.userPk$, size: '22px', isDefaultWidgetUser$ }} /></span>
+        ${placement.w >= 3 ? this.h`<icon-chevron-left props=${{ size: '12px', weight: 'bold', rotate: '270' }} />` : ''}
+      </button>`)
+      for (const action of actions().filter(action => action.id !== 'persona')) {
         controls.push(this.h`<button
           type='button'
           class=${{
@@ -1830,6 +1867,26 @@ f('widget-window', function () {
           box-shadow: 0 0 0 1px ${cssVars.colors.bg};
           cursor: pointer;
           z-index: 4;
+        }
+        .widget-window-root .widget-persona-button {
+          position: absolute; top: ${WIDGET_CONTROL_INSET}px; left: ${WIDGET_CONTROL_INSET}px;
+          display: flex; align-items: center; gap: 2px;
+          height: ${WIDGET_CONTROL_SIZE}px; padding: 0; border: 0;
+          background: transparent; color: ${cssVars.colors.bgAccentPrimary};
+          cursor: pointer; z-index: 4;
+        }
+        .widget-window-root .widget-persona-avatar {
+          box-sizing: border-box; display: grid; place-items: center;
+          width: ${WIDGET_CONTROL_SIZE}px; height: ${WIDGET_CONTROL_SIZE}px;
+          border: 2px solid ${cssVars.colors.bgAccentPrimary}; border-radius: 50%;
+          box-shadow: 0 0 0 1px ${cssVars.colors.bg};
+        }
+        .widget-window-root .widget-persona-avatar-default {
+          border: 0;
+          box-shadow: none;
+        }
+        .widget-window-root .widget-persona-button:focus-visible {
+          outline: 2px solid ${cssVars.colors.bgAccentPrimary}; outline-offset: 2px;
         }
         .widget-window-root .widget-pin-button {
           top: auto;
@@ -2088,28 +2145,28 @@ f('widget-window', function () {
 function getLocales () {
   return {
     'Add Widget': {
-      en: 'Add Widget', fr: 'Ajouter un widget', it: 'Aggiungi widget', de: 'Widget hinzufügen',
-      es: 'Añadir widget', 'pt-BR': 'Adicionar Widget', ru: 'Добавить виджет', 'zh-CN': '添加小组件',
+      en: 'Add Widget', fr: 'Ajouter un Widget', it: 'Aggiungi Widget', de: 'Widget Hinzufügen',
+      es: 'Añadir Widget', 'pt-BR': 'Adicionar Widget', ru: 'Добавить Виджет', 'zh-CN': '添加小组件',
       'zh-TW': '新增小工具', ja: 'ウィジェットを追加', ko: '위젯 추가'
     },
     'Remove Widget': {
-      en: 'Remove Widget', fr: 'Retirer le widget', it: 'Rimuovi widget', de: 'Widget entfernen',
-      es: 'Quitar widget', 'pt-BR': 'Remover Widget', ru: 'Удалить виджет', 'zh-CN': '移除小组件',
+      en: 'Remove Widget', fr: 'Retirer le Widget', it: 'Rimuovi Widget', de: 'Widget Entfernen',
+      es: 'Quitar Widget', 'pt-BR': 'Remover Widget', ru: 'Удалить Виджет', 'zh-CN': '移除小组件',
       'zh-TW': '移除小工具', ja: 'ウィジェットを削除', ko: '위젯 제거'
     },
     'Pin Widget': {
-      en: 'Pin Widget', fr: 'Épingler le widget', it: 'Fissa widget', de: 'Widget anheften',
-      es: 'Fijar widget', 'pt-BR': 'Fixar Widget', ru: 'Закрепить виджет', 'zh-CN': '置顶小组件',
+      en: 'Pin Widget', fr: 'Épingler le Widget', it: 'Fissa Widget', de: 'Widget Anheften',
+      es: 'Fijar Widget', 'pt-BR': 'Fixar Widget', ru: 'Закрепить Виджет', 'zh-CN': '置顶小组件',
       'zh-TW': '置頂小工具', ja: 'ウィジェットを固定', ko: '위젯 고정'
     },
     'Unpin Widget': {
-      en: 'Unpin Widget', fr: 'Détacher le widget', it: 'Sblocca widget', de: 'Widget lösen',
-      es: 'Desfijar widget', 'pt-BR': 'Desafixar Widget', ru: 'Открепить виджет', 'zh-CN': '取消置顶小组件',
+      en: 'Unpin Widget', fr: 'Détacher le Widget', it: 'Sblocca Widget', de: 'Widget Lösen',
+      es: 'Desfijar Widget', 'pt-BR': 'Desafixar Widget', ru: 'Открепить Виджет', 'zh-CN': '取消置顶小组件',
       'zh-TW': '取消置頂小工具', ja: 'ウィジェットの固定を解除', ko: '위젯 고정 해제'
     },
     'Widget Options': {
-      en: 'Widget Options', fr: 'Options du widget', it: 'Opzioni widget', de: 'Widget-Optionen',
-      es: 'Opciones del widget', 'pt-BR': 'Opções do Widget', ru: 'Параметры виджета', 'zh-CN': '小组件选项',
+      en: 'Widget Options', fr: 'Options du Widget', it: 'Opzioni Widget', de: 'Widget-Optionen',
+      es: 'Opciones del Widget', 'pt-BR': 'Opções do Widget', ru: 'Параметры Виджета', 'zh-CN': '小组件选项',
       'zh-TW': '小工具選項', ja: 'ウィジェットのオプション', ko: '위젯 옵션'
     },
     'Opening app...': {

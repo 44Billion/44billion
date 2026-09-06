@@ -1,3 +1,4 @@
+import { createPersonaPublicKeysClient } from '#helpers/window-message/persona-public-keys-client.js'
 import { tell, ask } from '#helpers/window-message/index.js'
 import { injectEventStore } from '#helpers/window-message/nostrdb-client.js'
 import { createInstanceMetadataClient } from '#helpers/window-message/instance-metadata-client.js'
@@ -42,6 +43,10 @@ const localeClient = createAppLocaleClient({
   reportError: error => originalConsole.error('window.napp locale listener failed', error)
 })
 
+const personaPublicKeysClient = createPersonaPublicKeysClient({
+  reportError: error => originalConsole.error('window.napp persona listener failed', error)
+})
+
 const instanceMetadataClient = createInstanceMetadataClient({
   reportError: error => originalConsole.error('window.napp instance metadata listener failed', error)
 })
@@ -62,6 +67,7 @@ function injectLocale () {
   injectNip07(p.promise) // first thing
   injectLocale()
   Object.assign(window.napp, {
+    onPersonaPublicKeysChanged: personaPublicKeysClient.onPersonaPublicKeysChanged,
     getInstanceMetadata: instanceMetadataClient.getInstanceMetadata,
     onInstanceMetadataChanged: instanceMetadataClient.onInstanceMetadataChanged
   })
@@ -137,6 +143,7 @@ function tellParentImReady (p) {
     })
     localeClient.setLocale(e.data.payload?.locale)
     instanceMetadataClient.setMetadata(e.data.payload?.instanceMetadata)
+    personaPublicKeysClient.setPublicKeys(e.data.payload?.personaPublicKeys)
     const bridgeId = e.data.payload?.bridgeId
     if (bridgeId) {
       navigator.serviceWorker?.controller?.postMessage({
@@ -150,6 +157,7 @@ function tellParentImReady (p) {
   }, { once: true })
   browserPort.addEventListener('message', e => {
     if (e.data.code === 'LOCALE_CHANGED') localeClient.setLocale(e.data.payload?.locale)
+    else if (e.data.code === 'PERSONA_PUBLIC_KEYS_CHANGED') personaPublicKeysClient.setPublicKeys(e.data.payload)
     else if (e.data.code === 'INSTANCE_METADATA_CHANGED') instanceMetadataClient.setMetadata(e.data.payload)
     else if (e.data.code === 'WIDGET_SELECT_MODE') {
       widgetDragClient.setSelectMode(e.data.payload?.enabled === true)
@@ -562,18 +570,17 @@ function injectNip07 (promise) {
       })
     return scoped
   }
-  napp.setMinWidth = minWidth => {
+  napp.setMinWidth = async minWidth => {
     const value = Math.round(Number(minWidth))
     if (!Number.isFinite(value) || value < 0) {
       originalConsole.warn('[app-page] Invalid setMinWidth value', minWidth)
       return
     }
-    if (autoFitPort) {
-      tell(autoFitPort, {
-        code: 'AUTO_FIT',
-        payload: { op: 'setMinWidth', minWidth: value }
-      })
-    }
+    const browserPort = await promise
+    tell(browserPort, {
+      code: 'AUTO_FIT',
+      payload: { op: 'setMinWidth', minWidth: value }
+    })
   }
 
   Object.assign(window, { nostr, napp })

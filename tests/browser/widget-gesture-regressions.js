@@ -5,7 +5,7 @@ export default async ({ cdp, evaluate, wait, root, select }) => {
   for (const pointerType of ['mouse', 'touch']) {
     await evaluate('fixture.storage.local_widgets$(all=>({...all,tall:{...all.tall,row:3,col:3,desired:{w:3,h:3}}}))')
     await wait(120)
-    const start = await evaluate(`(()=>{const r=${root('tall')}.getBoundingClientRect();return {x:r.left+35,y:r.top+8,top:r.top}})()`)
+    const start = await evaluate(`(()=>{const r=${root('tall')}.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+55,top:r.top}})()`)
     await cdp('Emulation.setTouchEmulationEnabled', { enabled: pointerType === 'touch', maxTouchPoints: 1 })
     const input = async (phase, x, y) => {
       if (pointerType === 'mouse') {
@@ -51,7 +51,7 @@ export default async ({ cdp, evaluate, wait, root, select }) => {
     await select('tall')
     const hitTargets = await evaluate(`(()=>{
       const root=${root('tall')};
-      const controls=[...root.querySelectorAll('.widget-remove-button')].map(button=>{
+      const controls=[...root.querySelectorAll('.widget-remove-button, .widget-persona-button')].map(button=>{
         const r=button.getBoundingClientRect();
         return [3,r.width/2,r.width-3].every(x=>[3,r.height/2,r.height-3].every(y=>document.elementFromPoint(r.x+x,r.y+y)?.closest('button')===button));
       });
@@ -63,13 +63,13 @@ export default async ({ cdp, evaluate, wait, root, select }) => {
     assert.ok(hitTargets.controls.every(Boolean), `${w}x${h}: all button interiors remain clickable`)
     assert.deepEqual(hitTargets.nodes, [true, true, true, true], `${w}x${h}: all resize nodes remain reachable`)
     await cdp('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 })
-    const buttonSelector = h === 1 ? '.widget-remove-button' : '.widget-pin-button'
+    const buttonSelector = h === 1 || w === 1 ? '.widget-remove-button' : '.widget-pin-button'
     const point = await evaluate(`(()=>{const r=${root('tall')}.querySelector('${buttonSelector}').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+3}})()`)
     await cdp('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...point, radiusX: 8, radiusY: 8, force: 1, id: 1 }] })
     await cdp('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
     await wait(180)
     assert.equal(await evaluate(`${root('tall')}.classList.contains('widget-window-dragging')`), false)
-    if (h === 1) {
+    if (h === 1 || w === 1) {
       assert.equal(await evaluate(`${root('tall')}.querySelector('dialog').matches(':popover-open')`), true, `${w}x${h}: touch near button edge opens options`)
     } else {
       assert.equal(await evaluate('fixture.storage.local_widgets$().tall.isPinned'), true, `${w}x${h}: touch near pin button edge toggles pin`)

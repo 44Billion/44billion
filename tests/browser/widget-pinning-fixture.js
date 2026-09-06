@@ -1,3 +1,4 @@
+import { useInitPersonas } from '#hooks/use-personas.js'
 // Actual widget grid, menu, gesture client, persistence and metadata hooks.
 // The runner substitutes the network bridge and external dialogs only.
 import { f, useStore, useGlobalStore, useGlobalSignal, useWebStorage } from '#f'
@@ -17,6 +18,7 @@ f('pin-test-screen', ({ h }) => {
   const automatic$ = useGlobalSignal('widgetEditReveal', null)
   useGlobalStore('useAppRouter', { openApp () {} })
   const reveal = () => manual$() || !!automatic$()
+  useInitPersonas({ storage })
   useInitInstanceMetadata({ storage, isSystemRoute: () => state.system$() && !automatic$(), revealWidgets: reveal })
   useInstanceMetadataSurface('window', () => ({ element: state.appRef$(), isWidget: false, eligible: state.window$(), contentVisible: true }))
   Object.assign(window.fixture, { storage, tabStorage, state, manual$, automatic$ })

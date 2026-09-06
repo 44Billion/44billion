@@ -1,3 +1,4 @@
+import checkPersonas from './persona-regressions.js'
 import { spawn } from 'node:child_process'
 import { readFileSync, mkdtempSync, rmSync } from 'node:fs'
 import path from 'node:path'
@@ -58,7 +59,7 @@ try {
         response.end(readFileSync(path.join(profile, filename)))
       } else if (request.webUrl.hostname === 'localhost') {
         response.setHeader('Content-Type', 'text/html')
-        response.end('<!doctype html><html><body><script type="module" src="/fixture.js"></script></body></html>')
+        response.end(pathname === '/storage-fixture' ? '<!doctype html><html><body>Storage fixture</body></html>' : '<!doctype html><html><body><script type="module" src="/fixture.js"></script></body></html>')
       } else await appRouter.fetch(request, response)
     } catch (error) { response.writeHead(500).end(String(error)) }
   })
@@ -147,6 +148,7 @@ try {
   await until(loaded('widget'), 'standalone widget loads through real bridge')
   await setVisibility('window', 'open')
   await until(loaded('window'), 'window joins widget bridge')
+  await checkPersonas({ cdp, evaluate, until, wait, port, send })
   await setVisibility('window', 'closed')
   assert.equal(await evaluate(loaded('widget')), true)
   await evaluate('fixture.storage.local_widgets$({})')
