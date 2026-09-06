@@ -5,6 +5,7 @@ import '#shared/app-persona.js'
 import '#shared/icons/icon-chevron-left.js'
 import { createWidgetEditing } from '#helpers/widget-editing.js'
 import { createWidgetDragSurface } from '#helpers/widget-drag-surface.js'
+import { createWidgetPageScroll } from '#helpers/widget-page-scroll.js'
 import { getWidgetResizeHitInsets } from '#helpers/widget-resize-hit-area.js'
 import { isInstanceSurfaceDisplayed } from '#helpers/instance-presentation.js'
 import { useInstanceMetadataSurface } from '#hooks/use-instance-metadata.js'
@@ -70,6 +71,8 @@ const WIDGET_FRESH_WINDOW_MS = 10000
 const WIDGET_SELECTED_WINDOW_MS = 4000
 const WIDGET_CONTROL_SIZE = 26
 const WIDGET_CONTROL_INSET = 6
+const WHEEL_GESTURE_IDLE_MS = 180
+const PAGE_SCROLL_IDLE_MS = 200
 
 // Temporary widget-drag instrumentation: only log in development builds.
 const widgetDragLog = (...args) => {
@@ -123,8 +126,10 @@ f('widgets-layer', function () {
     },
     currentPage$: 0,
     targetPage$: null,
-    dotsWidth$: 0
+    dotsWidth$: 0,
+    lastWheelAt: -Infinity
   }))
+  const pageScroll = useMemo(() => createWidgetPageScroll())
 
   useTask(({ cleanup }) => {
     const update = () => tabVisible$(document.visibilityState === 'visible')
@@ -180,25 +185,63 @@ f('widgets-layer', function () {
       const step = store.grid$().pageWidth + store.grid$().gap
       if (step <= 0) return
       const next = Math.round(el.scrollLeft / step)
-      const previous = store.currentPage$()
       store.currentPage$(next)
       const target = store.targetPage$()
-      if (target === null) return
-      if (next === target) {
-        store.targetPage$(null)
-        return
-      }
-      // The user scrolled away from the navigation target: abandon it so the
-      // destination page does not stay open.
-      const direction = Math.sign(target - previous)
-      const movement = Math.sign(next - previous)
-      if (movement !== 0 && direction !== 0 && movement !== direction) {
+      if (target === null || pageScroll.active) return
+      // The nearest page changes halfway through the animation; navigation
+      // remains in flight until the viewport actually reaches its destination.
+      if (Math.abs(el.scrollLeft - target * step) < 1) {
         store.targetPage$(null)
       }
     }
     update()
     el.addEventListener('scroll', update, { passive: true })
     cleanup(() => el.removeEventListener('scroll', update))
+  })
+
+  useTask(({ track, cleanup }) => {
+    const el = track(() => store.scrollRef$())
+    const target = track(() => store.targetPage$())
+    if (pageScroll.targetPage !== target) pageScroll.cancel()
+    if (!el || target === null) return
+    let idleTimer
+    const settle = () => {
+      if (!el.isConnected || store.targetPage$() !== target || pageScroll.active) return
+      const step = store.grid$().pageWidth + store.grid$().gap
+      // Creation and drag navigation also use this target. If their native
+      // animation stops early, animate the remaining distance without a jump.
+      pageScroll.scrollTo(el, {
+        page: target,
+        left: target * step,
+        onFinish: () => {
+          store.currentPage$(Math.round(el.scrollLeft / Math.max(step, 1)))
+          store.targetPage$(null)
+        }
+      })
+    }
+    const armIdleTimer = () => {
+      clearTimeout(idleTimer)
+      idleTimer = setTimeout(settle, PAGE_SCROLL_IDLE_MS)
+    }
+    // Touch, scrollbar dragging and keyboard input take over navigation.
+    const cancel = () => {
+      pageScroll.cancel()
+      store.targetPage$(null)
+    }
+    el.addEventListener('scroll', armIdleTimer, { passive: true })
+    el.addEventListener('scrollend', settle)
+    el.addEventListener('pointerdown', cancel, { passive: true })
+    el.addEventListener('keydown', cancel)
+    // Also recover when the browser aborts before emitting any scroll event.
+    armIdleTimer()
+    cleanup(() => {
+      if (pageScroll.targetPage === target) pageScroll.cancel()
+      clearTimeout(idleTimer)
+      el.removeEventListener('scroll', armIdleTimer)
+      el.removeEventListener('scrollend', settle)
+      el.removeEventListener('pointerdown', cancel)
+      el.removeEventListener('keydown', cancel)
+    })
   })
 
   // Real-widget creation: resolve the menu request on the current page.
@@ -420,11 +463,15 @@ f('widgets-layer', function () {
     if (!el) return
     const clamped = Math.max(0, Math.min(page, pageCount - 1))
     if (clamped === store.currentPage$()) return
-    store.targetPage$(clamped)
-    el.scrollTo({
+    pageScroll.scrollTo(el, {
+      page: clamped,
       left: clamped * pageStep$(),
-      behavior: 'smooth'
+      onFinish: () => {
+        store.currentPage$(Math.round(el.scrollLeft / pageStep$()))
+        store.targetPage$(null)
+      }
     })
+    store.targetPage$(clamped)
   }
   const swipe = useMemo(() => ({ startX: null, suppressClick: false }))
   const onDotsPointerDown = event => {
@@ -450,13 +497,15 @@ f('widgets-layer', function () {
   }
   const onWheel = event => {
     event.preventDefault()
-    // One page transition per wheel gesture: ignore new wheels while a
-    // navigation is in flight or a widget is being dragged.
-    if (widgetDragging$() || store.targetPage$() !== null) return
     const direction = Math.abs(event.deltaX) > Math.abs(event.deltaY)
       ? Math.sign(event.deltaX)
       : Math.sign(event.deltaY)
     if (direction === 0) return
+    const now = performance.now()
+    const continuing = now - store.lastWheelAt < WHEEL_GESTURE_IDLE_MS
+    store.lastWheelAt = now
+    // Keep consuming the tail of the same gesture even after arrival.
+    if (continuing || widgetDragging$() || store.targetPage$() !== null) return
     goToPage(store.currentPage$() + direction)
   }
 

@@ -7,6 +7,7 @@ import http from 'node:http'
 import assert from 'node:assert/strict'
 import checkGestures from './widget-gesture-regressions.js'
 import checkMenus from './widget-menu-regressions.js'
+import checkWheel from './widget-wheel-regressions.js'
 let fixtureServer
 const profile = mkdtempSync('/tmp/widget-chrome-')
 const chrome = spawn(process.env.CHROME_BIN || '/usr/bin/google-chrome', ['--headless=new', '--no-sandbox', '--allow-file-access-from-files', '--disable-gpu', '--disable-dev-shm-usage', '--remote-debugging-pipe', `--user-data-dir=${profile}`, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'] })
@@ -169,6 +170,10 @@ const timeout = setTimeout(() => { console.error('Chrome verification timed out'
   await evaluate(readFileSync(path.join(profile, 'fixture.js'), 'utf8'))
   await wait(450)
   assert.deepEqual(await evaluate('fixtureErrors'), [])
+  if (process.argv.includes('--wheel')) {
+    await checkWheel({ evaluate, cdp, wait })
+    return
+  }
   const root = key => `document.querySelector('iframe[data-key="${key}"]').closest('.widget-window-root')`
   const metadata = key => evaluate(`fixture.instanceMetadata.getMetadata('${key}')`)
   const gesture = async (key, op, extra = {}) => {
