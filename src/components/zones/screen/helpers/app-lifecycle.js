@@ -1,6 +1,5 @@
 import { base62ToBase16 } from 'libp2r2p/base62'
-import { releaseAppSubdomain } from '#helpers/subdomain-mapping.js'
-import { askAppToClearData } from './draft-app-runtime-reset.js'
+import { releaseAppSubdomain, subdomainStorage } from '#helpers/subdomain-mapping.js'
 import {
   cleanupNostrDbAppForWorkspace,
   hasAnyRecentSingleNappOpen,
@@ -76,7 +75,7 @@ export function removeAppInstance ({
 
   const instances = countAppInstances({ storage, appId, userPk })
   const resolvedAppSubdomain =
-    storage?.[`session_subdomainByUserAndApp_${userPk}_${appId}$`]?.() ?? appSubdomain
+    (globalThis.localStorage ? subdomainStorage() : storage)?.[`session_subdomainByUserAndApp_${userPk}_${appId}$`]?.() ?? appSubdomain
   return {
     ...instances,
     appSubdomain: resolvedAppSubdomain,
@@ -127,7 +126,6 @@ export async function uninstallAppFromWorkspace ({
   _removeWidgetsForApp = null,
   _removeSelectionsForApp = null,
   _cleanupNostrDb = cleanupNostrDbAppForWorkspace,
-  _askAppToClearData = askAppToClearData,
   _hasRecentSingleNappOpenForOwner = hasRecentSingleNappOpenForOwner,
   _hasAnyRecentSingleNappOpen = hasAnyRecentSingleNappOpen,
   _clearAppFiles = defaultClearAppFiles,
@@ -174,7 +172,6 @@ export async function uninstallAppFromWorkspace ({
     userPk,
     appSubdomain: removed.appSubdomain,
     skipNostrDbCleanup: true,
-    _askAppToClearData,
     _hasRecentSingleNappOpenForOwner,
     _hasAnyRecentSingleNappOpen,
     _clearAppFiles,
@@ -192,7 +189,6 @@ export async function clearAppDataAfterRemoval ({
   appSubdomain = null,
   skipNostrDbCleanup = false,
   _cleanupNostrDb = cleanupNostrDbAppForWorkspace,
-  _askAppToClearData = askAppToClearData,
   _hasRecentSingleNappOpenForOwner = hasRecentSingleNappOpenForOwner,
   _hasAnyRecentSingleNappOpen = hasAnyRecentSingleNappOpen,
   _clearAppFiles = defaultClearAppFiles,
@@ -209,9 +205,10 @@ export async function clearAppDataAfterRemoval ({
   const anyRecentSingleNapp =
     recentForOwner || await _hasAnyRecentSingleNappOpen({ appId })
   const resolvedAppSubdomain =
-    storage?.[`session_subdomainByUserAndApp_${userPk}_${appId}$`]?.() ?? appSubdomain
+    (globalThis.localStorage ? subdomainStorage() : storage)?.[`session_subdomainByUserAndApp_${userPk}_${appId}$`]?.() ?? appSubdomain
 
   let clearedAppData = false
+  let queuedOriginCleanup = false
   let clearedAppFiles = false
 
   if (!instances.hasOtherSameUserInstances && !recentForOwner) {
@@ -219,14 +216,13 @@ export async function clearAppDataAfterRemoval ({
       await _cleanupNostrDb({ storage, wsKey, appId })
     }
     if (resolvedAppSubdomain != null) {
-      await _askAppToClearData(resolvedAppSubdomain)
-      _releaseAppSubdomain(storage, {
+      queuedOriginCleanup = !!await _releaseAppSubdomain(_releaseAppSubdomain === releaseAppSubdomain && globalThis.localStorage ? subdomainStorage() : storage, {
         userPk,
         appId,
         subdomain: resolvedAppSubdomain
       })
     }
-    clearedAppData = true
+    clearedAppData = resolvedAppSubdomain == null
   }
 
   if (!instances.hasOtherAnyInstances && !anyRecentSingleNapp) {
@@ -236,6 +232,7 @@ export async function clearAppDataAfterRemoval ({
 
   return {
     clearedAppData,
+    queuedOriginCleanup,
     clearedAppFiles,
     hasOtherAnyInstances: instances.hasOtherAnyInstances,
     hasOtherSameUserInstances: instances.hasOtherSameUserInstances

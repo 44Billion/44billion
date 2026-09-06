@@ -888,7 +888,7 @@ describe('AppUpdater', () => {
       assert.deepEqual(clearedFiles, ['old-app'])
       assert.equal(localStorage.getItem('session_subdomainByUserAndApp_user_old-app'), null)
       assert.equal(localStorage.getItem('session_subdomainToApp_12'), null)
-      assert.deepEqual(JSON.parse(localStorage.getItem('session_subdomainFreeIds')), ['12'])
+      assert.deepEqual(JSON.parse(localStorage.getItem('local_subdomainLifecycle')).pending, ['12'])
       assert(clearedStorageKeys.some(item => item.key === 'session_appById_old-app_icon'))
     })
   })

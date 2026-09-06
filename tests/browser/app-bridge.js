@@ -1,3 +1,4 @@
+import checkIdentity from './identity-regressions.js'
 import checkPersonas from './persona-regressions.js'
 import { spawn } from 'node:child_process'
 import { readFileSync, mkdtempSync, rmSync } from 'node:fs'
@@ -38,7 +39,7 @@ const timeout = setTimeout(() => {
   fixtureServer?.close()
   chrome.kill()
   process.exitCode = 1
-}, 90000)
+}, 150000)
 try {
   const repo = fileURLToPath(new URL('../..', import.meta.url))
   // Keep the production bootstrap route, but serve test bundles on an isolated
@@ -66,7 +67,7 @@ try {
   await new Promise(resolve => fixtureServer.listen(0, '127.0.0.1', resolve))
   const port = fixtureServer.address().port
   const stubs = {
-    '#zones/vault-modal/index.js': 'export const useVaultActor=()=>({askVault(){throw Error("Unexpected vault request")}});export const useVaultModalStore=()=>({});export const tellVault=()=>{};export const flushQueuedVaultAcceptedMessages=()=>{}',
+    '#zones/vault-modal/index.js': 'export const useVaultActor=()=>({askVault(){throw Error("Unexpected vault request")}});export const useVaultModalStore=()=>({});export const tellVault=()=>{};export const flushQueuedVaultAcceptedMessages=async()=>{}',
     '#zones/permission-dialog/index.js': 'export const usePermissionDialogStore=()=>({requestPermission(){throw Error("Unexpected permission request")}})',
     '#zones/confirmation-dialog/index.js': 'export const useConfirmationDialogStore=()=>({requestConfirmation(){throw Error("Unexpected confirmation")}})',
     '#zones/file-not-cached-dialog/index.js': 'export const getFileNotCachedText=key=>key;export const useFileNotCachedDialogStore=()=>({requestAction(details){fixture.dialogs.push(details);return new Promise(()=>{})}})'
@@ -99,7 +100,7 @@ try {
   const until = async (expression, message, ms = 4000) => {
     const deadline = Date.now() + ms
     do { if (await evaluate(expression)) return; await wait(50) } while (Date.now() < deadline)
-    const details = await evaluate('({errors:window.fixtureErrors,dialogs:window.fixture?.dialogs,loaded:window.fixture?.loaded,bridge:window.fixture?.getAppBridgeState("0")&&{ready:fixture.getAppBridgeState("0").ready$(),size:fixture.getAppBridgeState("0").windows.size},frames:[...document.querySelectorAll("iframe")].map(f=>f.src),text:document.body.innerText})')
+    const details = await evaluate('({errors:window.fixtureErrors,dialogs:window.fixture?.dialogs,loaded:window.fixture?.loaded,bridge:window.fixture?.getAppBridgeState("0")&&{ready:fixture.getAppBridgeState("0").ready$(),size:fixture.getAppBridgeState("0").windows.size},frames:[...document.querySelectorAll("iframe")].map(f=>f.src),owner:fixture?.storage.session_workspaceByKey_ws_userPk$(),rawOwner:localStorage.getItem("session_workspaceByKey_ws_userPk"),specs:fixture?.getAppBridgeSpecs()(),text:document.body.innerText})')
     assert.fail(`${message}: ${JSON.stringify(details)}`)
   }
   await cdp('Page.enable')
@@ -171,13 +172,13 @@ try {
   assert.equal(await evaluate(`${bridge}.bridgeId!==fixture.originalBridge.bridgeId`), true)
   await checkLivePort(1200)
   await setVisibility('window', 'closed')
-  await evaluate('fixture.storage["session_subdomainByUserAndApp_"+fixture.userPk+"_"+fixture.appId+"$"]("1")')
+  await evaluate('fixture.subdomainStorage()["session_subdomainByUserAndApp_"+fixture.userPk+"_"+fixture.appId+"$"]("1")')
   await setVisibility('window', 'open')
   await until(loaded('window'), 'cold bridge recovers after one automatic retry', 9000)
   assert.equal(await evaluate('fixture.getAppBridgeState("1").retryCount$()'), 1)
   assert.deepEqual(await evaluate('fixture.dialogs'), [])
   await setVisibility('window', 'closed')
-  await evaluate('fixture.storage["session_subdomainByUserAndApp_"+fixture.userPk+"_"+fixture.appId+"$"]("2")')
+  await evaluate('fixture.subdomainStorage()["session_subdomainByUserAndApp_"+fixture.userPk+"_"+fixture.appId+"$"]("2")')
   await setVisibility('window', 'open')
   await until('fixture.dialogs.length===1', 'persistent failure escalates once to recovery dialog', 12000)
   assert.equal(await evaluate('fixture.getAppBridgeState("2").retryCount$()'), 1, 'automatic retries are bounded')
@@ -186,6 +187,7 @@ try {
   await until(loaded('window'), 'manual retry recovers after timeout dialog')
   await setVisibility('window', 'closed')
   await until('fixture.getAppBridgeState("2").windows.size===0 && !fixture.getAppBridgeState("2").currentPort', 'recovered bridge still cleans up')
+  await checkIdentity({ evaluate, until, wait, port, send, cdp })
   assert.deepEqual(await evaluate('fixtureErrors'), [])
   console.log('Chrome: real cold/warm bridge, app navigation and live ports, minimize/close/reopen, shared windows/widgets, automatic/manual retries, bounded timeout recovery and embedded lifecycle passed')
 } catch (error) {

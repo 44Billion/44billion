@@ -542,3 +542,34 @@ describe('persona selection membership audit', () => {
     assert.deepEqual(auditPersistedState(state.local, state.session).plan.local.local_appPersonaSelections, {})
   })
 })
+
+it('reports interrupted assignments and stale counters as maintenance without scheduling repair', () => {
+  const state = validState({
+    local: {
+      session_subdomainNextId: 2,
+      local_subdomainLifecycle: { version: 1, pending: [], assignments: { 7: 'interrupted' } }
+    }
+  })
+  const { plan } = auditPersistedState(state.local, state.session)
+  assert.deepEqual(plan.releaseSubdomains, [])
+  assert.equal(plan.local.session_subdomainNextId, undefined)
+  assert.equal(hasStorageRepairActions(plan), false)
+  assert.deepEqual(plan.issues.map(({ code, actionable }) => ({ code, actionable })), [
+    { code: 'orphan_subdomain_assignment', actionable: false },
+    { code: 'subdomain_counter_behind', actionable: false }
+  ])
+  assert.equal(plan.local.session_subdomainFreeIds, undefined)
+  assert.equal(state.local.getItem('session_subdomainNextId'), '2', 'audit stays pure')
+})
+
+it('accepts pending origins without requesting their premature reuse', () => {
+  const state = validState({
+    local: {
+      session_subdomainNextId: 8,
+      local_subdomainLifecycle: { version: 1, pending: ['7'], assignments: { 7: 'retired' } }
+    }
+  })
+  const { plan } = auditPersistedState(state.local, state.session)
+  assert.equal(plan.local.session_subdomainFreeIds, undefined)
+  assert.deepEqual(plan.releaseSubdomains, [])
+})

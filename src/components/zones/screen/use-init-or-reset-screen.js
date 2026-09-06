@@ -1,3 +1,4 @@
+import { retireSubdomainsFor, subdomainStorage } from '#helpers/subdomain-mapping.js'
 import { useTask, useGlobalSignal } from '#f'
 import { useWebStorage } from '#f'
 import { appDecode, npubEncode } from 'libp2r2p/nip19'
@@ -246,30 +247,9 @@ export async function setAccountsState (nextAccountState, storage, tabStorage) {
     const defaultWorkspaceKey = currentWorkspaceKeys[0]
     const inheritingUserPk = nextUserPks[0]
 
-    // Close all open apps and schedule their re-opening
-    const openAppKeys = tabStorage[`session_workspaceByKey_${defaultWorkspaceKey}_openAppKeys$`]() || []
-
-    const appsToOpen = []
-    // Close all currently open apps
-    openAppKeys.forEach(appKey => {
-      tabStorage[`session_appByKey_${appKey}_visibility$`](v => {
-        if (v === 'open') appsToOpen.push(appKey) // ignore minimized apps
-        return 'closed'
-      })
-    })
-
-    // Clear open apps list
-    tabStorage[`session_workspaceByKey_${defaultWorkspaceKey}_openAppKeys$`]([])
-
-    // Transfer ownership of the workspace to the first new user
+    // Each live instance observes workspace ownership and reloads its document,
+    // preserving visibility and routes (including minimized windows/widgets).
     storage[`session_workspaceByKey_${defaultWorkspaceKey}_userPk$`](inheritingUserPk)
-
-    // Schedule re-opening apps on next tick
-    await new Promise(resolve => setTimeout(resolve, 0))
-    appsToOpen.forEach(appToOpen => {
-      tabStorage[`session_appByKey_${appToOpen}_visibility$`]('open')
-    })
-    tabStorage[`session_workspaceByKey_${defaultWorkspaceKey}_openAppKeys$`](appsToOpen)
 
     storage.session_defaultUserPk$(undefined)
     requestNostrDbAppBackfillsForWorkspace({
@@ -392,6 +372,11 @@ export async function setAccountsState (nextAccountState, storage, tabStorage) {
 
   // Update the list of account user pubkeys
   storage.session_accountUserPks$(nextUserPks)
+
+  // Retire origins only after ownership/account updates have propagated.
+  for (const userPk of currentAccountUserPks.filter(pk => !nextUserPks.includes(pk))) {
+    await retireSubdomainsFor(subdomainStorage(), { userPk })
+  }
 
   // Clean up old account data
   currentAccountUserPks

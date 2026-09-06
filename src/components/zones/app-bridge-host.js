@@ -1,3 +1,5 @@
+import { useSubdomainCleanup } from '#hooks/use-subdomain-cleanup.js'
+import { reserveSubdomainUse } from '#services/subdomain-cleanup.js'
 import { f, useComputed, useSignal, useTask } from '#f'
 import { initAppBridge, retryAppBridge } from '#helpers/window-message/app-bridge.js'
 import {
@@ -17,6 +19,7 @@ import {
 } from '#helpers/window-message/app-bridge-error.js'
 
 f('app-bridge-host', function () {
+  useSubdomainCleanup()
   const specs$ = useSignal([])
   useTask(({ track }) => {
     const specs = track(() => getAppBridgeSpecs()())
@@ -77,6 +80,8 @@ f('app-bridge-manager', function () {
     const currentState = ensureAppBridgeState(appSubdomain, { userPk, appId })
     const ac = new AbortController()
     cleanup(() => ac.abort())
+    if (!await reserveSubdomainUse(appSubdomain, { signal: ac.signal, userPk, appId })) return
+    if (ac.signal.aborted) return
     const cleanupBridge = await initAppBridge(currentState, {
       signal: ac.signal,
       cachingProgress$: currentState.cachingProgress$,

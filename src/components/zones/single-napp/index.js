@@ -1,3 +1,4 @@
+import { useAppSubdomain } from '#hooks/use-app-subdomain.js'
 import { useInitPersonas } from '#hooks/use-personas.js'
 import { f, useClosestStore, useStore, useSignal, useTask, useComputed, useMemo } from '#f'
 import { useWebStorage } from '#f'
@@ -13,7 +14,7 @@ import {
 } from '#helpers/window-message/app-bridge.js'
 import { APP_BRIDGE_ERROR_KIND } from '#helpers/window-message/app-bridge-error.js'
 import useAppBridgeRegistration from '#hooks/use-app-bridge-registration.js'
-import { allocateAppSubdomain } from '#helpers/subdomain-mapping.js'
+import { allocateAppSubdomain, subdomainStorage } from '#helpers/subdomain-mapping.js'
 import { getRandomId } from '#helpers/misc.js'
 import { resetDraftAppRuntimeData } from '#zones/screen/helpers/draft-app-runtime-reset.js'
 import AppUpdater from '#services/app-updater/index.js'
@@ -88,11 +89,7 @@ f('singleNappLauncher', function () {
   const {
     [`session_workspaceByKey_${wsKey}_userPk$`]: userPk$
   } = storage
-  const appSubdomain$ = useComputed(() => {
-    const userPk = userPk$()
-    if (!userPk) return null
-    return storage[`session_subdomainByUserAndApp_${userPk}_${appId}$`]()
-  })
+  const appSubdomain$ = useAppSubdomain(() => ({ userPk: userPk$(), appId: appId }))
   const appIframeRef$ = useSignal()
   const appIframeSrc$ = useSignal('about:blank')
   const launchError$ = useSignal(null)
@@ -159,12 +156,24 @@ f('singleNappLauncher', function () {
         userPk$(),
         appIframeRef$()
       ])
+      const identity = JSON.stringify([wsKey, userPk, appId, subdomain])
+      if (runtime.identity !== identity) {
+        runtime.appCleanup?.()
+        runtime.appCleanup = null
+        runtime.identity = identity
+        runtime.startedGeneration = null
+        runtime.appReady = false
+        runtime.autoRetried = false
+        runtime.retentionRecorded = false
+        appIframeSrc$('about:blank')
+        appReady$(false)
+      }
       if (subdomain == null && (!userPk || !appId)) return
       // `after: 'rendering'` applies only to the first run. If this task reruns
       // before a later render populates the iframe ref, return and wait for the
       // ref signal instead of wiring `initAppWindow` to a stale contentWindow.
       if (subdomain == null || !iframeRef) {
-        allocateAppSubdomain(storage, { userPk: userPk$(), appId })
+        await allocateAppSubdomain(subdomainStorage(), { userPk, appId })
         return
       }
 
@@ -287,6 +296,7 @@ f('singleNappLauncher', function () {
 
       let appPageTimeout = null
       const onAppReady = () => {
+        if (ac.signal.aborted || runtime.identity !== identity) return
         clearTimeout(appPageTimeout)
         showPending$(false)
         runtime.appReady = true
@@ -296,6 +306,7 @@ f('singleNappLauncher', function () {
         appKey,
         wsKey,
         initialRoute: currentRoute,
+        onRouteChanged: route => { runtime.initialRoute = route },
         appIframeRef$,
         appIframeSrc$,
         cachingProgress$,

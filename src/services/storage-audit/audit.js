@@ -713,10 +713,31 @@ function toPlainStringArray (value) {
 }
 
 function auditSubdomains (local, plan, issue, setLocal) {
+  plan.subdomainSnapshot = Object.fromEntries([...local]
+    .filter(([key]) => key.startsWith('session_subdomain') || key === 'local_subdomainLifecycle')
+    .map(([key, entry]) => [key, entry.value]))
+  const lifecycle = getValue(local, 'local_subdomainLifecycle')
+  if (lifecycle !== undefined && (
+    lifecycle?.version !== 1 || !Array.isArray(lifecycle.pending) ||
+    lifecycle.pending.some(id => !/^\d+$/.test(id) || !Number.isSafeInteger(Number(id))) ||
+    !lifecycle.assignments || typeof lifecycle.assignments !== 'object' || Array.isArray(lifecycle.assignments) ||
+    Object.entries(lifecycle.assignments).some(([id, token]) => !/^\d+$/.test(id) || typeof token !== 'string' || !token)
+  )) {
+    issue('invalid_subdomain_lifecycle', 'Invalid subdomain cleanup state')
+    // Never manufacture a clean certificate from malformed data.
+    const pending = [...new Set([
+      ...(Array.isArray(lifecycle?.pending) ? lifecycle.pending : []),
+      ...Object.keys(lifecycle?.assignments ?? {}),
+      ...(Array.isArray(getValue(local, 'session_subdomainFreeIds')) ? getValue(local, 'session_subdomainFreeIds') : [])
+    ].map(String).filter(id => /^\d+$/.test(id) && Number.isSafeInteger(Number(id))))]
+    const assignments = Object.fromEntries(Object.entries(lifecycle?.assignments ?? {}).filter(([id, token]) => /^\d+$/.test(id) && typeof token === 'string' && token))
+    setLocal('local_subdomainLifecycle', { version: 1, pending, assignments })
+    setLocal('session_subdomainFreeIds', null)
+  }
+
   const nextId = getValue(local, 'session_subdomainNextId')
   if (nextId !== undefined && (!Number.isSafeInteger(nextId) || nextId < 0)) {
-    issue('invalid_subdomain_next_id', 'session_subdomainNextId is invalid')
-    setLocal('session_subdomainNextId', 0)
+    issue('invalid_subdomain_next_id', 'session_subdomainNextId needs maintenance', undefined, false)
   }
 
   let freeIds = getValue(local, 'session_subdomainFreeIds')
@@ -748,7 +769,7 @@ function auditSubdomains (local, plan, issue, setLocal) {
     ) {
       issue('invalid_subdomain_mapping', 'Invalid subdomain mapping', { key })
       setLocal(key, null)
-      if (/^\d+$/.test(id)) freeIds = uniqueStrings([...freeIds, id]).sort((a, b) => Number(a) - Number(b))
+      if (/^\d+$/.test(id)) plan.releaseSubdomains.push({ subdomain: id })
       continue
     }
     toAppEntries.set(id, mapping)
@@ -770,9 +791,7 @@ function auditSubdomains (local, plan, issue, setLocal) {
     if (!/^\d+$/.test(id) || !mapping || mapping.userPk !== userPk || mapping.appId !== appId) {
       issue('subdomain_mapping_mismatch', 'Subdomain mapping is not bidirectional', { key, id })
       setLocal(key, null)
-      if (mapping && mapping.userPk === userPk && mapping.appId === appId) {
-        plan.releaseSubdomains.push({ userPk, appId, subdomain: id })
-      }
+      if (/^\d+$/.test(id) && !mapping) plan.releaseSubdomains.push({ userPk, appId, subdomain: id })
       continue
     }
     byAppEntries.set(`${userPk}\u0000${appId}`, { userPk, appId, subdomain: id })
@@ -783,6 +802,21 @@ function auditSubdomains (local, plan, issue, setLocal) {
       issue('subdomain_mapping_mismatch', 'Subdomain mapping has no reverse entry', { id })
       plan.releaseSubdomains.push({ userPk: mapping.userPk, appId: mapping.appId, subdomain: id })
     }
+  }
+
+  // These are handled from live state under the mapping lock. They must not
+  // produce persisted repair actions or require a launcher reload.
+  for (const id of Object.keys(lifecycle?.assignments ?? {})) {
+    if (!toAppEntries.has(id) && !freeIds.includes(id) && !(Array.isArray(lifecycle?.pending) && lifecycle.pending.includes(id))) {
+      issue('orphan_subdomain_assignment', 'Interrupted allocation needs background origin cleanup', { id }, false)
+    }
+  }
+
+  const reserved = [...plan.releaseSubdomains.map(item => item.subdomain), ...toAppEntries.keys(), ...freeIds, ...(Array.isArray(lifecycle?.pending) ? lifecycle.pending : []), ...Object.keys(lifecycle?.assignments ?? {})]
+    .map(Number).filter(Number.isSafeInteger)
+  const minimumNext = reserved.reduce((max, id) => Math.max(max, id + 1), 0)
+  if (minimumNext > 0 && Number.isSafeInteger(minimumNext) && (!Number.isSafeInteger(nextId) || nextId < minimumNext)) {
+    issue('subdomain_counter_behind', 'Subdomain counter needs maintenance', undefined, false)
   }
 
   if (freeIds.length > 0 && (getValue(local, 'session_subdomainFreeIds') ?? []).join() !== freeIds.join()) {

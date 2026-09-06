@@ -31,7 +31,14 @@ ephemeral and intentionally not persisted; they do not belong here or in
 - `session_openWorkspaceKeys` — ordered active workspace keys; must be a subset of workspace keys.
 - `session_unread_appUpdateCount` — optional badge count.
 - `session_subdomainNextId` — next numeric subdomain id.
-- `session_subdomainFreeIds` — released numeric ids.
+- `session_subdomainFreeIds` — numeric IDs available only after confirmed origin cleanup.
+- `local_subdomainLifecycle` — `{ version: 1, pending: string[], assignments: { [subdomain]: string } }`.
+  `pending` quarantines retired origins until the trusted launcher page confirms
+  cleanup with no other clients. `assignments` retains a unique token for each
+  allocation, replaced on recycling; existing mappings without a token use
+  `legacy:<subdomain>` without clearing their existing session. Entries also
+  reserve numeric IDs against counter rollback. Legacy free IDs enter quarantine
+  before any reuse. Interrupted/failed cleanup never certifies an ID as free.
 - `44billion:vault-accepted-message-queue:v1` — pending vault messages.
 - `44billion:app-asset-budget:v1` — per-app cached byte budgets.
 - `local_embeddedOnlyRetentionAdmissions` — embedded-only retention admissions.
@@ -251,3 +258,44 @@ claims, seen ids and deletion tombstones.
 
 The two-phase audit removes only confirmed inconsistent/orphaned entries,
 reusing existing app/account cleanup routines. Unknown keys are preserved.
+
+Subdomain bookkeeping follows the same no-reload path as list normalization:
+before rendering and during background maintenance, the mapping lock protects
+counter correction and queuing interrupted assignments with no mapping in either
+direction. Valid mappings and assignment tokens are preserved; no origin cleanup
+is awaited before rendering. Only changed bookkeeping is written. The audit also
+takes its snapshot under this lock and reports these maintenance needs as
+non-actionable diagnostics, without repair writes or a reload. Older plans that
+contain only these maintenance issues are discarded in favor of current-state
+normalization. Broken mappings and other structural corruption retain the
+existing two-phase repair flow.
+
+## Origin retirement and account identity
+
+Subdomain mapping mutations use the `app-subdomain-mappings` Web Lock on the
+launcher origin. Live bridge hosts hold shared `app-subdomain-use:<id>` locks;
+cleanup requires an exclusive lock plus an origin-wide service-worker client
+check. Without Web Locks, recycling is disabled. The launcher processes pending
+origins on startup, retirement, bridge disposal, reconnect and regular maintenance,
+with bounded retries while old documents finish unloading.
+Each cleanup round logs a `[subdomain-cleanup]` summary with the number and IDs
+of origins released for reuse and the remaining pending IDs with their reasons
+(in use, still mapped, cleanup error/timeout, or unavailable Web Locks). Failures
+use a warning; ordinary progress uses an informational log. Empty rounds and
+unchanged pending-only reports are suppressed within each launcher context;
+new completions are always reported. These diagnostics are not persisted.
+Removal and storage repair enqueue cleanup instead of freeing IDs directly.
+The cleanup page `/~~napp#clear` and its service worker belong to the launcher;
+removing an app's files or mapping does not prevent origin cleanup. If bootstrap
+or cleanup is unavailable, the ID stays pending while apps can allocate fresh IDs.
+
+At each app origin, sessionStorage key `44billion:subdomain-assignment` records
+which allocation owns that tab's session. The trusted page checks it before app
+scripts execute. A new assignment clears that tab's old sessionStorage; normal
+reopens preserve it. This per-tab check supplements origin cleanup because a
+cleanup iframe cannot clear another top-level tab's sessionStorage.
+
+Changing workspace ownership reloads live windows, widgets (including minimized
+ones) and isolated apps with the new user/app origin. Routes, visibility and widget
+configuration survive; closed instances acquire the new identity on their next
+open. Changes to persona selection alone do not reload documents.

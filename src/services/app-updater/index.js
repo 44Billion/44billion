@@ -17,7 +17,8 @@ import {
 import { base62ToBase16 } from 'libp2r2p/base62'
 import { getUserRelays } from '#helpers/nostr-queries.js'
 import { cleanupNostrDbAppForOwner as cleanupNostrDbAppForOwnerBase } from '#helpers/nostrdb-app-cleanup.js'
-import { addSubdomainFreeId } from '#helpers/subdomain-mapping.js'
+import { retireSubdomainsFor, subdomainStorage } from '#helpers/subdomain-mapping.js'
+import { processSubdomainCleanup } from '#services/subdomain-cleanup.js'
 import { setWebStorageItem } from '#f'
 import { removeVaultAcceptedMessage } from '#helpers/window-message/browser/vault-accepted-message-queue.js'
 import { jsVars } from '#assets/styles/theme.js'
@@ -345,24 +346,7 @@ export default class AppUpdater {
     const storage = _localStorage || (typeof localStorage !== 'undefined' ? localStorage : null)
     if (!storage || !appId) return 0
 
-    let removed = 0
-    const prefix = 'session_subdomainByUserAndApp_'
-    const suffix = `_${appId}`
-    for (const key of this._storageKeys(storage)) {
-      if (!key.startsWith(prefix) || !key.endsWith(suffix)) continue
-      const subdomain = this._readJsonStorage(storage, key, null)
-      _setWebStorageItem(storage, key, undefined)
-      removed++
-      if (subdomain != null) {
-        _setWebStorageItem(storage, `session_subdomainToApp_${subdomain}`, undefined)
-        const freeIds = addSubdomainFreeId(
-          this._readJsonStorage(storage, 'session_subdomainFreeIds', []),
-          subdomain
-        )
-        _setWebStorageItem(storage, 'session_subdomainFreeIds', freeIds.length ? freeIds : undefined)
-      }
-    }
-    return removed
+    return retireSubdomainsFor(subdomainStorage(storage, _setWebStorageItem), { appId })
   }
 
   static _embeddedRetentionAdmissions ({
@@ -464,7 +448,7 @@ export default class AppUpdater {
 
     await _clearCachedFilesById(appId)
     this.clearCachedAppMetadata(appId, { _localStorage, _setWebStorageItem })
-    this.removeSubdomainMappingsForApp(appId, { _localStorage, _setWebStorageItem })
+    await this.removeSubdomainMappingsForApp(appId, { _localStorage, _setWebStorageItem })
 
     const { storage, admissions } = this._embeddedRetentionAdmissions({ _localStorage })
     const remaining = admissions.filter(item => item.appId !== appId)
@@ -1071,6 +1055,7 @@ export default class AppUpdater {
 
     // https://developer.mozilla.org/en-US/docs/Web/API/Web_Locks_API#options
     return _navigator.locks.request('app-cleanup-job', { ifAvailable }, async (lock) => {
+      if (lock) processSubdomainCleanup().catch(error => console.warn('[subdomain-cleanup]', error))
       if (!lock) return
 
       const now = _now()
@@ -1112,7 +1097,7 @@ export default class AppUpdater {
                 _localStorage,
                 _setWebStorageItem
               })
-              this.removeSubdomainMappingsForApp(appId, {
+              await this.removeSubdomainMappingsForApp(appId, {
                 _localStorage,
                 _setWebStorageItem
               })

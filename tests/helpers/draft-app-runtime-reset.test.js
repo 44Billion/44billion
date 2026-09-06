@@ -50,3 +50,27 @@ describe('draft app runtime reset helper', () => {
     assert.equal(clear.mock.callCount(), 0)
   })
 })
+
+it('accepts cleanup confirmation only from its own iframe and request', async () => {
+  const { askAppToClearData } = await import('../../src/components/zones/screen/helpers/draft-app-runtime-reset.js')
+  let receive
+  const iframe = { style: {}, contentWindow: {}, remove: mock.fn() }
+  const window = {
+    location: { protocol: 'https:', host: 'launcher.test' },
+    addEventListener: (_, listener) => { receive = listener },
+    removeEventListener: mock.fn()
+  }
+  let completed = false
+  const pending = askAppToClearData('7', {
+    requestId: 'expected', strict: true, _window: window,
+    _document: { createElement: () => iframe, body: { appendChild () {} } }
+  }).then(value => { completed = true; return value })
+  receive({ origin: 'https://7.launcher.test', source: {}, data: { code: 'DATA_CLEARED', requestId: 'expected' } })
+  receive({ origin: 'https://7.launcher.test', source: iframe.contentWindow, data: { code: 'DATA_CLEARED', requestId: 'old' } })
+  await Promise.resolve()
+  assert.equal(completed, false)
+  assert.match(iframe.src, /strictClear=1/)
+  receive({ origin: 'https://7.launcher.test', source: iframe.contentWindow, data: { code: 'DATA_CLEARED', requestId: 'expected' } })
+  assert.equal(await pending, true)
+  assert.equal(iframe.remove.mock.callCount(), 1)
+})

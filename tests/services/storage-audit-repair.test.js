@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict'
 import { before, describe, it, mock } from 'node:test'
 
+mock.module('#f', {
+  namedExports: {
+    setWebStorageItem: (area, key, value) => {
+      if (value === undefined) area.removeItem(key)
+      else area.setItem(key, JSON.stringify(value))
+    }
+  }
+})
+
 mock.module('#services/app-file-manager/index.js', {
   defaultExport: class {
     static async clearCachedFilesById () {}
@@ -95,6 +104,21 @@ describe('storage repair plan', () => {
     assert.equal(local.getItem('session_workspaceByKey_ws_userPk'), null)
     assert.equal(local.getItem('session_subdomainByUserAndApp_user_app'), null)
     assert.equal(local.getItem('session_subdomainToApp_7'), null)
-    assert.deepEqual(JSON.parse(local.getItem('session_subdomainFreeIds')), ['7'])
+    assert.deepEqual(JSON.parse(local.getItem('local_subdomainLifecycle')).pending, ['7'])
   })
+})
+
+it('does not retire a replacement assignment from a stale audit plan', async () => {
+  const local = storageMock({
+    session_subdomainByUserAndApp_user_app: JSON.stringify('7'),
+    session_subdomainToApp_7: JSON.stringify({ userPk: 'user', appId: 'app' }),
+    local_subdomainLifecycle: JSON.stringify({ version: 1, pending: [], assignments: { 7: 'new' } })
+  })
+  await applyStorageRepairPlan({
+    local: {}, session: {},
+    subdomainSnapshot: { local_subdomainLifecycle: { version: 1, pending: [], assignments: { 7: 'old' } } },
+    releaseSubdomains: [{ userPk: 'user', appId: 'app', subdomain: '7' }]
+  }, { localStorageArea: local, sessionStorageArea: storageMock({}) })
+  assert.equal(local.getItem('session_subdomainByUserAndApp_user_app'), JSON.stringify('7'))
+  assert.deepEqual(JSON.parse(local.getItem('local_subdomainLifecycle')).pending, [])
 })

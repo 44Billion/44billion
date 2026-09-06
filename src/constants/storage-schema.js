@@ -28,6 +28,7 @@ export const GLOBAL_LOCAL_KEYS = [
   'session_unread_appUpdateCount',
   'session_subdomainNextId',
   'session_subdomainFreeIds',
+  'local_subdomainLifecycle', // { version: 1, pending: string[], assignments: { [id]: token } }
   '44billion:vault-accepted-message-queue:v1',
   '44billion:app-asset-budget:v1',
   'local_embeddedOnlyRetentionAdmissions',
@@ -106,3 +107,6 @@ export const DYNAMIC_SESSION_PREFIXES = [
   'session_appByKey_',
   'session_widgetByKey_'
 ]
+
+// Persisted within each app origin, not the launcher's storage areas.
+export const APP_ORIGIN_SESSION_KEYS = ['44billion:subdomain-assignment']

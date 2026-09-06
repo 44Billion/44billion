@@ -1,3 +1,4 @@
+import { useAppSubdomain } from '#hooks/use-app-subdomain.js'
 import { useAppPersona } from '#hooks/use-app-persona.js'
 import { personaT } from '#i18n/personas.js'
 import '#shared/app-persona.js'
@@ -28,7 +29,7 @@ import '#shared/icons/icon-dots.js'
 import '#shared/menu.js'
 import { APP_PENDING_INDICATOR_DELAY_MS, initAppWindow } from '#helpers/window-message/app-bridge.js'
 import { ensureAppBridgeState, registerAppBridgeWindow } from '#helpers/window-message/app-bridge-registry.js'
-import { allocateAppSubdomain } from '#helpers/subdomain-mapping.js'
+import { allocateAppSubdomain, subdomainStorage } from '#helpers/subdomain-mapping.js'
 import { useVaultActor } from '#zones/vault-modal/index.js'
 import { usePermissionDialogStore } from '#zones/permission-dialog/index.js'
 import { useConfirmationDialogStore } from '#zones/confirmation-dialog/index.js'
@@ -725,12 +726,9 @@ f('widget-window', function () {
     const grid = grid$()
     return placement.w * (grid.cell + grid.gap) - grid.gap
   })
-  const appSubdomain$ = useComputed(() => {
+  const appSubdomain$ = useAppSubdomain(() => {
     const record = store.record$()
-    if (!record) return null
-    const userPk = storage[`session_workspaceByKey_${record.wsKey}_userPk$`]()
-    if (!userPk || !record.appId) return null
-    return storage[`session_subdomainByUserAndApp_${userPk}_${record.appId}$`]()
+    return { userPk: record && storage[`session_workspaceByKey_${record.wsKey}_userPk$`](), appId: record?.appId }
   })
   // Stable primitive views of the widget record. `record$` gets a new object
   // reference whenever any widget is written (e.g. APP_ROUTE_CHANGED pinning
@@ -1012,7 +1010,25 @@ f('widget-window', function () {
       const iframeRef = track(() => store.appIframeRef$())
       const appSubdomain = track(() => appSubdomain$())
       if (!appId || !wsKey) return
-      const userPk = storage[`session_workspaceByKey_${wsKey}_userPk$`]()
+      const userPk = track(() => storage[`session_workspaceByKey_${wsKey}_userPk$`]())
+      const identity = JSON.stringify([wsKey, userPk, appId, appSubdomain])
+      if (runtime.identity !== identity) {
+        runtime.ac?.abort()
+        runtime.appCleanup?.()
+        runtime.unregister?.()
+        runtime.ac = null
+        runtime.appCleanup = null
+        runtime.unregister = null
+        runtime.bridgeState = null
+        runtime.appReady = false
+        runtime.appStarting = false
+        runtime.startedGeneration = null
+        runtime.identity = identity
+        store.appIframeSrc$('about:blank')
+        store.appReady$(false)
+        store.wideMode$(false)
+        store.minWidth$(WIDGET_AUTO_FIT_MIN_WIDTH)
+      }
       const pinnedRoute = store.record$()?.pinnedRoute ?? ''
       const route = readWidgetSessionValue(sessionStorage, widgetKey, 'route') ?? pinnedRoute
       store.launchError$(null)
@@ -1038,7 +1054,7 @@ f('widget-window', function () {
       }
       if (!iframeRef) return
       if (!appSubdomain) {
-        allocateAppSubdomain(storage, { userPk, appId })
+        await allocateAppSubdomain(subdomainStorage(), { userPk, appId })
         return
       }
 
@@ -1157,6 +1173,7 @@ f('widget-window', function () {
       store.launchError$(null)
 
       const onAppReady = () => {
+        if (ac.signal.aborted || runtime.identity !== identity) return
         store.showPending$(false)
         runtime.appReady = true
         runtime.appStarting = false

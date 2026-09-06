@@ -14,6 +14,8 @@ export function askAppToClearData (appSubdomain, {
   _window = window,
   _setTimeout = setTimeout,
   _clearTimeout = clearTimeout,
+  strict = false,
+  requestId = globalThis.crypto.randomUUID(),
   timeoutMs = 5000
 } = {}) {
   if (appSubdomain == null) return Promise.resolve(false)
@@ -30,7 +32,7 @@ export function askAppToClearData (appSubdomain, {
 
   const appOrigin = `${_window.location.protocol}//${appSubdomain}.${_window.location.host}`
   const onMessage = e => {
-    if (e.origin !== appOrigin) return
+    if (e.origin !== appOrigin || e.source !== iframe.contentWindow || e.data?.requestId !== requestId) return
     if (e.data.code === 'DATA_CLEARED') {
       cleanup()
       p.resolve(true)
@@ -41,7 +43,7 @@ export function askAppToClearData (appSubdomain, {
     }
   }
   _window.addEventListener('message', onMessage)
-  iframe.src = `${appOrigin}/~~napp#clear`
+  iframe.src = `${appOrigin}/~~napp?clearRequest=${encodeURIComponent(requestId)}${strict ? '&strictClear=1' : ''}#clear`
   _document.body.appendChild(iframe)
 
   timeout = _setTimeout(() => {

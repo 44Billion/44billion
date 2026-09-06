@@ -344,9 +344,26 @@ setInterval(async () => {
 const resolvers = []
 
 self.addEventListener('message', async e => {
-  if (!e.source.id) return
+  if (!e.source?.id) return
   const { pathname } = new URL(e.source.url)
-  switch (e.data.code) {
+  switch (e.data?.code) {
+    case 'CHECK_ORIGIN_IDLE': {
+      const port = e.ports?.[0]
+      if (!port) return
+      // Include uncontrolled documents/workers from older launcher versions.
+      // Only the requesting cleanup iframe may remain during recycling.
+      e.waitUntil((async () => {
+        try {
+          const clients = await self.clients.matchAll({ includeUncontrolled: true, type: 'all' })
+          port.postMessage({ code: 'ORIGIN_IDLE', idle: clients.every(client => client.id === e.source.id) })
+        } catch {
+          port.postMessage({ code: 'ORIGIN_IDLE', idle: false })
+        } finally {
+          port.close()
+        }
+      })())
+      break
+    }
     // Handle ready signals from clients
     case 'TRUSTED_IFRAME_READY': {
       if (pathname !== '/~~napp') return

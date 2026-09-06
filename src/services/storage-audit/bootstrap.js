@@ -35,8 +35,20 @@ export function readPendingStorageRepairPlan (localStorageArea = globalThis.loca
   return parsePlan(localStorageArea?.getItem?.(STORAGE_REPAIR_PLAN_KEY))
 }
 
+// Also recognize maintenance-only plans persisted by older launcher code.
+const SUBDOMAIN_MAINTENANCE_ISSUES = new Set([
+  'orphan_subdomain_assignment', 'subdomain_counter_behind', 'invalid_subdomain_next_id'
+])
 function hasActionableStorageIssues (plan) {
-  return (plan?.issues ?? []).some(issue => issue.actionable !== false)
+  return (plan?.issues ?? []).some(issue => issue.actionable !== false && !SUBDOMAIN_MAINTENANCE_ISSUES.has(issue.code))
+}
+
+async function withNormalizedSubdomains (localStorageArea, callback = () => {}) {
+  const { withSubdomainLock, subdomainStorage, normalizeSubdomainMaintenance } = await import('#helpers/subdomain-mapping.js')
+  return withSubdomainLock(() => {
+    normalizeSubdomainMaintenance(subdomainStorage(localStorageArea))
+    return callback()
+  })
 }
 
 export function clearPendingStorageRepair (localStorageArea = globalThis.localStorage) {
@@ -113,7 +125,10 @@ async function auditWithManifestOwnedAppIds (localStorageArea, sessionStorageAre
   }
   const manifestsMs = Math.max(0, Math.round(performance.now() - startedAt))
   const auditStartedAt = performance.now()
-  const result = auditPersistedState(localStorageArea, sessionStorageArea, { manifestAppIds })
+  // Take the audit snapshot under the mapping lock too, so another tab's
+  // allocation/retirement cannot look like a partially written mapping.
+  const result = await withNormalizedSubdomains(localStorageArea, () =>
+    auditPersistedState(localStorageArea, sessionStorageArea, { manifestAppIds }))
   const auditMs = Math.max(0, Math.round(performance.now() - auditStartedAt))
   console.info(
     `[storage-audit] Audit completed in ${auditMs + manifestsMs}ms ` +
@@ -238,7 +253,18 @@ export async function applyPendingStorageRepair ({
     console.warn('[storage-audit] persisted-list normalization failed', error)
   }
 
+  // Local bookkeeping only: never await origin cleanup before rendering.
+  try {
+    await withNormalizedSubdomains(localStorageArea)
+  } catch (error) {
+    console.warn('[storage-audit] subdomain maintenance failed', error)
+  }
+
   let plan = readPendingStorageRepairPlan(localStorageArea)
+  if (plan?.issues?.length && plan.issues.every(issue => SUBDOMAIN_MAINTENANCE_ISSUES.has(issue.code))) {
+    clearPendingStorageRepair(localStorageArea)
+    plan = null
+  }
   if (!plan) {
     if (localStorageArea?.getItem?.(STORAGE_REPAIR_IN_PROGRESS_KEY)) {
       localStorageArea.removeItem(STORAGE_REPAIR_IN_PROGRESS_KEY)

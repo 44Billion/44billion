@@ -1,3 +1,4 @@
+import { readSubdomainLifecycle, subdomainStorage } from '#helpers/subdomain-mapping.js'
 import { personaPublicKeys, readAppPersonaPublicKeys } from '#services/personas/public-keys.js'
 import { serializeError } from '#helpers/error.js'
 import { connectPersonaPublicKeysPort } from './persona-public-keys-port.js'
@@ -452,7 +453,8 @@ export async function initAppBridge (state, {
     state.error$(null)
     // A retry closes the old port and needs a new document/handshake. The
     // bridge identity stays stable, while the navigation URL must change.
-    const trustedSrc = `//${state.appSubdomain}.${window.location.host}/~~napp?bridgeId=${encodeURIComponent(state.bridgeId)}&retry=${state.retryCount$()}`
+    const assignment = readSubdomainLifecycle(subdomainStorage()).assignments[state.appSubdomain] ?? `legacy:${state.appSubdomain}`
+    const trustedSrc = `//${state.appSubdomain}.${window.location.host}/~~napp?bridgeId=${encodeURIComponent(state.bridgeId)}&retry=${state.retryCount$()}&assignment=${encodeURIComponent(assignment)}`
     // A keyed manager can also be reused after the last instance briefly
     // closed. In that case its existing iframe still needs a fresh handshake.
     if (state.trustedIframeSrc$() === trustedSrc) state.trustedIframeRef$()?.setAttribute('src', trustedSrc)
@@ -632,6 +634,7 @@ function createAppPageMessageListener ({
   requestPermission,
   openApp,
   onFileNotCached,
+  onRouteChanged,
   requestAssetBudgetConfirmation,
   signal,
   wsKey,
@@ -796,6 +799,7 @@ function createAppPageMessageListener ({
             !href.startsWith('/') ||
             /^\/(?:\+{1,3}[a-zA-Z0-9]{48,}|naddr1[0-9a-z]+)/.test(href)
           ) break
+          if (onRouteChanged) { onRouteChanged(href); break }
           // Only live windows keep a route: ignore reports that arrive after
           // the instance was closed (e.g. a pagehide right before removal).
           let visibility
@@ -1133,6 +1137,7 @@ export function initAppWindow (state, {
   requestPermission,
   openApp,
   onFileNotCached,
+  onRouteChanged,
   requestAssetBudgetConfirmation,
   onAppReady,
   signal,
@@ -1173,6 +1178,7 @@ export function initAppWindow (state, {
     requestPermission,
     openApp,
     onFileNotCached,
+    onRouteChanged,
     requestAssetBudgetConfirmation,
     signal,
     wsKey,
@@ -1181,7 +1187,7 @@ export function initAppWindow (state, {
 
   const onAppReadyMessage = e => {
     if (
-      e.data.code !== 'APP_IFRAME_READY' ||
+      signal.aborted || e.data.code !== 'APP_IFRAME_READY' ||
       e.source !== appIframeRef$()?.contentWindow ||
       e.origin !== appOrigin
     ) return

@@ -1,6 +1,15 @@
 import { describe, it, mock } from 'node:test'
 import assert from 'node:assert/strict'
 
+mock.module('#f', {
+  namedExports: {
+    setWebStorageItem: (area, key, value) => {
+      if (value === undefined) area.removeItem(key)
+      else area.setItem(key, JSON.stringify(value))
+    }
+  }
+})
+
 mock.module('#services/idb/browser/queries/site-manifest.js', {
   namedExports: {
     getSiteManifestFromDb: async () => null,
@@ -157,7 +166,7 @@ describe('app lifecycle helper', () => {
     assert.equal(calls.cleanup[0].wsKey, 'ws1')
     assert.equal(calls.cleanup[0].appId, 'app')
     assert.deepEqual(calls.cleanup[0].excludeWorkspaceKeys, ['ws1'])
-    assert.deepEqual(calls.ask, ['7'])
+    assert.deepEqual(calls.ask, [])
     assert.equal(calls.release.length, 1)
     assert.deepEqual(calls.files, ['app'])
   })
@@ -202,7 +211,7 @@ describe('app lifecycle helper', () => {
     })
 
     assert.equal(calls.cleanup.length, 1)
-    assert.deepEqual(calls.clear, ['7'])
+    assert.deepEqual(calls.clear, [])
     assert.equal(calls.release.length, 1)
     assert.deepEqual(calls.files, [])
     assert.equal(storage.session_appById_app_name$(), 'App')
@@ -325,7 +334,7 @@ describe('app lifecycle helper', () => {
 
     assert.equal(storage['session_subdomainByUserAndApp_user-a_app$'](), undefined)
     assert.equal(storage['session_subdomainToApp_7$'](), undefined)
-    assert.deepEqual(storage.session_subdomainFreeIds$(), ['7'])
+    assert.deepEqual(storage.local_subdomainLifecycle$().pending, ['7'])
   })
 
   it('counts same-user instances separately from other users', () => {

@@ -1,3 +1,4 @@
+import { MessageChannel as NativeMessageChannel } from 'node:worker_threads'
 import { describe, it, mock } from 'node:test'
 import assert from 'node:assert/strict'
 
@@ -6,6 +7,7 @@ globalThis.window = { location: { origin: 'https://1.44billion.net' } }
 
 const {
   clearAppData,
+  prepareAppSession,
   tellSwImReady
 } = await import('../../src/helpers/window-message/trusted-app-page/index.js')
 
@@ -203,4 +205,47 @@ describe('trusted app page clearAppData', () => {
     assert.equal(typeof registration.then, 'function')
     await assert.rejects(registration)
   })
+})
+
+it('session assignment clears an old tab once and preserves normal reopens and legacy data', () => {
+  const values = new Map([['app-data', 'old']])
+  const storage = { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), clear: () => values.clear() }
+  prepareAppSession(storage, 'legacy:7')
+  assert.equal(values.get('app-data'), 'old')
+  prepareAppSession(storage, 'new-assignment')
+  assert.equal(values.has('app-data'), false)
+  values.set('app-data', 'new')
+  prepareAppSession(storage, 'new-assignment')
+  assert.equal(values.get('app-data'), 'new')
+})
+
+it('strict cleanup refuses missing client verification without clearing storage', async () => {
+  const clear = mock.fn()
+  const replies = []
+  await clearAppData({ strict: true, requestId: 'request', _document: {}, _window: { parent: {}, localStorage: { clear } }, _navigator: {}, _tell: (_, message) => replies.push(message) })
+  assert.equal(clear.mock.callCount(), 0)
+  assert.equal(replies[0].code, 'DATA_CLEAR_ERROR')
+  assert.equal(replies[0].requestId, 'request')
+})
+
+it('strict cleanup rejects IndexedDB without enumeration even after clients are verified', async () => {
+  const previousChannel = globalThis.MessageChannel
+  globalThis.MessageChannel = NativeMessageChannel
+  const replies = []
+  try {
+    await clearAppData({
+      strict: true, requestId: 'strict-request',
+      _window: { parent: {}, indexedDB: { deleteDatabase () {} } },
+      _document: {},
+      _navigator: {
+        serviceWorker: {
+          controller: { postMessage (_, [port]) { port.postMessage({ code: 'ORIGIN_IDLE', idle: true }); port.close() } },
+          getRegistrations: async () => []
+        }
+      },
+      _tell: (_, message) => replies.push(message)
+    })
+    assert.equal(replies[0].code, 'DATA_CLEAR_ERROR')
+    assert.deepEqual(replies[0].payload.failures.map(failure => failure.step), ['indexedDB'])
+  } finally { globalThis.MessageChannel = previousChannel }
 })

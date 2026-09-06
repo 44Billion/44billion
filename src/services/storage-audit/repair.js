@@ -9,10 +9,7 @@ import {
 import {
   deleteAllPermissionsForApp
 } from '#services/idb/browser/queries/permission.js'
-import {
-  addSubdomainFreeId,
-  normalizeSubdomainFreeIds
-} from '#helpers/subdomain-mapping.js'
+import { retireSubdomain, subdomainStorage, withSubdomainLock, initializeSubdomainLifecycle, normalizeSubdomainMaintenance, isSubdomainStorageKey } from '#helpers/subdomain-mapping.js'
 
 function setStoredValue (storage, key, value) {
   if (value === null || value === undefined) storage?.removeItem?.(key)
@@ -24,16 +21,6 @@ function removeKeysWithPrefix (storage, prefix) {
   for (let index = storage.length - 1; index >= 0; index--) {
     const key = storage.key(index)
     if (typeof key === 'string' && key.startsWith(prefix)) storage.removeItem(key)
-  }
-}
-
-function readJson (storage, key, fallback) {
-  const raw = storage?.getItem?.(key)
-  if (raw == null) return fallback
-  try {
-    return JSON.parse(raw)
-  } catch {
-    return fallback
   }
 }
 
@@ -76,7 +63,7 @@ async function removeAppData (appId, ownerPubkey, localStorageArea) {
     console.warn(`[storage-audit] Failed to clear cached files for ${appId}`, error)
   }
   AppUpdater.clearCachedAppMetadata(appId, { _localStorage: localStorageArea })
-  AppUpdater.removeSubdomainMappingsForApp(appId, { _localStorage: localStorageArea })
+  await AppUpdater.removeSubdomainMappingsForApp(appId, { _localStorage: localStorageArea })
   return results
 }
 
@@ -87,7 +74,7 @@ export async function applyStorageRepairPlan (plan, {
   if (!plan || typeof plan !== 'object') return null
 
   for (const [key, value] of Object.entries(plan.local ?? {})) {
-    setStoredValue(localStorageArea, key, value)
+    if (!isSubdomainStorageKey(key)) setStoredValue(localStorageArea, key, value)
   }
   for (const [key, value] of Object.entries(plan.session ?? {})) {
     setStoredValue(sessionStorageArea, key, value)
@@ -112,18 +99,28 @@ export async function applyStorageRepairPlan (plan, {
     if (item.ownerPubkey) ownersToDelete.add(item.ownerPubkey)
   }
 
-  let freeIds = normalizeSubdomainFreeIds(readJson(localStorageArea, 'session_subdomainFreeIds', []))
-  for (const item of plan.releaseSubdomains ?? []) {
-    if (!item?.subdomain || !item?.userPk || !item?.appId) continue
-    setStoredValue(localStorageArea, `session_subdomainByUserAndApp_${item.userPk}_${item.appId}`, null)
-    setStoredValue(localStorageArea, `session_subdomainToApp_${item.subdomain}`, null)
-    freeIds = addSubdomainFreeId(freeIds, item.subdomain)
-  }
-  if (freeIds.length > 0) {
-    setStoredValue(localStorageArea, 'session_subdomainFreeIds', freeIds)
-  } else {
-    setStoredValue(localStorageArea, 'session_subdomainFreeIds', null)
-  }
+  await withSubdomainLock(() => {
+    const storage = subdomainStorage(localStorageArea)
+    const unchanged = key => !plan.subdomainSnapshot ||
+      JSON.stringify(storage[`${key}$`]()) === JSON.stringify(plan.subdomainSnapshot[key])
+    for (const [key, value] of Object.entries(plan.local ?? {})) {
+      if (isSubdomainStorageKey(key) && unchanged(key)) setStoredValue(localStorageArea, key, value)
+    }
+    initializeSubdomainLifecycle(storage)
+    for (const item of plan.releaseSubdomains ?? []) {
+      if (!item?.subdomain) continue
+      if (plan.subdomainSnapshot) {
+        const oldAssignment = plan.subdomainSnapshot.local_subdomainLifecycle?.assignments?.[item.subdomain]
+        const assignment = storage.local_subdomainLifecycle$()?.assignments?.[item.subdomain]
+        if (oldAssignment !== assignment) continue
+      }
+      const mapping = storage[`session_subdomainToApp_${item.subdomain}$`]()
+      // A stale repair plan must not retire a replacement assignment.
+      if (mapping && (mapping.userPk !== item.userPk || mapping.appId !== item.appId)) continue
+      retireSubdomain(storage, item.subdomain)
+    }
+    normalizeSubdomainMaintenance(storage)
+  })
 
   const removedApps = []
   for (const item of plan.removeApps ?? []) {

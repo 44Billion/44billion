@@ -1,11 +1,20 @@
-import { describe, it } from 'node:test'
+import { describe, it, mock } from 'node:test'
 import assert from 'node:assert/strict'
 
-import {
+mock.module('#f', {
+  namedExports: {
+    setWebStorageItem: (area, key, value) => {
+      if (value === undefined) area.removeItem(key)
+      else area.setItem(key, JSON.stringify(value))
+    }
+  }
+})
+
+const {
   allocateAppSubdomain,
   normalizeSubdomainFreeIds,
   releaseAppSubdomain
-} from '../../src/helpers/subdomain-mapping.js'
+} = await import('../../src/helpers/subdomain-mapping.js')
 
 function signalStorage (entries = {}) {
   const data = new Map(Object.entries(entries))
@@ -24,15 +33,15 @@ function signalStorage (entries = {}) {
   })
 }
 
-describe('subdomain mapping helper', () => {
-  it('normalizes free ids as sorted unique numeric strings', () => {
+describe('subdomain mapping helper', async () => {
+  it('normalizes free ids as sorted unique numeric strings', async () => {
     assert.deepEqual(normalizeSubdomainFreeIds(['9', 2, '2', 'bad', -1, '01']), ['1', '2', '9'])
   })
 
-  it('allocates from next id when no free id is available', () => {
+  it('allocates from next id when no free id is available', async () => {
     const storage = signalStorage({ session_subdomainNextId: 7 })
 
-    const subdomain = allocateAppSubdomain(storage, { userPk: 'user', appId: 'app' })
+    const subdomain = await allocateAppSubdomain(storage, { userPk: 'user', appId: 'app' })
 
     assert.equal(subdomain, '7')
     assert.equal(storage.session_subdomainNextId$(), 8)
@@ -40,88 +49,88 @@ describe('subdomain mapping helper', () => {
     assert.deepEqual(storage.session_subdomainToApp_7$(), { userPk: 'user', appId: 'app' })
   })
 
-  it('reuses a released id before consuming next id', () => {
+  it('quarantines a released id before another allocation', async () => {
     const storage = signalStorage({ session_subdomainNextId: 3 })
 
-    const first = allocateAppSubdomain(storage, { userPk: 'user', appId: 'one' })
-    releaseAppSubdomain(storage, { userPk: 'user', appId: 'one', subdomain: first })
-    const second = allocateAppSubdomain(storage, { userPk: 'user', appId: 'two' })
+    const first = await allocateAppSubdomain(storage, { userPk: 'user', appId: 'one' })
+    await releaseAppSubdomain(storage, { userPk: 'user', appId: 'one', subdomain: first })
+    const second = await allocateAppSubdomain(storage, { userPk: 'user', appId: 'two' })
 
     assert.equal(first, '3')
-    assert.equal(second, '3')
-    assert.equal(storage.session_subdomainNextId$(), 4)
-    assert.equal(storage.session_subdomainFreeIds$(), undefined)
+    assert.equal(second, '4')
+    assert.equal(storage.session_subdomainNextId$(), 5)
+    assert.deepEqual(storage.session_subdomainFreeIds$() ?? [], [])
     assert.equal(storage.session_subdomainByUserAndApp_user_one$(), undefined)
-    assert.deepEqual(storage.session_subdomainToApp_3$(), { userPk: 'user', appId: 'two' })
+    assert.deepEqual(storage.local_subdomainLifecycle$().pending, ['3'])
   })
 
-  it('skips stale free ids that are still mapped', () => {
+  it('skips stale free ids that are still mapped', async () => {
     const storage = signalStorage({
       session_subdomainNextId: 10,
       session_subdomainFreeIds: ['4', '6'],
       session_subdomainToApp_4: { userPk: 'other', appId: 'busy' }
     })
 
-    const subdomain = allocateAppSubdomain(storage, { userPk: 'user', appId: 'app' })
+    const subdomain = await allocateAppSubdomain(storage, { userPk: 'user', appId: 'app' })
 
-    assert.equal(subdomain, '6')
-    assert.equal(storage.session_subdomainFreeIds$(), undefined)
+    assert.equal(subdomain, '10')
+    assert.deepEqual(storage.session_subdomainFreeIds$() ?? [], [])
     assert.deepEqual(storage.session_subdomainToApp_4$(), { userPk: 'other', appId: 'busy' })
-    assert.deepEqual(storage.session_subdomainToApp_6$(), { userPk: 'user', appId: 'app' })
+    assert.deepEqual(storage.session_subdomainToApp_10$(), { userPk: 'user', appId: 'app' })
   })
 
-  it('returns the existing mapping instead of allocating a second id', () => {
+  it('returns the existing mapping instead of allocating a second id', async () => {
     const storage = signalStorage({
       session_subdomainNextId: 0,
       session_subdomainByUserAndApp_user_app: '3',
       session_subdomainToApp_3: { userPk: 'user', appId: 'app' }
     })
 
-    assert.equal(allocateAppSubdomain(storage, { userPk: 'user', appId: 'app' }), '3')
+    assert.equal(await allocateAppSubdomain(storage, { userPk: 'user', appId: 'app' }), '3')
     assert.equal(storage.session_subdomainNextId$(), 0)
   })
 
-  it('repairs a missing forward mapping when the reverse mapping exists', () => {
+  it('repairs a missing forward mapping when the reverse mapping exists', async () => {
     const storage = signalStorage({
       session_subdomainNextId: 2,
       session_subdomainToApp_1: { userPk: 'user', appId: 'app' }
     })
 
-    assert.equal(allocateAppSubdomain(storage, { userPk: 'user', appId: 'app' }), '1')
+    assert.equal(await allocateAppSubdomain(storage, { userPk: 'user', appId: 'app' }), '1')
     assert.equal(storage.session_subdomainByUserAndApp_user_app$(), '1')
     assert.equal(storage.session_subdomainNextId$(), 2)
   })
 
-  it('repairs a missing reverse mapping without changing the subdomain', () => {
+  it('repairs a missing reverse mapping without changing the subdomain', async () => {
     const storage = signalStorage({
       session_subdomainNextId: 0,
       session_subdomainByUserAndApp_user_app: '3'
     })
 
-    assert.equal(allocateAppSubdomain(storage, { userPk: 'user', appId: 'app' }), '3')
+    assert.equal(await allocateAppSubdomain(storage, { userPk: 'user', appId: 'app' }), '3')
     assert.deepEqual(storage.session_subdomainToApp_3$(), { userPk: 'user', appId: 'app' })
   })
 
-  it('throws when the existing mapping conflicts with another app or user', () => {
+  it('throws when the existing mapping conflicts with another app or user', async () => {
     const storage = signalStorage({
       session_subdomainNextId: 0,
       session_subdomainByUserAndApp_user_app: '3',
       session_subdomainToApp_3: { userPk: 'other', appId: 'other-app' }
     })
 
-    assert.throws(
+    await assert.rejects(
       () => allocateAppSubdomain(storage, { userPk: 'user', appId: 'app' }),
       /mapped to another app\/user/
     )
   })
 
-  it('does not release a subdomain when the reverse mapping changed', () => {
+  it('does not release a subdomain when the reverse mapping changed', async () => {
     const storage = signalStorage({
       session_subdomainByUserAndApp_user_app: '3',
       session_subdomainToApp_3: { userPk: 'other', appId: 'other-app' }
     })
 
-    assert.equal(releaseAppSubdomain(storage, { userPk: 'user', appId: 'app', subdomain: '3' }), false)
+    assert.equal(await releaseAppSubdomain(storage, { userPk: 'user', appId: 'app', subdomain: '3' }), false)
     assert.equal(storage.session_subdomainByUserAndApp_user_app$(), '3')
     assert.deepEqual(storage.session_subdomainToApp_3$(), { userPk: 'other', appId: 'other-app' })
   })

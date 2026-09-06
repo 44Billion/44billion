@@ -1,3 +1,7 @@
+import { setAccountsState } from '#zones/screen/use-init-or-reset-screen.js'
+import { allocateAppSubdomain, retireSubdomainsFor, subdomainStorage } from '#helpers/subdomain-mapping.js'
+import { processSubdomainCleanup } from '#services/subdomain-cleanup.js'
+import { askAppToClearData } from '#zones/screen/helpers/draft-app-runtime-reset.js'
 import { setAppPersonaSelection, updatePersonaUserPks } from '#services/personas/index.js'
 import { useInitPersonas } from '#hooks/use-personas.js'
 // Real components, registry, MessagePorts, app file cache and metadata. Only
@@ -25,7 +29,7 @@ provideAppI18n()
 const pubkey = '11'.repeat(32)
 const userPk = base16ToBase62(pubkey, { mode: 'integer', minLength: 43 })
 const appId = addressObjToAppId({ kind: 35128, pubkey, dTag: 'bridge-test' })
-const fixture = window.fixture = { appId, userPk, instanceMetadata, getAppBridgeState, getAppBridgeSpecs, retryAppBridge, disposeAppBridge, AppUpdater, toBase62: hex => base16ToBase62(hex, { mode: 'integer', minLength: 43 }), setAppPersonaSelection, updatePersonaUserPks, dialogs: [], loaded: [] }
+const fixture = window.fixture = { setAccountsState, allocateAppSubdomain, retireSubdomainsFor, subdomainStorage, processSubdomainCleanup, askAppToClearData, appId, userPk, instanceMetadata, getAppBridgeState, getAppBridgeSpecs, retryAppBridge, disposeAppBridge, AppUpdater, toBase62: hex => base16ToBase62(hex, { mode: 'integer', minLength: 43 }), setAppPersonaSelection, updatePersonaUserPks, dialogs: [], loaded: [] }
 
 const bytes = new TextEncoder().encode(`<!doctype html><html><head><title>Bridge Test</title></head><body>Cached app loaded<script>
 window.documentToken = Math.random().toString(36);
@@ -46,8 +50,23 @@ window.addEventListener('message', async event => {
     }
     parent.postMessage({code:'FIXTURE_PERSONA_REPLY', requestId:event.data.requestId, payload:{
       keys:await window.napp.getPersonaPublicKeys(), changes:personaChanges,
-      metadata:await window.napp.getInstanceMetadata(), token:documentToken, signers
+      metadata:await window.napp.getInstanceMetadata(), peek:await window.nostr.peekPublicKey(), href:location.pathname+location.search+location.hash, token:documentToken, signers
     }}, event.origin);
+  }
+  if(event.data.code === 'FIXTURE_STORAGE') {
+    const db = await new Promise((resolve,reject)=>{
+      const request=indexedDB.open('identity-test',1);
+      request.onupgradeneeded=()=>request.result.createObjectStore('data');
+      request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);
+    });
+    if(event.data.value) {
+      localStorage.setItem('identity-test',event.data.value);
+      sessionStorage.setItem('identity-test',event.data.value);
+      await new Promise((resolve,reject)=>{const tx=db.transaction('data','readwrite');tx.objectStore('data').put(event.data.value,'value');tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error)});
+    }
+    const value=await new Promise((resolve,reject)=>{const request=db.transaction('data').objectStore('data').get('value');request.onsuccess=()=>resolve(request.result??null);request.onerror=()=>reject(request.error)});
+    db.close();
+    parent.postMessage({code:'FIXTURE_STORAGE_REPLY', requestId:event.data.requestId, payload:{local:localStorage.getItem('identity-test'),session:sessionStorage.getItem('identity-test'),db:value}},event.origin);
   }
   if(event.data.code === 'FIXTURE_MIN_WIDTH') window.napp.setMinWidth(event.data.width);
   if(event.data.code === 'FIXTURE_NAVIGATE') location.href = event.data.path;

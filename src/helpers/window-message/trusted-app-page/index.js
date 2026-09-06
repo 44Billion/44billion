@@ -13,7 +13,8 @@ function normalizeError (error) {
   return new Error(String(error ?? 'Unknown error'))
 }
 
-async function clearIndexedDb (indexedDB) {
+async function clearIndexedDb (indexedDB, strict) {
+  if (strict && indexedDB && typeof indexedDB.databases !== 'function') throw new Error('Cannot enumerate IndexedDB databases')
   if (typeof indexedDB?.databases !== 'function' || typeof indexedDB?.deleteDatabase !== 'function') return
   const databases = await indexedDB.databases()
   await Promise.all((databases || [])
@@ -23,6 +24,7 @@ async function clearIndexedDb (indexedDB) {
         const request = indexedDB.deleteDatabase(db.name)
         request.onsuccess = () => resolve()
         request.onerror = () => reject(request.error)
+        request.onblocked = () => reject(new Error(`IndexedDB deletion blocked: ${db.name}`))
       })
     ))
 }
@@ -54,7 +56,12 @@ async function clearOpfs (storage) {
   await clearOpfsDirectory(await storage.getDirectory())
 }
 
-async function unregisterServiceWorker (serviceWorker) {
+async function unregisterServiceWorker (serviceWorker, strict) {
+  if (strict) {
+    if (typeof serviceWorker?.getRegistrations !== 'function') throw new Error('Cannot enumerate service workers')
+    for (const registration of await serviceWorker.getRegistrations()) await registration.unregister()
+    return
+  }
   if (typeof serviceWorker?.getRegistration !== 'function') return
   const registration = await serviceWorker.getRegistration()
   if (registration) await registration.unregister()
@@ -86,24 +93,34 @@ export async function clearAppData ({
   _navigator = navigator,
   _document = document,
   _caches = globalThis.caches,
-  _tell = tell
+  _tell = tell,
+  strict = false,
+  requestId = null
 } = {}) {
   const failures = []
 
-  await runClearStep(failures, 'indexedDB', () => clearIndexedDb(_window.indexedDB))
+  // Old or uncooperative clients must not retain connections or repopulate data.
+  if (strict) {
+    try { await assertOriginIdle(_navigator.serviceWorker) } catch (error) {
+      _tell(_window.parent, { code: 'DATA_CLEAR_ERROR', requestId, error: normalizeError(error) }, { targetOrigin: '*' })
+      return
+    }
+  }
+  await runClearStep(failures, 'indexedDB', () => clearIndexedDb(_window.indexedDB, strict))
   await runClearStep(failures, 'localStorage', () => _window.localStorage?.clear?.())
   await runClearStep(failures, 'sessionStorage', () => _window.sessionStorage?.clear?.())
   await runClearStep(failures, 'caches', () => clearCacheStorage(_caches))
   await runClearStep(failures, 'cookies', () => clearCookies(_document))
   await runClearStep(failures, 'opfs', () => clearOpfs(_navigator.storage))
-  await runClearStep(failures, 'serviceWorker', () => unregisterServiceWorker(_navigator.serviceWorker))
+  await runClearStep(failures, 'serviceWorker', () => unregisterServiceWorker(_navigator.serviceWorker, strict))
 
   if (failures.length === 0) {
-    _tell(_window.parent, { code: 'DATA_CLEARED', payload: null }, { targetOrigin: '*' })
+    _tell(_window.parent, { code: 'DATA_CLEARED', requestId, payload: null }, { targetOrigin: '*' })
   } else {
     const error = clearErrorFromFailures(failures)
     _tell(_window.parent, {
       code: 'DATA_CLEAR_ERROR',
+      requestId,
       payload: { failures: error.failures },
       error
     }, { targetOrigin: '*' })
@@ -220,4 +237,35 @@ function waitForSwController () {
         }, 5000)
       })
     })
+}
+
+// The shared launcher SW answers this independently of app files/mappings.
+export function assertOriginIdle (serviceWorker, timeoutMs = 3000) {
+  return new Promise((resolve, reject) => {
+    if (!serviceWorker?.controller) { reject(new Error('Cannot inspect origin clients')); return }
+    const channel = new MessageChannel()
+    const finish = error => {
+      clearTimeout(timer)
+      channel.port1.close()
+      channel.port2.close()
+      if (error) reject(error)
+      else resolve()
+    }
+    const timer = setTimeout(() => finish(new Error('Origin client check timeout')), timeoutMs)
+    channel.port1.onmessage = event => {
+      if (event.data?.code !== 'ORIGIN_IDLE' || event.data?.idle !== true) finish(new Error('Origin still has active clients'))
+      else finish()
+    }
+    serviceWorker.controller.postMessage({ code: 'CHECK_ORIGIN_IDLE' }, [channel.port2])
+  })
+}
+
+export function prepareAppSession (sessionStorage, assignment) {
+  if (!assignment) return
+  const key = '44billion:subdomain-assignment'
+  const previous = sessionStorage.getItem(key)
+  if (previous === assignment) return
+  // Existing mappings have no marker yet; keep their current session intact.
+  if (previous != null || !assignment.startsWith('legacy:')) sessionStorage.clear()
+  sessionStorage.setItem(key, assignment)
 }

@@ -1,8 +1,10 @@
-import { clearAppData, initMessageListener, tellParentImReady, tellSwImReady } from '#helpers/window-message/trusted-app-page/index.js'
+import { clearAppData, prepareAppSession, initMessageListener, tellParentImReady, tellSwImReady } from '#helpers/window-message/trusted-app-page/index.js'
 
+const params = new URL(window.location.href).searchParams
 if (window.location.hash === '#clear') {
-  clearAppData()
+  clearAppData({ requestId: params.get('clearRequest'), strict: params.get('strictClear') === '1' })
 } else {
+  prepareAppSession(window.sessionStorage, params.get('assignment'))
   initMessageListener()
   tellParentImReady()
   tellSwImReady().catch(error => {

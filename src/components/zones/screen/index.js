@@ -1,3 +1,4 @@
+import { useAppSubdomain } from '#hooks/use-app-subdomain.js'
 import { useAppPersona } from '#hooks/use-app-persona.js'
 import { personaT } from '#i18n/personas.js'
 import '#shared/app-persona.js'
@@ -44,7 +45,7 @@ import useAppBridgeRegistration from '#hooks/use-app-bridge-registration.js'
 import { appEncode } from 'libp2r2p/nip19'
 import { appIdToAddressObj } from '#helpers/app.js'
 import { copyTextToClipboard } from '#helpers/copy-text.js'
-import { allocateAppSubdomain } from '#helpers/subdomain-mapping.js'
+import { allocateAppSubdomain, subdomainStorage } from '#helpers/subdomain-mapping.js'
 import { useVaultModalStore, useVaultActor } from '#zones/vault-modal/index.js'
 import { base62ToBase16 } from 'libp2r2p/base62'
 import { formatAssetBudgetBytes } from '#services/app-asset-budget/index.js'
@@ -476,12 +477,7 @@ f('appWindow', function () {
   const {
     [`session_appByKey_${this.props.appKey}_visibility$`]: appVisibility$
   } = tabStorage
-  const appSubdomain$ = useComputed(() => {
-    const userPk = userPk$()
-    const appId = appId$()
-    if (!userPk || !appId) return null
-    return storage[`session_subdomainByUserAndApp_${userPk}_${appId}$`]()
-  })
+  const appSubdomain$ = useAppSubdomain(() => ({ userPk: userPk$(), appId: appId$() }))
   const isClosed$ = useComputed(() => appVisibility$() === 'closed')
   const appIframeRef$ = useSignal(null)
   const appIframeSrc$ = useSignal('about:blank')
@@ -632,6 +628,24 @@ f('appWindow', function () {
       // page MessagePort, and the early-return guard below would leave the
       // port closed forever.
       const routeValue = initialRoute$()
+      const identity = JSON.stringify([wsKey, userPk, appId, appSubdomain])
+      if (runtime.identity !== identity) {
+        runtime.appCleanup?.()
+        runtime.appCleanup = null
+        runtime.identity = identity
+        runtime.startedGeneration = null
+        runtime.appReady = false
+        runtime.autoRetried = false
+        runtime.initialRoute = routeValue || ''
+        runtime.routeConsumed = false
+        runtime.routeVersion++
+        runtime.loadedRouteVersion = -1
+        appIframeSrc$('about:blank')
+        appReady$(false)
+        virtualWidth$(false)
+        minWidth$(0)
+      }
+
       launchError$(null)
       // This component is reused on open -> closed -> open: stableDomOrderAppKeys$
       // retains the app key, while the render returns nothing while closed. The
@@ -668,7 +682,7 @@ f('appWindow', function () {
 
       if (appSubdomain == null && (!appId || !userPk)) return
       if (appSubdomain == null) {
-        allocateAppSubdomain(storage, { userPk, appId })
+        await allocateAppSubdomain(subdomainStorage(), { userPk, appId })
         return
       }
 
@@ -786,6 +800,7 @@ f('appWindow', function () {
 
       let appPageTimeout = null
       const onAppReady = () => {
+        if (ac.signal.aborted || runtime.identity !== identity) return
         clearTimeout(appPageTimeout)
         showPending$(false)
         runtime.appReady = true

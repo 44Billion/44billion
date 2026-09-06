@@ -10,6 +10,15 @@ import {
   STORAGE_REPAIR_PLAN_KEY
 } from '#services/storage-audit/bootstrap.js'
 
+mock.module('#f', {
+  namedExports: {
+    setWebStorageItem: (area, key, value) => {
+      if (value === undefined) area.removeItem(key)
+      else area.setItem(key, JSON.stringify(value))
+    }
+  }
+})
+
 mock.module('#services/storage-audit/repair.js', {
   namedExports: {
     applyStorageRepairPlan: async (plan, { localStorageArea }) => {
@@ -297,4 +306,132 @@ describe('storage audit bootstrap', () => {
     assert.equal(local.getItem(STORAGE_REPAIR_IN_PROGRESS_KEY), null)
     assert.equal(local.getItem(STORAGE_REPAIR_ATTEMPTS_KEY), null)
   })
+})
+
+it('normalizes subdomain bookkeeping before rendering without a repair plan or repeated writes', async t => {
+  const local = storageMock({
+    session_subdomainNextId: '2',
+    session_subdomainFreeIds: '["6"]',
+    session_subdomainToApp_9: JSON.stringify({ userPk: 'user', appId: 'app' }),
+    session_subdomainByUserAndApp_user_app: '"9"',
+    local_subdomainLifecycle: JSON.stringify({ version: 1, pending: [], assignments: { 7: 'interrupted', 9: 'live' } })
+  })
+  const options = { localStorageArea: local, sessionStorageArea: storageMock(), codeVersion: 'v1' }
+  assert.equal(await applyPendingStorageRepair(options), false)
+  assert.equal(local.getItem('session_subdomainNextId'), '10')
+  assert.deepEqual(JSON.parse(local.getItem('local_subdomainLifecycle')), {
+    version: 1, pending: ['7'], assignments: { 7: 'interrupted', 9: 'live' }
+  })
+  assert.equal(local.getItem('session_subdomainFreeIds'), '["6"]')
+  assert.equal(local.getItem('session_subdomainByUserAndApp_user_app'), '"9"')
+  const writes = t.mock.method(local, 'setItem')
+  await applyPendingStorageRepair(options)
+  assert.equal(writes.mock.callCount(), 0)
+  const reload = t.mock.fn()
+  assert.equal(await scheduleStorageRepair({ ...options, reload }), false)
+  assert.equal(reload.mock.callCount(), 0)
+  assert.equal(local.getItem(STORAGE_REPAIR_PLAN_KEY), null)
+})
+
+it('handles late maintenance and legacy maintenance-only plans without reloading', async t => {
+  for (const withOldPlan of [false, true]) {
+    const local = storageMock({
+      session_subdomainNextId: '0',
+      local_subdomainLifecycle: JSON.stringify({ version: 1, pending: [], assignments: { 7: 'interrupted' } })
+    })
+    if (withOldPlan) {
+      local.setItem(STORAGE_REPAIR_PLAN_KEY, JSON.stringify({
+        ...pendingPlan(),
+        issues: [{ code: 'orphan_subdomain_assignment' }, { code: 'subdomain_counter_behind' }],
+        local: { session_subdomainNextId: 8 },
+        releaseSubdomains: [{ subdomain: '7' }]
+      }))
+    }
+    const reload = t.mock.fn()
+    assert.equal(await scheduleStorageRepair({
+      localStorageArea: local, sessionStorageArea: storageMock(), codeVersion: 'v1', reload
+    }), false)
+    assert.equal(reload.mock.callCount(), 0)
+    assert.equal(local.getItem('session_subdomainNextId'), '8')
+    assert.deepEqual(JSON.parse(local.getItem('local_subdomainLifecycle')).pending, ['7'])
+    assert.equal(local.getItem(STORAGE_REPAIR_PLAN_KEY), null)
+  }
+})
+
+it('does not apply stale maintenance-only writes to a replacement mapping before rendering', async () => {
+  const local = storageMock({
+    session_subdomainNextId: '20',
+    session_subdomainToApp_7: JSON.stringify({ userPk: 'new', appId: 'app' }),
+    session_subdomainByUserAndApp_new_app: '"7"',
+    local_subdomainLifecycle: JSON.stringify({ version: 1, pending: [], assignments: { 7: 'new' } }),
+    [STORAGE_REPAIR_PLAN_KEY]: JSON.stringify({
+      ...pendingPlan(), issues: [{ code: 'subdomain_counter_behind' }], local: { session_subdomainNextId: 8 }
+    })
+  })
+  assert.equal(await applyPendingStorageRepair({
+    localStorageArea: local, sessionStorageArea: storageMock(), codeVersion: 'v1'
+  }), false)
+  assert.equal(local.getItem('session_subdomainNextId'), '20')
+  assert.deepEqual(JSON.parse(local.getItem('local_subdomainLifecycle')).pending, [])
+  assert.equal(local.getItem('session_subdomainByUserAndApp_new_app'), '"7"')
+  assert.equal(local.getItem(STORAGE_REPAIR_PLAN_KEY), null)
+})
+
+it('still schedules reload for broken mappings alongside harmless maintenance', async t => {
+  const local = storageMock({
+    session_subdomainNextId: '0',
+    session_subdomainToApp_3: '{"broken":true}',
+    local_subdomainLifecycle: JSON.stringify({ version: 1, pending: [], assignments: { 7: 'interrupted' } })
+  })
+  const reload = t.mock.fn()
+  assert.equal(await scheduleStorageRepair({
+    localStorageArea: local, sessionStorageArea: storageMock(), codeVersion: 'v1', reload
+  }), true)
+  assert.equal(reload.mock.callCount(), 1)
+  const plan = readPendingStorageRepairPlan(local)
+  assert.ok(plan.issues.some(issue => issue.code === 'invalid_subdomain_mapping'))
+  assert.ok(!plan.issues.some(issue => issue.code === 'orphan_subdomain_assignment'))
+})
+
+it('waits for another tab to finish its mapping write before normalizing and auditing', async t => {
+  const { withSubdomainLock } = await import('#helpers/subdomain-mapping.js')
+  const local = storageMock({
+    local_subdomainLifecycle: JSON.stringify({ version: 1, pending: [], assignments: { 7: 'new' } })
+  })
+  const entered = Promise.withResolvers()
+  const finish = Promise.withResolvers()
+  const writer = withSubdomainLock(async () => {
+    local.setItem('session_subdomainToApp_7', JSON.stringify({ userPk: 'user', appId: 'app' }))
+    entered.resolve()
+    await finish.promise
+    local.setItem('session_subdomainByUserAndApp_user_app', '"7"')
+  })
+  await entered.promise
+  const reload = t.mock.fn()
+  let settled = false
+  const audit = scheduleStorageRepair({
+    localStorageArea: local, sessionStorageArea: storageMock(), codeVersion: 'v1', reload
+  }).then(result => { settled = true; return result })
+  try {
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.equal(settled, false)
+  } finally { finish.resolve() }
+  await writer
+  assert.equal(await audit, false)
+  assert.equal(reload.mock.callCount(), 0)
+  assert.deepEqual(JSON.parse(local.getItem('local_subdomainLifecycle')).pending, [])
+})
+
+it('quarantines legacy free IDs and repairs an invalid counter without reloading', async t => {
+  const local = storageMock({ session_subdomainFreeIds: '["7"]', session_subdomainNextId: '"invalid"' })
+  const options = { localStorageArea: local, sessionStorageArea: storageMock(), codeVersion: 'v1' }
+  await applyPendingStorageRepair(options)
+  assert.equal(local.getItem('session_subdomainNextId'), '8')
+  assert.equal(local.getItem('session_subdomainFreeIds'), null)
+  assert.deepEqual(JSON.parse(local.getItem('local_subdomainLifecycle')), {
+    version: 1, pending: ['7'], assignments: {}
+  })
+  const reload = t.mock.fn()
+  assert.equal(await scheduleStorageRepair({ ...options, reload }), false)
+  assert.equal(reload.mock.callCount(), 0)
 })

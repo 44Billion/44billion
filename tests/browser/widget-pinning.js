@@ -54,7 +54,7 @@ const timeout = setTimeout(() => { console.error('Chrome verification timed out'
     '#zones/confirmation-dialog/index.js': 'export const useConfirmationDialogStore = () => ({requestConfirmation(){}})',
     '#i18n/asset-budget.js': 'export const getAssetBudgetConfirmation = () => ({})',
     '#services/app-asset-budget/index.js': 'export const formatAssetBudgetBytes = () => ""',
-    '#helpers/subdomain-mapping.js': 'export const allocateAppSubdomain = () => {}',
+    '#helpers/subdomain-mapping.js': 'export const allocateAppSubdomain = () => {}; export const subdomainStorage = () => new Proxy({}, {get:(_,key)=>()=>JSON.parse(localStorage.getItem(key.slice(0,-1)))??undefined}); export const isSubdomainStorageKey = key => key.startsWith("session_subdomain")',
     '#i18n/index.js': 'export const getT = () => key => key',
     '#helpers/window-message/index.js': 'export const tell = (port,message) => port.postMessage(message)',
     '#helpers/window-message/app-bridge-registry.js': `
