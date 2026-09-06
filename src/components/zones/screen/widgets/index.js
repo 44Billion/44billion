@@ -701,7 +701,6 @@ f('widget-window', function () {
     appReady$: false,
     showPending$: false,
     launchError$: null,
-    wideMode$: false,
     minWidth$: WIDGET_AUTO_FIT_MIN_WIDTH
   }))
 
@@ -720,12 +719,6 @@ f('widget-window', function () {
   }))
 
   const placement$ = useComputed(() => layout$()[widgetKey] ?? null)
-  const cellWidth$ = useComputed(() => {
-    const placement = placement$()
-    if (!placement) return null
-    const grid = grid$()
-    return placement.w * (grid.cell + grid.gap) - grid.gap
-  })
   const appSubdomain$ = useAppSubdomain(() => {
     const record = store.record$()
     return { userPk: record && storage[`session_workspaceByKey_${record.wsKey}_userPk$`](), appId: record?.appId }
@@ -881,33 +874,6 @@ f('widget-window', function () {
     })
   })
 
-  // Apply/re-evaluate the virtual width whenever the cell width or the app's
-  // minWidth changes. The app page re-measures on its own viewport changes
-  // and covers zoom switches with its view transition; scale-only changes in
-  // wide mode need no re-measure at all, so the iframe must never be hidden
-  // here (that would also hide the app page's transition snapshot).
-  const reeval = useMemo(() => ({
-    lastCellWidth: null,
-    lastMinWidth: null,
-    lastClosed: null
-  }))
-  useTask(({ track }) => {
-    const cellWidth = track(() => cellWidth$())
-    const minWidth = track(() => store.minWidth$())
-    const isClosed = track(() => store.visibility$() === 'closed')
-    if (cellWidth == null) return
-    const applyWide = shouldApplyVirtualWidth(cellWidth, minWidth)
-    const cellChanged = reeval.lastCellWidth !== null && cellWidth !== reeval.lastCellWidth
-    const minWidthChanged = reeval.lastMinWidth !== null && minWidth !== reeval.lastMinWidth
-    const reopened = reeval.lastClosed !== null && !isClosed && reeval.lastClosed
-    reeval.lastCellWidth = cellWidth
-    reeval.lastMinWidth = minWidth
-    reeval.lastClosed = isClosed
-    const modeChanged = store.wideMode$() !== applyWide
-    if (!cellChanged && !minWidthChanged && !modeChanged && !reopened) return
-    store.wideMode$(applyWide)
-  })
-
   const setVisibility = (visibility, { now = Date.now() } = {}) => {
     widgetDragLog('[widget-lifecycle] transition', {
       widgetKey,
@@ -1026,7 +992,6 @@ f('widget-window', function () {
         runtime.identity = identity
         store.appIframeSrc$('about:blank')
         store.appReady$(false)
-        store.wideMode$(false)
         store.minWidth$(WIDGET_AUTO_FIT_MIN_WIDTH)
       }
       const pinnedRoute = store.record$()?.pinnedRoute ?? ''
@@ -1037,7 +1002,6 @@ f('widget-window', function () {
         store.appIframeSrc$('about:blank')
         store.appReady$(false)
         store.showPending$(false)
-        store.wideMode$(false)
         store.minWidth$(WIDGET_AUTO_FIT_MIN_WIDTH)
         runtime.ac?.abort()
         runtime.unregister?.()
@@ -1709,11 +1673,13 @@ f('widget-window', function () {
   if (!style) return
   const visibility = store.visibility$()
   const isClosed = visibility === 'closed'
-  const wide = store.wideMode$() && placement?.w && placement?.h
   const gridForStyle = grid$()
   const cellWidth = placement.w * (gridForStyle.cell + gridForStyle.gap) - gridForStyle.gap
   const cellHeight = placement.h * (gridForStyle.cell + gridForStyle.gap) - gridForStyle.gap
   const virtualWidth = store.minWidth$()
+  // Derive the fit from current geometry. A document/identity reset must not
+  // leave a cached mode disabled until the next manual resize.
+  const wide = !isClosed && shouldApplyVirtualWidth(cellWidth, virtualWidth)
   const isFresh = store.freshUntil$() > Date.now()
   const showSolidBorder = store.selected$() || store.dragging$()
   const rounded = isFresh || showSolidBorder

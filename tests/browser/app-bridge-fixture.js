@@ -85,7 +85,7 @@ for (const [key, value] of Object.entries({
   session_appByKey_window_route: '/initial',
   [`session_appById_${appId}_name`]: 'Bridge Test',
   [`session_subdomainByUserAndApp_${userPk}_${appId}`]: '0',
-  local_widgets: {}
+  local_widgets: JSON.parse(localStorage.getItem('local_widgets') ?? '{}')
 })) localStorage.setItem(key, JSON.stringify(value))
 sessionStorage.setItem('session_appByKey_window_visibility', '"open"')
 sessionStorage.setItem('session_appByKey_peer_visibility', '"closed"')

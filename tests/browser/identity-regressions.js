@@ -40,6 +40,7 @@ export default async function checkIdentity ({ evaluate, until, wait, port, send
   await evaluate(`fixture.setAccountsState([{pubkey:'${'44'.repeat(32)}',profile:{},relays:{},isReadOnly:true}],fixture.storage,fixture.tabStorage)`)
   await until("fixture.getAppBridgeSpecs()().some(spec=>spec.userPk===fixture.toBase62('" + '44'.repeat(32) + "') && fixture.getAppBridgeState(spec.appSubdomain).windows.size===4 && [...fixture.getAppBridgeState(spec.appSubdomain).windows.values()].every(entry=>entry.widgetPort))", 'ownership change reloads windows, widgets and isolated apps')
   const after = await Promise.all([windowFrame, widgetFrame, singleFrame, sleepingFrame].map(selector => query(selector)))
+  await until("[...document.querySelectorAll('widget-window iframe')].filter(frame=>frame.src!=='about:blank').every(frame=>frame.style.width==='360px')", 'open and minimized widgets retain auto-fit after ownership reload')
   for (let i = 0; i < after.length; i++) {
     assert.equal(after[i].peek, '44'.repeat(32))
     assert.notEqual(after[i].token, before[i].token)
@@ -51,6 +52,7 @@ export default async function checkIdentity ({ evaluate, until, wait, port, send
   assert.equal(await evaluate('fixture.tabStorage.session_widgetByKey_closed_visibility$()'), 'closed')
   await evaluate("fixture.tabStorage.session_widgetByKey_closed_visibility$('open')")
   await until("fixture.instanceMetadata.getMetadata('closed')?.isLoaded", 'closed widget reopens with the new identity')
+  await until("document.querySelector('widget-window:nth-of-type(3) iframe').style.width==='360px'", 'closed widget restores auto-fit when opened under the new identity')
   assert.equal((await query('widget-window:nth-of-type(3) iframe')).peek, '44'.repeat(32))
   assert.deepEqual(await query(windowFrame, 'FIXTURE_STORAGE'), { local: null, session: null, db: null })
   await until("(fixture.subdomainStorage().session_subdomainFreeIds$()??[]).includes('3')", 'retired default origin is cleaned before recycling', 10000)
