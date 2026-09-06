@@ -1,8 +1,18 @@
-# Widget browser checks
+# Browser checks
 
-Run `npm run test:browser` from the repository to execute all three checks
-sequentially (general, gestures, menus). Set `CHROME_BIN` if Chrome is installed
+Run `npm run test:browser` from the repository to execute all four checks
+sequentially (app bridge, widgets, gestures, menus). Set `CHROME_BIN` if Chrome is installed
 somewhere other than `/usr/bin/google-chrome`.
+
+Run `node tests/browser/app-bridge.js` for the app-loading regression check.
+It uses a fresh Chrome profile, a temporary local HTTP server, the real app
+service worker and injected scripts, MessagePorts, cache and launcher components.
+A small app is seeded in IndexedDB, so no external app downloads or signer are
+needed. Only interactive dialog/vault providers and the test origin configuration
+are substituted. It checks cold/warm handshakes, live app APIs after navigation,
+minimize/close/reopen, shared window/widget bridges, embedded admission cleanup,
+disposed bridge replacement, automatic retry and bounded timeout recovery.
+Allow about 20 seconds for its intentional timeout scenarios.
 
 Run `node tests/browser/widget-pinning.js` for the general widget check alone.
 

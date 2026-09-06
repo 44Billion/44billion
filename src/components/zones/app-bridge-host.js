@@ -63,14 +63,16 @@ f('app-bridge-manager', function () {
   // while this manager stays mounted, and a keyed list may reuse this instance
   // after the host briefly rendered without it. Derive the current state from
   // the specs signal so both the template and the bridge init follow it.
-  const state$ = useComputed(() => {
+  const currentBridgeId$ = useComputed(() => {
     const spec = getAppBridgeSpecs()().find(item => item.appSubdomain === appSubdomain)
-    return spec ? ensureAppBridgeState(appSubdomain, { userPk, appId }) : null
+    return spec?.bridgeId ?? null
   })
-  const state = state$()
+  const state = currentBridgeId$() === bridgeId
+    ? ensureAppBridgeState(appSubdomain, { userPk, appId })
+    : null
 
   useTask(async ({ track, cleanup }) => {
-    const currentBridgeId = track(() => state$()?.bridgeId ?? null)
+    const currentBridgeId = track(() => currentBridgeId$())
     if (!currentBridgeId || currentBridgeId !== bridgeId) return
     const currentState = ensureAppBridgeState(appSubdomain, { userPk, appId })
     const ac = new AbortController()

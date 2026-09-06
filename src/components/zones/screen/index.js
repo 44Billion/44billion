@@ -36,10 +36,7 @@ import {
   initAppWindow
 } from '#helpers/window-message/app-bridge.js'
 import { APP_BRIDGE_ERROR_KIND } from '#helpers/window-message/app-bridge-error.js'
-import {
-  ensureAppBridgeState,
-  registerAppBridgeWindow
-} from '#helpers/window-message/app-bridge-registry.js'
+import useAppBridgeRegistration from '#hooks/use-app-bridge-registration.js'
 import { appEncode } from 'libp2r2p/nip19'
 import { appIdToAddressObj } from '#helpers/app.js'
 import { copyTextToClipboard } from '#helpers/copy-text.js'
@@ -586,6 +583,34 @@ f('appWindow', function () {
     })
   }
 
+  const registeredBridge$ = useAppBridgeRegistration(() => {
+    if (isClosed$()) return null
+    return { appSubdomain: appSubdomain$(), appId: appId$(), userPk: userPk$() }
+  }, () => ({
+    appKey,
+    cachingProgress$,
+    onClose () {
+      tabStorage[`session_appByKey_${appKey}_visibility$`]('closed')
+      tabStorage[`session_workspaceByKey_${wsKey}_openAppKeys$`]((v = [], eqKey) => {
+        const i = v.indexOf(appKey)
+        if (i !== -1) { v.splice(i, 1); v[eqKey] = Math.random() }
+        return v
+      })
+    },
+    onSetMinWidth (minWidth) {
+      const value = Math.round(Number(minWidth))
+      if (!Number.isFinite(value) || value < 0) {
+        console.warn('[app-window] Invalid minWidth', minWidth)
+        return
+      }
+      minWidth$(value)
+    },
+    onAutoFitDone () {
+      iframeReevalHidden$(false)
+    },
+    onRemove: removeCurrentApp
+  }))
+
   useTask(
     async ({ track, cleanup }) => {
       const [isClosed, iframeRef, appSubdomain, appId, userPk] = track(() => [
@@ -651,32 +676,8 @@ f('appWindow', function () {
       const ac = new AbortController()
       cleanup(() => ac.abort())
       showPending$(false)
-      const bridgeState = ensureAppBridgeState(appSubdomain, { userPk, appId })
-      const unregisterBridgeWindow = registerAppBridgeWindow(bridgeState, {
-        appKey,
-        cachingProgress$,
-        onClose () {
-          tabStorage[`session_appByKey_${appKey}_visibility$`]('closed')
-          tabStorage[`session_workspaceByKey_${wsKey}_openAppKeys$`]((v = [], eqKey) => {
-            const i = v.indexOf(appKey)
-            if (i !== -1) { v.splice(i, 1); v[eqKey] = Math.random() }
-            return v
-          })
-        },
-        onSetMinWidth (minWidth) {
-          const value = Math.round(Number(minWidth))
-          if (!Number.isFinite(value) || value < 0) {
-            console.warn('[app-window] Invalid minWidth', minWidth)
-            return
-          }
-          minWidth$(value)
-        },
-        onAutoFitDone () {
-          iframeReevalHidden$(false)
-        },
-        onRemove: removeCurrentApp
-      })
-      cleanup(unregisterBridgeWindow)
+      const bridgeState = track(() => registeredBridge$())
+      if (!bridgeState) return
 
       let isDraftReloading = false
       const offDraftUpdate = AppUpdater.onDraftAppUpdated(async ({ appId: updatedAppId }) => {

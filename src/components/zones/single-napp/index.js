@@ -1,4 +1,4 @@
-import { f, useClosestStore, useSignal, useTask, useComputed, useMemo } from '#f'
+import { f, useClosestStore, useStore, useSignal, useTask, useComputed, useMemo } from '#f'
 import { useWebStorage } from '#f'
 import { useInitInstanceMetadata, useInstanceMetadataSurface } from '#hooks/use-instance-metadata.js'
 import { appDecode } from 'libp2r2p/nip19'
@@ -11,10 +11,7 @@ import {
   initAppWindow
 } from '#helpers/window-message/app-bridge.js'
 import { APP_BRIDGE_ERROR_KIND } from '#helpers/window-message/app-bridge-error.js'
-import {
-  ensureAppBridgeState,
-  registerAppBridgeWindow
-} from '#helpers/window-message/app-bridge-registry.js'
+import useAppBridgeRegistration from '#hooks/use-app-bridge-registration.js'
 import { allocateAppSubdomain } from '#helpers/subdomain-mapping.js'
 import { getRandomId } from '#helpers/misc.js'
 import { resetDraftAppRuntimeData } from '#zones/screen/helpers/draft-app-runtime-reset.js'
@@ -125,15 +122,32 @@ f('singleNappLauncher', function () {
     contentVisible: !showPending$() && appIframeSrc$() !== 'about:blank'
   }))
 
+  const admission = useStore({ allowed$: false })
+  useTask(({ cleanup }) => {
+    const activeSession = AppUpdater.tryMarkSingleNappOpen(appId)
+    if (!activeSession.accepted) {
+      launchError$(t('Too many embedded apps are open. Close one and try again.'))
+      return
+    }
+    cleanup(() => activeSession.release())
+    admission.allowed$(true)
+  })
+  const registeredBridge$ = useAppBridgeRegistration(() => admission.allowed$()
+    ? ({
+        appSubdomain: appSubdomain$(), userPk: userPk$(), appId
+      })
+    : null, ({ userPk }) => ({
+    appKey: `single-napp:${appId}:${userPk}:${instanceId}`,
+    cachingProgress$,
+    onClose () {
+      launchError$(getFileNotCachedText('Failed to load app. Retry or close it?'))
+    }
+  }))
+
   useTask(
     async ({ track, cleanup }) => {
+      if (!track(() => admission.allowed$())) return
       launchError$(null)
-      const activeSession = AppUpdater.tryMarkSingleNappOpen(appId)
-      if (!activeSession.accepted) {
-        launchError$(t('Too many embedded apps are open. Close one and try again.'))
-        return
-      }
-      cleanup(() => activeSession.release())
       if (runtime.initialRoute == null) runtime.initialRoute = initialRoute || ''
       const currentRoute = runtime.initialRoute
 
@@ -157,16 +171,9 @@ f('singleNappLauncher', function () {
         ac.abort()
       })
       showPending$(false)
-      const bridgeState = ensureAppBridgeState(subdomain, { userPk, appId })
+      const bridgeState = track(() => registeredBridge$())
+      if (!bridgeState) return
       const appKey = `single-napp:${appId}:${userPk}:${instanceId}`
-      const unregisterBridgeWindow = registerAppBridgeWindow(bridgeState, {
-        appKey,
-        cachingProgress$,
-        onClose () {
-          launchError$(getFileNotCachedText('Failed to load app. Retry or close it?'))
-        }
-      })
-      cleanup(unregisterBridgeWindow)
 
       let isDraftReloading = false
       const offDraftUpdate = AppUpdater.onDraftAppUpdated(async ({ appId: updatedAppId }) => {

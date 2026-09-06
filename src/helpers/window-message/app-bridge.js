@@ -456,9 +456,13 @@ export async function initAppBridge (state, {
   const schedule = () => {
     state.ready$(false)
     state.error$(null)
-    state.trustedIframeSrc$(
-      `//${state.appSubdomain}.${window.location.host}/~~napp?bridgeId=${encodeURIComponent(state.bridgeId)}`
-    )
+    // A retry closes the old port and needs a new document/handshake. The
+    // bridge identity stays stable, while the navigation URL must change.
+    const trustedSrc = `//${state.appSubdomain}.${window.location.host}/~~napp?bridgeId=${encodeURIComponent(state.bridgeId)}&retry=${state.retryCount$()}`
+    // A keyed manager can also be reused after the last instance briefly
+    // closed. In that case its existing iframe still needs a fresh handshake.
+    if (state.trustedIframeSrc$() === trustedSrc) state.trustedIframeRef$()?.setAttribute('src', trustedSrc)
+    else state.trustedIframeSrc$(trustedSrc)
     clearTimeout(bridgeTimer)
     bridgeTimer = setTimeout(() => {
       if (state.ready$()) return
@@ -1215,7 +1219,11 @@ export function initAppWindow (state, {
     `//${state.appSubdomain}.${window.location.host}${initialRoute || ''}`,
     state.bridgeId
   )
-  appIframeSrc$(route)
+  // Retrying the bridge replaces the app-page listener even when its route
+  // stays the same. A signal write of the same URL is deduplicated, so explicitly
+  // navigate that existing iframe to obtain a new document and MessagePort.
+  if (appIframeSrc$() === route) appIframeRef$()?.setAttribute('src', route)
+  else appIframeSrc$(route)
 
   return function cleanup () {
     window.removeEventListener('message', onAppReadyMessage)
