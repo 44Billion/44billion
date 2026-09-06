@@ -1272,6 +1272,8 @@ f('widget-window', function () {
   const menuProps = useStore({
     isOpen$: store.menuOpen$,
     contentKey$: store.menuPage$,
+    positionKey$: placement$,
+    preferredPlacement$: () => placement$()?.h > 1 ? 'top-start' : null,
     anchorRef$: store.elRef$,
     constrainToViewport: true,
     close: () => editing.setMenuOpen(false),
@@ -1280,11 +1282,12 @@ f('widget-window', function () {
       ${CSS.supports('position-anchor', '--test')
 ? `
         position-anchor: ${menuAnchor};
-        position-area: bottom span-left;
-        position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+        position-area: ${placement$()?.h > 1 ? 'top span-right' : 'bottom span-left'};
+        /* Reset the remembered fallback on close so reopening prefers above. */
+        position-try-fallbacks: ${placement$()?.h > 1 ? (store.menuOpen$() ? 'flip-inline, flip-block, flip-block flip-inline, span-all' : 'none') : 'flip-block, flip-inline, flip-block flip-inline'};
       `
 : ''}
-      margin: 6px;
+      margin: ${placement$()?.h > 1 ? '6px 0' : '6px'};
       /* Let anchor fallbacks choose a side using the content's natural width,
          rather than squeezing the options into the first anchor area. */
       width: max-content;
@@ -1700,7 +1703,8 @@ f('widget-window', function () {
   const controlRects = compactControls
     ? [{
         left: placement.w === 1 ? (cellWidth - WIDGET_CONTROL_SIZE) / 2 : rightControlLeft,
-        top: (cellHeight - WIDGET_CONTROL_SIZE) / 2, width: WIDGET_CONTROL_SIZE, height: WIDGET_CONTROL_SIZE
+        top: placement.h > 1 ? WIDGET_CONTROL_INSET : (cellHeight - WIDGET_CONTROL_SIZE) / 2,
+        width: WIDGET_CONTROL_SIZE, height: WIDGET_CONTROL_SIZE
       }]
     : [
         { left: WIDGET_CONTROL_INSET, top: WIDGET_CONTROL_INSET, width: personaWidth, height: WIDGET_CONTROL_SIZE },
@@ -1713,7 +1717,7 @@ f('widget-window', function () {
     if (compactControls) {
       controls.push(this.h`<button
         type='button'
-        class=${{ 'widget-remove-button': true, 'widget-remove-center-x': placement.w === 1, 'widget-remove-center-y': true }}
+        class=${{ 'widget-remove-button': true, 'widget-remove-center-x': placement.w === 1, 'widget-remove-center-y': placement.h === 1 }}
         onpointerdown=${stopControlPointer}
         onclick=${() => editing.setMenuOpen(!store.menuOpen$())}
         aria-label=${t('Widget Options')}

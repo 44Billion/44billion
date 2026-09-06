@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import checkMenuPositions from './widget-menu-position-regressions.js'
 
 export default async ({ cdp, evaluate, wait, root, select }) => {
   const results = []
@@ -108,6 +109,7 @@ export default async ({ cdp, evaluate, wait, root, select }) => {
   await evaluate('fixture.storage.local_appPersonaSelections$({})')
   await wait(80)
   assert.equal((await avatarGeometry()).svgWidth, 26, 'reset restores the larger default avatar')
+  await checkMenuPositions({ cdp, evaluate, wait, root, select })
   assert.deepEqual(await evaluate('fixtureErrors'), [])
   console.log('Chrome widget menus passed: natural width and stable first visible position, with CSS anchors and fallback')
 }

@@ -28,6 +28,10 @@ f('aMenu', function () {
   // Fallback positioning for browsers that don't support CSS anchor positioning
   useTask(({ track, cleanup }) => {
     track(() => this.props.contentKey$?.())
+    // Optional geometry key and placement preference for widget menus.
+    // Other menus retain their landscape/portrait positioning policy.
+    track(() => this.props.positionKey$?.())
+    const preferredPlacement = track(() => this.props.preferredPlacement$?.())
     const isOpen = track(() => store.isOpen$.get())
     const anchorRef = track(() => store.anchorRef$())
     if (!isOpen || !anchorRef || CSS.supports('position-anchor', '--test')) return
@@ -51,7 +55,25 @@ f('aMenu', function () {
         let left
         let top
         // Position the menu relative to the anchor with consistent logic
-        if (isLandscape) {
+        if (preferredPlacement === 'top-start') {
+          const above = anchorRect.top - dialogRect.height - margin
+          const below = anchorRect.bottom + margin
+          const start = anchorRect.left
+          const end = anchorRect.right - dialogRect.width
+          const candidates = [
+            { left: start, top: above }, { left: end, top: above },
+            { left: start, top: below }, { left: end, top: below }
+          ]
+          const fits = ({ left, top }) => left >= margin && top >= margin &&
+            left + dialogRect.width <= innerWidth - margin && top + dialogRect.height <= innerHeight - margin
+          const visibleArea = ({ left, top }) =>
+            Math.max(0, Math.min(left + dialogRect.width, innerWidth - margin) - Math.max(left, margin)) *
+            Math.max(0, Math.min(top + dialogRect.height, innerHeight - margin) - Math.max(top, margin))
+          // Mirror the native anchor order, then clamp the most visible option
+          // if none fits in full. Existing consumers keep their original policy.
+          const selected = candidates.find(fits) ?? candidates.reduce((best, next) => visibleArea(next) > visibleArea(best) ? next : best)
+          ;({ left, top } = selected)
+        } else if (isLandscape) {
           // Position to the left of the anchor with margin
           left = Math.max(margin, anchorRect.left - dialogRect.width - margin)
           top = anchorRect.top
@@ -71,6 +93,12 @@ f('aMenu', function () {
           top = Math.max(margin, Math.min(top, window.innerHeight - dialogRect.height - margin))
         }
 
+        if (preferredPlacement === 'top-start') {
+          // Insets address the margin box; candidates describe the visible box.
+          const style = getComputedStyle(store.dialogRef$())
+          left -= parseFloat(style.marginLeft) || 0
+          top -= parseFloat(style.marginTop) || 0
+        }
         store.fallbackPositioningStyle$(`
           & {
             left: ${left}px;
@@ -85,6 +113,7 @@ f('aMenu', function () {
     const timer = setTimeout(() => {
       position()
       observer.observe(store.dialogRef$())
+      if (preferredPlacement) observer.observe(anchorRef)
     }, 100) // or else dialogRect.height may be 0
     if (this.props.constrainToViewport) {
       window.addEventListener('resize', position)

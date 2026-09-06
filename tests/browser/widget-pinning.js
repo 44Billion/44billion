@@ -31,7 +31,7 @@ const send = (method, params = {}, sessionId) => new Promise((resolve, reject) =
   chrome.stdio[3].write(JSON.stringify({ id, method, params, sessionId }) + '\0')
 })
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
-const timeout = setTimeout(() => { console.error('Chrome verification timed out', errors); chrome.kill(); process.exitCode = 1 }, 45000)
+const timeout = setTimeout(() => { console.error('Chrome verification timed out', errors); chrome.kill(); process.exitCode = 1 }, process.argv.includes('--menus') ? 90000 : 45000)
 ;(async () => {
   const { targetId } = await send('Target.createTarget', { url: 'about:blank' })
   const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true })

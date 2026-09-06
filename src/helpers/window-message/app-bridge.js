@@ -24,7 +24,7 @@ import {
 } from './browser/nostrdb.js'
 import { appIdToAddressObj, addressObjToAppId } from '#helpers/app.js'
 import { base36NsiteToBase16, bytesToBase36Nsite } from 'libp2r2p/base36'
-import { base16ToBase62, base62ToBase16, base62ToBytes } from 'libp2r2p/base62'
+import { base16ToBase62, base62ToBytes } from 'libp2r2p/base62'
 import { appEncode, appDecode } from 'libp2r2p/nip19'
 import { tryDecodeAppUrl } from 'libp2r2p/url'
 import { streamFileChunksFromDb, getFileChunksFromDb, deleteFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
