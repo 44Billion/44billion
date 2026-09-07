@@ -84,7 +84,7 @@ const vaultRouter = IttyRouter()
 
       // Construct the absolute path to the vault docs file
       // Current project is at ~/repositories/44billion, vault is at ~/repositories/ez-vault
-      const vaultDocsRoot = path.resolve(process.cwd(), '../ez-vault/docs')
+      const vaultDocsRoot = path.resolve(import.meta.dirname, '../../../ez-vault', isDev ? '.dev' : 'docs')
       const vaultDocsPath = path.resolve(vaultDocsRoot, filePath.slice(1)) // Remove leading slash
 
       // Security check: ensure the resolved path is still within the vault/docs directory

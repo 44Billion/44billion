@@ -38,7 +38,13 @@ export const esbuildDefineConfig = isDev
 const prodOutdir = `${dirname}/../dist/${dirname.split('/').slice(-2, -1)}` // dist/<root dir>
 // same as esbuild.build, but reusable
 const ctx = await esbuild.context({
-  plugins: [jsTextPlugin, cssTextPlugin, htmlTextPlugin, swModulePlugin],
+  plugins: [jsTextPlugin, cssTextPlugin, htmlTextPlugin, swModulePlugin, {
+    name: 'dev-readiness',
+    setup (build) {
+      if (!build.initialOptions.entryPoints?.includes(`${dirname}/../src/components/app.js`)) return
+      build.onEnd(result => { process.send?.({ type: 'build-end', ok: result.errors.length === 0 }) })
+    }
+  }],
   loader: {
     '.html': 'copy', '.ico': 'copy',
     '.png': 'copy', '.webmanifest': 'copy',
@@ -98,11 +104,12 @@ if (isDev) {
   })
   console.log(`serving at http://${hosts.join('|')}:${port}`)
 
-  process.on('SIGINT', async function () {
-    console.log('Ctrl-C was pressed')
-    await ctx.dispose()
-    console.log('stopped watching')
-  })
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    process.once(signal, async () => {
+      await ctx.dispose()
+      process.disconnect?.()
+    })
+  }
 } else {
   const joinedProdOutDir = path.join(prodOutdir)
   // safe checks before deleting build directory
@@ -115,6 +122,6 @@ if (isDev) {
     fs.rmSync(joinedProdOutDir, { recursive: true, force: true })
   }
   console.log(`Building to ${joinedProdOutDir}`)
-  ctx.rebuild()
-  ctx.dispose()
+  await ctx.rebuild()
+  await ctx.dispose()
 }

@@ -82,3 +82,37 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   Until it is published, validate against the sibling library locally. Update
   the npm dependency and lockfile to a version containing it before shipping;
   the current published version does not contain the monitor.
+
+## Development runtime and consumer tests
+
+- `start:adb` composes `bin/adb-session.js` with `ensureRuntime()` directly.
+  Keep the ADB session alive when reusing a launcher; do not wrap `npm start`
+  in a detached process group or exit before asynchronous cleanup finishes.
+  Consumer apps share the ADB session helper while retaining their own watcher.
+  Forward only app-facing ports 10000/4000. Pin the selected device, honor
+  `ANDROID_SERIAL`, use `--no-rebind`, and remove only owned mappings that still
+  match their original endpoints. Console availability must not gate manual use.
+- `npm start` runs `bin/dev.js`, a Node supervisor. `bin/dev-runtime.js` exposes
+  `ensureRuntime()` for sibling development/test tools. Reuse only a matching
+  checkout/protocol that reports ready at `/__dev/health`; never terminate
+  unrelated servers. Handles stop only their own processes.
+- Keep ports 10000 (launcher), 8080 (esbuild), and 4000 (existing vault origin)
+  fixed. The bridge expects localhost:10000. Wait for the launcher and vault
+  builds before reporting readiness; handle SIGINT, SIGTERM and child failure.
+- The vault development server and launcher vault route serve `ez-vault/.dev`.
+  Production serves `ez-vault/docs`. Preserve the existing localhost:4000 origin
+  so development vault accounts remain accessible.
+- The health endpoint is development-only; it is not an injected app API.
+  Draft updates retain their current origin/event cleanup behavior.
+- `tests/browser/runtime/` contains reusable Node/CDP and installation helpers
+  for consumer integration tests. Use production manifest/chunk writers and
+  the ordinary launcher app-opening flow; do not duplicate storage schemas in
+  consumer projects. Fixtures and generated keys belong only to disposable
+  browser profiles. No new production storage key or database is introduced.
+- The default Chrome helper denies external traffic through a local proxy,
+  including WebSockets/CONNECT. Network fixtures may supply controlled responses;
+  injected APIs, the vault, and permissions stay real. `externalNetwork: true`
+  is reserved for explicitly invoked publication checks, not normal test suites.
+- Consumer browser tests reload a fixed app version to verify persistence.
+  They must not restore data before asserting recovery. Capture diagnostics
+  before removing the profile, including when a scenario fails.

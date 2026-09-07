@@ -1,9 +1,11 @@
 import { createServer } from 'node:http'
+import { access, realpath } from 'node:fs/promises'
+import path from 'node:path'
+import { launcherRoot, healthPath, runtimeProtocol } from '../bin/dev-runtime.js'
 import {
   withWebUrl,
   withDomains,
-  replyWithError,
-  findFreePort
+  replyWithError
 } from './helpers.js'
 import router from './router/index.js'
 
@@ -11,6 +13,21 @@ import router from './router/index.js'
 const server = createServer(async function httpHandler (req, res) {
   try {
     withWebUrl(req)
+    if (process.env.NODE_ENV === 'development' && req.webUrl.hostname === 'localhost' && req.webUrl.pathname === healthPath) {
+      let ready = false
+      try {
+        const response = await fetch('http://127.0.0.1:8080/app.js', { signal: AbortSignal.timeout(1500) })
+        await response.body?.cancel()
+        const vault = await fetch('http://127.0.0.1:4000/app.js', { signal: AbortSignal.timeout(1500) })
+        await vault.body?.cancel()
+        await access(path.resolve(launcherRoot, '../ez-vault/.dev/app.js'))
+        await access(path.resolve(launcherRoot, '../ez-vault/.dev/index.html'))
+        ready = response.ok && vault.ok
+      } catch {}
+      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+      res.end(JSON.stringify({ service: '44billion', protocol: runtimeProtocol, root: await realpath(launcherRoot), ready }))
+      return
+    }
     withDomains(req)
     logReqRes(req, res, 'http')
     if (!req.domain && req.webUrl.hostname !== '127.0.0.1') return replyWithError(res)
@@ -30,9 +47,9 @@ const server = createServer(async function httpHandler (req, res) {
     replyWithError(res)
   }
 })
-const port = await findFreePort()
+const port = 10000
 server
-  .listen(port)
+  .listen(port, '127.0.0.1')
   .on('listening', () => console.log(`> Dev-server ready on http://localhost:${port}`))
   .on('close', () => console.log(`Server closed at ${new Date().toLocaleString('pt-br', { timeZone: 'America/Sao_Paulo' })}`))
   .on('error', error => {
@@ -43,11 +60,13 @@ server
       default: () => { throw error }
     }[error.code ?? 'default']?.())
   })
-process.on('SIGINT', async function () {
-  console.log('Ctrl-C was pressed')
-  await new Promise(resolve => server.close(resolve))
-  console.log('stopped dev-server')
-})
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.once(signal, async function () {
+    server.closeAllConnections()
+    await new Promise(resolve => server.close(resolve))
+    process.disconnect?.()
+  })
+}
 
 function logReqRes (req, res, mode = 'http') {
   console.log(`${req.method} ${req.url} (sub: ${req.subdomain ?? 'none'} - fwd: ${req.headers['x-forwarded-for'] ?? 'none'} - sckt: ${req.socket.remoteAddress})`)
