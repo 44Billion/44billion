@@ -6,6 +6,64 @@ globalThis.IS_DEVELOPMENT = true
 const { createNostrDb, injectEventStore } = await import('../../src/helpers/window-message/nostrdb-client.js')
 
 describe('nostrdb app-page client bridge', () => {
+  it('does not start a subscription cancelled before the handshake', async () => {
+    const port = Promise.withResolvers()
+    let started = false
+    const db = createNostrDb(port.promise, {
+      askStream: async function * () { started = true }
+    })
+    const iterator = db.subscribe({ kinds: [3] })
+    const next = iterator.next()
+    assert.deepEqual(await iterator.return(), { done: true })
+    port.resolve('port')
+    assert.deepEqual(await next, { done: true })
+    assert.equal(started, false)
+  })
+
+  it('closes the transport iterator when a scoped subscription rejects', async () => {
+    let closed = false
+    const denied = Object.assign(new Error('Removed'), { code: 'PUBKEY_NOT_IN_PERSONA' })
+    const db = createNostrDb(Promise.resolve('port'), {
+      askStream: async function * () {
+        try { yield { error: denied } } finally { closed = true }
+      }
+    })
+    const iterator = db.subscribe({ kinds: [3] })
+    await assert.rejects(iterator.next(), { code: 'PUBKEY_NOT_IN_PERSONA' })
+    assert.equal(closed, true)
+    assert.deepEqual(await iterator.next(), { done: true })
+  })
+
+  it('creates persona event stores synchronously and forwards their target after the handshake', async () => {
+    const port = Promise.withResolvers()
+    const calls = []
+    const target = { napp: {} }
+    injectEventStore(target, port.promise, {
+      ask: async (_port, message) => { calls.push(message); return { payload: 'ok' } },
+      askStream: async function * (_port, message) {
+        calls.push(message)
+        yield { payload: 'item' }
+      },
+      tell: (_port, message) => calls.push(message)
+    })
+    const pubkey = 'ab'.repeat(32)
+    const store = target.napp.getWindowNappEventStoreFor(pubkey)
+    assert.deepEqual(Object.keys(store).sort(), Object.keys(target.napp.eventStore).sort())
+    const pending = store.query({ kinds: [3] })
+    await Promise.resolve()
+    assert.equal(calls.length, 0)
+    port.resolve('port')
+    assert.equal(await pending, 'ok')
+    for (const method of ['add', 'addPersonalCopy', 'count', 'supports']) await store[method]()
+    const iterator = store.subscribe({ kinds: [3] })
+    assert.deepEqual(await iterator.next(), { value: 'item', done: false })
+    assert.ok(calls.every(message => message.payload.userPk === pubkey))
+    await iterator.return()
+    assert.equal(calls.at(-1).code, 'NOSTRDB_CANCEL')
+    await target.napp.eventStore.supports()
+    assert.equal(Object.hasOwn(calls.at(-1).payload, 'userPk'), false)
+  })
+
   it('exposes only public nostrdb methods', () => {
     const nostrdb = createNostrDb(Promise.resolve('port'), {
       ask: async () => ({ payload: null }),

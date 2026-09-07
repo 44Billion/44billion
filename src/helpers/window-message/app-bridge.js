@@ -10,17 +10,10 @@ import {
   APP_BRIDGE_ERROR_KIND,
   tagAppBridgeFileError
 } from './app-bridge-error.js'
-import { nostrDbStreamDonePayload } from './nostrdb-protocol.js'
+import { createAppEventStoreBridge } from './browser/app-event-store.js'
 import {
   createNostrDbMaintenanceSignEvent,
-  createNostrDbPersonalCopyDecrypt,
-  createNostrDbPersonalCopyEncrypt,
-  createNostrDbPersonalCopyObfuscate,
-  createNostrDbSignEvent,
-  createNostrDbSubscriptionAuthorizer,
-  nostrDbMaintenanceOptions,
-  nostrDbReadParamsWithAppId,
-  runNostrDbMethod
+  nostrDbMaintenanceOptions
 } from './browser/nostrdb.js'
 import { appIdToAddressObj, addressObjToAppId } from '#helpers/app.js'
 import { base36NsiteToBase16, bytesToBase36Nsite } from 'libp2r2p/base36'
@@ -576,50 +569,6 @@ async function getPermissionAppMetadata (appIdParam, appAddressParam, cache, fet
   }
 }
 
-function cancelNostrDbSubscription (subscriptions, subscriptionId) {
-  const subscription = subscriptions.get(subscriptionId)
-  if (!subscription) return
-  subscription.cancelled = true
-  subscription.iterator?.return?.()
-}
-
-async function streamNostrDbSubscription (e, {
-  db,
-  params = [],
-  subscriptionId,
-  subscriptions,
-  appPagePort,
-  authorizer,
-  appId
-}) {
-  let subscription
-  try {
-    if (!subscriptionId) throw new Error('NOSTRDB_SUBSCRIPTION_ID_REQUIRED')
-    if (subscriptions.has(subscriptionId)) throw new Error('NOSTRDB_SUBSCRIPTION_EXISTS')
-    subscription = { iterator: null, cancelled: false }
-    subscriptions.set(subscriptionId, subscription)
-
-    await authorizer?.authorizeBeforeStart?.()
-    if (subscription.cancelled) return
-    const iterator = db.subscribe(...nostrDbReadParamsWithAppId(params, { appId }))
-    subscription.iterator = iterator
-    for await (const item of iterator) {
-      await authorizer?.authorizeItem?.(item)
-      reply(e, { payload: item, isLast: false }, { to: appPagePort })
-    }
-    if (!subscription.cancelled) {
-      reply(e, {
-        payload: nostrDbStreamDonePayload(subscriptionId),
-        isLast: true
-      }, { to: appPagePort })
-    }
-  } catch (error) {
-    if (!subscription?.cancelled) reply(e, { error, isLast: true }, { to: appPagePort })
-  } finally {
-    if (subscriptions.get(subscriptionId) === subscription) subscriptions.delete(subscriptionId)
-  }
-}
-
 function createAppPageMessageListener ({
   state,
   appFiles,
@@ -627,9 +576,7 @@ function createAppPageMessageListener ({
   appId,
   appAddress,
   userPkB16,
-  isDefaultUser,
   defaultUserPk,
-  guardSigner,
   askVault,
   requestPermission,
   openApp,
@@ -645,9 +592,38 @@ function createAppPageMessageListener ({
 
   return function (appPagePort, documentSignal = signal) {
     const record = { instanceKey: appKey, appId, wsKey, instanceUserPk: state.userPk }
-    const initialPublicKeys = connectPersonaPublicKeysPort(personaPublicKeys, {
-      record, port: appPagePort, signal: documentSignal
+    const eventStoreBridge = createAppEventStoreBridge({
+      ownerPubkey: userPkB16,
+      appId,
+      getAppMetadata: () => getAppMetadata(appId, appAddress, { appMetadataCache, appFetchingState, timeoutMs: 0 }),
+      readPersonaPublicKeys: () => readAppPersonaPublicKeys(record),
+      readAccountFlags: userPk => readSignerAccountFlags(userPk, { defaultUserPk }),
+      getNostrDb,
+      askVault,
+      askNip07,
+      requestPermission,
+      notifySignerRequestAttention,
+      reply: (event, message) => reply(event, {
+        ...message,
+        ...(message.error
+          ? {
+              error: serializeError(message.error, {
+                ...message.error.context,
+                ...(message.error.code ? { code: message.error.code } : {})
+              })
+            }
+          : {})
+      }, { to: appPagePort }),
+      isWidget: instanceKind === 'widget'
     })
+    const initialPublicKeys = connectPersonaPublicKeysPort(personaPublicKeys, {
+      record, port: appPagePort, signal: documentSignal,
+      onChange: eventStoreBridge.revalidateSubscriptions
+    })
+    documentSignal.addEventListener('abort', eventStoreBridge.dispose, { once: true })
+    appPagePort.addEventListener('message', event => {
+      if (event.data.code === 'INSTANCE_DOCUMENT_UNLOADED') eventStoreBridge.dispose()
+    }, { signal: documentSignal })
     const metadata = connectInstanceMetadataPort(instanceMetadata, {
       record: {
         instanceKey: appKey, appId, wsKey, userPk: state.userPk,
@@ -845,72 +821,11 @@ function createAppPageMessageListener ({
           break
         }
         case 'NOSTRDB': {
-          const { method, params = [], subscriptionId } = e.data.payload || {}
-          const maintenanceSignEvent = isDefaultUser
-            ? null
-            : createNostrDbMaintenanceSignEvent({ askVault, pubkey: userPkB16, guard: guardSigner })
-          const personalCopyDecrypt = isDefaultUser
-            ? null
-            : createNostrDbPersonalCopyDecrypt({ askVault, pubkey: userPkB16, guard: guardSigner })
-          const personalCopyEncrypt = isDefaultUser
-            ? null
-            : createNostrDbPersonalCopyEncrypt({ askVault, pubkey: userPkB16, guard: guardSigner })
-          const personalCopyObfuscate = isDefaultUser
-            ? null
-            : createNostrDbPersonalCopyObfuscate({ askVault, pubkey: userPkB16, guard: guardSigner })
-          const db = getNostrDb(userPkB16, {
-            ...nostrDbMaintenanceOptions(maintenanceSignEvent),
-            ...(personalCopyDecrypt ? { personalCopyDecrypt } : {}),
-            ...(personalCopyObfuscate ? { personalCopyObfuscate } : {})
-          })
-          const appMetadata = await getAppMetadata(appId, appAddress, { appMetadataCache, appFetchingState, timeoutMs: 0 })
-          if (method === 'subscribe') {
-            const authorizer = createNostrDbSubscriptionAuthorizer({
-              app: appMetadata,
-              requestPermission,
-              params
-            })
-            streamNostrDbSubscription(e, {
-              db,
-              params,
-              subscriptionId,
-              subscriptions: state.nostrDbSubscriptions,
-              appPagePort,
-              authorizer,
-              appId
-            })
-            break
-          }
-          const accountFlags = readSignerAccountFlags(state.userPk, { defaultUserPk })
-          const signEvent = createNostrDbSignEvent({
-            askNip07,
-            askVault,
-            pubkey: userPkB16,
-            app: appMetadata,
-            ...accountFlags,
-            onSignerRequestAttention: kind => notifySignerRequestAttention({ kind, userPk: state.userPk })
-          })
-          try {
-            reply(e, {
-              payload: await runNostrDbMethod({
-                db,
-                method,
-                params,
-                appId,
-                signEvent,
-                requestPermission,
-                app: appMetadata,
-                personalCopyEncrypt,
-                personalCopyObfuscate
-              })
-            }, { to: appPagePort })
-          } catch (error) {
-            reply(e, { error }, { to: appPagePort })
-          }
+          await eventStoreBridge.handle(e)
           break
         }
         case 'NOSTRDB_CANCEL': {
-          cancelNostrDbSubscription(state.nostrDbSubscriptions, e.data.payload?.subscriptionId)
+          eventStoreBridge.cancel(e.data.payload?.subscriptionId)
           break
         }
         case 'WINDOW_NAPP': {
@@ -1150,17 +1065,7 @@ export function initAppWindow (state, {
   )
   const userPkB16 = base36NsiteToBase16(userPkB36)
   const defaultUserPk = JSON.parse(localStorage.getItem('session_defaultUserPk'))
-  const isDefaultUser = base16ToBase62(
-    userPkB16,
-    { mode: 'integer', minLength: 43 }
-  ) === defaultUserPk
   const appOrigin = `${location.protocol}//${state.appSubdomain}.${location.host}`
-  const guardSigner = ({ method, params }) => guardSignerRequest({
-    method,
-    params,
-    account: readSignerAccountFlags(state.userPk, { defaultUserPk }),
-    onAttention: kind => notifySignerRequestAttention({ kind, userPk: state.userPk })
-  })
   let currentAppPagePort = null
   let ac = null
 
@@ -1171,9 +1076,7 @@ export function initAppWindow (state, {
     appId: state.appId,
     appAddress,
     userPkB16,
-    isDefaultUser,
     defaultUserPk,
-    guardSigner,
     askVault,
     requestPermission,
     openApp,

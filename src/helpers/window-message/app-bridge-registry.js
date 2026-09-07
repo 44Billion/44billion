@@ -72,7 +72,6 @@ export function ensureAppBridgeState (appSubdomain, { userPk, appId }) {
     currentPort: null,
     currentPortAbortController: null,
     nfileDownloads: new Map(),
-    nostrDbSubscriptions: new Map(),
     bridgeErrorHandler: null,
     disposeTimer: null,
     bridgeCleanup: null,

@@ -10,6 +10,7 @@ in standalone embedded apps.
 ```js
 const publicKeys = await window.napp.getPersonaPublicKeys() // Promise<string[]>
 const signer = window.napp.getWindowNostrFor(publicKeys[0]) // synchronous object
+const eventStore = window.napp.getWindowNappEventStoreFor(publicKeys[0]) // synchronous object
 const publicKey = await signer.getPublicKey()
 
 const unsubscribe = window.napp.onPersonaPublicKeysChanged(publicKeys => {
@@ -161,6 +162,35 @@ and `supports`. Reads and writes may request the corresponding launcher
 permission. The event store remains scoped to the instance's workspace account
 and app; selecting a persona does not merge its members' event stores. Bridge
 errors reject method promises or the iterator's `next()` promise.
+
+`window.napp.getWindowNappEventStoreFor(pubkey)` synchronously returns the same
+six-method API for a member of the app's current persona. The public key uses
+the same 64-character hexadecimal format as `getWindowNostrFor`. Calls made
+before the handshake wait for the connection. This does not change
+`window.napp.eventStore`, merge stores, or switch the instance's primary user.
+
+```js
+const publicKeys = await window.napp.getPersonaPublicKeys()
+for (const pubkey of publicKeys) {
+  const store = window.napp.getWindowNappEventStoreFor(pubkey)
+  const { results } = await store.query({ kinds: [3] })
+  updateKnownContacts(pubkey, results)
+}
+```
+
+Each call validates current persona membership, including calls on previously
+created objects. Invalid or unavailable keys reject with
+`error.code === 'PUBKEY_NOT_IN_PERSONA'`; access is also checked after pending
+permissions and before returning results. Existing event permissions still
+apply, with the target account identified in permission requests. Signing and
+personal-copy cryptography use the target account and its lock/read-only rules.
+
+Subscriptions belong to the requesting document. They are cancelled on document
+unload, and scoped subscriptions fail with `PUBKEY_NOT_IN_PERSONA` when the
+member is removed, including while waiting for new events. Apps should follow
+`onPersonaPublicKeysChanged` to reconcile consumers and discard data they no
+longer need. Persona access does not define an app's inbox or account-switching
+policy; those remain app-level decisions.
 
 `subscribe()` returns an async iterator. Exiting a `for await` loop normally
 invokes the iterator's `return()` method and cancels the remote subscription;

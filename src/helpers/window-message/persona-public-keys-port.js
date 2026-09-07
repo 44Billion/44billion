@@ -1,7 +1,8 @@
 import { tell } from './index.js'
 
-export function connectPersonaPublicKeysPort (service, { record, port, signal, send = tell }) {
+export function connectPersonaPublicKeysPort (service, { record, port, signal, send = tell, onChange }) {
   const connection = service.connect(record, keys => {
+    onChange?.(keys)
     send(port, { code: 'PERSONA_PUBLIC_KEYS_CHANGED', payload: keys })
   })
   port.addEventListener('message', event => {

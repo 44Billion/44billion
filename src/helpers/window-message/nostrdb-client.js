@@ -10,12 +10,12 @@ function defaultSubscriptionId () {
   return `${Date.now()}:${Math.random().toString(36).slice(2)}`
 }
 
-function createNostrDbMethod (browserPortPromise, method, { ask: askFn, timeout }) {
+function createNostrDbMethod (browserPortPromise, method, { ask: askFn, timeout, context }) {
   return async (...params) => {
     const browserPort = await browserPortPromise
     const { payload, error } = await askFn(
       browserPort,
-      { code: 'NOSTRDB', payload: { method, params } },
+      { code: 'NOSTRDB', payload: { ...context, method, params } },
       { timeout }
     )
     if (error) throw error
@@ -26,21 +26,26 @@ function createNostrDbMethod (browserPortPromise, method, { ask: askFn, timeout 
 function createNostrDbSubscription (browserPortPromise, params, {
   askStream: askStreamFn,
   tell: tellFn,
-  subscriptionId
+  subscriptionId,
+  context
 }) {
   let browserPort
   let streamIterator
-  let started = false
+  let startPromise
+  let closed = false
 
-  async function start () {
-    if (started) return
-    started = true
-    browserPort = await browserPortPromise
-    streamIterator = askStreamFn(
-      browserPort,
-      { code: 'NOSTRDB', payload: { method: 'subscribe', params, subscriptionId } },
-      { timeout: null }
-    )[Symbol.asyncIterator]()
+  // Cancelling before the handshake must not create a remote subscription later.
+  function start () {
+    startPromise ??= (async () => {
+      browserPort = await browserPortPromise
+      if (closed) return
+      streamIterator = askStreamFn(
+        browserPort,
+        { code: 'NOSTRDB', payload: { ...context, method: 'subscribe', params, subscriptionId } },
+        { timeout: null }
+      )[Symbol.asyncIterator]()
+    })()
+    return startPromise
   }
 
   return {
@@ -48,18 +53,32 @@ function createNostrDbSubscription (browserPortPromise, params, {
       return this
     },
     async next () {
-      await start()
-      const next = await streamIterator.next()
-      if (next.done) return { done: true }
-      const { payload, error } = next.value
-      if (error) throw error
-      if (isNostrDbStreamDonePayload(payload, subscriptionId)) return { done: true }
-      return { value: payload, done: false }
+      if (closed) return { done: true }
+      try {
+        await start()
+        if (closed) return { done: true }
+        const next = await streamIterator.next()
+        if (closed) return { done: true }
+        if (!next.done) {
+          const { payload, error } = next.value
+          if (error) throw error
+          if (!isNostrDbStreamDonePayload(payload, subscriptionId)) return { value: payload, done: false }
+        }
+        closed = true
+        await streamIterator.return?.()
+        return { done: true }
+      } catch (error) {
+        closed = true
+        await streamIterator?.return?.()
+        throw error
+      }
     },
     async return () {
-      if (started && browserPort) {
+      if (closed) return { done: true }
+      closed = true
+      if (streamIterator) {
         tellFn(browserPort, { code: 'NOSTRDB_CANCEL', payload: { subscriptionId } })
-        await streamIterator?.return?.()
+        await streamIterator.return?.()
       }
       return { done: true }
     }
@@ -71,22 +90,31 @@ export function createNostrDb (browserPortPromise, {
   askStream: askStreamFn = askStream,
   tell: tellFn = tell,
   makeSubscriptionId = defaultSubscriptionId,
-  timeout = DEFAULT_TIMEOUT
+  timeout = DEFAULT_TIMEOUT,
+  context = {}
 } = {}) {
   const nostrdb = {}
   for (const method of NOSTRDB_ONE_SHOT_METHODS) {
-    nostrdb[method] = createNostrDbMethod(browserPortPromise, method, { ask: askFn, timeout })
+    nostrdb[method] = createNostrDbMethod(browserPortPromise, method, { ask: askFn, timeout, context })
   }
   nostrdb.subscribe = (...params) => createNostrDbSubscription(browserPortPromise, params, {
     askStream: askStreamFn,
     tell: tellFn,
-    subscriptionId: makeSubscriptionId()
+    subscriptionId: makeSubscriptionId(),
+    context
   })
   return nostrdb
 }
 
 export function injectEventStore (target, browserPortPromise, options) {
   const eventStore = createNostrDb(browserPortPromise, options)
-  Object.assign(target.napp, { eventStore })
+  Object.assign(target.napp, {
+    eventStore,
+    // Membership is checked by the launcher on each call, not when creating the object.
+    getWindowNappEventStoreFor: pubkey => createNostrDb(browserPortPromise, {
+      ...options,
+      context: { userPk: pubkey }
+    })
+  })
   return eventStore
 }

@@ -18,6 +18,7 @@ export default async function checkPersonas ({ evaluate, until, wait, port, send
   const originalWidget = await request(widgetFrame)
   assert.deepEqual(original.keys, [a])
   assert.deepEqual(original.signers, [a, { error: 'PUBKEY_NOT_IN_PERSONA' }])
+  assert.deepEqual(original.eventStores, [true, { error: 'PUBKEY_NOT_IN_PERSONA' }])
   assert.deepEqual(original.changes, [[a]])
 
   // The real toolbar menu should offer the selected app's eligible identities.
@@ -38,6 +39,8 @@ export default async function checkPersonas ({ evaluate, until, wait, port, send
   const selectedWidget = await request(widgetFrame, [b])
   assert.deepEqual(selected.keys, [a, b])
   assert.deepEqual(selected.signers, [a, b])
+  assert.deepEqual(selected.eventStores, [true, true])
+  assert.deepEqual(selectedWidget.eventStores, [true])
   assert.deepEqual(selectedWidget.keys, [a, b])
   assert.deepEqual(selected.changes, [[a], [a, b]])
   assert.equal(selected.token, original.token)
@@ -48,6 +51,7 @@ export default async function checkPersonas ({ evaluate, until, wait, port, send
   const reset = await request(windowFrame, [b, null, ''])
   assert.deepEqual(reset.keys, [a])
   assert.deepEqual(reset.signers, Array(3).fill({ error: 'PUBKEY_NOT_IN_PERSONA' }))
+  assert.deepEqual(reset.eventStores, Array(3).fill({ error: 'PUBKEY_NOT_IN_PERSONA' }))
   assert.deepEqual(reset.changes, [[a], [a, b], [a]])
   assert.deepEqual((await request(widgetFrame)).changes, [[a], [a, b], [a]])
   assert.equal(await evaluate('fixture.storage.local_appPersonaSelections$().ws?.[fixture.appId]??null'), null)

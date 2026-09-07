@@ -10,6 +10,24 @@ light DOM, and no per-component build step (esbuild only bundles the app). Follo
 the framework's component conventions: `f('tag', ...)` declarations, signal props,
 `useStore`/`useTask`, and light-DOM slots.
 
+## Routing
+
+- Use pathname URLs and the browser History API through `useLocation` from `#f`
+  and `url-router`. Render matched system views with `<f-route>`, imported from
+  `#f/components/f-route.js`; do not restore a local `a-route` implementation.
+- Navigate through the location store's `pushState`, `replaceState`, `back`,
+  and `forward` methods. Read route data from `props.route$` or
+  `useClosestStore('<f-route>').route$`. Preserve app-window routing and verify
+  direct URLs, reloads, and browser Back/Forward when changing navigation.
+
+## Injected app APIs
+
+- Keep [`APP_API.md`](APP_API.md) updated in the same change that adds or changes
+  an injected API. Consumers use the committed version on `main` as their contract.
+- Document identity scope, permissions, handshake timing, errors, and subscription
+  cleanup. Persona-scoped access must be checked in the launcher on every request
+  and revoked for live subscriptions when membership changes.
+
 ## Styling Rules
 
 - **Colors come from [`src/assets/styles/theme.js`](src/assets/styles/theme.js).**
@@ -53,3 +71,14 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   detects inconsistent workspace/app/account state and schedules a repair
   reload; the pre-render pass applies the pending repair plan. Keep the audit
   pure, prefer existing cleanup routines, and preserve unknown keys.
+
+## Connectivity recovery
+
+- Use `isOnline` and `onOnline` from `libp2r2p/network`. The shared library
+  monitor owns connectivity probes, capped retry delays, and browser wake-up
+  listeners. `ConnectivityRetryCoordinator` owns waiters, cancellation, and
+  concurrency of resumed app work; do not restore its duplicate probe timer.
+- These consumer changes depend on the companion libp2r2p monitor update.
+  Until it is published, validate against the sibling library locally. Update
+  the npm dependency and lockfile to a version containing it before shipping;
+  the current published version does not contain the monitor.

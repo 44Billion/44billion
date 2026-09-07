@@ -1,6 +1,4 @@
-import { isOnline, onOnline } from '#helpers/network.js'
-
-const RETRY_DELAYS = [5000, 15000, 30000, 60000]
+import { isOnline, onOnline } from 'libp2r2p/network'
 
 function abortError () {
   const error = new Error('Connectivity wait aborted')
@@ -19,24 +17,16 @@ export class ConnectivityRetryCoordinator {
   constructor ({
     _isOnline = isOnline,
     _onOnline = onOnline,
-    _setTimeout = setTimeout,
-    _clearTimeout = clearTimeout,
-    _random = Math.random,
     concurrency = 3
   } = {}) {
     this._isOnline = _isOnline
     this._onOnline = _onOnline
-    this._setTimeout = _setTimeout
-    this._clearTimeout = _clearTimeout
-    this._random = _random
     this.concurrency = concurrency
   }
 
   waiters = new Set()
   queue = []
   running = 0
-  retryIndex = 0
-  timer = null
   removeOnlineListener = null
   connectivityCheck = null
   lastOnlineAt = 0
@@ -88,22 +78,10 @@ export class ConnectivityRetryCoordinator {
     if (!this.removeOnlineListener) {
       this.removeOnlineListener = this._onOnline(() => this.#releaseWaiters())
     }
-    if (!this.timer) this.#scheduleProbe()
-  }
-
-  #scheduleProbe () {
-    const baseDelay = RETRY_DELAYS[Math.min(this.retryIndex, RETRY_DELAYS.length - 1)]
-    this.retryIndex++
-    const jitter = 0.8 + (this._random() * 0.4)
-    this.timer = this._setTimeout(async () => {
-      this.timer = null
-      if (!this.waiters.size) return this.#stopIfIdle()
-      if (await this.confirmOnline()) this.#releaseWaiters()
-      else this.#scheduleProbe()
-    }, Math.round(baseDelay * jitter))
   }
 
   #releaseWaiters () {
+    this.lastOnlineAt = Date.now()
     const waiters = [...this.waiters]
     this.waiters.clear()
     for (const waiter of waiters) {
@@ -115,9 +93,6 @@ export class ConnectivityRetryCoordinator {
 
   #stopIfIdle () {
     if (this.waiters.size) return
-    if (this.timer) this._clearTimeout(this.timer)
-    this.timer = null
-    this.retryIndex = 0
     this.removeOnlineListener?.()
     this.removeOnlineListener = null
   }

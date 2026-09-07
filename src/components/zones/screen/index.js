@@ -34,7 +34,7 @@ import { shouldApplyVirtualWidth } from '#services/widgets/index.js'
 import { resetDraftAppRuntimeData } from './helpers/draft-app-runtime-reset.js'
 import { usePermissionDialogStore } from '#zones/permission-dialog/index.js'
 import { getFileNotCachedText } from '#zones/file-not-cached-dialog/index.js'
-import '#shared/route.js'
+import '#f/components/f-route.js'
 import {
   APP_PENDING_INDICATOR_DELAY_MS,
   APP_PAGE_READY_TIMEOUT_MS,
@@ -333,11 +333,12 @@ f('aScreen', function () {
   `
 })
 
-f('system-views', function () {
-  return this.h`
-    <a-route props=${{ path: '/settings' }} />
-    <a-route props=${{ path: '/app-updates' }} />
-    <a-route props=${{ path: '/sticky-sessions' }} />
+// Mount launcher system pages through the shared History API router.
+f('system-views', ({ h }) => {
+  return h`
+    <f-route props=${{ path: '/settings' }} />
+    <f-route props=${{ path: '/app-updates' }} />
+    <f-route props=${{ path: '/sticky-sessions' }} />
   `
 })
 

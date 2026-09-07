@@ -35,6 +35,7 @@ const bytes = new TextEncoder().encode(`<!doctype html><html><head><title>Bridge
 window.documentToken = Math.random().toString(36);
 window.personaChanges = [];
 window.scopedSigners = new Map();
+window.scopedEventStores = new Map();
 window.napp.onPersonaPublicKeysChanged(keys => window.personaChanges.push(keys));
 window.napp.getInstanceMetadata().then(metadata => {
   parent.postMessage({code:'FIXTURE_LOADED', metadata, token:documentToken}, '${location.origin}');
@@ -43,14 +44,18 @@ window.addEventListener('message', async event => {
   if(event.origin !== '${location.origin}' || event.source !== parent) return;
   if(event.data.code === 'FIXTURE_PERSONA_QUERY') {
     const signers = [];
+    const eventStores = [];
     for (const pk of event.data.pubkeys) {
       if (!scopedSigners.has(pk)) scopedSigners.set(pk, window.napp.getWindowNostrFor(pk));
       try { signers.push(await scopedSigners.get(pk).getPublicKey()); }
       catch (error) { signers.push({error:error.code}); }
+      if (!scopedEventStores.has(pk)) scopedEventStores.set(pk, window.napp.getWindowNappEventStoreFor(pk));
+      try { eventStores.push(Boolean(await scopedEventStores.get(pk).supports())); }
+      catch (error) { eventStores.push({error:error.code}); }
     }
     parent.postMessage({code:'FIXTURE_PERSONA_REPLY', requestId:event.data.requestId, payload:{
       keys:await window.napp.getPersonaPublicKeys(), changes:personaChanges,
-      metadata:await window.napp.getInstanceMetadata(), peek:await window.nostr.peekPublicKey(), href:location.pathname+location.search+location.hash, token:documentToken, signers
+      metadata:await window.napp.getInstanceMetadata(), peek:await window.nostr.peekPublicKey(), href:location.pathname+location.search+location.hash, token:documentToken, signers, eventStores
     }}, event.origin);
   }
   if(event.data.code === 'FIXTURE_STORAGE') {

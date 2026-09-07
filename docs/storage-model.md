@@ -154,6 +154,13 @@ registered instance identity.
 
 ### `44billion_nostrdb:<ownerPubkey>`
 
+`window.napp.eventStore` uses the instance's workspace owner.
+`getWindowNappEventStoreFor(pubkey)` explicitly selects an accessible persona
+member's existing owner database, preserving the requesting app context and
+event permissions. This creates no new storage keys or stores and does not merge
+owners' databases. Document subscriptions are in memory, are cancelled on unload,
+and lose access when their target leaves the active persona.
+
 - `events` — Nostr events with app/owner references.
 - `deletions` — deletion tombstones.
 - `kindRegistry` — app-neutral kinds.
