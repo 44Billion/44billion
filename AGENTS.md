@@ -19,6 +19,9 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   and `forward` methods. Read route data from `props.route$` or
   `useClosestStore('<f-route>').route$`. Preserve app-window routing and verify
   direct URLs, reloads, and browser Back/Forward when changing navigation.
+- App iframes use isolated origins. Use `reloadAppIframe` to reload them through
+  the parent-owned `src`, retaining the bridge marker; do not access the child
+  document's `location.reload()`. Keep draft data cleanup before navigation.
 
 ## Injected app APIs
 

@@ -1,6 +1,6 @@
 import { useAppSubdomain } from '#hooks/use-app-subdomain.js'
 import { useInitPersonas } from '#hooks/use-personas.js'
-import { f, useClosestStore, useStore, useSignal, useTask, useComputed, useMemo } from '#f'
+import { f, useClosestStore, useStore, useSignal, useTask, useMemo } from '#f'
 import { useWebStorage } from '#f'
 import { useInitInstanceMetadata, useInstanceMetadataSurface } from '#hooks/use-instance-metadata.js'
 import { appDecode } from 'libp2r2p/nip19'
@@ -13,6 +13,7 @@ import {
   initAppWindow
 } from '#helpers/window-message/app-bridge.js'
 import { APP_BRIDGE_ERROR_KIND } from '#helpers/window-message/app-bridge-error.js'
+import { reloadAppIframe } from '#helpers/window-message/reload-app-iframe.js'
 import useAppBridgeRegistration from '#hooks/use-app-bridge-registration.js'
 import { allocateAppSubdomain, subdomainStorage } from '#helpers/subdomain-mapping.js'
 import { getRandomId } from '#helpers/misc.js'
@@ -89,7 +90,7 @@ f('singleNappLauncher', function () {
   const {
     [`session_workspaceByKey_${wsKey}_userPk$`]: userPk$
   } = storage
-  const appSubdomain$ = useAppSubdomain(() => ({ userPk: userPk$(), appId: appId }))
+  const appSubdomain$ = useAppSubdomain(() => ({ userPk: userPk$(), appId }))
   const appIframeRef$ = useSignal()
   const appIframeSrc$ = useSignal('about:blank')
   const launchError$ = useSignal(null)
@@ -186,6 +187,11 @@ f('singleNappLauncher', function () {
       if (!bridgeState) return
       const appKey = `single-napp:${appId}:${userPk}:${instanceId}`
 
+      const reloadAppFrame = () => reloadAppIframe({
+        appIframeRef$,
+        appIframeSrc$,
+        fallbackSrc: `//${subdomain}.${window.location.host}${currentRoute || '/'}`
+      })
       let isDraftReloading = false
       const offDraftUpdate = AppUpdater.onDraftAppUpdated(async ({ appId: updatedAppId }) => {
         if (ac.signal.aborted || updatedAppId !== appId || isDraftReloading) return
@@ -199,22 +205,7 @@ f('singleNappLauncher', function () {
             appSubdomain: subdomain
           })
           if (ac.signal.aborted) return
-
-          try {
-            appIframeRef$()?.contentWindow?.location?.reload()
-          } catch (err) {
-            console.warn('[single-napp] Direct reload failed; restoring previous iframe URL', err)
-            const currentSrc = appIframeSrc$()
-            appIframeSrc$('about:blank')
-            await new Promise(resolve => setTimeout(resolve, 0))
-            if (!ac.signal.aborted) {
-              appIframeSrc$(
-                currentSrc && currentSrc !== 'about:blank'
-                  ? currentSrc
-                  : `//${subdomain}.${window.location.host}${currentRoute || '/'}`
-              )
-            }
-          }
+          reloadAppFrame()
         } finally {
           isDraftReloading = false
         }
@@ -275,24 +266,6 @@ f('singleNappLauncher', function () {
       runtime.appReady = false
       runtime.autoRetried = false
       appReady$(false)
-
-      const reloadAppFrame = async () => {
-        const currentSrc = appIframeSrc$()
-        try {
-          appIframeRef$()?.contentWindow?.location?.reload()
-        } catch (err) {
-          console.warn('[single-napp] Retry reload failed; restoring previous iframe URL', err)
-          appIframeSrc$('about:blank')
-          await new Promise(resolve => setTimeout(resolve, 0))
-          if (!ac.signal.aborted) {
-            appIframeSrc$(
-              currentSrc && currentSrc !== 'about:blank'
-                ? currentSrc
-                : `//${subdomain}.${window.location.host}${currentRoute || '/'}`
-            )
-          }
-        }
-      }
 
       let appPageTimeout = null
       const onAppReady = () => {

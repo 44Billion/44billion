@@ -118,9 +118,32 @@ try {
     await evaluate(`document.querySelector('app-window iframe').contentWindow.postMessage({code:'FIXTURE_MIN_WIDTH',width:${width}},'http://0.localhost:${port}')`)
     await until(`document.querySelector('app-window iframe').style.width==='${width}px'`, 'app MessagePort remains usable')
   }
+  const checkDraftReload = async (selector, instanceKey) => {
+    const before = await evaluate(`({
+      token:fixture.loaded.filter(item=>item.metadata.instanceKey===${JSON.stringify(instanceKey)}).at(-1).token,
+      src:document.querySelector(${JSON.stringify(selector)}).src
+    })`)
+    await evaluate(`
+      fixture.reloadWarnings=[];
+      fixture.originalWarn=console.warn;
+      console.warn=(...args)=>{
+        fixture.reloadWarnings.push(args.map(arg=>arg?.name==='SecurityError'?arg.name+': '+arg.message:String(arg)).join(' '));
+        fixture.originalWarn(...args);
+      };
+      fixture.AppUpdater._emitDraftAppUpdated({appId:fixture.appId});
+    `)
+    try {
+      await until(`fixture.loaded.filter(item=>item.metadata.instanceKey===${JSON.stringify(instanceKey)}).at(-1)?.token!==${JSON.stringify(before.token)}`, 'draft update loads a fresh cross-origin app document', 12000)
+      assert.equal(await evaluate(`document.querySelector(${JSON.stringify(selector)}).src`), before.src, 'draft reload preserves the iframe URL and bridge marker')
+      assert.deepEqual(await evaluate('fixture.reloadWarnings'), [], 'draft reload must not attempt forbidden cross-origin access')
+    } finally {
+      await evaluate('console.warn=fixture.originalWarn')
+    }
+  }
+  await checkDraftReload('app-window iframe', 'window')
   await checkLivePort()
   await evaluate(`document.querySelector('app-window iframe').contentWindow.postMessage({code:'FIXTURE_NAVIGATE',path:'/next'},'http://0.localhost:${port}')`)
-  await until('fixture.loaded.length===2', 'app navigation renews document handshake')
+  await until('fixture.loaded.length===3', 'app navigation renews document handshake')
   await until("fixture.storage.session_appByKey_window_route$()==='/next'", 'route persisted through the app port')
   await checkLivePort(1000)
   await setVisibility('window', 'minimized')
@@ -189,8 +212,10 @@ try {
   await evaluate('fixture.state.single$(true)')
   await until('fixture.loaded.some(item=>item.metadata.instanceKey.startsWith("single-napp:"))', 'embedded launcher loads as the only instance')
   assert.equal(await evaluate('fixture.AppUpdater.singleNappOpenCount()'), 1, 'one admission for the lifetime of an embedded instance')
+  const singleKey = await evaluate('fixture.loaded.find(item=>item.metadata.instanceKey.startsWith("single-napp:")).metadata.instanceKey')
+  await checkDraftReload('single-napp-launcher iframe.napp-page', singleKey)
   await evaluate(`fixture.retryAppBridge(${bridge})`)
-  await until(`${bridge}.ready$() && fixture.loaded.filter(item=>item.metadata.instanceKey.startsWith('single-napp:')).length===2`, 'embedded retry reuses admission')
+  await until(`${bridge}.ready$() && fixture.loaded.filter(item=>item.metadata.instanceKey.startsWith('single-napp:')).length===3`, 'embedded retry reuses admission')
   assert.equal(await evaluate('fixture.AppUpdater.singleNappOpenCount()'), 1)
   await evaluate('fixture.state.single$(false)')
   await until(`${bridge}.windows.size===0 && !${bridge}.currentPort`, 'embedded unmount releases bridge')
@@ -222,7 +247,7 @@ try {
   await until('fixture.getAppBridgeState("2").windows.size===0 && !fixture.getAppBridgeState("2").currentPort', 'recovered bridge still cleans up')
   await checkIdentity({ evaluate, until, wait, port, send, cdp })
   assert.deepEqual(await evaluate('fixtureErrors'), [])
-  console.log('Chrome: real cold/warm bridge, app navigation and live ports, minimize/close/reopen, shared windows/widgets, automatic/manual retries, bounded timeout recovery and embedded lifecycle passed')
+  console.log('Chrome: real cold/warm bridge, cross-origin draft reloads, app navigation and live ports, minimize/close/reopen, shared windows/widgets, automatic/manual retries, bounded timeout recovery and embedded lifecycle passed')
 } catch (error) {
   console.error(error)
   process.exitCode = 1

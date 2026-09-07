@@ -41,6 +41,7 @@ import {
   initAppWindow
 } from '#helpers/window-message/app-bridge.js'
 import { APP_BRIDGE_ERROR_KIND } from '#helpers/window-message/app-bridge-error.js'
+import { reloadAppIframe } from '#helpers/window-message/reload-app-iframe.js'
 import useAppBridgeRegistration from '#hooks/use-app-bridge-registration.js'
 import { appEncode } from 'libp2r2p/nip19'
 import { appIdToAddressObj } from '#helpers/app.js'
@@ -699,6 +700,11 @@ f('appWindow', function () {
       const bridgeState = track(() => registeredBridge$())
       if (!bridgeState) return
 
+      const reloadAppFrame = () => reloadAppIframe({
+        appIframeRef$,
+        appIframeSrc$,
+        fallbackSrc: `//${appSubdomain}.${window.location.host}${runtime.initialRoute || '/'}`
+      })
       let isDraftReloading = false
       const offDraftUpdate = AppUpdater.onDraftAppUpdated(async ({ appId: updatedAppId }) => {
         if (ac.signal.aborted || updatedAppId !== appId || isClosed$() || isDraftReloading) return
@@ -711,21 +717,7 @@ f('appWindow', function () {
             appSubdomain
           })
           if (ac.signal.aborted) return
-          try {
-            appIframeRef$()?.contentWindow?.location?.reload()
-          } catch (err) {
-            console.warn('[app-window] Direct reload failed; restoring previous iframe URL', err)
-            const currentSrc = appIframeSrc$()
-            appIframeSrc$('about:blank')
-            await new Promise(resolve => setTimeout(resolve, 0))
-            if (!ac.signal.aborted) {
-              appIframeSrc$(
-                currentSrc && currentSrc !== 'about:blank'
-                  ? currentSrc
-                  : `//${appSubdomain}.${window.location.host}${runtime.initialRoute || '/'}`
-              )
-            }
-          }
+          reloadAppFrame()
         } finally {
           isDraftReloading = false
         }
@@ -780,24 +772,6 @@ f('appWindow', function () {
       runtime.autoRetried = false
       appReady$(false)
       launchError$(null)
-
-      const reloadAppFrame = async () => {
-        const currentSrc = appIframeSrc$()
-        try {
-          appIframeRef$()?.contentWindow?.location?.reload()
-        } catch (err) {
-          console.warn('[app-window] Retry reload failed; restoring previous iframe URL', err)
-          appIframeSrc$('about:blank')
-          await new Promise(resolve => setTimeout(resolve, 0))
-          if (!ac.signal.aborted) {
-            appIframeSrc$(
-              currentSrc && currentSrc !== 'about:blank'
-                ? currentSrc
-                : `//${appSubdomain}.${window.location.host}${runtime.initialRoute || '/'}`
-            )
-          }
-        }
-      }
 
       let appPageTimeout = null
       const onAppReady = () => {
