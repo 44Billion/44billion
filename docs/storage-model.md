@@ -152,6 +152,13 @@ registered instance identity.
 - `chunkRoots` — owner chunk roots and purge metadata.
 - `chunkState` — chunk-cache reconciliation state.
 
+The initial `siteManifests` write belongs to the normal first-open fetch. Being
+listed as installed in localStorage does not imply that this write has finished.
+The draft watcher holds early feed events in memory until a local manifest exists
+and rechecks its timestamp and file aggregate after waiting for the update slot.
+Initial/duplicate events and metadata-only revisions do not trigger runtime data
+cleanup. Pending draft events introduce no persisted key or store.
+
 ### `44billion_nostrdb:<ownerPubkey>`
 
 `window.napp.eventStore` uses the instance's workspace owner.

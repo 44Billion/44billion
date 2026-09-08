@@ -107,6 +107,10 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   so development vault accounts remain accessible.
 - The health endpoint is development-only; it is not an injected app API.
   Draft updates retain their current origin/event cleanup behavior.
+- The draft watcher must wait for the first-open manifest write. Recheck the
+  installed timestamp and file aggregate after acquiring the update slot;
+  initial feed replay, duplicate/deferred events, and metadata-only revisions
+  must not emit a reload notification or clear app data.
 - `tests/browser/runtime/` contains reusable Node/CDP and installation helpers
   for consumer integration tests. Use production manifest/chunk writers and
   the ordinary launcher app-opening flow; do not duplicate storage schemas in

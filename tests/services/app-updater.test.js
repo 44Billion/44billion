@@ -548,6 +548,155 @@ describe('AppUpdater', () => {
   })
 
   describe('draft live updates', () => {
+    function draftScenario (t, localManifest) {
+      resetDraftUpdateState()
+      const state = { localManifest, downloads: [], saved: [], emitted: [] }
+      const off = AppUpdater.onDraftAppUpdated(payload => state.emitted.push(payload))
+      t.after(() => { off(); resetDraftUpdateState() })
+      state.deps = {
+        _getSiteManifestFromDb: async () => state.localManifest,
+        _saveSiteManifestToDb: async (event, meta) => {
+          state.saved.push(event)
+          state.localManifest = { ...event, meta }
+        },
+        _AppFileDownloader: class {
+          constructor (appId, root) { this.root = root }
+          async * run () {
+            state.downloads.push(this.root)
+            yield { progress: 100 }
+          }
+        },
+        _deleteStaleFileChunksFromDb: async () => {},
+        _sumFileChunkBytesFromDb: async () => 0,
+        _replaceCachedSiteManifest: async () => null,
+        _setWebStorageItem: () => {},
+        _localStorage: storageFromEntries({ config_appUpdateMode: 'always' }),
+        _sessionStorage: storageFromEntries(),
+        writeRelays: ['wss://author.example']
+      }
+      state.receive = event => AppUpdater._handleDraftUpdateEvent(event, AppUpdater._draftWatchTargets([DRAFT_APP_ID]), state.deps)
+      return state
+    }
+
+    const initialDraft = {
+      id: 'initial-draft', kind: 35130, pubkey: DRAFT_PUBKEY, created_at: 100,
+      tags: [['d', 'draft-app'], ['path', 'index.html', ROOT_A]]
+    }
+    const nextDraft = {
+      ...initialDraft, id: 'next-draft', created_at: 200,
+      tags: [['d', 'draft-app'], ['path', 'index.html', ROOT_B]]
+    }
+
+    it('does not install or reload a draft whose first manifest is still being fetched', async t => {
+      const state = draftScenario(t)
+      await state.receive(initialDraft)
+      assert.deepEqual(state.downloads, [], 'the foreground installer owns the first version')
+      assert.deepEqual(state.saved, [])
+      assert.deepEqual(state.emitted, [], 'no reload or runtime cleanup before initial installation')
+      assert.equal(AppUpdater._draftPendingEvents.get(DRAFT_APP_ID).id, initialDraft.id)
+
+      // The ordinary first-open fetch finishes with the exact event from the feed.
+      state.localManifest = initialDraft
+      await AppUpdater.applyPendingDraftUpdates(state.deps)
+      assert.deepEqual(state.downloads, [])
+      assert.deepEqual(state.emitted, [])
+      assert.equal(AppUpdater._draftPendingEvents.size, 0)
+      await state.receive(initialDraft)
+      assert.deepEqual(state.emitted, [], 'relay replay after installation is also a no-op')
+    })
+
+    it('retains a genuinely newer draft received before first installation finishes', async t => {
+      const state = draftScenario(t)
+      await state.receive(initialDraft)
+      await state.receive(nextDraft)
+      assert.deepEqual(state.emitted, [])
+      assert.equal(AppUpdater._draftPendingEvents.get(DRAFT_APP_ID).id, nextDraft.id)
+      state.localManifest = initialDraft
+      await AppUpdater.applyPendingDraftUpdates(state.deps)
+      assert.deepEqual(state.downloads, [ROOT_B])
+      assert.deepEqual(state.emitted.map(item => item.event.id), [nextDraft.id])
+      await state.receive(nextDraft)
+      assert.equal(state.emitted.length, 1)
+    })
+
+    it('rechecks a deferred draft against the installed version before reloading', async t => {
+      const state = draftScenario(t, initialDraft)
+      state.deps._localStorage = storageFromEntries({ config_appUpdateMode: 'wifi' })
+      state.deps._navigator = { userAgentData: { mobile: true }, connection: { metered: true } }
+      await state.receive(nextDraft)
+      assert.equal(AppUpdater._draftPendingEvents.size, 1)
+
+      // Another installation/update finishes while this event is deferred.
+      state.localManifest = nextDraft
+      state.deps._navigator.connection.metered = false
+      await AppUpdater.applyPendingDraftUpdates(state.deps)
+      assert.deepEqual(state.downloads, [])
+      assert.deepEqual(state.emitted, [])
+      assert.equal(AppUpdater._draftPendingEvents.size, 0)
+    })
+
+    it('rechecks a draft after waiting for the shared download slot', async t => {
+      const state = draftScenario(t, initialDraft)
+      await AppUpdater._acquireUpdateSlot()
+      const waiting = Promise.withResolvers()
+      const acquire = AppUpdater._acquireUpdateSlot
+      t.mock.method(AppUpdater, '_acquireUpdateSlot', function () {
+        const result = acquire.call(this)
+        waiting.resolve()
+        return result
+      })
+      const update = state.receive(nextDraft)
+      try {
+        await waiting.promise
+        state.localManifest = nextDraft
+      } finally {
+        AppUpdater._releaseUpdateSlot()
+      }
+      await update
+      assert.deepEqual(state.downloads, [])
+      assert.deepEqual(state.emitted, [])
+      assert.equal(AppUpdater._activeUpdates, 0)
+    })
+
+    it('refreshes metadata without reloading when deferred files are already installed', async t => {
+      const state = draftScenario(t, initialDraft)
+      state.deps._localStorage = storageFromEntries({ config_appUpdateMode: 'wifi' })
+      state.deps._navigator = { userAgentData: { mobile: true }, connection: { metered: true } }
+      await state.receive(nextDraft)
+      state.localManifest = { ...nextDraft, id: 'same-files', created_at: 150 }
+      state.deps._navigator.connection.metered = false
+      await AppUpdater.applyPendingDraftUpdates(state.deps)
+      assert.deepEqual(state.saved.map(event => event.id), [nextDraft.id])
+      assert.deepEqual(state.downloads, [])
+      assert.deepEqual(state.emitted, [])
+      assert.equal(AppUpdater._draftPendingEvents.size, 0)
+    })
+
+    it('does not replay a duplicate queued while the same draft is downloading', async t => {
+      const state = draftScenario(t, initialDraft)
+      const downloading = Promise.withResolvers()
+      const finish = Promise.withResolvers()
+      state.deps._AppFileDownloader = class {
+        async * run () {
+          state.downloads.push(ROOT_B)
+          downloading.resolve()
+          await finish.promise
+          yield { progress: 100 }
+        }
+      }
+      const update = state.receive(nextDraft)
+      try {
+        await downloading.promise
+        await state.receive(nextDraft)
+      } finally {
+        finish.resolve()
+      }
+      await update
+      assert.deepEqual(state.downloads, [ROOT_B])
+      assert.deepEqual(state.emitted.map(item => item.event.id), [nextDraft.id])
+      assert.equal(AppUpdater._draftPendingEvents.size, 0)
+    })
+
     it('filters installed draft app ids', () => {
       assert.deepEqual(AppUpdater.filterDraftAppIds([MAIN_APP_ID, DRAFT_APP_ID]), [DRAFT_APP_ID])
       assert.deepEqual(AppUpdater.filterRegularAppIds([MAIN_APP_ID, DRAFT_APP_ID]), [MAIN_APP_ID])

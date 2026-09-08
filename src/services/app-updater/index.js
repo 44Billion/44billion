@@ -748,6 +748,7 @@ export default class AppUpdater {
   static async _drainDraftUpdateQueue (appId, deps = {}) {
     if (this._draftApplyingAppIds.has(appId)) return { accepted: true, queued: true }
     this._draftApplyingAppIds.add(appId)
+    let applied = false
     try {
       while (this._draftPendingEvents.has(appId)) {
         if (!this._canAutoApplyDraftUpdate(deps)) return { accepted: true, deferred: true }
@@ -756,10 +757,13 @@ export default class AppUpdater {
         this._draftPendingEvents.delete(appId)
 
         let updateError = null
+        let skipped = null
         for await (const report of this.updateApp(event, {
           ...deps,
+          requireNewerVersion: true,
           assetBudgetMode: 'autoUpdate'
         })) {
+          if (report.skipped) skipped = report.skipped
           if (report.error) {
             updateError = report.error
             break
@@ -771,9 +775,20 @@ export default class AppUpdater {
           return { accepted: true, error: updateError }
         }
 
+        if (skipped === 'awaiting-manifest') {
+          // Opening an app records its installation before its initial manifest
+          // fetch finishes. Keep only the newest feed event until that baseline
+          // exists; the normal pending-update poll will compare it again.
+          const pending = this._draftPendingEvents.get(appId)
+          this._draftPendingEvents.set(appId, this._newerDraftEvent(pending, event))
+          return { accepted: true, deferred: true }
+        }
+        if (skipped) continue
+
         this._emitDraftAppUpdated({ appId, event })
+        applied = true
       }
-      return { accepted: true, applied: true }
+      return { accepted: true, applied }
     } finally {
       this._draftApplyingAppIds.delete(appId)
     }
@@ -1228,6 +1243,7 @@ export default class AppUpdater {
     _localStorage,
     _sessionStorage,
     writeRelays,
+    requireNewerVersion = false,
     assetBudgetMode = 'foreground',
     requestAssetBudgetConfirmation
   } = {}) {
@@ -1243,6 +1259,30 @@ export default class AppUpdater {
         pubkey: nextSiteManifestEvent.pubkey,
         dTag
       })
+
+      if (requireNewerVersion) {
+        // Recheck after acquiring the shared slot: an initial fetch, another
+        // update or a deferred feed event may have changed the local baseline.
+        const localManifest = await _getSiteManifestFromDb(appId)
+        if (!localManifest) {
+          yield { skipped: 'awaiting-manifest', error: null }
+          return
+        }
+        if ((nextSiteManifestEvent.created_at || 0) <= (localManifest.created_at || 0)) {
+          yield { skipped: 'not-newer', error: null }
+          return
+        }
+        if (getManifestAggregateHash(nextSiteManifestEvent) === getManifestAggregateHash(localManifest)) {
+          await this.storeManifestAndRefreshMetadata(appId, nextSiteManifestEvent, localManifest.meta || {}, {
+            _saveSiteManifestToDb,
+            _replaceCachedSiteManifest,
+            _localStorage,
+            _setWebStorageItem
+          })
+          yield { skipped: 'same-version', error: null }
+          return
+        }
+      }
 
       if (!writeRelays) {
         const relays = await _getUserRelays([nextSiteManifestEvent.pubkey])

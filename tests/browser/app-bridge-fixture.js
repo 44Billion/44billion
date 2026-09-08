@@ -28,7 +28,9 @@ import '#zones/app-bridge-host.js'
 provideAppI18n()
 const pubkey = '11'.repeat(32)
 const userPk = base16ToBase62(pubkey, { mode: 'integer', minLength: 43 })
-const appId = addressObjToAppId({ kind: 35128, pubkey, dTag: 'bridge-test' })
+const draftStartup = new URLSearchParams(location.search).has('draft-startup')
+const kind = draftStartup ? 35130 : 35128
+const appId = addressObjToAppId({ kind, pubkey, dTag: 'bridge-test' })
 const fixture = window.fixture = { setAccountsState, allocateAppSubdomain, retireSubdomainsFor, subdomainStorage, processSubdomainCleanup, askAppToClearData, appId, userPk, instanceMetadata, getAppBridgeState, getAppBridgeSpecs, retryAppBridge, disposeAppBridge, AppUpdater, toBase62: hex => base16ToBase62(hex, { mode: 'integer', minLength: 43 }), setAppPersonaSelection, updatePersonaUserPks, dialogs: [], loaded: [] }
 
 const bytes = new TextEncoder().encode(`<!doctype html><html><head><title>Bridge Test</title></head><body>Cached app loaded<script>
@@ -78,8 +80,18 @@ window.addEventListener('message', async event => {
 });
 </script></body></html>`)
 const root = bytesToBase16(sha256(bytes))
-await saveSiteManifestToDb({ kind: 35128, pubkey, id: '22'.repeat(32), created_at: 1, content: '', tags: [['d', 'bridge-test'], ['name', 'Bridge Test'], ['path', '/index.html', root]] })
+const manifest = { kind, pubkey, id: '22'.repeat(32), created_at: 1, content: '', tags: [['d', 'bridge-test'], ['name', 'Bridge Test'], ['path', '/index.html', root]] }
 await run('put', [{ appId, fx: root, pos: 0, total: 1, service: 'blossom', evt: { kind: 34601, tags: [['mmr', '0', '1', '']], content: encode(bytes) } }], 'fileChunks')
+if (draftStartup) {
+  // Reproduce feed delivery before the ordinary first-open manifest write.
+  // Files are cached so even the old updater can run without external traffic.
+  const deps = { writeRelays: ['wss://author.example'], _localStorage: localStorage }
+  fixture.draftUpdates = []
+  AppUpdater.onDraftAppUpdated(event => fixture.draftUpdates.push(event))
+  fixture.initialDraftResult = await AppUpdater._handleDraftUpdateEvent(manifest, AppUpdater._draftWatchTargets([appId]), deps)
+  fixture.resumeDraftUpdates = () => AppUpdater.applyPendingDraftUpdates(deps)
+}
+await saveSiteManifestToDb(manifest)
 for (const [key, value] of Object.entries({
   session_workspaceKeys: ['ws'], session_openWorkspaceKeys: ['ws'],
   session_defaultUserPk: userPk,

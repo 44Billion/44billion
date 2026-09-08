@@ -105,6 +105,17 @@ try {
   }
   await cdp('Page.enable')
   await cdp('Page.addScriptToEvaluateOnNewDocument', { source: 'window.fixtureErrors=[];window.addEventListener("error",e=>fixtureErrors.push(String(e.error?.stack||e.message)));window.addEventListener("unhandledrejection",e=>fixtureErrors.push(String(e.reason?.stack||e.reason)))' })
+  await cdp('Page.navigate', { url: `http://localhost:${port}/?draft-startup` })
+  await until("window.fixture?.loaded.some(item=>item.metadata.instanceKey==='window')", 'first draft document loads while the startup feed event is pending', 12000)
+  assert.deepEqual(await evaluate('fixture.initialDraftResult'), { accepted: true, deferred: true })
+  assert.deepEqual(await evaluate('fixture.draftUpdates'), [])
+  const initialDraftToken = await evaluate('fixture.loaded[0].token')
+  await evaluate('fixture.resumeDraftUpdates()')
+  assert.equal(await evaluate('fixture.AppUpdater._draftPendingEvents.size'), 0)
+  assert.deepEqual(await evaluate('fixture.draftUpdates'), [], 'the first manifest is not an update and must not trigger data cleanup')
+  await wait(150)
+  assert.deepEqual(await evaluate('fixture.loaded.map(item=>item.token)'), [initialDraftToken], 'startup feed replay preserves the original app document')
+  assert.deepEqual(await evaluate('fixtureErrors'), [])
   await cdp('Page.navigate', { url: `http://localhost:${port}` })
   const bridge = 'fixture.getAppBridgeState("0")'
   const loaded = key => `fixture.instanceMetadata.getMetadata('${key}')?.isLoaded`
@@ -247,7 +258,7 @@ try {
   await until('fixture.getAppBridgeState("2").windows.size===0 && !fixture.getAppBridgeState("2").currentPort', 'recovered bridge still cleans up')
   await checkIdentity({ evaluate, until, wait, port, send, cdp })
   assert.deepEqual(await evaluate('fixtureErrors'), [])
-  console.log('Chrome: real cold/warm bridge, cross-origin draft reloads, app navigation and live ports, minimize/close/reopen, shared windows/widgets, automatic/manual retries, bounded timeout recovery and embedded lifecycle passed')
+  console.log('Chrome: real cold/warm bridge, draft startup without reload, cross-origin draft reloads, app navigation and live ports, minimize/close/reopen, shared windows/widgets, automatic/manual retries, bounded timeout recovery and embedded lifecycle passed')
 } catch (error) {
   console.error(error)
   process.exitCode = 1

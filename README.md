@@ -47,6 +47,9 @@ manifest/chunk writers and test the full launcher in disposable Chrome profiles.
 The Chrome helper blocks external traffic by default and supports network fixtures.
 
 A normal app-document reload preserves data. A new draft version currently clears
-app-origin data and app-owned events before reloading. Persistence tests must keep
-the version fixed and reload normally. Browser test fixtures are never production
-APIs or published app files.
+app-origin data and app-owned events before reloading. The initial manifest and
+relay replays of an installed version do not trigger that cleanup. Draft events
+received before the first manifest is saved wait for the normal update poll;
+only a newer manifest with a different file aggregate triggers a reload.
+Persistence tests must keep the version fixed and reload normally. Browser test
+fixtures are never production APIs or published app files.
