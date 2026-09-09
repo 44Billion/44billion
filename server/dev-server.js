@@ -8,10 +8,14 @@ import {
   replyWithError
 } from './helpers.js'
 import router from './router/index.js'
+import { createLocalAppServer } from './local-app-server.js'
+
+const localApps = process.env.NODE_ENV === 'development' ? await createLocalAppServer(launcherRoot) : null
 
 // dev server, but router is also used at production
 const server = createServer(async function httpHandler (req, res) {
   try {
+    if (await localApps?.handle(req, res)) return
     withWebUrl(req)
     if (process.env.NODE_ENV === 'development' && req.webUrl.hostname === 'localhost' && req.webUrl.pathname === healthPath) {
       let ready = false
@@ -62,6 +66,7 @@ server
   })
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.once(signal, async function () {
+    await localApps?.close()
     server.closeAllConnections()
     await new Promise(resolve => server.close(resolve))
     process.disconnect?.()

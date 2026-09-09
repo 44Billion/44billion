@@ -1,3 +1,4 @@
+import { isLocalDevApp } from '#services/local-dev/state.js'
 import { appIdToAddressObj } from '#helpers/app.js'
 import { getUserRelays, getEventsByStrategy } from '#helpers/nostr-queries.js'
 import { nappRelays } from 'libp2r2p/relay'
@@ -39,7 +40,8 @@ export default class AppFileDownloader {
     _getUserRelays = getUserRelays,
     _getEventsByStrategy = getEventsByStrategy
   } = {}) {
-    if (!appIds || appIds.length === 0) return {}
+    appIds = (appIds || []).filter(appId => !isLocalDevApp(appId))
+    if (appIds.length === 0) return {}
 
     const appsByPubkey = {}
     const addressByAppId = {}
@@ -131,6 +133,7 @@ export default class AppFileDownloader {
       }
     }
 
+    if (isLocalDevApp(this.appId)) throw new Error('Local app file is missing; restart the local watcher')
     const { pubkey } = appIdToAddressObj(this.appId)
 
     const queue = []
@@ -228,6 +231,7 @@ export default class AppFileDownloader {
         return keys.map(key => key[2])
       }
 
+    if (isLocalDevApp(this.appId)) throw new Error('Local app file is missing; restart the local watcher')
     const { pubkey } = appIdToAddressObj(this.appId)
     const pubkeysByRelay = {}
     for (const url of this.writeRelays) {

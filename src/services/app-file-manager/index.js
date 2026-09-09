@@ -1,3 +1,4 @@
+import { isLocalDevApp } from '#services/local-dev/state.js'
 import { appIdToAddressObj } from '#helpers/app.js'
 import {
   findFaviconAssetDescriptor,
@@ -371,6 +372,7 @@ export default class AppFileManager {
     const config = this.#getCacheFilePubSubConfig(filename)
 
     try {
+      if (isLocalDevApp(this.appId)) throw new Error('Local app file is missing; restart the local watcher')
       const relays = await getUserRelays([this.siteManifest.pubkey])
       const sourceHints = getManifestFileSourceHints(this.siteManifest)
       const writeRelays = [...new Set([

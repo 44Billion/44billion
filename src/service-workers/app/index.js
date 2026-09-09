@@ -351,11 +351,20 @@ self.addEventListener('message', async e => {
       const port = e.ports?.[0]
       if (!port) return
       // Include uncontrolled documents/workers from older launcher versions.
-      // Only the requesting cleanup iframe may remain during recycling.
+      // Only the cleanup iframe may remain during recycling; local resets can
+      // also retain trusted bridges, which do not execute application code.
       e.waitUntil((async () => {
         try {
           const clients = await self.clients.matchAll({ includeUncontrolled: true, type: 'all' })
-          port.postMessage({ code: 'ORIGIN_IDLE', idle: clients.every(client => client.id === e.source.id) })
+          const idle = clients.every(client => {
+            if (client.id === e.source.id) return true
+            if (IS_DEVELOPMENT && e.data.allowTrustedBridges && client.type === 'window') {
+              const url = new URL(client.url)
+              return url.pathname === '/~~napp' && url.searchParams.has('bridgeId')
+            }
+            return false
+          })
+          port.postMessage({ code: 'ORIGIN_IDLE', idle })
         } catch {
           port.postMessage({ code: 'ORIGIN_IDLE', idle: false })
         } finally {

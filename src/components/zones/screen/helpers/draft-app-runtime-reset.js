@@ -15,6 +15,7 @@ export function askAppToClearData (appSubdomain, {
   _setTimeout = setTimeout,
   _clearTimeout = clearTimeout,
   strict = false,
+  localDevelopment = false,
   requestId = globalThis.crypto.randomUUID(),
   timeoutMs = 5000
 } = {}) {
@@ -43,7 +44,7 @@ export function askAppToClearData (appSubdomain, {
     }
   }
   _window.addEventListener('message', onMessage)
-  iframe.src = `${appOrigin}/~~napp?clearRequest=${encodeURIComponent(requestId)}${strict ? '&strictClear=1' : ''}#clear`
+  iframe.src = `${appOrigin}/~~napp?clearRequest=${encodeURIComponent(requestId)}${strict ? '&strictClear=1' : ''}${localDevelopment ? '&localReset=1' : ''}#clear`
   _document.body.appendChild(iframe)
 
   timeout = _setTimeout(() => {

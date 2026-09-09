@@ -53,3 +53,26 @@ received before the first manifest is saved wait for the normal update poll;
 only a newer manifest with a different file aggregate triggers a reload.
 Persistence tests must keep the version fixed and reload normally. Browser test
 fixtures are never production APIs or published app files.
+
+## Local app development
+
+Consumer apps can use `bin/local-app-publisher.js` with `ensureRuntime()` to serve
+watched builds without publishing. Open the printed local link in an ordinary
+browser, including Android with the existing forwarded ports.
+
+The development-only `/__dev/apps/` routes accept registered build bytes, provide
+SSE notifications and receive installation reports. Registration requires the
+private token in `tmp/local-dev-session.json`, owned by the running local server.
+No arbitrary filesystem paths are served and no injected app API is added.
+
+The browser keeps a persistent local-app classification and uses the real cache
+writers. New files are verified and stored before activating the manifest. Reloads
+preserve the app route, storage and eventStore; published draft updates still clear
+runtime data. A confirmed **Clear local app data and reload** action in the app
+menu clears only the selected user/app, coordinating other instances first.
+
+Version locks protect files still used by open tabs. Installation failures keep
+the previous manifest; obsolete files are pruned once their versions are unused.
+Stopping a watcher preserves the last cached installation. Uninstalling removes
+its classification. Local development does not validate remote upload/discovery;
+use the publishing workflow to check those paths.

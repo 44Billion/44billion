@@ -95,13 +95,15 @@ export async function clearAppData ({
   _caches = globalThis.caches,
   _tell = tell,
   strict = false,
+  localDevelopment = false,
   requestId = null
 } = {}) {
   const failures = []
+  localDevelopment = typeof IS_DEVELOPMENT !== 'undefined' && IS_DEVELOPMENT && localDevelopment
 
   // Old or uncooperative clients must not retain connections or repopulate data.
   if (strict) {
-    try { await assertOriginIdle(_navigator.serviceWorker) } catch (error) {
+    try { await assertOriginIdle(_navigator.serviceWorker, 3000, { allowTrustedBridges: localDevelopment }) } catch (error) {
       _tell(_window.parent, { code: 'DATA_CLEAR_ERROR', requestId, error: normalizeError(error) }, { targetOrigin: '*' })
       return
     }
@@ -112,7 +114,8 @@ export async function clearAppData ({
   await runClearStep(failures, 'caches', () => clearCacheStorage(_caches))
   await runClearStep(failures, 'cookies', () => clearCookies(_document))
   await runClearStep(failures, 'opfs', () => clearOpfs(_navigator.storage))
-  await runClearStep(failures, 'serviceWorker', () => unregisterServiceWorker(_navigator.serviceWorker, strict))
+  // Local reset keeps the trusted runtime alive while app documents are paused.
+  if (!localDevelopment) await runClearStep(failures, 'serviceWorker', () => unregisterServiceWorker(_navigator.serviceWorker, strict))
 
   if (failures.length === 0) {
     _tell(_window.parent, { code: 'DATA_CLEARED', requestId, payload: null }, { targetOrigin: '*' })
@@ -240,7 +243,7 @@ function waitForSwController () {
 }
 
 // The shared launcher SW answers this independently of app files/mappings.
-export function assertOriginIdle (serviceWorker, timeoutMs = 3000) {
+export function assertOriginIdle (serviceWorker, timeoutMs = 3000, { allowTrustedBridges = false } = {}) {
   return new Promise((resolve, reject) => {
     if (!serviceWorker?.controller) { reject(new Error('Cannot inspect origin clients')); return }
     const channel = new MessageChannel()
@@ -256,7 +259,7 @@ export function assertOriginIdle (serviceWorker, timeoutMs = 3000) {
       if (event.data?.code !== 'ORIGIN_IDLE' || event.data?.idle !== true) finish(new Error('Origin still has active clients'))
       else finish()
     }
-    serviceWorker.controller.postMessage({ code: 'CHECK_ORIGIN_IDLE' }, [channel.port2])
+    serviceWorker.controller.postMessage({ code: 'CHECK_ORIGIN_IDLE', ...(allowTrustedBridges ? { allowTrustedBridges: true } : {}) }, [channel.port2])
   })
 }
 

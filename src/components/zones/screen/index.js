@@ -614,6 +614,40 @@ f('appWindow', function () {
     onRemove: removeCurrentApp
   }))
 
+  const localRuntimeReady$ = useSignal(!IS_DEVELOPMENT)
+  if (IS_DEVELOPMENT) {
+    // Version/user leases belong to the window, not to a bridge retry or handshake.
+    useTask(async ({ track, cleanup }) => {
+      const [closed, frame, appSubdomain, appId, userPk] = track(() => [isClosed$(), appIframeRef$(), appSubdomain$(), appId$(), userPk$()])
+      localRuntimeReady$(false)
+      if (closed || !frame || appSubdomain == null || !appId || !userPk) return
+      const ac = new AbortController()
+      cleanup(() => ac.abort())
+      try {
+        const { attachLocalInstance } = await import('#services/local-dev/instances.js')
+        ac.signal.throwIfAborted()
+        const navigateLocal = (pause = false) => new Promise((resolve, reject) => {
+          const done = () => { clearTimeout(timer); frame.removeEventListener('load', done); resolve() }
+          const timer = setTimeout(() => { frame.removeEventListener('load', done); reject(new Error('Local app navigation timed out')) }, 15000)
+          frame.addEventListener('load', done)
+          if (pause) frame.setAttribute('src', 'about:blank')
+          else {
+            const route = storage[`session_appByKey_${appKey}_route$`]() || '/'
+            const src = new URL(appIframeSrc$() === 'about:blank' ? `http://${appSubdomain}.${window.location.host}/` : appIframeSrc$(), location.href)
+            const next = new URL(route, src.origin)
+            if (src.searchParams.has('~~bridgeId')) next.searchParams.set('~~bridgeId', src.searchParams.get('~~bridgeId'))
+            // Navigate synchronously even when the tab is not being rendered.
+            appIframeRef$()?.setAttribute('src', next.href)
+          }
+        })
+        cleanup(await attachLocalInstance({ appId, userPk, signal: ac.signal, reload: () => navigateLocal(), pause: () => navigateLocal(true) }))
+        if (!ac.signal.aborted) localRuntimeReady$(true)
+      } catch (error) {
+        if (!ac.signal.aborted) { console.error('[local app]', error); launchError$(error.message) }
+      }
+    }, { after: 'rendering' })
+  }
+
   useTask(
     async ({ track, cleanup }) => {
       const [isClosed, iframeRef, appSubdomain, appId, userPk] = track(() => [
@@ -687,6 +721,8 @@ f('appWindow', function () {
         await allocateAppSubdomain(subdomainStorage(), { userPk, appId })
         return
       }
+
+      if (IS_DEVELOPMENT && !track(() => localRuntimeReady$())) return
 
       if (routeValue && !runtime.routeConsumed && routeValue !== runtime.initialRoute) {
         runtime.initialRoute = routeValue
@@ -2063,6 +2099,7 @@ f('appLaunchersMenu', function () {
             }
           }
         `}</style>
+        ${IS_DEVELOPMENT ? this.h`<local-dev-reset-button props=${{ app$ }} />` : ''}
         <div class=${{ invisible: visibility === 'open' }}>
           <div class='icon-wrapper-271yiduh'><icon-maximize props=${{ size: '16px' }} /></div>
           <div class='menu-label' onclick=${openApp}>${visibility === 'closed' ? t('Open') : t('Maximize')}</div>

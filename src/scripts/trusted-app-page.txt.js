@@ -2,7 +2,7 @@ import { clearAppData, prepareAppSession, initMessageListener, tellParentImReady
 
 const params = new URL(window.location.href).searchParams
 if (window.location.hash === '#clear') {
-  clearAppData({ requestId: params.get('clearRequest'), strict: params.get('strictClear') === '1' })
+  clearAppData({ requestId: params.get('clearRequest'), strict: params.get('strictClear') === '1', localDevelopment: IS_DEVELOPMENT && params.get('localReset') === '1' })
 } else {
   prepareAppSession(window.sessionStorage, params.get('assignment'))
   initMessageListener()

@@ -1,3 +1,4 @@
+import { isLocalDevApp, writeLocalApp } from '#services/local-dev/state.js'
 import { run } from '#services/idb/browser/index.js'
 import { isNostrAppDTagSafe, appIdToDbAppRef } from '#helpers/app.js'
 import { base16ToBytes, bytesToBase16 } from 'libp2r2p/base16'
@@ -12,7 +13,9 @@ export async function getSiteManifestFromDb (appId) {
 // Caution: use this only when no user has the app installed anymore
 export async function deleteSiteManifestFromDb (appId) {
   const ref = appIdToDbAppRef(appId)
-  return run('delete', [ref], 'siteManifests')
+  const result = await run('delete', [ref], 'siteManifests')
+  if (isLocalDevApp(appId)) writeLocalApp(appId, null)
+  return result
 }
 
 export async function listSiteManifestsFromDb ({ db } = {}) {

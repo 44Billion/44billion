@@ -429,6 +429,13 @@ export function auditPersistedState (localStorageArea, sessionStorageArea, {
   const session = storageSnapshot(sessionStorageArea)
   const plan = createEmptyPlan()
   const issues = plan.issues
+  // Preserve malformed development classifications: deleting them could enable remote updates.
+  const devApps = getValue(local, 'local_devApps')
+  if (isInvalid(local, 'local_devApps') || (devApps != null && (!toPlainObject(devApps) || Object.values(devApps).some(record =>
+    !toPlainObject(record) || typeof record.project !== 'string' || !toPlainObject(record.versions))))) {
+    issues.push({ code: 'invalid-local-dev-apps', message: 'Local development app registry requires manual inspection', actionable: false })
+  }
+
   const setLocal = (key, value) => {
     plan.local[key] = value === undefined ? null : value
   }

@@ -11,7 +11,7 @@ async function setup (t, { existing, conflict, autoBuild = true } = {}) {
   const children = []
   const checkedPorts = []
   let serving = false
-  const health = () => existing ?? (serving ? { service: '44billion', protocol: 1, root, ready: true } : null)
+  const health = () => existing ?? (serving ? { service: '44billion', protocol: 2, root, ready: true } : null)
   t.mock.method(globalThis, 'fetch', async () => ({ ok: true, json: async () => health() }))
   t.mock.module('node:fs/promises', { namedExports: { ...fs, access: async () => {}, realpath: async value => value } })
   t.mock.module('node:net', {
@@ -54,7 +54,7 @@ async function setup (t, { existing, conflict, autoBuild = true } = {}) {
 }
 
 test('compatible runtime reuse neither starts nor stops processes', async t => {
-  const api = await setup(t, { existing: { service: '44billion', protocol: 1, root, ready: true } })
+  const api = await setup(t, { existing: { service: '44billion', protocol: 2, root, ready: true } })
   const runtime = await api.ensureRuntime()
   assert.equal(runtime.owned, false)
   await runtime.close()

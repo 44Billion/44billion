@@ -1940,3 +1940,20 @@ describe('AppUpdater', () => {
     })
   })
 })
+
+describe('local development exclusion', () => {
+  it('skips local apps in both filters and direct manual updates', async t => {
+    const before = globalThis.IS_DEVELOPMENT
+    globalThis.IS_DEVELOPMENT = true
+    t.after(() => { if (before === undefined) delete globalThis.IS_DEVELOPMENT; else globalThis.IS_DEVELOPMENT = before })
+    const storage = storageFromEntries({ local_devApps: { [DRAFT_APP_ID]: { project: DRAFT_APP_ID, version: 'test', versions: {} } } })
+    assert.deepEqual(AppUpdater.filterDraftAppIds([DRAFT_APP_ID], { _localStorage: storage }), [])
+    assert.deepEqual(AppUpdater.filterRegularAppIds([DRAFT_APP_ID, MAIN_APP_ID], { _localStorage: storage }), [MAIN_APP_ID])
+    const reports = []
+    for await (const report of AppUpdater.updateApp({ kind: 35130, pubkey: DRAFT_PUBKEY, tags: [['d', 'draft-app']] }, {
+      _localStorage: storage,
+      _getUserRelays: () => { throw new Error('Must not query remote relays') }
+    })) reports.push(report)
+    assert.equal(reports.at(-1).skipped, 'local-development')
+  })
+})

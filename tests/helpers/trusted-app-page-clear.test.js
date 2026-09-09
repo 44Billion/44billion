@@ -249,3 +249,36 @@ it('strict cleanup rejects IndexedDB without enumeration even after clients are 
     assert.deepEqual(replies[0].payload.failures.map(failure => failure.step), ['indexedDB'])
   } finally { globalThis.MessageChannel = previousChannel }
 })
+
+it('only development reset can retain verified trusted bridges and the runtime service worker', async () => {
+  const previousChannel = globalThis.MessageChannel
+  const previousDevelopment = globalThis.IS_DEVELOPMENT
+  globalThis.MessageChannel = NativeMessageChannel
+  try {
+    for (const development of [true, false]) {
+      globalThis.IS_DEVELOPMENT = development
+      const idb = indexedDbMock()
+      const unregister = mock.fn(async () => {})
+      const requests = []
+      const replies = []
+      await clearAppData({
+        strict: true, localDevelopment: true,
+        _window: { parent: {}, indexedDB: idb.api }, _document: {},
+        _navigator: {
+          serviceWorker: {
+            controller: { postMessage (message, [port]) { requests.push(message); port.postMessage({ code: 'ORIGIN_IDLE', idle: true }); port.close() } },
+            getRegistrations: async () => [{ unregister }]
+          }
+        },
+        _tell: (_, message) => replies.push(message)
+      })
+      assert.equal(!!requests[0].allowTrustedBridges, development)
+      assert.equal(unregister.mock.callCount(), development ? 0 : 1)
+      assert.equal(replies[0].code, 'DATA_CLEARED')
+      assert.deepEqual(idb.deleted, ['app-db', 'library-db'])
+    }
+  } finally {
+    globalThis.MessageChannel = previousChannel
+    globalThis.IS_DEVELOPMENT = previousDevelopment
+  }
+})

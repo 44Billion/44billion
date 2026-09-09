@@ -1,4 +1,5 @@
 import '#config/polyfills.js'
+import { installStorageEventGuard } from '#helpers/storage-event-guard.js'
 import resetCssString from '#assets/styles/reset.css'
 import globalCssString from '#assets/styles/global.css'
 import { cssClasses, cssStrings } from '#assets/styles/theme.js'
@@ -19,6 +20,8 @@ import {
   SESSION_STICKY_TAB_ID
 } from '#services/sticky-sessions/index.js'
 import { useInitI18n } from '#i18n/index.js'
+
+installStorageEventGuard()
 
 // Clear old localStorage data from pre-v2 schema (bundle→siteManifest migration)
 // Runs before any component mounts so useWebStorage signals start fresh
@@ -59,6 +62,7 @@ document.documentElement.classList.add(cssClasses.defaultTheme)
 document.head.insertAdjacentHTML('beforeend', `<style>${resetCssString}${globalCssString}${cssStrings.defaultTheme}</style>`)
 
 if (IS_DEVELOPMENT) {
+  await (await import('#services/local-dev/client.js')).startLocalApps()
   // https://esbuild.github.io/api/#live-reload
   new EventSource('/esbuild').addEventListener('change', () => location.reload())
 } else {

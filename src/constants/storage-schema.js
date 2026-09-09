@@ -16,6 +16,7 @@ export const STORAGE_AREA = {
 
 export const GLOBAL_LOCAL_KEYS = [
   'storage_version',
+  'local_devApps', // Development-only app classification and retained file versions.
   'config_locale',
   'config_isSingleWindow',
   'config_appUpdateMode',

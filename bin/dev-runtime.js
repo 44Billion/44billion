@@ -7,7 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 export const launcherRoot = path.resolve(import.meta.dirname, '..')
 export const launcherUrl = 'http://localhost:10000'
 export const healthPath = '/__dev/health'
-export const runtimeProtocol = 1
+export const runtimeProtocol = 2
 
 export async function readRuntimeHealth () {
   try {

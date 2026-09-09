@@ -1,3 +1,4 @@
+import { isLocalDevApp } from '#services/local-dev/state.js'
 import AppFileDownloader from '#services/app-file-downloader/index.js'
 import { replaceCachedSiteManifest } from '#services/app-file-manager/manifest-instance-cache.js'
 import { nappRelays, relayPool as nostrRelays } from 'libp2r2p/relay'
@@ -98,11 +99,11 @@ export default class AppUpdater {
   }
 
   static filterRegularAppIds (appIds, deps = {}) {
-    return (appIds || []).filter(appId => !this.isDraftAppId(appId, deps))
+    return (appIds || []).filter(appId => !isLocalDevApp(appId, deps._localStorage) && !this.isDraftAppId(appId, deps))
   }
 
   static filterDraftAppIds (appIds, deps = {}) {
-    return (appIds || []).filter(appId => this.isDraftAppId(appId, deps))
+    return (appIds || []).filter(appId => !isLocalDevApp(appId, deps._localStorage) && this.isDraftAppId(appId, deps))
   }
 
   static getInstalledDraftAppIds (deps = {}) {
@@ -663,7 +664,7 @@ export default class AppUpdater {
     for (const appId of appIds || []) {
       try {
         const address = _appIdToAddressObj(appId)
-        if (address.kind !== DRAFT_SITE_MANIFEST_KIND) continue
+        if (address.kind !== DRAFT_SITE_MANIFEST_KIND || isLocalDevApp(appId)) continue
         targets.set(appId, address)
       } catch (_err) {
         continue
@@ -720,7 +721,7 @@ export default class AppUpdater {
     ...deps
   } = {}) {
     const appId = this._draftEventAppId(event, targets, deps)
-    if (!appId) return { accepted: false, reason: 'not-watched' }
+    if (!appId || isLocalDevApp(appId)) return { accepted: false, reason: 'not-watched' }
 
     const localManifest = await _getSiteManifestFromDb(appId)
     if (localManifest && (event.created_at || 0) <= (localManifest.created_at || 0)) {
@@ -755,6 +756,7 @@ export default class AppUpdater {
 
         const event = this._draftPendingEvents.get(appId)
         this._draftPendingEvents.delete(appId)
+        if (isLocalDevApp(appId)) continue
 
         let updateError = null
         let skipped = null
@@ -1082,6 +1084,12 @@ export default class AppUpdater {
       const openApps = []
 
       for (const appId of idsToCheck) {
+        if (typeof IS_DEVELOPMENT !== 'undefined' && IS_DEVELOPMENT && isLocalDevApp(appId, _localStorage)) {
+          const { pruneLocalVersions } = await import('#services/local-dev/install.js')
+          const { installLock } = await import('#services/local-dev/state.js')
+          await navigator.locks.request(installLock(appId), () => pruneLocalVersions(appId))
+          continue
+        }
         if (this.isAppOpen(appId, { _sessionStorage, _localStorage })) {
           openApps.push(appId)
         } else {
@@ -1259,6 +1267,8 @@ export default class AppUpdater {
         pubkey: nextSiteManifestEvent.pubkey,
         dTag
       })
+
+      if (isLocalDevApp(appId, _localStorage)) { yield { skipped: 'local-development', error: null }; return }
 
       if (requireNewerVersion) {
         // Recheck after acquiring the shared slot: an initial fetch, another

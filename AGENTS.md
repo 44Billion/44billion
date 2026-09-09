@@ -2,6 +2,12 @@
 
 This document is the primary brief for AI assistants working on this repository. Read it in full before making changes.
 
+## Documentation
+
+- Document this project and its dependencies. Describe consuming apps generically;
+  keep their names, setup instructions, and project-specific commands in their
+  own repositories.
+
 ## Project Overview
 
 44billion is a Nostr app (napp) launcher. UI components are built with the sibling
@@ -113,9 +119,10 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   must not emit a reload notification or clear app data.
 - `tests/browser/runtime/` contains reusable Node/CDP and installation helpers
   for consumer integration tests. Use production manifest/chunk writers and
-  the ordinary launcher app-opening flow; do not duplicate storage schemas in
+  the ordinary launcher app-opening flow; shared cache installation lives in
+  `src/services/local-dev/install.js`. Do not duplicate storage schemas in
   consumer projects. Fixtures and generated keys belong only to disposable
-  browser profiles. No new production storage key or database is introduced.
+  browser profiles. Development classification is documented separately below.
 - The default Chrome helper denies external traffic through a local proxy,
   including WebSockets/CONNECT. Network fixtures may supply controlled responses;
   injected APIs, the vault, and permissions stay real. `externalNetwork: true`
@@ -123,3 +130,31 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
 - Consumer browser tests reload a fixed app version to verify persistence.
   They must not restore data before asserting recovery. Capture diagnostics
   before removing the profile, including when a scenario fails.
+
+## Local app development
+
+- Consumer development workflows may register immutable local builds through the
+  development server. Preserve the separate real-publishing workflow. The local
+  publisher identity is persistent and never comes from remote publishing credentials.
+- `/__dev/apps/` is development-only, same-origin and loopback-host restricted.
+  Node registration requires the private supervisor token; never expose it to app
+  URLs or user-facing logs. Reject unregistered files and mismatched hashes.
+- `local_devApps` classifies installations outside Nostr manifests. Exclude these
+  apps from automatic/manual remote updates and network cache-miss fallback.
+  Retain classification when the watcher stops; remove it on uninstall.
+- Hold the registry install lock while activating builds and pruning. A live
+  instance holds shared app-version and user/app locks. Keep old roots until their
+  version locks are free. Do not delete active files to make a new build fit.
+- Local reloads preserve data and routes. Explicit reset confirms the selected
+  user/app, pauses its instances, acquires the exclusive user lock, and reports
+  strict origin or eventStore cleanup failures. The development-only local reset
+  retains trusted bridge documents and their runtime service worker; ordinary app
+  documents and workers must be gone. Recycling checks and remote draft cleanup
+  retain their existing behavior.
+- Local controls use thenameisf and existing i18n/confirmation conventions, and
+  are excluded from production builds. No new window.napp API is introduced.
+
+- Keep `storage-event-guard.js` ahead of component mounting. The installed
+  thenameisf storage adapter writes received values back; delayed remove/set
+  events can otherwise echo indefinitely between tabs. The guard discards
+  superseded events. Retain its regression test when upgrading the adapter.

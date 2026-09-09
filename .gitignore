@@ -2,3 +2,5 @@
 node_modules
 todo
 dist/44billion
+
+tmp/

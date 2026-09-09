@@ -47,10 +47,10 @@ export async function launchChrome ({ externalNetwork = false, intercept = () =>
   child.once('error', fail)
   child.once('exit', code => fail(new Error(`Chrome exited (${code}): ${stderr}`)))
   for (const pipe of [child.stdio[3], child.stdio[4]]) pipe.on('error', fail)
-  const send = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
+  const send = (method, params = {}, sessionId, timeoutMs = 30000) => new Promise((resolve, reject) => {
     const id = ++sequence
-    const timer = setTimeout(() => { pending.delete(id); reject(new Error(`CDP timeout: ${method}`)) }, 30000)
-    pending.set(id, { resolve, reject, timer })
+    const timer = setTimeout(() => { pending.delete(id); reject(new Error(`CDP timeout: ${method}`)) }, timeoutMs)
+    pending.set(id, { resolve, reject, timer, method, sessionId, contextId: params.contextId })
     child.stdio[3].write(JSON.stringify({ id, method, params, sessionId }) + '\0')
   })
   const configure = async (sessionId, info) => {
@@ -88,6 +88,16 @@ export async function launchChrome ({ externalNetwork = false, intercept = () =>
         continue
       }
       const { method, params, sessionId } = message
+      if (['Runtime.executionContextDestroyed', 'Runtime.executionContextsCleared', 'Target.detachedFromTarget'].includes(method)) {
+        const affectedSession = params?.sessionId ?? sessionId
+        for (const [id, entry] of pending) {
+          if (entry.sessionId !== affectedSession) continue
+          if (method !== 'Target.detachedFromTarget' && entry.method !== 'Runtime.evaluate') continue
+          if (method === 'Runtime.executionContextDestroyed' && entry.contextId !== params.executionContextId) continue
+          pending.delete(id); clearTimeout(entry.timer)
+          entry.reject(new Error('Chrome execution context was destroyed'))
+        }
+      }
       if (method === 'Runtime.exceptionThrown') {
         exceptions.push({ sessionId, ...params })
         if (exceptions.length > 30) exceptions.shift()

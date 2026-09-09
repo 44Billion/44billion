@@ -313,3 +313,20 @@ Changing workspace ownership reloads live windows, widgets (including minimized
 ones) and isolated apps with the new user/app origin. Routes, visibility and widget
 configuration survive; closed instances acquire the new identity on their next
 open. Changes to persona selection alone do not reload documents.
+
+## Local app development (development builds only)
+
+`local_devApps` is a JSON object in launcher localStorage keyed by appId. Records
+contain `project` (local watcher identifier), `version` (active build digest, or
+null before first activation), and `versions` (digest to retained asset-root
+arrays). No private key, control token, user data or filesystem path is stored.
+The record survives watcher/browser restarts and excludes the app from remote
+updates. Deleting its manifest on uninstall removes the record. Explicit user-data
+reset preserves it. The audit reports malformed records without deleting them or
+silently changing the app to remote mode; existing repair/uninstall cleanup uses
+the manifest deletion writer and therefore also clears valid classifications.
+
+Chunks/manifests use the existing browser IndexedDB stores and asset budget.
+Activation follows complete file writes. Web Locks serialize registry installation
+and protect live file versions and user/app data across tabs. Leases and the
+BroadcastChannel are in-memory coordination, not additional persisted keys.
