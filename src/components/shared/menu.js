@@ -145,12 +145,14 @@ f('aMenu', function () {
     cleanup(() => window.removeEventListener('blur', onWindowBlur))
   })
 
-  // The dialog tag gives us a dialog role for free
+  // Keep initial focus on the menu, even when reopening with existing buttons.
+  // Tab can still move focus into its actions. The dialog supplies the role.
   return this.h`
     <dialog
       id=${store.id$()}
       ref=${store.dialogRef$}
       data-name='menu'
+      autofocus
       popover
       ontoggle=${e => {
         if (e.newState !== 'closed' || !store.isOpen$()) return

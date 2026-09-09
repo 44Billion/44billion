@@ -1,7 +1,7 @@
 # Browser checks
 
-Run `npm run test:browser` from the repository to execute all four checks
-sequentially (app bridge, widgets, gestures, menus). Set `CHROME_BIN` if Chrome is installed
+Run `npm run test:browser` from the repository to execute all six checks
+sequentially (app bridge, widgets, gestures, menus, wheel, menu focus). Set `CHROME_BIN` if Chrome is installed
 somewhere other than `/usr/bin/google-chrome`.
 
 Run `node tests/browser/app-bridge.js` for the app-loading regression check.
@@ -44,3 +44,7 @@ Physical Chrome Android and Firefox Android validation remains necessary for
 device-specific longpress feedback and gesture behavior. Chrome touch emulation
 does not certify either mobile browser. Safari/iPhone is outside this acceptance
 pass.
+
+Run `node tests/browser/menu-focus.js` to verify that reopening the shared menu
+for another app keeps initial focus on its container, while Tab still gives
+actions visible keyboard focus. It uses real pointer and keyboard input in Chrome.
