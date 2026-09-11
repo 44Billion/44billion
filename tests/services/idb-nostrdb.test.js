@@ -2895,6 +2895,29 @@ describe('nostrdb', () => {
     db.bc?.close()
   })
 
+  it('initial replay buffers writes during the snapshot and releases the live subscription', async () => {
+    const db = getNostrDb(`${OWNER}initial-replay`)
+    const stored = event({ id: '1'.repeat(64), kind: 1 })
+    const arrived = event({ id: '2'.repeat(64), kind: 1 })
+    assertAddOk(await db.add(stored))
+    const query = db.query.bind(db)
+    db.query = async (...args) => {
+      const snapshot = await query(...args)
+      assertAddOk(await db.add(arrived))
+      return snapshot
+    }
+    const iterator = db.subscribe({ kinds: [1] }, { initial: true })
+    try {
+      assert.deepEqual(await subscriptionResult(iterator.next()), stored)
+      assert.deepEqual(await subscriptionResult(iterator.next()), arrived)
+    } finally {
+      await iterator.return()
+      db.query = query
+      db.bc?.close()
+    }
+    assert.equal(db.subscriptions.size, 0)
+  })
+
   it('subscribes to future matching events', async () => {
     const db = getNostrDb(`${OWNER}4`)
     const iterator = db.subscribe({ kinds: [1] })
@@ -3531,6 +3554,7 @@ describe('nostrdb', () => {
       '&tags',
       'multi_filters',
       'subscribe:scheduled',
+      'subscribe:initial',
       'app_export'
     ])
     db.bc?.close()

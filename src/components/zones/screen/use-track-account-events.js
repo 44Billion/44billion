@@ -1,110 +1,37 @@
-import { useTask } from '#f'
-import { useWebStorage } from '#f'
-import { relayPool as nostrRelays, seedRelays } from 'libp2r2p/relay'
-import { tellVault } from '#zones/vault-modal/index.js'
+import { useMemo, useTask, useWebStorage } from '#f'
+import { relayPool, seedRelays } from 'libp2r2p/relay'
 import { base62ToBase16 } from 'libp2r2p/base62'
-import { isValidPublicRelayUrl, normalizeRelayUrl } from 'libp2r2p/url'
-
-// pk (base62) -> AbortController for all subscriptions related to that account
-const activeSubscriptions = new Map()
+import { tellVault } from '#zones/vault-modal/index.js'
+import { getNostrDb } from '#services/idb/nostrdb/index.js'
+import { trackAccountEvents } from '#services/account-events.js'
 
 export default function useTrackAccountEvents () {
   const storage = useWebStorage(localStorage)
-
+  const active = useMemo(() => new Map())
+  useTask(({ cleanup }) => cleanup(() => {
+    for (const controller of active.values()) controller.abort()
+    active.clear()
+  }))
   useTask(({ track }) => {
-    const userPks = track(() => storage.session_accountUserPks$()) ?? []
-    const defaultUserPk = storage.session_defaultUserPk$()
-
-    // Only track real (post-VAULT_READY) accounts — skip the default placeholder user
-    const realPks = userPks.filter(pk => pk !== defaultUserPk)
-    const pkSet = new Set(realPks)
-
-    // Stop tracking pubkeys that are no longer in account state
-    for (const [pk, controller] of activeSubscriptions) {
-      if (!pkSet.has(pk)) {
-        controller.abort()
-        activeSubscriptions.delete(pk)
-      }
+    const { userPks, defaultPk } = track(() => ({
+      userPks: storage.session_accountUserPks$() ?? [],
+      defaultPk: storage.session_defaultUserPk$()
+    }))
+    const accounts = new Set(userPks.filter(pk => pk !== defaultPk))
+    for (const [pk, controller] of active) {
+      if (!accounts.has(pk)) { controller.abort(); active.delete(pk) }
     }
-
-    // Start tracking new pubkeys
-    for (const pk of pkSet) {
-      if (activeSubscriptions.has(pk)) continue
+    for (const pk of accounts) {
+      if (active.has(pk)) continue
       const controller = new AbortController()
-      activeSubscriptions.set(pk, controller)
-      trackEventsForAccount(pk, controller.signal, storage)
+      active.set(pk, controller)
+      const pubkey = base62ToBase16(pk, { mode: 'integer', byteLength: 32 })
+      trackAccountEvents({
+        pubkey, signal: controller.signal, pool: relayPool, seeds: seedRelays,
+        db: getNostrDb(pubkey),
+        getStoredEvent: kind => storage[`session_accountByUserPk_${pk}_${kind === 0 ? 'profile' : 'relays'}$`]()?.meta?.events?.find(event => event.kind === kind),
+        sendToVault: event => tellVault({ code: 'UPDATE_ACCOUNT_EVENTS', payload: { pubkey, events: [event] } })
+      })
     }
   })
-}
-
-function extractWriteRelays (event) {
-  const relays = []
-  for (const tag of event.tags ?? []) {
-    if (tag[0] !== 'r' || typeof tag[1] !== 'string') continue
-    const type = tag[2]
-    if (type && type !== 'write') continue // skip read-only relays
-    let url
-    try { url = normalizeRelayUrl(tag[1]) } catch { continue }
-    if (isValidPublicRelayUrl(url)) relays.push(url)
-  }
-  return relays
-}
-
-async function trackEventsForAccount (pk, signal, storage) {
-  const pkBase16 = base62ToBase16(pk, { mode: 'integer', byteLength: 32 })
-
-  const getStoredEventAt = (kind) => {
-    if (kind === 0) {
-      return storage[`session_accountByUserPk_${pk}_profile$`]()
-        ?.meta?.events?.find(e => e.kind === 0)?.created_at ?? 0
-    }
-    if (kind === 10002) {
-      return storage[`session_accountByUserPk_${pk}_relays$`]()
-        ?.meta?.events?.find(e => e.kind === 10002)?.created_at ?? 0
-    }
-    return 0
-  }
-
-  const maybeSendToVault = (event) => {
-    if (event.created_at <= getStoredEventAt(event.kind)) return
-    tellVault({
-      code: 'UPDATE_ACCOUNT_EVENTS',
-      payload: { pubkey: pkBase16, events: [event] }
-    })
-  }
-
-  // Stream kind 10002 (relay list) from seed relays — initial gap fill + live.
-  // The first event tells us the user's write relays, which we use to start
-  // a concurrent kind 0 (profile) stream on those relays.
-  let kind0Started = false
-
-  try {
-    for await (const event of nostrRelays.getEventsFeedGenerator(
-      { kinds: [10002], authors: [pkBase16], since: getStoredEventAt(10002), limit: 1 },
-      seedRelays,
-      { signal }
-    )) {
-      maybeSendToVault(event)
-
-      if (!kind0Started) {
-        kind0Started = true
-        const writeRelays = extractWriteRelays(event)
-        if (writeRelays.length > 0) {
-          ;(async () => {
-            for await (const e of nostrRelays.getEventsFeedGenerator(
-              { kinds: [0], authors: [pkBase16], since: getStoredEventAt(0), limit: 1 },
-              writeRelays,
-              { signal }
-            )) {
-              maybeSendToVault(e)
-            }
-          })().catch(err => {
-            if (!signal.aborted) console.error('Kind 0 tracking error for', pk, err)
-          })
-        }
-      }
-    }
-  } catch (err) {
-    if (!signal.aborted) console.error('Error tracking account events for', pk, err)
-  }
 }

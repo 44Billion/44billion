@@ -207,3 +207,53 @@ for await (const result of subscription) {
 
 When calling `next()` manually, cancel explicitly with
 `await subscription.return()` when the consumer no longer needs results.
+
+
+`subscribe(filter, { initial: true })` registers live delivery before querying
+stored matches, then emits the snapshot followed by buffered and future matches.
+Each item is `{ result: event }` (live items may also include metadata). Snapshot
+and live results can overlap; deduplicate by event ID. Existing filters, app
+claims and permissions apply to both phases. `return()` cancels live delivery
+also while the snapshot is pending. Without `initial`, subscriptions remain
+future-only. Feature detection: `(await eventStore.supports()).includes('subscribe:initial')`.
+This option requires the companion launcher update.
+
+### Personal copies
+
+Personal copies are private signed kind-1006 wrappers, never relay publications.
+`addPersonalCopy` encrypts and signs through the owner's vault and returns
+`{ event: wrapper, result }`; check `result.ok` before reporting a successful save.
+A self-authored unsigned input can contain only `kind`, `created_at`, `tags` and
+`content`; the launcher supplies the owner. An optional own `pubkey` is normalized
+away. Do not give an unsigned input an `id` or `sig`.
+
+Always supply the intended context: `dm:<peer hex pubkey>` for a conversation,
+including the owner's own pubkey for self chat, or `''` for generic private
+account data. Query/subscribe return encrypted wrappers, not plaintext rumors.
+For example, reading the owner's self chat uses:
+
+```js
+const owner = await window.nostr.peekPublicKey()
+const context = await window.nostr.obfuscate(`dm:${owner}`, '1006', '')
+const filter = {
+  kinds: [1006], authors: [owner], '#k': ['9'],
+  '#c': [context], '#v': ['0', '1']
+}
+const subscription = window.napp.eventStore.subscribe(filter, { initial: true })
+for await (const { result: wrapper } of subscription) {
+  const base64url = await window.nostr.nip44v3.decrypt(owner, '9', '', wrapper.content)
+  // Decode base64url bytes as UTF-8 JSON to obtain the inner event/template.
+}
+```
+
+`k` identifies the inner kind, `c` holds the obfuscated context, and `v` records
+provenance: `0` signed original, `1` direct rumor/self template, `2` hearsay.
+For a self template, compute the original event ID using its fields plus the
+owner pubkey; replies refer to that ID, never the wrapper ID. Decryption and
+obfuscation use normal vault permissions and account lock/read-only constraints.
+Neither a self template nor a direct rumor becomes signed proof of its sender.
+
+
+For local nsec accounts, the companion vault update signs personal copies using
+persisted local content keys without relay publication. Remote bunker signers
+retain their own connectivity requirements.

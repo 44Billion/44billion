@@ -168,6 +168,10 @@ event permissions. This creates no new storage keys or stores and does not merge
 owners' databases. Document subscriptions are in memory, are cancelled on unload,
 and lose access when their target leaves the active persona.
 
+Account tracking imports the owner's public relay events into this existing
+store, excluding NIP-78 app data and ephemeral events. Only kinds 0/10002 also
+update vault account metadata. No additional cursor or storage schema is used.
+
 - `events` — Nostr events with app/owner references.
 - `deletions` — deletion tombstones.
 - `kindRegistry` — app-neutral kinds.
@@ -330,3 +334,7 @@ Chunks/manifests use the existing browser IndexedDB stores and asset budget.
 Activation follows complete file writes. Web Locks serialize registry installation
 and protect live file versions and user/app data across tabs. Leases and the
 BroadcastChannel are in-memory coordination, not additional persisted keys.
+
+The account tracker also imports already available signed vault profiles and
+relay lists into NostrDB before relay delivery, preserving immediate offline
+access without echoing those cached events back to the vault.

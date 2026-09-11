@@ -1,3 +1,4 @@
+import { withInitialResults } from './initial-subscription.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { encode as base93Encode } from 'libp2r2p/base93'
 import { base16ToBytes, bytesToBase16 } from 'libp2r2p/base16'
@@ -1301,6 +1302,7 @@ export class NostrDb {
       '&tags',
       'multi_filters',
       'subscribe:scheduled',
+      'subscribe:initial',
       'app_export'
     ]
   }
@@ -1402,7 +1404,10 @@ export class NostrDb {
     const iterator = subscription.iterator(() => {
       this.subscriptions.delete(subscription)
     })
-    return hydrateChunkSubscription(this.ownerPubkey, iterator)
+    const live = hydrateChunkSubscription(this.ownerPubkey, iterator)
+    return options.initial === true
+      ? withInitialResults(live, () => this.query(filterOrFilters, options))
+      : live
   }
 
   queueAppClaimsFromResults (results, appRef) {

@@ -76,3 +76,13 @@ the previous manifest; obsolete files are pruned once their versions are unused.
 Stopping a watcher preserves the last cached installation. Uninstalling removes
 its classification. Local development does not validate remote upload/discovery;
 use the publishing workflow to check those paths.
+
+
+Account event tracking continuously imports public events authored by available
+accounts from seed and discovered write relays into each owner's event store.
+NIP-78 app data (78/30078) and ephemeral events are excluded; apps must ingest
+app data themselves. Only profiles (0) and relay lists (10002) additionally go
+to the vault's account-metadata channel. Apps can treat the store as the local
+source of truth for their user's public events and private personal copies;
+third-party public events remain relay-backed caches. See [APP_API.md](APP_API.md)
+for personal-copy reads and subscriptions with initial replay.

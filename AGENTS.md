@@ -158,3 +158,21 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   thenameisf storage adapter writes received values back; delayed remove/set
   events can otherwise echo indefinitely between tabs. The guard discards
   superseded events. Retain its regression test when upgrading the adapter.
+
+
+## Account event ingestion
+
+- `useTrackAccountEvents` owns the account feeds and aborts them on account
+  removal or root unmount. Track history and live events without a kind filter
+  on seed relays and known/discovered write relays, including relay-list updates.
+- Store account events in the owner's existing NostrDB. Exclude NIP-78 kinds
+  78/30078 (apps must claim them directly) and ephemeral events, including the
+  library's tag-defined ephemeral classification. Only kinds 0 and 10002 are
+  forwarded to the vault account-metadata channel. The event store owns version
+  selection. No new persisted cursor, key or database is introduced.
+- Event-store subscriptions support opt-in initial replay, with live delivery
+  registered before the snapshot. Preserve cancellation and deduplication by ID.
+
+The account tracker also imports already available signed vault profiles and
+relay lists into NostrDB before relay delivery, preserving immediate offline
+access without echoing those cached events back to the vault.
