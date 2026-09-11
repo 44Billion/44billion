@@ -4,6 +4,9 @@ A Nostr app launcher with isolated app origins, injected signer/event-store APIs
 local app installation, and live draft updates. See [APP_API.md](APP_API.md) for
 the injected contract and [AGENTS.md](AGENTS.md) for contribution rules.
 
+[NostrDB internals and maintenance](docs/nostrdb.md) documents event-store cleanup,
+concurrency, recovery and storage growth limits for developers.
+
 ## Development
 
 Install npm dependencies here and in the sibling `ez-vault` repository. Node.js

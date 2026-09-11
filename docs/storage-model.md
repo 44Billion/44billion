@@ -161,6 +161,9 @@ cleanup. Pending draft events introduce no persisted key or store.
 
 ### `44billion_nostrdb:<ownerPubkey>`
 
+See [NostrDB internals and maintenance](nostrdb.md) for cleanup schedules,
+ownership semantics, concurrency, transaction boundaries, recovery and growth limits.
+
 `window.napp.eventStore` uses the instance's workspace owner.
 `getWindowNappEventStoreFor(pubkey)` explicitly selects an accessible persona
 member's existing owner database, preserving the requesting app context and
