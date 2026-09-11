@@ -111,3 +111,9 @@ export const DYNAMIC_SESSION_PREFIXES = [
 
 // Persisted within each app origin, not the launcher's storage areas.
 export const APP_ORIGIN_SESSION_KEYS = ['44billion:subdomain-assignment']
+
+// Per-owner 44billion_nostrdb:<ownerPubkey>, schema version 2.
+// The checkpoint is committed with the corresponding events/deletions batch.
+export const NOSTRDB_MAINTENANCE_STORE = 'maintenance'
+// { key, after: event ID index key | null, completedAt: milliseconds | null }
+export const NOSTRDB_UNCLAIMED_APP_DATA_KEY = 'unclaimedAppData'

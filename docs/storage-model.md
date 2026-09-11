@@ -181,6 +181,18 @@ and draining feeds are in memory; no additional cursor or storage schema is used
 - `events` — Nostr events with app/owner references.
 - `deletions` — deletion tombstones.
 - `kindRegistry` — app-neutral kinds.
+- `maintenance` — per-owner cleanup progress, introduced in NostrDB schema
+  version 2. The `unclaimedAppData` record is
+  `{ key: 'unclaimedAppData', after, completedAt }`: `after` is the last examined
+  event ID index key (or `null` when a full sweep finishes); `completedAt` is the
+  last full sweep completion in milliseconds (or `null` before the first one).
+  Each page commits its deletions and checkpoint together. A visit resumes
+  pending work; completed sweeps remain on cooldown for 24 hours across reloads.
+
+The version 2 upgrade adds `maintenance` without rewriting existing event stores.
+The storage audit inspects launcher state rather than internal NostrDB records;
+its app cleanup preserves this checkpoint, and owner-database removal deletes it
+with the other stores. No localStorage/sessionStorage repair key is needed.
 
 ## Cleanup invariants
 

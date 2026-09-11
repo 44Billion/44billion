@@ -5,6 +5,10 @@ import { base16ToBytes, bytesToBase16 } from 'libp2r2p/base16'
 import { base64UrlToBytes, bytesToBase64Url } from 'libp2r2p/base64'
 
 import { eventKinds } from '#constants/event.js'
+import {
+  NOSTRDB_MAINTENANCE_STORE,
+  NOSTRDB_UNCLAIMED_APP_DATA_KEY
+} from '#constants/storage-schema.js'
 import { appIdToDbAppRef } from '#helpers/app.js'
 import {
   PERSONAL_COPY_KIND,
@@ -65,7 +69,7 @@ import {
 } from './chunk-event.js'
 import { isValidEvent } from 'libp2r2p/event'
 
-export const NOSTRDB_VERSION = 1
+export const NOSTRDB_VERSION = 2
 export const NOSTRDB_PREFIX = '44billion_nostrdb:'
 export const EVENTS_STORE = 'events'
 export const DELETIONS_STORE = 'deletions'
@@ -116,6 +120,11 @@ deletions indexes
 kindRegistry, keyPath "key"
   key   registry record name, currently "appNeutralKinds"
   kinds sorted app-neutral event kinds
+
+maintenance, keyPath "key"
+  key         "unclaimedAppData"
+  after       last examined event id index key, or null after a full sweep
+  completedAt last full sweep completion in milliseconds, or null
 */
 export const INDEX = {
   address: 'byAddress',
@@ -148,6 +157,8 @@ const UNCLAIMED_APP_DATA_GRACE_MS = 30 * 24 * 60 * 60 * 1000
 const UNCLAIMED_APP_DATA_BATCH_SIZE = 100
 const UNCLAIMED_APP_DATA_MAX_SCANNED = 1000
 const UNCLAIMED_APP_DATA_PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000
+const UNCLAIMED_APP_DATA_PAGE_DELAY_MS = 1000
+const UNCLAIMED_APP_DATA_RETRY_MS = 60 * 1000
 const CHUNK_ROOT_GRACE_MS = 10 * 60 * 1000
 const CHUNK_MAINTENANCE_INTERVAL_MS = 60 * 1000
 const CHUNK_PURGE_BATCH_SIZE = 256
@@ -1128,33 +1139,12 @@ export class NostrDb {
     }
   }
 
-  async purgeUnclaimedAppData ({
-    graceMs = UNCLAIMED_APP_DATA_GRACE_MS,
-    batchSize = UNCLAIMED_APP_DATA_BATCH_SIZE,
-    maxScanned = UNCLAIMED_APP_DATA_MAX_SCANNED,
-    now
-  } = {}) {
-    const db = await openNostrDb(this.ownerPubkey)
-    if (!db) return 0
-
-    const cutoffMs = (Number.isFinite(now) ? now * 1000 : currentUnixTime() * 1000) -
-      normalizeDurationMs(graceMs, UNCLAIMED_APP_DATA_GRACE_MS)
-    const scanLimit = normalizePositiveInteger(maxScanned, UNCLAIMED_APP_DATA_MAX_SCANNED)
-    const deleteLimit = normalizePositiveInteger(batchSize, UNCLAIMED_APP_DATA_BATCH_SIZE)
-    const idKeys = []
-    let scanned = 0
-
+  // Explicit calls process one resumable page without waiting for the daily
+  // interval. The scheduler uses the same page transaction with a cooldown.
+  async purgeUnclaimedAppData (options = {}) {
     try {
-      await scanCursor(db, EVENTS_STORE, null, null, {
-        onItem: stored => {
-          scanned++
-          if (isUnclaimedAppDataCleanupCandidate(stored, cutoffMs)) idKeys.push(stored.i)
-          return scanned < scanLimit && idKeys.length < deleteLimit
-        }
-      })
-
-      if (idKeys.length === 0) return 0
-      return deleteUnclaimedAppDataBatch(db, idKeys, cutoffMs)
+      const page = await purgeUnclaimedAppDataPage(this.ownerPubkey, options)
+      return page.deleted
     } catch {
       return 0
     }
@@ -1162,10 +1152,12 @@ export class NostrDb {
 
   startUnclaimedAppDataPurge ({
     intervalMs = UNCLAIMED_APP_DATA_PURGE_INTERVAL_MS,
+    pageDelayMs = UNCLAIMED_APP_DATA_PAGE_DELAY_MS,
     runImmediately = true,
     ...options
   } = {}) {
     const delay = Number.isInteger(intervalMs) && intervalMs > 0 ? intervalMs : UNCLAIMED_APP_DATA_PURGE_INTERVAL_MS
+    const pageDelay = normalizePositiveInteger(pageDelayMs, UNCLAIMED_APP_DATA_PAGE_DELAY_MS)
     let stopped = false
     let running = false
     let timer = null
@@ -1184,16 +1176,18 @@ export class NostrDb {
       }
 
       running = true
+      let nextDelay = UNCLAIMED_APP_DATA_RETRY_MS
       try {
-        await this.purgeUnclaimedAppData(options)
+        const page = await purgeUnclaimedAppDataPage(this.ownerPubkey, { ...options, intervalMs: delay })
+        nextDelay = page.hasMore ? pageDelay : Math.max(1, page.nextRunAt - Date.now())
       } catch {
       } finally {
         running = false
-        schedule(delay)
+        schedule(nextDelay)
       }
     }
 
-    schedule(runImmediately ? 0 : delay)
+    schedule(runImmediately ? pageDelay : delay)
 
     return () => {
       stopped = true
@@ -1824,8 +1818,7 @@ export function startGlobalChunkMaintenance ({
 function startNostrDbMaintenance (db, { signEvent } = {}) {
   startMaintenanceTask(db, 'chunks', () => db.startChunkMaintenance())
   startMaintenanceTask(db, 'unclaimedAppData', () => db.startUnclaimedAppDataPurge({
-    intervalMs: UNCLAIMED_APP_DATA_PURGE_INTERVAL_MS,
-    runImmediately: false
+    intervalMs: UNCLAIMED_APP_DATA_PURGE_INTERVAL_MS
   }))
   startMaintenanceTask(db, 'expiration', () => db.startExpirationPurge())
   if (typeof signEvent === 'function') {
@@ -1943,6 +1936,7 @@ function initNostrDb (dbName) {
     createIndexIfMissing(store, DELETION_INDEX.request, 'c', { multiEntry: true })
 
     createObjectStoreIfMissing(db, tx, KIND_REGISTRY_STORE, { keyPath: 'key' })
+    createObjectStoreIfMissing(db, tx, NOSTRDB_MAINTENANCE_STORE, { keyPath: 'key' })
   }
 
   return p.promise
@@ -2098,22 +2092,72 @@ function isUnclaimedAppDataCleanupCandidate (stored, cutoffMs) {
   return receivedAt <= cutoffMs
 }
 
-async function deleteUnclaimedAppDataBatch (db, idKeys, cutoffMs) {
-  const tx = db.transaction([EVENTS_STORE, DELETIONS_STORE], 'readwrite')
+async function purgeUnclaimedAppDataPage (ownerPubkey, {
+  graceMs = UNCLAIMED_APP_DATA_GRACE_MS,
+  batchSize = UNCLAIMED_APP_DATA_BATCH_SIZE,
+  maxScanned = UNCLAIMED_APP_DATA_MAX_SCANNED,
+  intervalMs = 0,
+  now
+} = {}) {
+  const db = await openNostrDb(ownerPubkey)
+  if (!db) throw new Error('IndexedDB is unavailable')
+  const scanLimit = normalizePositiveInteger(maxScanned, UNCLAIMED_APP_DATA_MAX_SCANNED)
+  const deleteLimit = normalizePositiveInteger(batchSize, UNCLAIMED_APP_DATA_BATCH_SIZE)
+  const tx = db.transaction([EVENTS_STORE, DELETIONS_STORE, NOSTRDB_MAINTENANCE_STORE], 'readwrite')
   const done = txDone(tx)
-  let deleted = 0
 
-  for (const idKey of idKeys) {
-    const stored = await run('get', [idKey], EVENTS_STORE, null, { db, tx })
+  try {
+    const state = await run('get', [NOSTRDB_UNCLAIMED_APP_DATA_KEY], NOSTRDB_MAINTENANCE_STORE, null, { db, tx })
       .then(v => v.result)
-    if (!isUnclaimedAppDataCleanupCandidate(stored, cutoffMs)) continue
+    const nowMs = Number.isFinite(now) ? now * 1000 : Date.now()
+    const after = typeof state?.after === 'string' ? state.after : null
+    const completedAt = Number.isFinite(state?.completedAt) ? state.completedAt : null
+    const nextRunAt = completedAt === null ? nowMs : completedAt + intervalMs
+    if (after === null && nextRunAt > nowMs) {
+      await done
+      return { deleted: 0, hasMore: false, nextRunAt }
+    }
 
-    await deleteStoredEvent(db, tx, stored)
-    deleted++
+    const cutoffMs = nowMs - normalizeDurationMs(graceMs, UNCLAIMED_APP_DATA_GRACE_MS)
+    const idKeys = []
+    let scanned = 0
+    let lastKey = after
+    let hasMore = false
+    // Keep only candidate IDs. The live cursor and all writes stay in this
+    // transaction; scheduler pauses happen only after it has committed.
+    await scanCursor(db, EVENTS_STORE, null, after === null ? null : IDBKeyRange.lowerBound(after, true), {
+      tx,
+      onItem: stored => {
+        scanned++
+        lastKey = stored.i
+        if (isUnclaimedAppDataCleanupCandidate(stored, cutoffMs)) idKeys.push(stored.i)
+        hasMore = scanned >= scanLimit || idKeys.length >= deleteLimit
+        return !hasMore
+      }
+    })
+
+    let deleted = 0
+    for (const idKey of idKeys) {
+      const stored = await run('get', [idKey], EVENTS_STORE, null, { db, tx })
+        .then(v => v.result)
+      if (!isUnclaimedAppDataCleanupCandidate(stored, cutoffMs)) continue
+      await deleteStoredEvent(db, tx, stored)
+      deleted++
+    }
+
+    const finishedAt = Number.isFinite(now) ? now * 1000 : Date.now()
+    await run('put', [{
+      key: NOSTRDB_UNCLAIMED_APP_DATA_KEY,
+      after: hasMore ? lastKey : null,
+      completedAt: hasMore ? completedAt : finishedAt
+    }], NOSTRDB_MAINTENANCE_STORE, null, { db, tx })
+    await done
+    return { deleted, hasMore, nextRunAt: hasMore ? null : finishedAt + intervalMs }
+  } catch (error) {
+    try { tx.abort() } catch {}
+    await done.catch(() => {})
+    throw error
   }
-
-  await done
-  return deleted
 }
 
 async function deleteAppEventBatch (db, appRef, idKeys) {

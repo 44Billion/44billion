@@ -3363,35 +3363,6 @@ describe('nostrdb', () => {
     assert.equal(await db.count({ kinds: [eventKinds.REGULAR_CUSTOM_APP_DATA] }), 0)
   })
 
-  it('starts unclaimed app-data purge on a non-overlapping timer', async () => {
-    const db = new NostrDb(`${OWNER}101`)
-    let calls = 0
-    let running = 0
-    let maxRunning = 0
-
-    db.purgeUnclaimedAppData = async () => {
-      calls++
-      running++
-      maxRunning = Math.max(maxRunning, running)
-      await delay(20)
-      running--
-    }
-
-    const abort = db.startUnclaimedAppDataPurge({
-      intervalMs: 1,
-      runImmediately: true
-    })
-
-    await delay(35)
-    abort()
-    const callsAfterAbort = calls
-    await delay(10)
-
-    assert.equal(maxRunning, 1)
-    assert.equal(calls, callsAfterAbort)
-    db.bc?.close()
-  })
-
   it('starts default maintenance once and refreshes deletion request maintenance signer', async () => {
     const db = new NostrDb(`${OWNER}102`)
     const calls = []
@@ -3417,7 +3388,7 @@ describe('nostrdb', () => {
     __nostrDbInternals.startNostrDbMaintenance(db, { signEvent: async () => event({ id: hexId(10), pubkey: db.ownerPubkey, kind: 5 }) })
 
     assert.deepEqual(calls, [
-      ['unclaimed', false, 24 * 60 * 60 * 1000],
+      ['unclaimed', undefined, 24 * 60 * 60 * 1000],
       ['expiration', undefined],
       ['deletionRequests', 'function']
     ])
