@@ -9,8 +9,7 @@ aligned with changes to maintenance defaults and transaction boundaries.
 ## Ownership and storage
 
 Each owner has a `44billion_nostrdb:<ownerPubkey>` database containing `events`,
-`deletions`, `kindRegistry`, and `maintenance` (added in schema version 2 without
-rewriting existing stores). The owner identifies the database, not necessarily
+`deletions`, `kindRegistry`, `maintenance`, and `cacheAccess` (schema version 3). The owner identifies the database, not necessarily
 the author of every event in it. Event records carry local app references (`ap`),
 receipt time (`ra`, milliseconds), and a sync anchor (`sa`). Cleanup grace periods
 use receipt time rather than the event's authored timestamp where noted below.
@@ -28,6 +27,7 @@ when `maintenanceOptions.signEvent` is supplied.
 
 | Routine | Default schedule | Work and limits per execution |
 | --- | --- | --- |
+| `maintainNostrDbCache` | First check after 1 second; excess pages 1 second apart; otherwise every minute | Initializes missing quota summaries, then removes at most 100 globally oldest cache events, examining at most 1,000 candidates. |
 | `purgeExpired` | Immediately, then every hour | Finds expired events and removes them and their deletion contributions. No batch cap; selected deletions share one write transaction. |
 | Unclaimed-data scheduler / `purgeUnclaimedAppData` | Checks after 1 second; pauses 1 second between pages; new sweep 24 hours after the last completion | Each page scans up to 1,000 records and deletes up to 100 unclaimed app-trackable events received at least 30 days ago. Progress and completion time survive reloads. |
 | `maintainDeletionRequests` | Immediately, then every hour, with a signer | Runs one compaction, then pruning, for the selected author (the owner by default). Compaction combines compatible kind 5 requests into a signed event with up to 100 target tags. Pruning targets a total of 1,000 requests, removing at most 100 per run after a 30-day receipt grace period. |
@@ -43,7 +43,8 @@ scheduler, but automatic startup uses the combined maintenance routine.
 
 Unclaimed cleanup applies to kinds 78/30078 and kinds absent from the app-neutral
 registry, when `ap` has no valid app references. It does not filter by author.
-Missing `ra` is treated as old enough for cleanup.
+Third-party events referenced by the owner are retained. Missing `ra` is treated
+as old enough for cleanup.
 
 ### Resumable unclaimed-data cleanup
 
@@ -83,7 +84,8 @@ Compaction preserves address cutoffs by grouping compatible timestamps.
 
 - `deleteEventsByApp(appId)` runs during app cleanup, in batches of 64. It removes
   the app reference, deletes rows with no remaining app references, and retains
-  shared rows. This does not depend on the event author.
+  shared rows and third-party rows still referenced by the owner. Retained rows
+  lose the uninstalled app association even when no other app remains.
 - Database opening synchronizes `kindRegistry`. When previously unknown kinds
   become app-neutral, their app references are removed before the new registry
   is saved. Custom app-data kinds retain their app ownership semantics.
@@ -98,7 +100,9 @@ Compaction preserves address cutoffs by grouping compatible timestamps.
 
 44billion supports simultaneous app windows within one launcher tab; opening
 another browser tab is not necessary for that workflow. Maintenance has no
-leader election or exclusive lock covering a complete routine across tabs.
+leader election covering a complete routine across tabs. Quota mutations use the
+global Web Lock `44billion:nostrdb-quota:v1`, including database creation/removal,
+event admission, deletion, reclassification and quota settings changes.
 
 `maintenanceStops` prevents duplicate automatic schedulers on one NostrDB
 instance. Each scheduler's `running` flag and chained timer prevent that
@@ -109,13 +113,13 @@ and per-owner chunk maintenance can overlap even within one tab.
 
 The shared cache uses the Web Lock `44billion:chunk-cache:v1` around selected
 cache operations. Without Web Locks, its fallback promise queue is local to the
-module context. Neither mechanism locks the complete NostrDB/cache workflow.
+module context. Neither chunk nor quota locking makes the complete NostrDB/payload workflow atomic.
 IndexedDB serializes conflicting write transactions, but reads, signing and
 decisions made between transactions can still interleave. The NostrDB
 `BroadcastChannel` delivers event notifications; it does not coordinate maintenance.
 
 Unclaimed-data pages read and advance their shared checkpoint inside the same
-write transaction as their deletions. Concurrent page calls therefore serialize
+quota transaction as their deletions. Concurrent page calls therefore serialize
 their progress, including across connections; this does not elect a scheduler
 leader or make a whole sweep atomic.
 
@@ -125,12 +129,15 @@ flight. Stopping and restarting therefore does not establish an execution barrie
 ## Interruption, atomicity and recovery
 
 Atomicity applies to each IndexedDB transaction, not to an entire maintenance
-cycle. A transaction commits its changes together or aborts them together.
+cycle. A transaction commits its changes together or aborts them together. Every event
+mutation includes `events`, `deletions`, `cacheAccess` and `maintenance`; references,
+LRU membership, tombstones and local usage commit or roll back together. App
+association changes alone do not change byte accounting.
 
 | Operation | Transaction boundary |
 | --- | --- |
-| Expiration purge | Selected event removals and deletion contributions in one `events`/`deletions` transaction; candidate discovery happens earlier. |
-| Unclaimed-data purge | Checkpoint read, bounded scan, revalidated deletions and checkpoint write share one `events`/`deletions`/`maintenance` transaction. |
+| Expiration purge | Selected event removals, deletion contributions, cache classification and usage in one quota transaction; candidate discovery happens earlier. |
+| Unclaimed-data purge | Checkpoint read, bounded scan, revalidated deletions and checkpoint write share one quota transaction. |
 | Deletion compaction | Selection and signing precede the write. The new request, its tombstones and removal of consumed requests share one transaction. Notification follows commit. |
 | Deletion pruning / app cleanup | Each deletion batch is atomic; the entire scan and all batches are not. |
 | Chunk maintenance | Multiple transactions across two databases, including cache updates triggered after NostrDB commit. No global rollback. |
@@ -152,16 +159,103 @@ therefore does not provide an application-level guarantee that a recent commit
 has reached physical storage. See the
 [IndexedDB durability specification](https://www.w3.org/TR/IndexedDB/#transaction-durability-hint).
 
-## Growth limits
+## Global quotas and references
 
-There is no general event-count cap, mandatory TTL or oldest-first eviction
-policy for events whose `pubkey` differs from the database owner. Deduplication,
-coordinate replacement, explicit expiration/deletion and applicable app cleanup
-reduce some data, but ordinary third-party events can accumulate up to browser
-storage limits.
+[quotas.js](../src/services/idb/nostrdb/quotas.js) owns three logical budgets shared
+by all owner databases, including databases whose account is disconnected:
 
-The 1,000-request pruning target applies only to kind 5 for the selected author;
-automatic maintenance selects the owner. The shared chunk cache's 2 GiB quota
-applies to unreferenced payload bytes globally, not to event counts or all stored
-bytes. Referenced payloads are outside that budget. Batch and query limits also
-do not bound the total number of stored events.
+| Category | Default | On excess |
+| --- | --- | --- |
+| Public: own and third-party events | 512 MiB | Refuse growth |
+| Private: all personal-copy wrappers | 1 GiB | Refuse growth |
+| Cache: unreferenced third-party public events | 128 MiB and 50,000 events | Evict by approximate LRU |
+
+Cache also consumes public bytes. Exceeding only the public limit never triggers
+cache eviction. Bytes are exactly UTF-8 `JSON.stringify(stored.event)`, excluding
+internal metadata, indices and external chunk payloads. The count is a logical
+budget, not IndexedDB disk usage. Kind 34601 is counted without its externalized
+`content`. Every personal-copy context/inner author shares the private budget;
+there is no per-context quota. Its encrypted contents grant no public protection.
+
+`eventBytes` caches this size. `ownerRefs` and its multiEntry `byOwnerRef` index
+contain normalized references extracted only from the owner's outer tags, when
+the tag name has one character and `tag[1]` is a valid ID or coordinate. IDs use
+`e:<base64url ID>`; coordinates use `a:<kind>:<base64url pubkey>:<d hash or empty>`,
+matching existing coordinate keys. Hex case is normalized, empty `d` and colons
+inside `d` work, duplicate references collapse. References may precede the target.
+They protect only targets in that owner's DB; third-party references do not
+propagate protection. Any still-stored owner referrer contributes, including an
+expired referrer until it is physically removed. New input and signed/merged
+outputs require valid cryptographic signatures; old records are not reverified.
+
+Promotion removes the target's `cacheAccess` row. Losing the last reference
+recreates it with the transition time. This does not prevent expiration, explicit
+deletion or coordinate replacement by a newer version. Uninstall and unclaimed
+cleanup retain protected third-party events. Unreferenced cache remains eligible
+for other cleanup routines. Removing references may increase cache usage without
+allocating storage; removal commits and background maintenance trims the excess.
+
+### Admission and coordination
+
+Under the global quota lock, enumerate all NostrDBs and sum their small persisted
+`maintenance.quotaUsage` records. There is no separately persisted global total.
+Signing/preparation precedes the lock. Transactions await only IndexedDB requests;
+chunk staging, compensation and reconciliation remain outside them and retain
+their existing separate lock. Unavailable enumeration/coordination refuses
+admission as `unavailable`, without assuming zero usage.
+
+Admission checks the net change after replacements, consumed deletion requests,
+provenance reconciliation and reference changes. Duplicates without growth,
+deletions, and replacements that do not increase an already-exceeded category
+remain allowed. A quota failure aborts the whole attempted mutation and reports
+`quotaCategory`, without revealing another account's events or identity.
+
+When cache admission exceeds a ceiling, merge the oldest index candidate from
+each DB, ordered by `lastAccessAt`, DB name and ID. Read candidates incrementally,
+revalidate existence/protection on deletion, exclude versions needed by the
+pending replacement, delete in transactions of at most 100, and examine at most
+1,000 candidates per admission. Aim for 90% of both cache limits, but admit if the
+hard limits fit even when that margin cannot be reached. Already committed cache
+evictions survive a later admission failure; a rejected replacement itself never
+partially commits. Public/private limits never authorize deleting preserved data.
+
+### Approximate LRU
+
+`cacheAccess` stores `{ i, lastAccessAt }` only for cache events and has the compound
+`byLastAccess` index `[lastAccessAt, i]`. Full app queries and events actually
+returned by app subscription iterators queue touches. ID-only results, counts,
+internal reads, maintenance, export, sync and duplicate insertion do not.
+The app bridge defers touches until authorization succeeds and it sends the
+reply; cancelled or denied deliveries do not count. Initial subscription replay
+touches only delivered events, not the whole snapshot.
+
+The execution-context queue deduplicates IDs and retains at most 2,048 pending
+touches, dropping the oldest when full. Flush after 250 ms in batches of 100;
+check the stored timestamp to persist at most once per event per minute across
+tabs. Only `cacheAccess` is written, without rewriting event/tag indices or
+recreating removed/promoted rows. Losing pending touches affects LRU quality,
+not event integrity. Synthetic app reads can still influence approximate LRU.
+
+### Initialization, settings and repair
+
+Existing databases initialize in two resumable passes, at most 1,000 rows per
+transaction: fill event sizes/references, then classify cache and build counters.
+`quotaUsage.phase` and `after` advance with each page's writes. The event loop is
+released between pages; reads remain available, and admission waits for complete
+summaries. Initialization does not delete excess public/private data. Cache
+maintenance subsequently trims excess in bounded pages. Failure preserves the
+last committed checkpoint and totals; a subsequent attempt resumes.
+
+Launcher-only exports `getNostrDbQuotaLimits`, `setNostrDbQuotaLimits` and
+`getNostrDbQuotaUsage` prepare a future settings UI. Byte overrides persist under
+`44billion:nostrdb-quotas:v1`; the 50,000 count ceiling is separate and fixed.
+Reducing public/private limits blocks growth only; reducing cache schedules
+trimming. No injected quota configuration/usage API or settings screen is added.
+Storage audit preserves the global configuration; repair uses the ordinary app
+cleanup and owner removal paths, maintaining usage and deleting all owner-local
+auxiliary stores along with the database.
+
+The independent 1,000-request pruning target remains specific to kind 5 for the
+selected author. The shared payload cache retains its global 2 GiB unreferenced
+payload budget and existing pressure/staging/reconciliation policies; referenced
+payloads remain outside that budget. Event quotas do not replace it.

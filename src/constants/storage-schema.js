@@ -32,6 +32,7 @@ export const GLOBAL_LOCAL_KEYS = [
   'local_subdomainLifecycle', // { version: 1, pending: string[], assignments: { [id]: token } }
   '44billion:vault-accepted-message-queue:v1',
   '44billion:app-asset-budget:v1',
+  '44billion:nostrdb-quotas:v1',
   'local_embeddedOnlyRetentionAdmissions',
   'local_pendingStorageRepairPlan',
   'local_storageRepairInProgress',
@@ -117,3 +118,8 @@ export const APP_ORIGIN_SESSION_KEYS = ['44billion:subdomain-assignment']
 export const NOSTRDB_MAINTENANCE_STORE = 'maintenance'
 // { key, after: event ID index key | null, completedAt: milliseconds | null }
 export const NOSTRDB_UNCLAIMED_APP_DATA_KEY = 'unclaimedAppData'
+
+// NostrDB v3: local event accounting, resumable initialization and cache LRU.
+export const NOSTRDB_CACHE_ACCESS_STORE = 'cacheAccess'
+export const NOSTRDB_QUOTA_USAGE_KEY = 'quotaUsage'
+export const NOSTRDB_QUOTA_SETTINGS_KEY = '44billion:nostrdb-quotas:v1'

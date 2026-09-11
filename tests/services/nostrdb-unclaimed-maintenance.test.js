@@ -14,6 +14,8 @@ import {
   toStoredRecord
 } from '#services/idb/nostrdb/index.js'
 
+import { withQuotaMutation, putQuotaEvent } from '#services/idb/nostrdb/quotas.js'
+
 globalThis.indexedDB = indexedDB
 globalThis.IDBKeyRange = IDBKeyRange
 
@@ -35,13 +37,6 @@ function requestResult (request) {
   return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result)
     request.onerror = () => reject(request.error)
-  })
-}
-
-function transactionDone (tx) {
-  return new Promise((resolve, reject) => {
-    tx.addEventListener('complete', resolve, { once: true })
-    tx.addEventListener('abort', () => reject(tx.error || new Error('aborted')), { once: true })
   })
 }
 
@@ -69,10 +64,9 @@ async function fixture (count) {
 }
 
 async function writeRows (raw, rows) {
-  const tx = raw.transaction(EVENTS_STORE, 'readwrite')
-  const done = transactionDone(tx)
-  for (const row of rows) tx.objectStore(EVENTS_STORE).put(row)
-  await done
+  await withQuotaMutation(raw, async tx => {
+    for (const row of rows) await putQuotaEvent(raw, tx, row)
+  })
 }
 
 async function readState (raw) {

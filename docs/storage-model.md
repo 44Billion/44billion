@@ -40,6 +40,10 @@ ephemeral and intentionally not persisted; they do not belong here or in
   reserve numeric IDs against counter rollback. Legacy free IDs enter quarantine
   before any reuse. Interrupted/failed cleanup never certifies an ID as free.
 - `44billion:vault-accepted-message-queue:v1` — pending vault messages.
+- `44billion:nostrdb-quotas:v1` — launcher-only global byte-limit overrides:
+  `{ publicBytes, privateBytes, cacheBytes }`, non-negative safe integers. Defaults
+  are 512 MiB, 1 GiB and 128 MiB respectively; cache also has a fixed 50,000-event
+  ceiling. Account/app cleanup preserves this configuration.
 - `44billion:app-asset-budget:v1` — per-app cached byte budgets.
 - `local_embeddedOnlyRetentionAdmissions` — embedded-only retention admissions.
 - `local_pendingStorageRepairPlan` — durable repair plan, retained until applied.
@@ -178,7 +182,12 @@ events, then end; their pending delivery is cancelled on account removal or root
 unmount. Only kinds 0/10002 also update vault account metadata. Relay membership
 and draining feeds are in memory; no additional cursor or storage schema is used.
 
-- `events` — Nostr events with app/owner references.
+- `events` — Nostr events with app references. Schema 3 adds `eventBytes`
+  (UTF-8 JSON bytes of `event`) and `ownerRefs` (normalized outer owner tag
+  references), indexed by multiEntry `byOwnerRef`.
+- `cacheAccess` — schema 3: cache-only `{ i, lastAccessAt }`, primary key `i`,
+  compound index `byLastAccess` on `[lastAccessAt, i]`. Access updates do not
+  rewrite event records; classification and deletions share event transactions.
 - `deletions` — deletion tombstones.
 - `kindRegistry` — app-neutral kinds.
 - `maintenance` — per-owner cleanup progress, introduced in NostrDB schema
@@ -189,9 +198,15 @@ and draining feeds are in memory; no additional cursor or storage schema is used
   Each page commits its deletions and checkpoint together. A visit resumes
   pending work; completed sweeps remain on cooldown for 24 hours across reloads.
 
-The version 2 upgrade adds `maintenance` without rewriting existing event stores.
+Schema 3 also adds `maintenance.quotaUsage`: `{ key: 'quotaUsage', version: 1,
+phase, after, publicBytes, publicCount, privateBytes, privateCount, cacheBytes,
+cacheCount }`. `phase` is `records`, `classify` or `ready`; `after` checkpoints the
+last primary key, or is null at each pass boundary. Two resumable passes of up
+to 1,000 rows backfill sizes/references and then classification/totals. All event
+mutations atomically maintain these local totals; a global Web Lock coordinates
+summation across every existing owner DB. No global counter is persisted.
 The storage audit inspects launcher state rather than internal NostrDB records;
-its app cleanup preserves this checkpoint, and owner-database removal deletes it
+its app cleanup preserves the checkpoints and maintains quota usage. Owner-database removal deletes them and cache access rows
 with the other stores. No localStorage/sessionStorage repair key is needed.
 
 ## Cleanup invariants

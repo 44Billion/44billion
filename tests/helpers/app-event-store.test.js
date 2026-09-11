@@ -36,6 +36,7 @@ function fixture (overrides = {}) {
   const permissions = []
   const databases = []
   const vaultCalls = []
+  const accesses = []
   const streams = []
   const flags = new Map()
   const state = { members: [owner, peer] }
@@ -49,6 +50,7 @@ function fixture (overrides = {}) {
       databases.push({ pubkey, options })
       return {
         ownerPubkey: pubkey,
+        recordCacheAccess: (...args) => accesses.push({ pubkey, args }),
         query: async (filter, options) => ({ results: [{ kind: 3, pubkey }], options }),
         count: async () => pubkey === owner ? 1 : 2,
         supports: async () => ({ owner: pubkey }),
@@ -67,7 +69,7 @@ function fixture (overrides = {}) {
     ...overrides
   })
   const request = (payload, id = 'request') => bridge.handle({ data: { id, payload } })
-  return { bridge, request, state, flags, replies, permissions, databases, vaultCalls, streams }
+  return { bridge, request, state, flags, replies, permissions, databases, vaultCalls, streams, accesses }
 }
 
 describe('persona event store bridge', () => {
@@ -75,6 +77,8 @@ describe('persona event store bridge', () => {
     const f = fixture()
     await f.request({ method: 'query', params: [{ kinds: [3] }] })
     assert.equal(f.replies.at(-1).payload.results[0].pubkey, owner)
+    assert.equal(f.accesses.length, 1)
+    assert.equal(f.replies.at(-1).payload.options.deferCacheAccess, true)
     assert.equal(Object.hasOwn(f.permissions.at(-1).meta, 'accountUserPk'), false)
     await f.request({ method: 'query', userPk: peer.toUpperCase(), params: [{ kinds: [3] }, { appId: 'forged' }] })
     assert.equal(f.replies.at(-1).payload.results[0].pubkey, peer)
@@ -129,6 +133,7 @@ describe('persona event store bridge', () => {
       assert.equal(f.replies.at(-1).payload, 2)
     }
     assert.equal(f.vaultCalls.length, 0)
+    assert.equal(f.accesses.length, 0)
   })
 
   it('propagates permission failures without signing or returning data', async () => {
@@ -139,6 +144,7 @@ describe('persona event store bridge', () => {
     await f.request({ method: 'add', userPk: peer, params: [{ kind: 3, tags: [] }] })
     assert.equal(f.replies.at(-1).error, denied)
     assert.equal(f.vaultCalls.length, 0)
+    assert.equal(f.accesses.length, 0)
   })
 
   it('streams only the target store and terminates idle subscriptions on persona revocation', async () => {
@@ -147,9 +153,12 @@ describe('persona event store bridge', () => {
     await setImmediate()
     assert.equal(f.streams[0].pubkey, peer)
     assert.equal(f.streams[0].options.appId, 'chat-app')
+    assert.equal(f.streams[0].options.deferCacheAccess, true)
+    assert.equal(f.accesses.length, 0)
     f.streams[0].iterator.push({ result: { kind: 3, pubkey: peer } })
     await setImmediate()
     assert.equal(f.replies.at(-1).payload.result.pubkey, peer)
+    assert.equal(f.accesses.length, 1)
     f.state.members = [owner]
     f.bridge.revalidateSubscriptions()
     await pending
@@ -167,6 +176,7 @@ describe('persona event store bridge', () => {
     await pending
     assert.equal(f.replies.length, 1)
     assert.equal(f.replies[0].error.code, 'PUBKEY_NOT_IN_PERSONA')
+    assert.equal(f.accesses.length, 0)
     assert.equal(f.streams[0].iterator.closed, true)
   })
 

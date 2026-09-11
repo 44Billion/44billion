@@ -101,6 +101,10 @@ describe('normalized global chunk cache', () => {
     assert.equal(stored.cr, fixture.root)
     assert.equal(stored.ci, 0)
     assert.equal(stored.cb, 4)
+    assert.equal(stored.eventBytes, new TextEncoder().encode(JSON.stringify(stored.event)).length)
+    const usage = await requestResult(rawDb.transaction('maintenance').objectStore('maintenance').get('quotaUsage'))
+    assert.equal(usage.publicBytes, stored.eventBytes)
+    assert.equal(usage.cacheCount, 0)
 
     const queried = (await db.query({ kinds: [34601] })).results[0]
     assert.equal(queried.content, fixture.template.content)

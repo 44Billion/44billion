@@ -163,6 +163,28 @@ permission. The event store remains scoped to the instance's workspace account
 and app; selecting a persona does not merge its members' event stores. Bridge
 errors reject method promises or the iterator's `next()` promise.
 
+`addPersonalCopy` resolves to `{ event, result }`; `add` returns the result
+directly. Storage admission failures have result `{ ok: false, code: 'quota', message,
+stored: false, published: false, quotaCategory }`, where `quotaCategory` is
+`public`, `private`, or `cache` for event quotas. Existing chunk-payload quota
+failures may omit the category. Limits are shared across launcher accounts:
+512 MiB public, 1 GiB personal copies, and 128 MiB / 50,000 cache events by default.
+Cache counts toward public usage; a public limit alone does not trigger eviction.
+Personal-copy contexts and inner authors share the private limit. Limits count
+UTF-8 JSON event bytes; external chunk payloads retain their separate policy.
+Owner references can preserve third-party public events; other third-party events
+are disposable cache and may be evicted by approximate LRU. Expiration, explicit
+deletion and newer coordinate replacement still apply to preserved events.
+
+No-growth duplicates and net non-growing replacements remain admissible above a
+limit. A refusal never partially replaces an event; cache removals committed
+while attempting admission may remain. Missing quota coordination or database
+enumeration returns `ok: false, code: 'unavailable'`. Invalid new signatures
+return `code: 'invalid'`. Quota results reveal no other account's events or
+identity. Limit configuration and aggregate usage are launcher-only, not methods
+of this injected object. Full app reads/subscription deliveries update approximate
+cache recency; ID-only reads, counts and synchronization do not.
+
 `window.napp.getWindowNappEventStoreFor(pubkey)` synchronously returns the same
 six-method API for a member of the app's current persona. The public key uses
 the same 64-character hexadecimal format as `getWindowNostrFor`. Calls made

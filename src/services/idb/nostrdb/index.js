@@ -7,8 +7,21 @@ import { base64UrlToBytes, bytesToBase64Url } from 'libp2r2p/base64'
 import { eventKinds } from '#constants/event.js'
 import {
   NOSTRDB_MAINTENANCE_STORE,
+  NOSTRDB_CACHE_ACCESS_STORE,
   NOSTRDB_UNCLAIMED_APP_DATA_KEY
 } from '#constants/storage-schema.js'
+import {
+  CACHE_ACCESS_INDEX,
+  NostrDbQuotaError,
+  accountDeletedEvent,
+  initialQuotaUsage,
+  isOwnerReferenced,
+  putQuotaEvent,
+  queueCacheAccess,
+  startGlobalQuotaMaintenance,
+  withNostrDbQuotaLock,
+  withQuotaMutation
+} from './quotas.js'
 import { appIdToDbAppRef } from '#helpers/app.js'
 import {
   PERSONAL_COPY_KIND,
@@ -68,8 +81,11 @@ import {
   validateCanonicalOwnerChunkEvent
 } from './chunk-event.js'
 import { isValidEvent } from 'libp2r2p/event'
+import { verifyEventSignature } from './verification.js'
 
-export const NOSTRDB_VERSION = 2
+export const NOSTRDB_VERSION = 3
+const SNAPSHOT_READ = Symbol('subscription snapshot read')
+
 export const NOSTRDB_PREFIX = '44billion_nostrdb:'
 export const EVENTS_STORE = 'events'
 export const DELETIONS_STORE = 'deletions'
@@ -91,6 +107,8 @@ events, keyPath "i"
   t     multiEntry tag index keys: [tagName, sha256(tagValue), created_at]
   cr/ci/ct/ch/cb optional externalized chunk root/index/total/content hash/byte length
   br    optional multiEntry roots referenced by public or decrypted personal r tags
+  eventBytes UTF-8 JSON byte length of stored event, excluding internal metadata
+  ownerRefs normalized owner-only references: e:<idKey> / a:<kind>:<pubkeyKey>:<dTagKey>
   event original Nostr event; chunk events omit content and are rehydrated on reads
 
 events indexes
@@ -105,6 +123,7 @@ events indexes
   byTag       t, multiEntry
   byChunk     [cr, ci], unique, sparse
   byBlobRef   br, multiEntry, sparse
+  byOwnerRef  ownerRefs, multiEntry
 
 deletions, keyPath "ref"
   ref   "e:<base64url-id>:<base64url-pubkey>" or "a:<base64url-sha256-coordinate>"
@@ -125,6 +144,12 @@ maintenance, keyPath "key"
   key         "unclaimedAppData"
   after       last examined event id index key, or null after a full sweep
   completedAt last full sweep completion in milliseconds, or null
+  quotaUsage  separate record: initialization phase/after + local public/private/cache totals
+
+cacheAccess, keyPath "i"
+  i            event id key, only for current cache events
+  lastAccessAt approximate last app delivery time, milliseconds
+  byLastAccess index [lastAccessAt, i]
 */
 export const INDEX = {
   address: 'byAddress',
@@ -137,7 +162,8 @@ export const INDEX = {
   pubkeyKind: 'byPubkeyKind',
   tag: 'byTag',
   chunk: 'byChunk',
-  blobRef: 'byBlobRef'
+  blobRef: 'byBlobRef',
+  ownerRef: 'byOwnerRef'
 }
 
 export const DELETION_INDEX = {
@@ -178,12 +204,12 @@ const ADD_MESSAGES = {
   duplicate: 'Event is already stored.',
   superseded: 'A newer or tie-winning coordinate event is already stored.',
   published: 'Event was published to subscribers without being stored.',
-  invalid: 'Event shape is invalid.',
+  invalid: 'Event shape or signature is invalid.',
   invalid_app: 'App id is invalid.',
   expired: 'Event is expired.',
   blocked: 'Event is blocked by a deletion request.',
-  quota: 'Global unreferenced chunk quota exceeded.',
-  unavailable: 'IndexedDB is unavailable.',
+  quota: 'Storage quota exceeded.',
+  unavailable: 'IndexedDB or quota coordination is unavailable.',
   error: 'IndexedDB transaction failed.'
 }
 
@@ -322,6 +348,9 @@ export class NostrDb {
     tombstoneTagName
   } = {}) {
     const inputEvent = event
+    if (!isVerifiedEvent(event)) {
+      return this.reportAddResult('add', event, addResult('invalid'))
+    }
     let chunkData = null
     let normalized
 
@@ -368,7 +397,7 @@ export class NostrDb {
     const personalCopy = normalized.personalCopy
     const blobRefs = blobReferencesFromTags(personalCopy?.inner?.tags ?? event.tags)
 
-    if (!isValidEventShape(event)) {
+    if (event !== inputEvent && !isVerifiedEvent(event)) {
       return this.reportAddResult('add', event, addResult('invalid'))
     }
 
@@ -551,7 +580,7 @@ export class NostrDb {
     blobRefs,
     log = true
   } = {}) {
-    if (!isValidEventShape(event)) {
+    if (!isVerifiedEvent(event)) {
       return this.reportAddResult('addEvent', event, addResult('invalid'), { log })
     }
 
@@ -620,145 +649,125 @@ export class NostrDb {
     }
 
     const record = toStoredRecord(event, { now, appRef, chunkData, blobRefs })
-    let replaced = false
-    let tx
-    let done
-
+    let result
     try {
-      tx = db.transaction([EVENTS_STORE, DELETIONS_STORE], 'readwrite')
-      done = txDone(tx)
+      result = await withQuotaMutation(db, async tx => {
+        let replaced = false
+        await validatePersonalCopyProvenanceSnapshot(db, tx, personalCopyResolution?.snapshot)
 
-      await validatePersonalCopyProvenanceSnapshot(db, tx, personalCopyResolution?.snapshot)
+        if (personalCopyResolution && !personalCopyResolution.incomingWins) {
+          const changed = await retainExistingPersonalCopyWinner(
+            db,
+            tx,
+            personalCopyResolution,
+            appRef
+          )
+          return addResult(
+            personalCopyResolution.winnerId === event.id ? 'duplicate' : 'superseded',
+            { stored: changed }
+          )
+        }
 
-      if (personalCopyResolution && !personalCopyResolution.incomingWins) {
-        const changed = await retainExistingPersonalCopyWinner(
-          db,
-          tx,
-          personalCopyResolution,
-          appRef
-        )
-        await done
-        return addResult(
-          personalCopyResolution.winnerId === event.id ? 'duplicate' : 'superseded',
-          { stored: changed }
-        )
-      }
+        const existingById = await run('get', [record.i], EVENTS_STORE, null, { db, tx })
+          .then(v => v.result)
 
-      const existingById = await run('get', [record.i], EVENTS_STORE, null, { db, tx })
-        .then(v => v.result)
+        if (existingById) {
+          let changed = mergeAppRef(existingById, appRef)
+          changed = await removePersonalCopyLosers(
+            db,
+            tx,
+            personalCopyResolution?.loserIds,
+            existingById
+          ) || changed
+          if (changed) await run('put', [existingById], EVENTS_STORE, null, { db, tx })
+          return addResult('duplicate', { stored: changed })
+        }
 
-      if (existingById) {
-        let changed = mergeAppRef(existingById, appRef)
-        changed = await removePersonalCopyLosers(
+        if (await isBlockedByDeletion(db, tx, event)) {
+          return this.reportAddResult('addEvent', event, addResult('blocked'), { log })
+        }
+
+        if (record.a) {
+          const existingByAddress = await run('get', [record.a], EVENTS_STORE, INDEX.address, { db, tx })
+            .then(v => v.result)
+          const existingIsPersonalCopyLoser = personalCopyResolution?.loserIds.includes(existingByAddress?.event.id)
+
+          if (
+            existingByAddress &&
+            !existingIsPersonalCopyLoser &&
+            !forceCoordinateReplace &&
+            !isNewer(event, existingByAddress.event)
+          ) {
+            const changed = mergeAppRef(existingByAddress, appRef)
+            if (changed) await run('put', [existingByAddress], EVENTS_STORE, null, { db, tx })
+            return addResult('superseded', { stored: changed })
+          }
+
+          if (existingByAddress) {
+            mergeAppRefs(record, existingByAddress.ap)
+            if (!existingIsPersonalCopyLoser) {
+              record.sa = await nextSyncAnchor(db, tx, event, now)
+              await deleteStoredEvent(db, tx, existingByAddress)
+            }
+            replaced = true
+          }
+        }
+
+        await removePersonalCopyLosers(
           db,
           tx,
           personalCopyResolution?.loserIds,
-          existingById
-        ) || changed
-        if (changed) await run('put', [existingById], EVENTS_STORE, null, { db, tx })
-        await done
-        await finishChunkStage(chunkStage, {
-          owner: this.ownerPubkey,
-          event,
-          chunkData,
-          protectedRoot: chunkStage?.protectedRoot
-        })
-        scheduleBlobReferenceReconciliation(this.ownerPubkey, record.br)
-        return addResult('duplicate', { stored: changed })
-      }
+          record
+        )
 
-      if (await isBlockedByDeletion(db, tx, event)) {
-        await done
-        await abortChunkPayloadStage(chunkStage)
-        return this.reportAddResult('addEvent', event, addResult('blocked'), { log })
-      }
-
-      if (record.a) {
-        const existingByAddress = await run('get', [record.a], EVENTS_STORE, INDEX.address, { db, tx })
-          .then(v => v.result)
-        const existingIsPersonalCopyLoser = personalCopyResolution?.loserIds.includes(existingByAddress?.event.id)
-
-        if (
-          existingByAddress &&
-          !existingIsPersonalCopyLoser &&
-          !forceCoordinateReplace &&
-          !isNewer(event, existingByAddress.event)
-        ) {
-          const changed = mergeAppRef(existingByAddress, appRef)
-          if (changed) await run('put', [existingByAddress], EVENTS_STORE, null, { db, tx })
-          await done
-          await abortChunkPayloadStage(chunkStage)
-          return addResult('superseded', { stored: changed })
+        if (record.sa === undefined) {
+          record.sa = await nextSyncAnchor(db, tx, event, now)
         }
 
-        if (existingByAddress) {
-          mergeAppRefs(record, existingByAddress.ap)
-          if (!existingIsPersonalCopyLoser) {
-            record.sa = await nextSyncAnchor(db, tx, event, now)
-            await deleteStoredEvent(db, tx, existingByAddress)
-          }
-          replaced = true
+        if (event.kind === 5) {
+          // Keep this chain IDB-only; unrelated awaits can let the transaction auto-commit.
+          await applyDeletionRequest(db, tx, event)
         }
-      }
 
-      await removePersonalCopyLosers(
-        db,
-        tx,
-        personalCopyResolution?.loserIds,
-        record
-      )
+        for (const id of consumeDeletionRequestIds) {
+          await deleteStoredDeletionRequestById(db, tx, id, event.pubkey)
+        }
 
-      if (record.sa === undefined) {
-        record.sa = await nextSyncAnchor(db, tx, event, now)
-      }
-
-      if (event.kind === 5) {
-        // Keep this chain IDB-only; unrelated awaits can let the transaction auto-commit.
-        await applyDeletionRequest(db, tx, event)
-      }
-
-      for (const id of consumeDeletionRequestIds) {
-        await deleteStoredDeletionRequestById(db, tx, id, event.pubkey)
-      }
-
-      await run('put', [record], EVENTS_STORE, null, { db, tx })
-      await done
+        await putQuotaEvent(db, tx, record)
+        return addResult(replaced ? 'replaced' : 'stored', { stored: true, storedRecord: record })
+      }, { admission: true })
     } catch (error) {
-      try {
-        tx?.abort()
-      } catch {
-      }
-      await done?.catch(() => {})
       await abortChunkPayloadStage(chunkStage).catch(() => {})
-      const result = addResult('error')
+      const code = error instanceof NostrDbQuotaError ? 'quota' : error.code === 'unavailable' ? 'unavailable' : 'error'
+      const result = addResult(code, error instanceof NostrDbQuotaError ? { quotaCategory: error.category } : {})
       if (error instanceof StalePersonalCopyProvenanceError) {
         Object.defineProperty(result, PERSONAL_COPY_PROVENANCE_STALE, { value: true })
       }
-      return this.reportAddResult('addEvent', event, result, { log })
+      return this.reportAddResult('addEvent', event, result, { log, error })
     }
 
-    await finishChunkStage(chunkStage, {
-      owner: this.ownerPubkey,
-      event,
-      chunkData,
-      protectedRoot: chunkStage?.protectedRoot
-    })
-    scheduleBlobReferenceReconciliation(this.ownerPubkey, record.br)
-
-    return addResult(replaced ? 'replaced' : 'stored', {
-      stored: true,
-      storedRecord: record
-    })
+    if (['stored', 'replaced', 'duplicate'].includes(result.code)) {
+      await finishChunkStage(chunkStage, {
+        owner: this.ownerPubkey,
+        event,
+        chunkData,
+        protectedRoot: chunkStage?.protectedRoot
+      })
+      scheduleBlobReferenceReconciliation(this.ownerPubkey, record.br)
+    } else {
+      await abortChunkPayloadStage(chunkStage)
+    }
+    return result
   }
 
-  reportAddResult (method, event, result, { log = true } = {}) {
+  reportAddResult (method, event, result, { log = true, error } = {}) {
     if (log && !result.ok) {
       logNostrDbIssue(method, {
         ownerPubkey: this.ownerPubkey,
         code: result.code,
         message: result.message,
         event: eventLogSummary(event)
-      })
+      }, error)
     }
     return result
   }
@@ -831,7 +840,7 @@ export class NostrDb {
     throwIfAborted(signal)
 
     if (
-      !isValidEventShape(signed) ||
+      !isVerifiedEvent(signed) ||
       signed.kind !== 5 ||
       signed.pubkey !== author ||
       (selection.createdAt === null ? signed.created_at < maxConsumedCreatedAt : signed.created_at !== templateCreatedAt) ||
@@ -1033,20 +1042,18 @@ export class NostrDb {
 
       if (expiredIdKeys.length === 0) return 0
 
-      const tx = db.transaction([EVENTS_STORE, DELETIONS_STORE], 'readwrite')
-      const done = txDone(tx)
+      return await withQuotaMutation(db, async tx => {
+        for (const idKey of expiredIdKeys) {
+          const stored = await run('get', [idKey], EVENTS_STORE, null, { db, tx })
+            .then(v => v.result)
+          if (!stored || isStoredRecordLive(stored, cutoff)) continue
 
-      for (const idKey of expiredIdKeys) {
-        const stored = await run('get', [idKey], EVENTS_STORE, null, { db, tx })
-          .then(v => v.result)
-        if (!stored || isStoredRecordLive(stored, cutoff)) continue
+          await deleteStoredEvent(db, tx, stored)
+          removed++
+        }
 
-        await deleteStoredEvent(db, tx, stored)
-        removed++
-      }
-
-      await done
-      return removed
+        return removed
+      })
     } catch {
       return 0
     }
@@ -1074,20 +1081,18 @@ export class NostrDb {
     while (true) {
       const records = await getChunkRecordBatch(db, root, CHUNK_PURGE_BATCH_SIZE)
       if (records.length === 0) break
-      const transaction = db.transaction([EVENTS_STORE, DELETIONS_STORE], 'readwrite')
-      const done = txDone(transaction)
       try {
-        for (const stored of records) {
-          const current = await run('get', [stored.i], EVENTS_STORE, null, { db, tx: transaction })
-            .then(value => value.result)
-          if (!current || current.cr !== root) continue
-          await deleteStoredEvent(db, transaction, current)
-          removed++
-        }
-        await done
+        removed += await withQuotaMutation(db, async tx => {
+          let count = 0
+          for (const stored of records) {
+            const current = await run('get', [stored.i], EVENTS_STORE, null, { db, tx }).then(value => value.result)
+            if (!current || current.cr !== root) continue
+            await deleteStoredEvent(db, tx, current)
+            count++
+          }
+          return count
+        })
       } catch {
-        try { transaction.abort() } catch {}
-        await done.catch(() => {})
         failed = true
         break
       }
@@ -1257,6 +1262,7 @@ export class NostrDb {
       })
       await hydrateChunkResults(this.ownerPubkey, results)
       this.queueAppClaimsFromResults(results, appRef)
+      if (appRef && !options.deferCacheAccess && !options[SNAPSHOT_READ] && filters[0]?.algorithm !== 'sync') queueCacheAccess(this.ownerPubkey, results)
       return queryResult(results, filters[0])
     } catch (error) {
       logNostrDbIssue('query', { ownerPubkey: this.ownerPubkey }, error)
@@ -1399,9 +1405,32 @@ export class NostrDb {
       this.subscriptions.delete(subscription)
     })
     const live = hydrateChunkSubscription(this.ownerPubkey, iterator)
-    return options.initial === true
-      ? withInitialResults(live, () => this.query(filterOrFilters, options))
+    const delivery = options.initial === true
+      ? withInitialResults(live, () => this.query(filterOrFilters, { ...options, [SNAPSHOT_READ]: true }))
       : live
+    if (!appRef || options.deferCacheAccess || filters[0]?.algorithm === 'sync') return delivery
+    const owner = this.ownerPubkey
+    return {
+      [Symbol.asyncIterator] () { return this },
+      async next () {
+        const item = await delivery.next()
+        if (!item.done) queueCacheAccess(owner, [item.value?.result])
+        return item
+      },
+      return: value => delivery.return?.(value),
+      throw: error => delivery.throw?.(error)
+    }
+  }
+
+  // Internal bridge hook: authorization/cancellation may still reject a read
+  // after the DB iterator has produced it. Only acknowledge actual app delivery.
+  recordCacheAccess (payload, filterOrFilters, options = {}) {
+    try {
+      if (!normalizeReadAppRef(options)) return
+      const filters = parseFilterInput(filterOrFilters, options)
+      if (filters[0]?.algorithm === 'sync') return
+      queueCacheAccess(this.ownerPubkey, payload?.results ?? [payload?.result])
+    } catch {}
   }
 
   queueAppClaimsFromResults (results, appRef) {
@@ -1617,17 +1646,12 @@ async function getReferencedRootBatch (db, after, limit) {
 }
 
 async function deleteInvalidChunkRecord (db, stored) {
-  const transaction = db.transaction([EVENTS_STORE, DELETIONS_STORE], 'readwrite')
-  const done = txDone(transaction)
   try {
-    const current = await run('get', [stored.i], EVENTS_STORE, null, { db, tx: transaction })
-      .then(value => value.result)
-    if (current?.k === 34601) await deleteStoredEvent(db, transaction, current)
-    await done
-  } catch {
-    try { transaction.abort() } catch {}
-    await done.catch(() => {})
-  }
+    await withQuotaMutation(db, async tx => {
+      const current = await run('get', [stored.i], EVENTS_STORE, null, { db, tx }).then(value => value.result)
+      if (current?.k === 34601) await deleteStoredEvent(db, tx, current)
+    })
+  } catch { return }
   await removeChunkCopy(stored.event?.pubkey, stored.cr, stored.ci).catch(() => {})
 }
 
@@ -1782,6 +1806,7 @@ export function startGlobalChunkMaintenance ({
   intervalMs = CHUNK_MAINTENANCE_INTERVAL_MS,
   runImmediately = true
 } = {}) {
+  startGlobalQuotaMaintenance()
   if (globalChunkMaintenance) return globalChunkMaintenance.stop
   const delay = Number.isSafeInteger(intervalMs) && intervalMs > 0
     ? intervalMs
@@ -1816,6 +1841,7 @@ export function startGlobalChunkMaintenance ({
 }
 
 function startNostrDbMaintenance (db, { signEvent } = {}) {
+  startGlobalQuotaMaintenance()
   startMaintenanceTask(db, 'chunks', () => db.startChunkMaintenance())
   startMaintenanceTask(db, 'unclaimedAppData', () => db.startUnclaimedAppDataPurge({
     intervalMs: UNCLAIMED_APP_DATA_PURGE_INTERVAL_MS
@@ -1847,51 +1873,46 @@ function stopNostrDbMaintenance (db) {
   db.deletionRequestMaintenanceSignEvent = null
 }
 
-export async function openNostrDb (ownerPubkey) {
+export async function openNostrDb (ownerPubkey, { quotaLockHeld = false } = {}) {
   if (typeof indexedDB === 'undefined') return null
 
   const dbName = `${NOSTRDB_PREFIX}${ownerPubkey}`
-  if (!dbCache.has(dbName)) {
-    dbCache.set(dbName, initNostrDb(dbName).catch(() => null))
+  const open = () => {
+    if (!dbCache.has(dbName)) dbCache.set(dbName, initNostrDb(dbName).catch(() => null))
+    return dbCache.get(dbName)
   }
-  return dbCache.get(dbName)
+  if (dbCache.has(dbName) || quotaLockHeld) return open()
+  // Empty databases remain readable without Web Locks; admission fails closed.
+  if (!globalThis.navigator?.locks?.request) return open()
+  return withNostrDbQuotaLock(open)
 }
 
 export async function deleteNostrDb (ownerPubkey) {
   if (typeof indexedDB === 'undefined') return false
-
-  const dbName = `${NOSTRDB_PREFIX}${ownerPubkey}`
-  const store = storeCache.get(ownerPubkey)
-  store?.stopMaintenance?.()
-  store?.bc?.close()
-  if (store) store.bc = null
-  storeCache.delete(ownerPubkey)
-
-  const cached = dbCache.get(dbName)
-  dbCache.delete(dbName)
-
+  let deleted
   try {
-    const db = await cached
-    db?.close()
-  } catch {}
-
-  return new Promise(resolve => {
-    let req
-
-    try {
-      req = indexedDB.deleteDatabase(dbName)
-    } catch {
-      resolve(false)
-      return
-    }
-
-    req.onsuccess = () => {
-      clearOwnerChunkCache(ownerPubkey)
-        .then(() => resolve(true), () => resolve(true))
-    }
-    req.onerror = () => resolve(false)
-    req.onblocked = () => resolve(false)
-  })
+    deleted = await withNostrDbQuotaLock(async () => {
+      const dbName = `${NOSTRDB_PREFIX}${ownerPubkey}`
+      const store = storeCache.get(ownerPubkey)
+      store?.stopMaintenance?.()
+      store?.bc?.close()
+      if (store) store.bc = null
+      storeCache.delete(ownerPubkey)
+      const cached = dbCache.get(dbName)
+      dbCache.delete(dbName)
+      try { (await cached)?.close() } catch {}
+      return new Promise(resolve => {
+        let req
+        try { req = indexedDB.deleteDatabase(dbName) } catch { resolve(false); return }
+        req.onsuccess = () => resolve(true)
+        req.onerror = () => resolve(false)
+        // Keep the quota lock until deletion actually finishes. Other launcher
+        // connections close on versionchange; a blocked request cannot be cancelled.
+      })
+    })
+  } catch { return false }
+  if (deleted) await clearOwnerChunkCache(ownerPubkey).catch(() => {})
+  return deleted
 }
 
 function initNostrDb (dbName) {
@@ -1905,7 +1926,7 @@ function initNostrDb (dbName) {
   }
 
   req.onerror = () => p.resolve(null)
-  req.onblocked = () => p.resolve(null)
+  // A blocked open is still pending: retain coordination until it finishes.
   req.onsuccess = () => {
     const db = req.result
     db.onversionchange = () => {
@@ -1918,6 +1939,7 @@ function initNostrDb (dbName) {
     const db = e.target.result
     const tx = e.target.transaction
     let store
+    const fresh = !db.objectStoreNames.contains(EVENTS_STORE)
 
     store = createObjectStoreIfMissing(db, tx, EVENTS_STORE, { keyPath: 'i' })
     createIndexIfMissing(store, INDEX.address, 'a', { unique: true })
@@ -1931,12 +1953,16 @@ function initNostrDb (dbName) {
     createIndexIfMissing(store, INDEX.tag, 't', { multiEntry: true })
     createIndexIfMissing(store, INDEX.chunk, ['cr', 'ci'], { unique: true })
     createIndexIfMissing(store, INDEX.blobRef, 'br', { multiEntry: true })
+    createIndexIfMissing(store, INDEX.ownerRef, 'ownerRefs', { multiEntry: true })
 
     store = createObjectStoreIfMissing(db, tx, DELETIONS_STORE, { keyPath: 'ref' })
     createIndexIfMissing(store, DELETION_INDEX.request, 'c', { multiEntry: true })
 
     createObjectStoreIfMissing(db, tx, KIND_REGISTRY_STORE, { keyPath: 'key' })
-    createObjectStoreIfMissing(db, tx, NOSTRDB_MAINTENANCE_STORE, { keyPath: 'key' })
+    store = createObjectStoreIfMissing(db, tx, NOSTRDB_MAINTENANCE_STORE, { keyPath: 'key' })
+    if (fresh) store.put(initialQuotaUsage(true))
+    store = createObjectStoreIfMissing(db, tx, NOSTRDB_CACHE_ACCESS_STORE, { keyPath: 'i' })
+    createIndexIfMissing(store, CACHE_ACCESS_INDEX, ['lastAccessAt', 'i'])
   }
 
   return p.promise
@@ -2103,10 +2129,7 @@ async function purgeUnclaimedAppDataPage (ownerPubkey, {
   if (!db) throw new Error('IndexedDB is unavailable')
   const scanLimit = normalizePositiveInteger(maxScanned, UNCLAIMED_APP_DATA_MAX_SCANNED)
   const deleteLimit = normalizePositiveInteger(batchSize, UNCLAIMED_APP_DATA_BATCH_SIZE)
-  const tx = db.transaction([EVENTS_STORE, DELETIONS_STORE, NOSTRDB_MAINTENANCE_STORE], 'readwrite')
-  const done = txDone(tx)
-
-  try {
+  return withQuotaMutation(db, async tx => {
     const state = await run('get', [NOSTRDB_UNCLAIMED_APP_DATA_KEY], NOSTRDB_MAINTENANCE_STORE, null, { db, tx })
       .then(v => v.result)
     const nowMs = Number.isFinite(now) ? now * 1000 : Date.now()
@@ -2114,7 +2137,6 @@ async function purgeUnclaimedAppDataPage (ownerPubkey, {
     const completedAt = Number.isFinite(state?.completedAt) ? state.completedAt : null
     const nextRunAt = completedAt === null ? nowMs : completedAt + intervalMs
     if (after === null && nextRunAt > nowMs) {
-      await done
       return { deleted: 0, hasMore: false, nextRunAt }
     }
 
@@ -2140,7 +2162,7 @@ async function purgeUnclaimedAppDataPage (ownerPubkey, {
     for (const idKey of idKeys) {
       const stored = await run('get', [idKey], EVENTS_STORE, null, { db, tx })
         .then(v => v.result)
-      if (!isUnclaimedAppDataCleanupCandidate(stored, cutoffMs)) continue
+      if (!isUnclaimedAppDataCleanupCandidate(stored, cutoffMs) || await isOwnerReferenced(db, tx, stored)) continue
       await deleteStoredEvent(db, tx, stored)
       deleted++
     }
@@ -2151,37 +2173,31 @@ async function purgeUnclaimedAppDataPage (ownerPubkey, {
       after: hasMore ? lastKey : null,
       completedAt: hasMore ? completedAt : finishedAt
     }], NOSTRDB_MAINTENANCE_STORE, null, { db, tx })
-    await done
     return { deleted, hasMore, nextRunAt: hasMore ? null : finishedAt + intervalMs }
-  } catch (error) {
-    try { tx.abort() } catch {}
-    await done.catch(() => {})
-    throw error
-  }
+  })
 }
 
 async function deleteAppEventBatch (db, appRef, idKeys) {
-  const tx = db.transaction([EVENTS_STORE, DELETIONS_STORE], 'readwrite')
-  const done = txDone(tx)
-  let deleted = 0
+  return withQuotaMutation(db, async tx => {
+    let deleted = 0
 
-  for (const idKey of idKeys) {
-    const stored = await run('get', [idKey], EVENTS_STORE, null, { db, tx })
-      .then(v => v.result)
-    if (!stored) continue
+    for (const idKey of idKeys) {
+      const stored = await run('get', [idKey], EVENTS_STORE, null, { db, tx })
+        .then(v => v.result)
+      if (!stored) continue
 
-    const refs = removeAppRef(stored.ap, appRef)
-    if (refs.length === 0) {
-      await deleteStoredEvent(db, tx, stored)
-      deleted++
-    } else {
-      stored.ap = refs
-      await run('put', [stored], EVENTS_STORE, null, { db, tx })
+      const refs = removeAppRef(stored.ap, appRef)
+      if (refs.length === 0 && !await isOwnerReferenced(db, tx, stored)) {
+        await deleteStoredEvent(db, tx, stored)
+        deleted++
+      } else {
+        stored.ap = refs
+        await run('put', [stored], EVENTS_STORE, null, { db, tx })
+      }
     }
-  }
 
-  await done
-  return deleted
+    return deleted
+  })
 }
 
 function kindRegistryRecord (kinds = appNeutralKindList()) {
@@ -3572,7 +3588,7 @@ async function signCrdtTemplate (signEvent, template) {
 }
 
 function isValidCrdtSignedEvent (signed, template, expectedAddress, ownerPubkey) {
-  if (!isValidEventShape(signed)) return false
+  if (!isVerifiedEvent(signed)) return false
   if (signed.pubkey !== ownerPubkey) return false
   if (signed.kind !== template.kind) return false
   if (signed.created_at !== template.created_at) return false
@@ -3856,6 +3872,10 @@ function isStoredRecordLive (stored, now) {
   return !!stored?.event && !shouldSkipStorage(stored.event, now)
 }
 
+function isVerifiedEvent (event) {
+  return isValidEventShape(event) && verifyEventSignature(event)
+}
+
 export function isValidEventShape (event) {
   if (!event || typeof event !== 'object') return false
   if (!HEX64_RE.test(event.id)) return false
@@ -4052,7 +4072,8 @@ async function deleteStoredDeletionRequestById (db, tx, id, author) {
   return true
 }
 
-async function deleteStoredEvent (db, tx, stored) {
+export async function deleteStoredEvent (db, tx, stored) {
+  await accountDeletedEvent(db, tx, stored)
   await run('delete', [stored.i], EVENTS_STORE, null, { db, tx })
 
   if (stored.event.kind === 34601 && stored.cr && Number.isSafeInteger(stored.ci)) {
@@ -4211,15 +4232,15 @@ async function scoreDeletionRequestKeyBatch (db, items, cutoffMs, signal) {
 async function deleteDeletionRequestIdsInBatches (db, ids, author, { batchSize, deleted, signal }) {
   for (let i = 0; i < ids.length; i += batchSize) {
     const batch = ids.slice(i, i + batchSize)
-    const tx = db.transaction([EVENTS_STORE, DELETIONS_STORE], 'readwrite')
-    const done = txDone(tx)
-
-    for (const id of batch) {
-      throwIfAborted(signal)
-      if (await deleteStoredDeletionRequestById(db, tx, id, author)) deleted.push(id)
-    }
-
-    await done
+    const committed = await withQuotaMutation(db, async tx => {
+      const removed = []
+      for (const id of batch) {
+        throwIfAborted(signal)
+        if (await deleteStoredDeletionRequestById(db, tx, id, author)) removed.push(id)
+      }
+      return removed
+    })
+    deleted.push(...committed)
   }
 }
 

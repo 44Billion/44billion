@@ -1,8 +1,13 @@
-import { afterEach, beforeEach, describe, it } from 'node:test'
+import { afterEach, beforeEach, describe, it, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import { finalizeEvent } from 'libp2r2p/event'
 
-import {
+// These storage/query unit fixtures use deliberately chosen IDs. Cryptographic
+// admission is exercised with real signatures in nostrdb-quotas.test.js.
+mock.module('../../src/services/idb/nostrdb/verification.js', {
+  namedExports: { verifyEventSignature: () => true }
+})
+const {
   DELETIONS_STORE,
   EVENTS_STORE,
   INDEX,
@@ -24,7 +29,7 @@ import {
   pubkeyIndexKey,
   toStoredRecord,
   __nostrDbInternals
-} from '../../src/services/idb/nostrdb/index.js'
+} = await import('../../src/services/idb/nostrdb/index.js')
 import { buildCrdtMergeTemplate } from '../../src/services/idb/nostrdb/crdt.js'
 import { isScheduledDurableFuture } from '../../src/services/idb/nostrdb/scheduled.js'
 import { eventKinds } from '../../src/constants/event.js'
@@ -65,6 +70,11 @@ describe('nostrdb', () => {
   })
 
   afterEach(() => {
+    for (const db of globalThis.indexedDB?.dbs?.values() ?? []) {
+      if (!db.name.startsWith(NOSTRDB_PREFIX)) continue
+      getNostrDb(db.name.slice(NOSTRDB_PREFIX.length), { maintenance: false }).stopMaintenance()
+      db.onversionchange?.()
+    }
     globalThis.indexedDB = oldIndexedDB
     globalThis.IDBKeyRange = oldIDBKeyRange
     console.error = oldConsoleError
@@ -373,7 +383,7 @@ describe('nostrdb', () => {
       key: 'appNeutralKinds',
       kinds: []
     })
-    globalThis.indexedDB.databases.set(dbName, db)
+    globalThis.indexedDB.dbs.set(dbName, db)
 
     await openNostrDb(owner)
 
@@ -409,7 +419,7 @@ describe('nostrdb', () => {
     assertAddNotOk(await db.add(event({ id: deletedId, created_at: 40 })), { code: 'blocked' })
     assertAddNotOk(await db.add({}), { code: 'invalid' })
 
-    const fake = globalThis.indexedDB.databases.get(`${NOSTRDB_PREFIX}${OWNER}66`)
+    const fake = globalThis.indexedDB.dbs.get(`${NOSTRDB_PREFIX}${OWNER}66`)
     const originalTransaction = fake.transaction
     fake.transaction = () => {
       throw new Error('boom')
@@ -1093,7 +1103,7 @@ describe('nostrdb', () => {
     })
     assertNoConsoleIssues()
 
-    const fake = globalThis.indexedDB.databases.get(`${NOSTRDB_PREFIX}${owner}`)
+    const fake = globalThis.indexedDB.dbs.get(`${NOSTRDB_PREFIX}${owner}`)
     const originalTransaction = fake.transaction
     try {
       fake.transaction = () => {
@@ -1136,7 +1146,7 @@ describe('nostrdb', () => {
     const db = getNostrDb(owner)
     assertAddOk(await db.add(event({ id: '1'.repeat(64), created_at: 10 })))
 
-    const fake = globalThis.indexedDB.databases.get(`${NOSTRDB_PREFIX}${owner}`)
+    const fake = globalThis.indexedDB.dbs.get(`${NOSTRDB_PREFIX}${owner}`)
     const originalTransaction = fake.transaction
 
     try {
@@ -3553,7 +3563,7 @@ describe('nostrdb', () => {
 })
 
 function assertAddOk (result, { code, stored, published } = {}) {
-  assert.equal(result.ok, true)
+  assert.equal(result.ok, true, JSON.stringify(result) + ' ' + consoleErrors.flat().map(value => value?.stack ?? '').join(' '))
   if (code !== undefined) assert.equal(result.code, code)
   if (stored !== undefined) assert.equal(result.stored, stored)
   if (published !== undefined) assert.equal(result.published, published)
@@ -3821,7 +3831,7 @@ function delay (ms) {
 }
 
 function fakeStore (owner, name) {
-  return globalThis.indexedDB.databases.get(`${NOSTRDB_PREFIX}${owner}`).stores.get(name)
+  return globalThis.indexedDB.dbs.get(`${NOSTRDB_PREFIX}${owner}`).stores.get(name)
 }
 
 function createNostrDbSchema (db) {
@@ -3870,18 +3880,20 @@ function hexId (value) {
 
 class FakeIndexedDB {
   constructor () {
-    this.databases = new Map()
+    this.dbs = new Map()
   }
+
+  async databases () { return [...this.dbs.values()].map(db => ({ name: db.name, version: db.version })) }
 
   open (name, version) {
     const req = new FakeRequest()
     queueMicrotask(() => {
-      let db = this.databases.get(name)
+      let db = this.dbs.get(name)
       const isNew = !db
 
       if (!db) {
         db = new FakeDB(name, version)
-        this.databases.set(name, db)
+        this.dbs.set(name, db)
       }
 
       req.result = db
@@ -3897,7 +3909,7 @@ class FakeIndexedDB {
   deleteDatabase (name) {
     const req = new FakeRequest()
     queueMicrotask(() => {
-      this.databases.delete(name)
+      this.dbs.delete(name)
       req.onsuccess?.({ target: req })
     })
     return req
@@ -3933,6 +3945,13 @@ class FakeTransaction {
     this.pending = 0
     this.completed = false
     this.completeQueued = false
+    this.listeners = new Map()
+  }
+
+  addEventListener (type, callback) {
+    const listeners = this.listeners.get(type) ?? []
+    listeners.push(callback)
+    this.listeners.set(type, listeners)
   }
 
   objectStore (name) {
@@ -3945,6 +3964,7 @@ class FakeTransaction {
     this.error = error || new Error('transaction aborted')
     this.completed = true
     this.onabort?.()
+    for (const callback of this.listeners.get('abort') ?? []) callback()
   }
 
   startRequest () {
@@ -3968,6 +3988,7 @@ class FakeTransaction {
 
       this.completed = true
       this.oncomplete?.()
+      for (const callback of this.listeners.get('complete') ?? []) callback()
     })
   }
 
@@ -4058,6 +4079,10 @@ class FakeIndex {
     this.store = store
     this.index = index
     this.tx = tx
+  }
+
+  getKey (key) {
+    return request(() => this.entries().find(entry => compareKeys(entry.key, key) === 0)?.primaryKey, this.tx)
   }
 
   get (key) {

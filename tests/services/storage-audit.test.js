@@ -368,7 +368,8 @@ describe('storage audit', () => {
     const state = validState({
       local: {
         session_appById_orphan_name: 'Orphan',
-        custom_unknown_key: 'keep'
+        custom_unknown_key: 'keep',
+        '44billion:nostrdb-quotas:v1': { publicBytes: 123, privateBytes: 456, cacheBytes: 78 }
       }
     })
     const result = auditPersistedState(state.local, state.session)
@@ -376,6 +377,7 @@ describe('storage audit', () => {
     assert.equal(result.ok, false)
     assert.equal(result.plan.local.session_appById_orphan_name, null)
     assert.equal(result.plan.local.custom_unknown_key, undefined)
+    assert.equal(result.plan.local['44billion:nostrdb-quotas:v1'], undefined)
   })
 
   it('skips orphan metadata for app ids that still own a site manifest', () => {
@@ -524,10 +526,12 @@ describe('storage audit', () => {
 
 describe('persona selection membership audit', () => {
   it('removes a non-member selection while preserving the persona and other valid selections', () => {
-    const state = validState({ local: {
-      local_personas: { team: { userPks: ['different'], createdAt: 1, updatedAt: 1 } },
-      local_appPersonaSelections: { ws1: { app1: 'team' } }
-    } })
+    const state = validState({
+      local: {
+        local_personas: { team: { userPks: ['different'], createdAt: 1, updatedAt: 1 } },
+        local_appPersonaSelections: { ws1: { app1: 'team' } }
+      }
+    })
     const before = state.local.getItem('local_appPersonaSelections')
     const result = auditPersistedState(state.local, state.session)
     assert.deepEqual(result.plan.local.local_appPersonaSelections, {})
@@ -535,10 +539,12 @@ describe('persona selection membership audit', () => {
     assert.equal(state.local.getItem('local_appPersonaSelections'), before, 'audit stays pure')
   })
   it('applies the same membership rule to the virtual persona', () => {
-    const state = validState({ local: {
-      session_accountUserPks: ['user', 'real'],
-      local_appPersonaSelections: { ws1: { app1: '__default__' } }
-    } })
+    const state = validState({
+      local: {
+        session_accountUserPks: ['user', 'real'],
+        local_appPersonaSelections: { ws1: { app1: '__default__' } }
+      }
+    })
     assert.deepEqual(auditPersistedState(state.local, state.session).plan.local.local_appPersonaSelections, {})
   })
 })

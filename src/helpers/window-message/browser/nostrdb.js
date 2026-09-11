@@ -42,20 +42,21 @@ function plainOptions (options) {
   return options && typeof options === 'object' && !Array.isArray(options) ? options : {}
 }
 
-export function buildNostrDbReadOptions (options, { appId }) {
+export function buildNostrDbReadOptions (options, { appId, deferCacheAccess }) {
   return {
     ...(options && typeof options === 'object' && !Array.isArray(options) ? options : {}),
-    ...(appId === undefined ? {} : { appId })
+    ...(appId === undefined ? {} : { appId }),
+    ...(deferCacheAccess ? { deferCacheAccess: true } : {})
   }
 }
 
-export function nostrDbReadParamsWithAppId (params = [], { appId } = {}) {
+export function nostrDbReadParamsWithAppId (params = [], { appId, deferCacheAccess } = {}) {
   const args = Array.isArray(params) ? [...params] : []
   if (appId === undefined) return args
 
   return [
     args[0],
-    buildNostrDbReadOptions(args[1], { appId })
+    buildNostrDbReadOptions(args[1], { appId, deferCacheAccess })
   ]
 }
 
@@ -370,7 +371,8 @@ export async function runNostrDbMethod ({
   requestPermission,
   app,
   personalCopyEncrypt,
-  personalCopyObfuscate
+  personalCopyObfuscate,
+  deferCacheAccess = false
 }) {
   if (!NOSTRDB_ONE_SHOT_METHODS.includes(method)) throw new Error(`Unknown nostrdb method ${method}`)
   const args = Array.isArray(params) ? params : []
@@ -418,7 +420,7 @@ export async function runNostrDbMethod ({
       if (explicitPersonalKinds !== null) await requestPersonalKinds(explicitPersonalKinds, permissionContext)
     }
 
-    const payload = await db.query(...nostrDbReadParamsWithAppId(args, { appId }))
+    const payload = await db.query(...nostrDbReadParamsWithAppId(args, { appId, deferCacheAccess }))
     if (explicitKinds !== null && explicitPersonalKinds === null) {
       await requestPermissionsForQueryResult(payload, permissionContext, { explicitKinds })
     }

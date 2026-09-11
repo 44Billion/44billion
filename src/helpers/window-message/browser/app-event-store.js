@@ -133,7 +133,8 @@ export function createAppEventStoreBridge ({
         await authorizer.authorizeBeforeStart()
         if (!active()) return
         scope.assertAvailable()
-        subscription.iterator = db.subscribe(...nostrDbReadParamsWithAppId(params, { appId }))
+        const readParams = nostrDbReadParamsWithAppId(params, { appId, deferCacheAccess: true })
+        subscription.iterator = db.subscribe(...readParams)
         for await (const item of subscription.iterator) {
           if (!active()) return
           scope.assertAvailable()
@@ -141,6 +142,7 @@ export function createAppEventStoreBridge ({
           if (!active()) return
           scope.assertAvailable()
           reply(event, { payload: item, isLast: false })
+          db.recordCacheAccess?.(item, ...readParams)
         }
         if (active()) reply(event, { payload: nostrDbStreamDonePayload(subscriptionId), isLast: true })
         return
@@ -157,10 +159,13 @@ export function createAppEventStoreBridge ({
       }
       const result = await runNostrDbMethod({
         db, method, params, appId, signEvent, requestPermission: scope.permission,
-        app, personalCopyEncrypt, personalCopyObfuscate
+        app, personalCopyEncrypt, personalCopyObfuscate, deferCacheAccess: true
       })
       scope.assertAvailable()
-      if (active()) reply(event, { payload: result })
+      if (active()) {
+        reply(event, { payload: result })
+        if (method === 'query') db.recordCacheAccess?.(result, ...nostrDbReadParamsWithAppId(params, { appId }))
+      }
     } catch (error) {
       if (active()) reply(event, { error, ...(method === 'subscribe' ? { isLast: true } : {}) })
     } finally {

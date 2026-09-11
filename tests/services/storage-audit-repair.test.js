@@ -72,6 +72,7 @@ describe('storage repair plan', () => {
   it('applies local/session writes and the explicit cleanup actions', async () => {
     const ownerPubkey = 'ab'.repeat(32)
     const local = storageMock({
+      '44billion:nostrdb-quotas:v1': JSON.stringify({ cacheBytes: 1024 }),
       session_to_remove: JSON.stringify({ broken: true }),
       session_accountByUserPk_user_isReadOnly: JSON.stringify(true),
       session_accountByUserPk_user_isLocked: JSON.stringify(false),
@@ -99,6 +100,7 @@ describe('storage repair plan', () => {
     }, { localStorageArea: local, sessionStorageArea: session })
 
     assert.equal(local.getItem('session_to_remove'), null)
+    assert.deepEqual(JSON.parse(local.getItem('44billion:nostrdb-quotas:v1')), { cacheBytes: 1024 })
     assert.equal(local.getItem('session_accountByUserPk_user_profile'), null)
     assert.equal(session.getItem('session_appByKey_key_visibility'), null)
     assert.equal(local.getItem('session_workspaceByKey_ws_userPk'), null)
