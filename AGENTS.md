@@ -163,8 +163,12 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
 ## Account event ingestion
 
 - `useTrackAccountEvents` owns the account feeds and aborts them on account
-  removal or root unmount. Track history and live events without a kind filter
-  on seed relays and known/discovered write relays, including relay-list updates.
+  removal or root unmount. Seeds track only kind 10002. Current write relays track
+  history and live events without a kind filter. Reconcile write membership on
+  newer relay lists, retaining unchanged feeds and using `stopAndDrain()` for
+  removed feeds so accepted events finish processing. A relay that is also a
+  seed retains its independent discovery feed. Account abort discards pending
+  delivery, including draining feeds. This requires the companion libp2r2p API.
 - Store account events in the owner's existing NostrDB. Exclude NIP-78 kinds
   78/30078 (apps must claim them directly) and ephemeral events, including the
   library's tag-defined ephemeral classification. Only kinds 0 and 10002 are

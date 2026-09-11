@@ -79,7 +79,11 @@ use the publishing workflow to check those paths.
 
 
 Account event tracking continuously imports public events authored by available
-accounts from seed and discovered write relays into each owner's event store.
+accounts from their current write relays into each owner's event store. Seed
+relays are queried only for relay lists (10002). A newer relay list starts feeds
+on added write relays and stops removed ones, draining events already accepted
+before removal. A removed relay that is also a seed keeps only its relay-list
+discovery feed. Account removal or root unmount cancels pending delivery.
 NIP-78 app data (78/30078) and ephemeral events are excluded; apps must ingest
 app data themselves. Only profiles (0) and relay lists (10002) additionally go
 to the vault's account-metadata channel. Apps can treat the store as the local

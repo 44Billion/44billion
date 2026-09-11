@@ -168,9 +168,12 @@ event permissions. This creates no new storage keys or stores and does not merge
 owners' databases. Document subscriptions are in memory, are cancelled on unload,
 and lose access when their target leaves the active persona.
 
-Account tracking imports the owner's public relay events into this existing
-store, excluding NIP-78 app data and ephemeral events. Only kinds 0/10002 also
-update vault account metadata. No additional cursor or storage schema is used.
+Account tracking imports the owner's public events from current write relays
+into this existing store, excluding NIP-78 app data and ephemeral events. Seeds
+provide only relay lists (10002). Removed write feeds drain already accepted
+events, then end; their pending delivery is cancelled on account removal or root
+unmount. Only kinds 0/10002 also update vault account metadata. Relay membership
+and draining feeds are in memory; no additional cursor or storage schema is used.
 
 - `events` — Nostr events with app/owner references.
 - `deletions` — deletion tombstones.

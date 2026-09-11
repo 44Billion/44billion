@@ -16,29 +16,41 @@ function writeRelays (event) {
   })
 }
 
-// Each discovered write relay gets a historical and live feed. Relay-list
-// updates expand coverage without interrupting the existing feeds.
+// Seeds discover relay lists; only current write relays ingest other kinds.
+// Removed write feeds stop receiving but finish processing accepted events.
 export function trackAccountEvents ({ pubkey, signal, pool, seeds, db, getStoredEvent, sendToVault, reportError = console.error }) {
-  const started = new Set()
+  const writes = new Map()
   let relayList = getStoredEvent(10002)
   const latest = new Map([0, 10002].map(kind => [kind, getStoredEvent(kind)]))
-  function start (relays) {
+  function start (relay, discovery = false) {
+    if (signal.aborted) return
+    const entry = { relay, discovery, retired: new AbortController(), stream: null }
+    if (!discovery) writes.set(relay, entry)
+    maintain(entry).catch(error => { if (!signal.aborted) reportError(error) })
+  }
+  function reconcile (event) {
+    const relays = new Set(writeRelays(event))
+    for (const [relay, entry] of writes) {
+      if (relays.has(relay)) continue
+      writes.delete(relay)
+      entry.retired.abort()
+      entry.stream?.stopAndDrain()
+    }
     for (const relay of relays) {
-      if (signal.aborted || started.has(relay)) continue
-      started.add(relay)
-      maintain(relay).catch(error => { if (!signal.aborted) reportError(error) })
+      if (!writes.has(relay)) start(relay)
     }
   }
-  async function maintain (relay) {
+  async function maintain (entry) {
+    const stopped = AbortSignal.any([signal, entry.retired.signal])
     let delay = 1000
-    while (!signal.aborted) {
-      try { await run(relay) } catch (error) { if (!signal.aborted) reportError(error) }
-      if (signal.aborted) return
+    while (!stopped.aborted) {
+      try { await run(entry) } catch (error) { if (!signal.aborted) reportError(error) }
+      if (stopped.aborted) return
       await new Promise(resolve => {
-        const finish = () => { clearTimeout(timer); signal.removeEventListener('abort', finish); resolve() }
+        const finish = () => { clearTimeout(timer); stopped.removeEventListener('abort', finish); resolve() }
         const timer = setTimeout(finish, delay)
         timer.unref?.()
-        signal.addEventListener('abort', finish, { once: true })
+        stopped.addEventListener('abort', finish, { once: true })
       })
       delay = Math.min(delay * 2, 30000)
     }
@@ -49,22 +61,30 @@ export function trackAccountEvents ({ pubkey, signal, pool, seeds, db, getStored
       if (!result.ok) reportError(new Error(`Account event storage failed: ${result.code}`))
     } catch (error) { if (!signal.aborted) reportError(error) }
   }
-  async function run (relay) {
-    for await (const event of pool.getEventsFeedGenerator({ authors: [pubkey] }, [relay], { signal })) {
-      if (signal.aborted) break
-      if (event.pubkey !== pubkey || !shouldStoreAccountEvent(event)) continue
-      if (event.kind === 0 || event.kind === 10002) {
-        const previous = latest.get(event.kind)
-        if (!previous || event.created_at > previous.created_at || (event.created_at === previous.created_at && event.id < previous.id)) {
-          latest.set(event.kind, event)
-          sendToVault(event)
+  async function run (entry) {
+    const filter = { authors: [pubkey], ...(entry.discovery ? { kinds: [10002] } : {}) }
+    const stream = pool.getEventsFeedGenerator(filter, [entry.relay], { signal })
+    entry.stream = stream
+    try {
+      for await (const event of stream) {
+        if (signal.aborted) break
+        if (entry.discovery && event.kind !== 10002) continue
+        if (event.pubkey !== pubkey || !shouldStoreAccountEvent(event)) continue
+        if (event.kind === 0 || event.kind === 10002) {
+          const previous = latest.get(event.kind)
+          if (!previous || event.created_at > previous.created_at || (event.created_at === previous.created_at && event.id < previous.id)) {
+            latest.set(event.kind, event)
+            sendToVault(event)
+          }
         }
+        if (event.kind === 10002 && (!relayList || event.created_at > relayList.created_at || (event.created_at === relayList.created_at && event.id < relayList.id))) {
+          relayList = event
+          reconcile(event)
+        }
+        await persist(event)
       }
-      if (event.kind === 10002 && (!relayList || event.created_at > relayList.created_at || (event.created_at === relayList.created_at && event.id < relayList.id))) {
-        relayList = event
-        start(writeRelays(event))
-      }
-      await persist(event)
+    } finally {
+      entry.stream = null
     }
   }
   // Vault account metadata is already signed and can seed the local store
@@ -72,5 +92,6 @@ export function trackAccountEvents ({ pubkey, signal, pool, seeds, db, getStored
   for (const event of latest.values()) {
     if (event?.pubkey === pubkey && !signal.aborted) persist(event)
   }
-  start([...seeds, ...writeRelays(relayList)])
+  for (const relay of new Set(seeds)) start(relay, true)
+  reconcile(relayList)
 }
