@@ -13,7 +13,7 @@ it('validates MiB drafts and preserves unedited byte limits', () => {
   assert.deepEqual(draftOverrides({ ...quotaDraft(limits), cacheBytes: '64.5' }, { cacheBytes: true }), { cacheBytes: 67633152 })
 })
 it('avoids double counting in the donut and handles exceeded and zero bars', () => {
-  assert.deepEqual(usageSegments({ publicBytes: 100, cacheBytes: 40, privateBytes: 200 }), [60, 40, 200])
+  assert.deepEqual(usageSegments({ publicBytes: 100, cacheBytes: 40, privateBytes: 200 }), [100, 40, 200])
   assert.equal(occupancy(20, 10), 100)
   assert.equal(occupancy(20, 0), 100)
   assert.equal(occupancy(0, 0), 0)

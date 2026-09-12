@@ -16,7 +16,7 @@ export function draftOverrides (draft, dirty) {
 }
 
 export function usageSegments (usage) {
-  return [Math.max(0, usage.publicBytes - usage.cacheBytes), usage.cacheBytes, usage.privateBytes]
+  return [usage.publicBytes, usage.cacheBytes, usage.privateBytes]
 }
 
 export function occupancy (used, limit) {

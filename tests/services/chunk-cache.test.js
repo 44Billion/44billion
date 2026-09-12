@@ -464,3 +464,40 @@ describe('normalized global chunk cache', () => {
     assert.equal(after.unreferencedBytes, before.unreferencedBytes)
   })
 })
+
+it('reconciles chunk protection after a cached blob referrer cannot be promoted', async t => {
+  const { getNostrDbQuotaUsage, setNostrDbQuotaLimits } = await import('#services/idb/nostrdb/quotas.js')
+  const priorStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  const settings = new Map()
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true, value: {
+      getItem: key => settings.get(key) ?? null,
+      setItem: (key, value) => settings.set(key, value)
+    }
+  })
+  t.after(() => {
+    if (priorStorage) Object.defineProperty(globalThis, 'localStorage', priorStorage)
+    else delete globalThis.localStorage
+  })
+  const fixture = await chunkFixture(151)
+  const ownerA = ownerSigner(40)
+  const ownerB = ownerSigner(41)
+  const db = getNostrDb(ownerA.pubkey, { maintenance: false })
+  const other = getNostrDb(ownerB.pubkey, { maintenance: false })
+  const added = await db.add(fixture.event, { signEvent: ownerA.signEvent })
+  await other.add(fixture.event, { signEvent: ownerB.signEvent })
+  const cached = finalizeEvent({ kind: 1, created_at: 500, tags: [['r', fixture.root]], content: '' }, foreignSecret)
+  assert.equal((await db.add(cached)).stored, true)
+  await db.maintainChunks()
+  const before = await getChunkState()
+  const ref = await ownerA.signEvent({ kind: 1, created_at: 501, tags: [['e', cached.id]], content: '' })
+  const usage = await getNostrDbQuotaUsage()
+  await setNostrDbQuotaLimits({ publicBytes: usage.publicBytes + new TextEncoder().encode(JSON.stringify(ref)).length })
+  assert.equal((await db.add(ref)).stored, true)
+  assert.equal(await db.count({ ids: [cached.id] }), 0)
+  await waitFor(async () => (await getChunkState()).unreferencedBytes === before.unreferencedBytes + 4)
+  const copy = await getOwnerChunkCopy(ownerB.pubkey, fixture.root, 0)
+  assert.ok(copy)
+  assert.ok(await getChunkPayload(copy.contentHash, { touch: false }))
+  assert.ok(await getChunkPayloadForEvent(ownerA.pubkey, added.storedEvent.id))
+})

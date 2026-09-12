@@ -94,7 +94,7 @@ try {
   await browser.until(() => evaluate('!document.body.innerText.includes("No events stored")'), 'seeded usage')
   const arcs = await evaluate('[...document.querySelectorAll("event-storage circle[stroke-dasharray]")].map(el=>Number(el.getAttribute("stroke-dasharray").split(" ")[0]))')
   assert.ok(Math.abs(arcs.reduce((a, b) => a + b, 0) - 100) < 0.000001)
-  assert.ok(Math.abs(arcs[1] - usage.cacheBytes / (usage.publicBytes + usage.privateBytes) * 100) < 0.000001)
+  assert.ok(Math.abs(arcs[1] - usage.cacheBytes / (usage.publicBytes + usage.cacheBytes + usage.privateBytes) * 100) < 0.000001)
 
   // Actual same-origin storage event from another tab preserves a dirty field.
   await input('publicBytes', '123')

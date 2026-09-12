@@ -11,9 +11,9 @@ import { MIB, quotaFields, parseQuotaMiB, quotaDraft, draftOverrides, usageSegme
 import { eventStorageLocales } from './locales.js'
 
 const t = getT(eventStorageLocales)
-const titles = ['Public events', 'Public event cache', 'Personal copies']
+const titles = ['Public events outside cache', 'Public event cache', 'Personal copies']
 const descriptions = [
-  'Own events and events from other authors, including cache.',
+  'Own events and events preserved by your references. Cache is counted separately.',
   'Unreferenced events from other authors. Least recently used events are removed first.',
   'All personal copies share this limit, across authors and contexts.'
 ]
@@ -129,7 +129,7 @@ f('event-storage', ({ h, s }) => {
     })
   })
   const usage = state.usage$()
-  const total = usage ? usage.publicBytes + usage.privateBytes : 0
+  const total = usage ? usage.publicBytes + usage.cacheBytes + usage.privateBytes : 0
   const segments = usage ? usageSegments(usage) : [0, 0, 0]
   let offset = 0
   const limits = state.limits$()
@@ -206,7 +206,6 @@ f('event-storage', ({ h, s }) => {
         return h({ key })`<section class="card" aria-labelledby=${`${key}-title`}>
           <h2 id=${`${key}-title`}>${t(titles[i])}</h2>
           <p>${t(descriptions[i])}</p>
-          ${isCache ? h`<p><strong>${t('Included in public event usage.')}</strong></p>` : ''}
           <div class="usage"><strong>${usage ? `${bytes(used)} / ${bytes(limits[key])}` : t('Calculating…')}</strong><span>${usage ? number(usage[countKey]) : '—'}${isCache ? ` / ${number(limits.cacheCount)}` : ''} ${t('events')}</span></div>
           <div class="track" role="progressbar" aria-label=${t(titles[i])} aria-valuemin="0" aria-valuemax="100" aria-valuenow=${occupancy(used, limits[key])} aria-valuetext=${usage ? `${bytes(used)} / ${bytes(limits[key])}` : t('Calculating…')}><div class="fill" style=${`width: ${occupancy(used, limits[key])}%; background: ${colors[i]}`}></div></div>
           ${over ? h`<p class="notice">${t('Above limit')}: ${t(isCache ? 'Automatic cache cleanup is scheduled.' : 'Events are kept. Growth is blocked while above the limit.')}</p>` : ''}

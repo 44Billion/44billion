@@ -166,12 +166,13 @@ by all owner databases, including databases whose account is disconnected:
 
 | Category | Default | On excess |
 | --- | --- | --- |
-| Public: own and third-party events | 512 MiB | Refuse growth |
+| Public outside cache: own and owner-referenced third-party events | 512 MiB | Refuse growth |
 | Private: all personal-copy wrappers | 1 GiB | Refuse growth |
 | Cache: unreferenced third-party public events | 128 MiB and 50,000 events | Evict by approximate LRU |
 
-Cache also consumes public bytes. Exceeding only the public limit never triggers
-cache eviction. Bytes are exactly UTF-8 `JSON.stringify(stored.event)`, excluding
+The three categories are exclusive, for both bytes and event counts. Cache does
+not consume public quota, and removing cache does not free public capacity.
+Bytes are exactly UTF-8 `JSON.stringify(stored.event)`, excluding
 internal metadata, indices and external chunk payloads. The count is a logical
 budget, not IndexedDB disk usage. Kind 34601 is counted without its externalized
 `content`. Every personal-copy context/inner author shares the private budget;
@@ -196,6 +197,29 @@ for other cleanup routines. Removing references may increase cache usage without
 allocating storage; removal commits and background maintenance trims the excess.
 
 ### Admission and coordination
+
+When owner references newly protect existing cache, reserve room for the referrer
+and other mandatory transaction changes first. Reconcile against the final set of
+stored owner references, deduplicating targets by stored ID. Public promotion room
+is `max(publicLimit, previousGlobalPublicBytes) - projectedGlobalPublicBytes`, with
+the projection excluding these promotions but including demotions/replacements.
+A negative budget rejects the entire operation with public `quota`.
+
+Promote candidates in descending persisted `lastAccessAt` order, breaking ties by
+stored ID (IndexedDB ordering). Skip and locally delete candidates that do not fit,
+continuing to smaller candidates later in that order. Only pre-existing cache is
+eligible: already preserved events and newly admitted/replaced records are not
+sacrificed. Look up affected IDs/addresses and access records through existing
+keys/indexes; retain only candidate metadata while sorting, never scan global LRU
+for promotion selection. Ordinary global cache eviction keeps its existing bounds.
+
+The referrer and all promotion/discard operations commit atomically, using the
+common deletion path (including removal of old kind 5 contributions and post-commit
+chunk/blob reconciliation). Aborts roll everything back; discards create no new
+tombstones. References to discarded targets remain stored. A later arrival still
+referenced must fit public quota; it cannot fall back to cache. Losing the last
+reference transfers usage from public to cache without blocking removals, even
+when cache exceeds its limit; maintenance trims that excess later.
 
 Under the global quota lock, enumerate all NostrDBs and sum their small persisted
 `maintenance.quotaUsage` records. There is no separately persisted global total.
@@ -256,8 +280,8 @@ Reducing public/private limits blocks growth only; reducing cache schedules
 trimming. Configuration and global usage remain launcher-only.
 The screen preserves drafts until Save, updates usage every five seconds while
 visible and on focus, and observes configuration changes across tabs without
-overwriting dirty fields. Its donut shows public minus cache, cache, and private
-bytes; the center totals public plus private, avoiding double counting.
+overwriting dirty fields. Its donut shows public outside cache, cache, and private
+bytes directly; the center sums all three exclusive categories.
 Storage audit preserves the global configuration; repair uses the ordinary app
 cleanup and owner removal paths, maintaining usage and deleting all owner-local
 auxiliary stores along with the database.

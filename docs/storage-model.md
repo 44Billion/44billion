@@ -200,7 +200,8 @@ and draining feeds are in memory; no additional cursor or storage schema is used
 
 Schema 3 also adds `maintenance.quotaUsage`: `{ key: 'quotaUsage', version: 1,
 phase, after, publicBytes, publicCount, privateBytes, privateCount, cacheBytes,
-cacheCount }`. `phase` is `records`, `classify` or `ready`; `after` checkpoints the
+cacheCount }`. Public, private and cache bytes/counts are mutually exclusive:
+`publicBytes`/`publicCount` exclude cache. `phase` is `records`, `classify` or `ready`; `after` checkpoints the
 last primary key, or is null at each pass boundary. Two resumable passes of up
 to 1,000 rows backfill sizes/references and then classification/totals. All event
 mutations atomically maintain these local totals; a global Web Lock coordinates
@@ -384,3 +385,15 @@ removes old tombstone contributions without creating new ones; external chunk
 cleanup/reconciliation remains post-commit. Audit/repair preserve the registered
 global configuration key; app cleanup and owner DB deletion still use existing
 quota-aware paths, including removal of the owner's auxiliary stores.
+
+Owner-reference changes transfer bytes and counts between public and cache.
+Admission reserves the net usage of the referrer and other mandatory changes
+before promoting existing cache by descending persisted last access (stored-ID
+tie-break). Candidates that cannot fit are deleted atomically with the referrer,
+using ordinary event-deletion accounting and post-commit payload hooks. Public
+room is `max(limit, prior global usage) - projected global usage`, excluding
+optional promotions. Cache demotions may exceed its limits and schedule cleanup.
+No stores, indices, settings fields or schema-version changes are introduced;
+previous overlapping summaries are not migrated and existing DBs are not reset
+automatically. Audit/repair continue preserving the global settings and using
+ordinary quota-aware cleanup paths.

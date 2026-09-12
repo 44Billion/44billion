@@ -140,8 +140,7 @@ export async function isOwnerReferenced (db, tx, row) {
   return await request(index.getKey(ref)) !== undefined
 }
 
-function changeEventTotals (usage, row, sign) {
-  const category = isPersonalCopyEvent(row.event) ? 'private' : 'public'
+function changeEventTotals (usage, row, sign, category = isPersonalCopyEvent(row.event) ? 'private' : 'public') {
   usage[`${category}Bytes`] += sign * row.eventBytes
   usage[`${category}Count`] += sign
 }
@@ -151,8 +150,8 @@ async function setCacheClassification (db, tx, row, usage, { initial = false } =
   const access = await request(store.get(row.i))
   const cached = foreignPublic(db, row) && !await isOwnerReferenced(db, tx, row)
   if (cached === !!access) return
-  usage.cacheCount += cached ? 1 : -1
-  usage.cacheBytes += (cached ? 1 : -1) * row.eventBytes
+  changeEventTotals(usage, row, cached ? -1 : 1, 'public')
+  changeEventTotals(usage, row, cached ? 1 : -1, 'cache')
   if (cached) {
     await request(store.put({ i: row.i, lastAccessAt: initial && Number.isFinite(row.ra) ? row.ra : Date.now() }))
   } else {
@@ -244,11 +243,10 @@ export function getNostrDbQuotaUsage () {
 export async function accountDeletedEvent (db, tx, row) {
   const ctx = contexts.get(tx)
   if (!ctx) throw new Error('Event deletion requires a quota transaction')
-  changeEventTotals(ctx.usage, row, -1)
   const store = tx.objectStore(CACHE)
-  if (await request(store.get(row.i))) {
-    ctx.usage.cacheBytes -= row.eventBytes
-    ctx.usage.cacheCount--
+  const cached = await request(store.get(row.i))
+  changeEventTotals(ctx.usage, row, -1, cached ? 'cache' : undefined)
+  if (cached) {
     await request(store.delete(row.i))
   }
   for (const ref of row.ownerRefs ?? []) ctx.refs.add(ref)
@@ -267,8 +265,10 @@ export async function putQuotaEvent (db, tx, row) {
   ctx.excluded.add(row.i)
 }
 
-async function reconcileChangedReferences (db, tx, ctx) {
+async function reconcileChangedReferences (db, tx, ctx, admission, before) {
   const store = tx.objectStore(EVENTS_STORE)
+  const seen = new Set()
+  const promotions = []
   for (const ref of ctx.refs) {
     let row
     if (ref.startsWith('e:')) row = await request(store.get(ref.slice(2)))
@@ -276,7 +276,34 @@ async function reconcileChangedReferences (db, tx, ctx) {
       const [, kind, pubkey, d] = ref.split(':')
       row = await request(store.index(INDEX.address).get([Number(kind), pubkey, d]))
     }
-    if (row && foreignPublic(db, row)) await setCacheClassification(db, tx, row, ctx.usage)
+    if (!row || seen.has(row.i) || !foreignPublic(db, row)) continue
+    seen.add(row.i)
+    const access = await request(tx.objectStore(CACHE).get(row.i))
+    if (admission && access && !ctx.excluded.has(row.i) && await isOwnerReferenced(db, tx, row)) {
+      // Only pre-existing cache may be sacrificed. Newly admitted/replaced rows
+      // must fit normally, and referrers are reserved before any promotion.
+      promotions.push({ i: row.i, eventBytes: row.eventBytes, lastAccessAt: access.lastAccessAt })
+      ctx.excluded.add(row.i)
+    } else {
+      await setCacheClassification(db, tx, row, ctx.usage)
+    }
+  }
+  if (!admission) return
+  const { totals, limits } = admission
+  const projected = totals.publicBytes + ctx.usage.publicBytes - before.publicBytes
+  let budget = Math.max(limits.publicBytes, totals.publicBytes) - projected
+  if (budget < 0) throw new NostrDbQuotaError('public')
+  promotions.sort((a, b) => b.lastAccessAt - a.lastAccessAt || indexedDB.cmp(a.i, b.i))
+  for (const candidate of promotions) {
+    // Retain only metadata while ranking; fetch one payload at a time in this
+    // same transaction. Other writers cannot change its version or protection.
+    const row = await request(store.get(candidate.i))
+    if (candidate.eventBytes <= budget) {
+      budget -= candidate.eventBytes
+      await setCacheClassification(db, tx, row, ctx.usage)
+    } else {
+      await deleteStoredEvent(db, tx, row)
+    }
   }
 }
 
@@ -291,7 +318,7 @@ async function mutate (db, callback, admission) {
     const ctx = { usage, refs: new Set(), excluded: new Set(), admitsCache: false }
     contexts.set(tx, ctx)
     const result = await callback(tx)
-    await reconcileChangedReferences(db, tx, ctx)
+    await reconcileChangedReferences(db, tx, ctx, admission, before)
     if (admission) {
       const delta = emptyTotals()
       for (const key of Object.keys(delta)) delta[key] = usage[key] - before[key]

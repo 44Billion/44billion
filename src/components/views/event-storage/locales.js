@@ -12,26 +12,13 @@ export const eventStorageLocales = {
     ja: 'イベントストレージ',
     ko: '이벤트 저장소'
   },
-  'Public events': {
-    en: 'Public events',
-    fr: 'Événements publics',
-    it: 'Eventi pubblici',
-    de: 'Öffentliche Ereignisse',
-    es: 'Eventos públicos',
-    'pt-BR': 'Eventos públicos',
-    ru: 'Публичные события',
-    'zh-CN': '公开事件',
-    'zh-TW': '公開事件',
-    ja: '公開イベント',
-    ko: '공개 이벤트'
-  },
   'Public events outside cache': {
     en: 'Public events outside cache',
     fr: 'Événements publics hors cache',
     it: 'Eventi pubblici fuori cache',
     de: 'Öffentliche Ereignisse ohne Cache',
     es: 'Eventos públicos fuera de caché',
-    'pt-BR': 'Públicos fora do cache',
+    'pt-BR': 'Eventos públicos fora do cache',
     ru: 'Публичные события вне кэша',
     'zh-CN': '缓存外的公开事件',
     'zh-TW': '快取外的公開事件',
@@ -129,31 +116,18 @@ export const eventStorageLocales = {
     ja: '件',
     ko: '개 이벤트'
   },
-  'Included in public event usage.': {
-    en: 'Included in public event usage.',
-    fr: 'Inclus dans le stockage des événements publics.',
-    it: 'Inclusa nello spazio degli eventi pubblici.',
-    de: 'Im Speicher öffentlicher Ereignisse enthalten.',
-    es: 'Incluida en el uso de eventos públicos.',
-    'pt-BR': 'Incluído no uso de eventos públicos.',
-    ru: 'Входит в объём публичных событий.',
-    'zh-CN': '计入公开事件使用量。',
-    'zh-TW': '計入公開事件使用量。',
-    ja: '公開イベントの使用量に含まれます。',
-    ko: '공개 이벤트 사용량에 포함됩니다.'
-  },
-  'Own events and events from other authors, including cache.': {
-    en: 'Own events and events from other authors, including cache.',
-    fr: 'Vos événements et ceux des autres auteurs, cache compris.',
-    it: 'Eventi propri e di altri autori, inclusa la cache.',
-    de: 'Eigene und fremde Ereignisse, einschließlich Cache.',
-    es: 'Eventos propios y de otros autores, incluida la caché.',
-    'pt-BR': 'Eventos próprios e de outros autores, incluindo cache.',
-    ru: 'Свои и чужие события, включая кэш.',
-    'zh-CN': '自己和其他作者的事件，包括缓存。',
-    'zh-TW': '自己和其他作者的事件，包含快取。',
-    ja: '自分と他の作成者のイベント（キャッシュを含む）。',
-    ko: '캐시를 포함한 본인 및 다른 작성자의 이벤트.'
+  'Own events and events preserved by your references. Cache is counted separately.': {
+    en: 'Own events and events preserved by your references. Cache is counted separately.',
+    fr: 'Vos événements et ceux conservés grâce à vos références. Le cache est compté séparément.',
+    it: 'Eventi propri ed eventi conservati tramite i tuoi riferimenti. La cache è conteggiata separatamente.',
+    de: 'Eigene Ereignisse und durch Ihre Verweise erhaltene Ereignisse. Der Cache wird separat gezählt.',
+    es: 'Eventos propios y eventos conservados por tus referencias. La caché se cuenta por separado.',
+    'pt-BR': 'Eventos próprios e eventos preservados pelas suas referências. O cache é contabilizado separadamente.',
+    ru: 'Свои события и события, сохранённые благодаря вашим ссылкам. Кэш учитывается отдельно.',
+    'zh-CN': '自己的事件和通过您的引用保留的事件。缓存单独计算。',
+    'zh-TW': '自己的事件和透過您的引用保留的事件。快取單獨計算。',
+    ja: '自分のイベントと参照によって保持されたイベント。キャッシュは別に計上します。',
+    ko: '본인 이벤트와 참조로 보존된 이벤트입니다. 캐시는 별도로 계산됩니다.'
   },
   'Unreferenced events from other authors. Least recently used events are removed first.': {
     en: 'Unreferenced events from other authors. Least recently used events are removed first.',

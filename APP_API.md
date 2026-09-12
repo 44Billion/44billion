@@ -168,15 +168,26 @@ directly. Storage admission failures have result `{ ok: false, code: 'quota', me
 stored: false, published: false, quotaCategory }`, where `quotaCategory` is
 `public`, `private`, or `cache` for event quotas. Existing chunk-payload quota
 failures may omit the category. Limits are shared across launcher accounts:
-512 MiB public, 1 GiB personal copies, and 128 MiB / 50,000 cache events by default.
+512 MiB public outside cache, 1 GiB personal copies, and 128 MiB / 50,000 cache
+events by default. These categories are exclusive for both bytes and counts.
 Users can increase or decrease the three byte limits in Settings → Advanced →
 Event storage. The cache event ceiling scales with its bytes:
 `floor(cacheBytes × 50,000 / 134,217,728)` (64 MiB → 25,000; zero → zero).
 Public/private reductions preserve existing events and block growth while over
 quota; cache reductions schedule automatic LRU cleanup.
-Cache counts toward public usage; a public limit alone does not trigger eviction.
+Cache does not consume public quota; removing cache does not free public capacity.
 Personal-copy contexts and inner authors share the private limit. Limits count
 UTF-8 JSON event bytes; external chunk payloads retain their separate policy.
+When a new owner reference protects existing cache, persistence of the referrer
+has priority. After reserving its net quota usage, the store promotes the targets
+that fit public quota, preferring the most recently accessed, and locally deletes
+those that do not fit. This affects only previously cached targets, never already
+preserved records. All changes share the admission transaction: if the referrer
+itself cannot fit or the transaction aborts, no promotion/discard is committed.
+No new tombstone is created. Its references remain intact; later arrivals of
+referenced targets must fit public quota rather than falling back to cache.
+The existing add result format is unchanged; success may include these discards.
+
 Owner references can preserve third-party public events; other third-party events
 are disposable cache and may be evicted by approximate LRU. Expiration, explicit
 deletion and newer coordinate replacement still apply to preserved events.

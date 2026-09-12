@@ -15,6 +15,13 @@ const bundle = await build({
     import { getPublicKey } from 'libp2r2p/key';
     globalThis.fixture = {
       ...quotas, deleteNostrDb, openNostrDb,
+      async preparePromotion(seed) {
+        await this.setup(seed);
+        this.target = finalizeEvent({kind:1,created_at:124,tags:[],content:'x'.repeat(3000)}, new Uint8Array(32).fill(3));
+        await this.db.add(this.target);
+        this.ref = finalizeEvent({kind:1,created_at:125,tags:[['q',this.target.id]],content:''}, new Uint8Array(32).fill(seed));
+        return {refBytes:new TextEncoder().encode(JSON.stringify(this.ref)).length,targetBytes:new TextEncoder().encode(JSON.stringify(this.target)).length};
+      },
       async setup(seed) {
         const secret = new Uint8Array(32).fill(seed);
         this.owner = getPublicKey(secret);
@@ -93,7 +100,22 @@ try {
   await evaluate(contexts[1], `fixture.openNostrDb('${winner}').then(() => true)`)
   assert.equal(await evaluate(contexts[0], `fixture.deleteNostrDb('${winner}')`), true)
   assert.equal((await evaluate(contexts[1], 'fixture.getNostrDbQuotaUsage()')).publicBytes, 0)
-  console.log('NostrDB quotas: concurrent tabs, reload and cross-tab owner removal passed')
+  const promotions = await Promise.all(contexts.map((c, i) => evaluate(c, `fixture.preparePromotion(${30 + i})`)))
+  const promotionBudget = promotions[0].refBytes + promotions[1].refBytes + promotions[0].targetBytes
+  await evaluate(contexts[0], `fixture.setNostrDbQuotaLimits({publicBytes:${promotionBudget}})`)
+  await evaluate(contexts[0], 'void navigator.locks.request(fixture.QUOTA_LOCK, () => new Promise(resolve => { globalThis.releasePromotionLock = resolve }))')
+  await browser.until(() => evaluate(contexts[0], '!!globalThis.releasePromotionLock'), 'promotion barrier')
+  const pendingPromotions = contexts.map(c => evaluate(c, 'fixture.db.add(fixture.ref)'))
+  await browser.until(() => evaluate(contexts[0], 'navigator.locks.query().then(state => state.pending.filter(lock => lock.name === fixture.QUOTA_LOCK).length >= 2)'), 'concurrent referrers')
+  await evaluate(contexts[0], 'releasePromotionLock()')
+  assert.ok((await Promise.all(pendingPromotions)).every(r => r.stored))
+  const promotedUsage = await evaluate(contexts[0], 'fixture.getNostrDbQuotaUsage()')
+  assert.equal(promotedUsage.publicBytes, promotionBudget)
+  assert.equal(promotedUsage.publicCount, 3)
+  assert.equal(promotedUsage.cacheCount, 0)
+  const targetCounts = await Promise.all(contexts.map(c => evaluate(c, 'fixture.db.count({ids:[fixture.target.id]})')))
+  assert.equal(targetCounts.reduce((sum, n) => sum + n, 0), 1)
+  console.log('NostrDB quotas: concurrent admissions/promotions, exclusive totals, reload and cross-tab owner removal passed')
 } finally {
   await browser.diagnose('/tmp/44billion-nostrdb-quota-browser')
   await browser.close()
