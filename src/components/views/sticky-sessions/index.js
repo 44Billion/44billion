@@ -156,7 +156,6 @@ f('sticky-sessions', function () {
           align-items: center;
           padding: 0 10px;
           flex-shrink: 0;
-          border-bottom: 1px solid ${cssVars.colors.bg2};
         }
         .title {
           flex-grow: 1;

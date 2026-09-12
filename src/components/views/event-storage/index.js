@@ -2,6 +2,9 @@ import { f, useStore, useTask } from '#f'
 import { cssVars, jsVars } from '#assets/styles/theme.js'
 import { getT, getEffectiveLocale } from '#i18n/index.js'
 import '#shared/back-btn.js'
+import '#shared/icons/icon-database.js'
+import '#shared/icons/icon-server-bolt.js'
+import '#shared/icons/icon-shield-lock.js'
 import { NOSTRDB_QUOTA_SETTINGS_KEY } from '#constants/storage-schema.js'
 import {
   DEFAULT_NOSTRDB_QUOTAS, cacheEventLimit, getNostrDbQuotaLimits,
@@ -141,14 +144,15 @@ f('event-storage', ({ h, s }) => {
         display: flex !important; flex-direction: column; flex-grow: 1;
         width: 100%; max-width: 900px; height: 100%; min-height: 0;
         background: ${cssVars.colors.bg}; color: ${cssVars.colors.fg};
-        .header { height: 55px; flex-shrink: 0; display: flex; align-items: center; padding: 0 10px; border-bottom: 1px solid ${cssVars.colors.bg2}; }
-        h1 { margin-left: 10px; font-size: 18rem; font-weight: 500; }
-        h2 { font-size: 16rem; font-weight: 600; margin: 0; }
+        .header { height: 55px; flex-shrink: 0; display: flex; align-items: center; padding: 0 10px; }
+        .title { flex-grow: 1; font-weight: 500; font-size: 18rem; margin-left: 10px; }
+        h2 { display: flex; align-items: center; gap: 10px; font-size: 16rem; font-weight: 600; margin: 0; }
+        .category-icon { display: flex; width: 22px; height: 22px; flex-shrink: 0; }
         .content { padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
         .card { background: ${cssVars.colors.bg2}; border-radius: 8px; padding: 18px; }
         .summary { display: flex; align-items: center; gap: 28px; }
         .donut { position: relative; width: 200px; height: 200px; flex-shrink: 0; }
-        svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+        .donut > svg { width: 100%; height: 100%; transform: rotate(-90deg); }
         .center { position: absolute; inset: 44px 26px; display: flex; flex-direction: column; justify-content: center; text-align: center; gap: 5px; }
         .center strong { font-size: 22rem; overflow-wrap: anywhere; }
         .legend { flex: 1; display: flex; flex-direction: column; gap: 16px; }
@@ -165,10 +169,10 @@ f('event-storage', ({ h, s }) => {
         .notice, .error { color: ${cssVars.colors.fgError}; }
         .success { color: ${cssVars.colors.fgSuccess}; }
         .actions { display: flex; flex-wrap: wrap; gap: 8px; }
-        button { padding: 10px 16px; border-radius: 6px; background: ${cssVars.colors.overlayHover}; color: ${cssVars.colors.fg}; cursor: pointer; font-size: 14rem; }
-        button.primary { background: ${cssVars.colors.bgAccentPrimary}; color: ${cssVars.colors.fgAccent}; }
-        button:disabled { opacity: .55; cursor: default; }
-        button:focus-visible, input:focus-visible { outline: 2px solid ${cssVars.colors.bgAccentPrimary}; outline-offset: 3px; }
+        .content button { padding: 10px 16px; border-radius: 6px; background: ${cssVars.colors.overlayHover}; color: ${cssVars.colors.fg}; cursor: pointer; font-size: 14rem; }
+        .content button.primary { background: ${cssVars.colors.bgAccentPrimary}; color: ${cssVars.colors.fgAccent}; }
+        .content button:disabled { opacity: .55; cursor: default; }
+        .content button:focus-visible, input:focus-visible { outline: 2px solid ${cssVars.colors.bgAccentPrimary}; outline-offset: 3px; }
         @media ${jsVars.breakpoints.mobile} {
           .summary { flex-direction: column; gap: 20px; }
           .legend { width: 100%; }
@@ -176,7 +180,7 @@ f('event-storage', ({ h, s }) => {
         }
       }
     `}</style>
-    <div class="header"><back-btn /><h1>${t('Event storage')}</h1></div>
+    <div class="header"><back-btn /><div class="title">${t('Event storage')}</div></div>
     <div class="content">
       <div class="card summary" aria-busy=${!usage}>
         <div class="donut">
@@ -203,8 +207,14 @@ f('event-storage', ({ h, s }) => {
         const isCache = key === 'cacheBytes'
         const over = usage && (used > limits[key] || (isCache && usage.cacheCount > limits.cacheCount))
         const reduction = preview !== null && preview < limits[key]
+        const iconProps = { size: '22px', color: colors[i], weight: 'regular' }
+        const icon = i === 0
+          ? h`<icon-database props=${iconProps} />`
+          : i === 1
+            ? h`<icon-server-bolt props=${iconProps} />`
+            : h`<icon-shield-lock props=${iconProps} />`
         return h({ key })`<section class="card" aria-labelledby=${`${key}-title`}>
-          <h2 id=${`${key}-title`}>${t(titles[i])}</h2>
+          <h2 id=${`${key}-title`}><span class="category-icon" aria-hidden="true">${icon}</span><span>${t(titles[i])}</span></h2>
           <p>${t(descriptions[i])}</p>
           <div class="usage"><strong>${usage ? `${bytes(used)} / ${bytes(limits[key])}` : t('Calculating…')}</strong><span>${usage ? number(usage[countKey]) : '—'}${isCache ? ` / ${number(limits.cacheCount)}` : ''} ${t('events')}</span></div>
           <div class="track" role="progressbar" aria-label=${t(titles[i])} aria-valuemin="0" aria-valuemax="100" aria-valuenow=${occupancy(used, limits[key])} aria-valuetext=${usage ? `${bytes(used)} / ${bytes(limits[key])}` : t('Calculating…')}><div class="fill" style=${`width: ${occupancy(used, limits[key])}%; background: ${colors[i]}`}></div></div>
