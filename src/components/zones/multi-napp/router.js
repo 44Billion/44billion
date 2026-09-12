@@ -15,6 +15,12 @@ const router = new Router({
     tag: 'sticky-sessions',
     loadModule: () => import('#views/sticky-sessions/index.js')
   },
+  '/event-storage': {
+    mount: 'system-views',
+    path: '/event-storage',
+    tag: 'event-storage',
+    loadModule: () => import('#views/event-storage/index.js')
+  },
   '/settings': {
     mount: 'system-views',
     path: '/settings',

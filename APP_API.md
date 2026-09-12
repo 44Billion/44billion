@@ -158,7 +158,7 @@ const features = await eventStore.supports()
 ```
 
 The public methods are `add`, `addPersonalCopy`, `query`, `count`, `subscribe`,
-and `supports`. Reads and writes may request the corresponding launcher
+`removeLocal`, and `supports`. Reads and writes may request the corresponding launcher
 permission. The event store remains scoped to the instance's workspace account
 and app; selecting a persona does not merge its members' event stores. Bridge
 errors reject method promises or the iterator's `next()` promise.
@@ -169,6 +169,11 @@ stored: false, published: false, quotaCategory }`, where `quotaCategory` is
 `public`, `private`, or `cache` for event quotas. Existing chunk-payload quota
 failures may omit the category. Limits are shared across launcher accounts:
 512 MiB public, 1 GiB personal copies, and 128 MiB / 50,000 cache events by default.
+Users can increase or decrease the three byte limits in Settings → Advanced →
+Event storage. The cache event ceiling scales with its bytes:
+`floor(cacheBytes × 50,000 / 134,217,728)` (64 MiB → 25,000; zero → zero).
+Public/private reductions preserve existing events and block growth while over
+quota; cache reductions schedule automatic LRU cleanup.
 Cache counts toward public usage; a public limit alone does not trigger eviction.
 Personal-copy contexts and inner authors share the private limit. Limits count
 UTF-8 JSON event bytes; external chunk payloads retain their separate policy.
@@ -279,3 +284,51 @@ Neither a self template nor a direct rumor becomes signed proof of its sender.
 For local nsec accounts, the companion vault update signs personal copies using
 persisted local content keys without relay publication. Remote bunker signers
 retain their own connectivity requirements.
+
+### Local event removal
+
+`removeLocal` is available on `window.napp.eventStore` and stores returned by
+`getWindowNappEventStoreFor(pubkey)`. `supports()` includes `removeLocal`.
+Calls wait for the existing launcher handshake.
+
+```js
+await window.napp.eventStore.removeLocal([
+  ['e', eventId],
+  ['a', `${kind}:${pubkey}:${d}`]
+])
+// { ok: true, code: 'deleted', message: 'Events were removed locally.', deleted: 2 }
+```
+
+Pass 1–100 exact two-element pairs, exclusively `e` or `a`. The entire input is
+validated before requesting permissions or deleting anything. IDs and pubkeys
+are hexadecimal (case-insensitive); addresses follow NostrDB coordinates,
+preserving empty `d` and identifiers containing colons. Regular replaceable
+coordinates use empty `d`. An `e` removes exactly that ID; an `a` removes the
+version present when the transaction runs, even if it arrived while authorization
+was pending. Targets and overlapping matches are deduplicated. Absent events are
+ignored. Target personal copies using their wrapper ID/address, not the inner event.
+
+Permissions are exactly those of a kind 5 descriptor with these target tags:
+address-only requests use access to the target kinds (including existing transport
+exceptions); any ID target requests one-time `delete` with `remember: false`.
+No event is signed or persisted. Permission denial and loss of persona access
+reject the Promise through the existing bridge. Access is rechecked after
+authorization and under the global quota lock before the transaction.
+
+The selected account's complete local records are removed, including records
+from other authors, protected records, personal copies and records shared between
+apps. This is not limited to the calling app's association. It neither deletes
+referrers nor cascades to their targets. Events, references, cache classification,
+usage and removed deletion-request contributions update atomically, even above
+quota. Losing the last owner reference demotes remaining targets to cache and
+schedules cleanup if necessary. No new tombstone or synthetic Nostr event is made.
+
+No matches return `{ ok: true, code: 'noop', message, deleted: 0 }`. Operational
+failures return `{ ok: false, code: 'invalid' | 'unavailable' | 'error', message,
+deleted: 0 }`. Results do not expose event contents, additional IDs or other accounts.
+Success confirms the NostrDB transaction; external chunk/blob reconciliation may
+finish later, with shared payloads retaining their existing policies.
+
+Locally removed events may be received again. Existing queues/snapshots are not
+revoked, and subscriptions do not receive removal notifications. Normal kind 5
+processing, including its ephemeral variant, remains unchanged.

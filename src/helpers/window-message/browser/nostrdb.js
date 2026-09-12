@@ -1,3 +1,4 @@
+import { normalizeLocalRemovalTargets, localRemovalResult } from '#services/idb/nostrdb/local-removal.js'
 import {
   BROAD_EVENT_KIND,
   eventAccessPermissionRequestsForEvent,
@@ -372,11 +373,20 @@ export async function runNostrDbMethod ({
   app,
   personalCopyEncrypt,
   personalCopyObfuscate,
-  deferCacheAccess = false
+  deferCacheAccess = false,
+  assertAccess
 }) {
   if (!NOSTRDB_ONE_SHOT_METHODS.includes(method)) throw new Error(`Unknown nostrdb method ${method}`)
   const args = Array.isArray(params) ? params : []
   const permissionContext = { app, requestPermission, params: args }
+
+  if (method === 'removeLocal') {
+    const targets = normalizeLocalRemovalTargets(args[0])
+    if (!targets) return localRemovalResult('invalid')
+    await requestPermissions(eventAccessPermissionRequestsForEvent({ kind: 5, tags: targets }), permissionContext)
+    assertAccess?.()
+    return db.removeLocal(targets, { assertAccess })
+  }
 
   if (method === 'add') {
     const [event, options] = args

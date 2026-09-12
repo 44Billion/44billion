@@ -1,3 +1,4 @@
+import { eventStorageLocales } from '#views/event-storage/locales.js'
 import { f, useSignal, useCallback, useComputed } from '#f'
 import { useWebStorage } from '#f'
 import { useLocation } from '#f'
@@ -20,6 +21,7 @@ import {
 
 export const settingsLocales = getLocales()
 
+const storageT = getT(eventStorageLocales)
 const t = getT(settingsLocales)
 
 const LOCALE_NAMES = Object.freeze({
@@ -328,6 +330,9 @@ f('a-settings', function () {
 
       <div class="section">
         <div class="section-title">${t('Advanced')}</div>
+        <button class="item" onclick=${() => location.pushState({}, '', '/event-storage')}>
+          <div class="item-content"><div class="item-title">${storageT('Event storage')}</div></div>
+        </button>
 
         <div class="item" style="cursor: default;">
           <div class="input-group" style="width: 100%;">

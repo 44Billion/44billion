@@ -247,10 +247,17 @@ maintenance subsequently trims excess in bounded pages. Failure preserves the
 last committed checkpoint and totals; a subsequent attempt resumes.
 
 Launcher-only exports `getNostrDbQuotaLimits`, `setNostrDbQuotaLimits` and
-`getNostrDbQuotaUsage` prepare a future settings UI. Byte overrides persist under
-`44billion:nostrdb-quotas:v1`; the 50,000 count ceiling is separate and fixed.
+`getNostrDbQuotaUsage` serve Settings → Advanced → Event storage (`/event-storage`).
+Only three byte overrides persist under `44billion:nostrdb-quotas:v1`. The cache
+count ceiling is derived with exact integer arithmetic:
+`floor(cacheBytes × 50,000 / 134,217,728)`. Existing overrides automatically use
+this proportion; schema 3 is unchanged. Zero bytes means zero cache events.
 Reducing public/private limits blocks growth only; reducing cache schedules
-trimming. No injected quota configuration/usage API or settings screen is added.
+trimming. Configuration and global usage remain launcher-only.
+The screen preserves drafts until Save, updates usage every five seconds while
+visible and on focus, and observes configuration changes across tabs without
+overwriting dirty fields. Its donut shows public minus cache, cache, and private
+bytes; the center totals public plus private, avoiding double counting.
 Storage audit preserves the global configuration; repair uses the ordinary app
 cleanup and owner removal paths, maintaining usage and deleting all owner-local
 auxiliary stores along with the database.
@@ -259,3 +266,20 @@ The independent 1,000-request pruning target remains specific to kind 5 for the
 selected author. The shared payload cache retains its global 2 GiB unreferenced
 payload budget and existing pressure/staging/reconciliation policies; referenced
 payloads remain outside that budget. Event quotas do not replace it.
+
+## Explicit local removal
+
+`NostrDb.removeLocal(targets)` is exposed through the app bridge with the same
+permission requests as `{ kind: 5, tags: targets }`, without signing that descriptor.
+See [the API contract](../APP_API.md#local-event-removal) for validation and scope.
+It resolves IDs exactly and addresses to their current version inside a single
+non-admission `withQuotaMutation`, calling `deleteStoredEvent` for each distinct
+match. Persona access is checked again under the quota lock, before opening that
+transaction. Aborts roll back every deletion and usage/reference/cache transition.
+
+The common deletion path removes existing kind 5 contributions and runs the same
+post-commit chunk-copy cleanup and blob reconciliation hooks. No new tombstone,
+cascade or subscription notification is produced. Local success confirms the
+NostrDB commit, not completion of external payload reconciliation. Buffered reads
+are not revoked and removed events can arrive again. This also works above quotas;
+reference removals may demote remaining targets to cache and schedule cleanup.

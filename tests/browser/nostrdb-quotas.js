@@ -69,6 +69,20 @@ try {
   assert.equal(results.filter(r => r.quotaCategory === 'public').length, 1)
   assert.equal((await evaluate(contexts[1], 'fixture.getNostrDbQuotaUsage()')).publicBytes, info[0].bytes)
 
+  const winnerContext = contexts[results.findIndex(r => r.stored)]
+  await evaluate(contexts[0], 'void navigator.locks.request(fixture.QUOTA_LOCK, () => new Promise(resolve => { globalThis.releaseRemovalLock = resolve }))')
+  await browser.until(() => evaluate(contexts[0], '!!globalThis.releaseRemovalLock'), 'removal lock barrier')
+  await evaluate(winnerContext, 'fixture.allowed = true')
+  const removal = evaluate(winnerContext, 'fixture.db.removeLocal([[\'e\', fixture.event.id]], {assertAccess() { if (!fixture.allowed) throw Object.assign(new Error(\'revoked\'), {code:\'PUBKEY_NOT_IN_PERSONA\'}) }}).catch(error => ({code:error.code}))')
+  await browser.until(() => evaluate(contexts[0], 'navigator.locks.query().then(state => state.pending.some(lock => lock.name === fixture.QUOTA_LOCK))'), 'removal waiting on quota lock')
+  await evaluate(winnerContext, 'fixture.allowed = false')
+  await evaluate(contexts[0], 'releaseRemovalLock()')
+  assert.equal((await removal).code, 'PUBKEY_NOT_IN_PERSONA')
+  assert.equal((await evaluate(winnerContext, 'fixture.getNostrDbQuotaUsage()')).publicCount, 1)
+  assert.equal((await evaluate(winnerContext, "fixture.db.removeLocal([['e', fixture.event.id]])")).deleted, 1)
+  assert.equal((await evaluate(contexts[0], 'fixture.getNostrDbQuotaUsage()')).publicCount, 0)
+  assert.equal((await evaluate(winnerContext, 'fixture.db.add(fixture.event)')).stored, true)
+
   // Reload without restoring any data and read the persisted global summaries.
   const previous = new Set(contexts.map(c => c.uniqueId))
   await Promise.all(contexts.map(c => browser.send('Page.reload', {}, c.sessionId)))

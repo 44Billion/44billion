@@ -159,7 +159,11 @@ export function createAppEventStoreBridge ({
       }
       const result = await runNostrDbMethod({
         db, method, params, appId, signEvent, requestPermission: scope.permission,
-        app, personalCopyEncrypt, personalCopyObfuscate, deferCacheAccess: true
+        app, personalCopyEncrypt, personalCopyObfuscate, deferCacheAccess: true,
+        assertAccess: () => {
+          scope.assertAvailable()
+          if (!active()) throw new Error('NOSTRDB_REQUEST_CANCELLED')
+        }
       })
       scope.assertAvailable()
       if (active()) {

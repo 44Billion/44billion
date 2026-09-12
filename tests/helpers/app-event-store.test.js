@@ -53,6 +53,7 @@ function fixture (overrides = {}) {
         recordCacheAccess: (...args) => accesses.push({ pubkey, args }),
         query: async (filter, options) => ({ results: [{ kind: 3, pubkey }], options }),
         count: async () => pubkey === owner ? 1 : 2,
+        removeLocal: async (targets, { assertAccess }) => { assertAccess(); return { ok: true, deleted: targets.length } },
         supports: async () => ({ owner: pubkey }),
         add: async (event, options) => ({ signed: await options.signEvent(event), appId: options.appId }),
         subscribe: (filter, options) => {
@@ -204,4 +205,18 @@ describe('persona event store bridge', () => {
     await pendingB
     assert.equal(b.streams[0].iterator.closed, true)
   })
+})
+
+it('removeLocal rejects persona revocation during permission authorization and never signs', async () => {
+  const pending = Promise.withResolvers()
+  const entered = Promise.withResolvers()
+  const f = fixture({ requestPermission: async () => { entered.resolve(); await pending.promise } })
+  const request = f.request({ method: 'removeLocal', userPk: peer, params: [[['e', 'ab'.repeat(32)]]] })
+  await entered.promise
+  f.state.members = [owner]
+  pending.resolve()
+  await request
+  assert.equal(f.replies.at(-1).error.code, 'PUBKEY_NOT_IN_PERSONA')
+  assert.equal(f.vaultCalls.length, 0)
+  f.bridge.dispose()
 })

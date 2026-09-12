@@ -13,7 +13,8 @@
     "_build": "node bin/build.js",
     "test": "node --test --experimental-test-module-mocks 'tests/**/*.test.js'",
     "test:browser:quotas": "node tests/browser/nostrdb-quotas.js",
-    "test:browser": "node tests/browser/nostrdb-quotas.js && node tests/browser/app-bridge.js && node tests/browser/widget-pinning.js && node tests/browser/widget-pinning.js --gestures && node tests/browser/widget-pinning.js --menus && node tests/browser/widget-pinning.js --wheel && node tests/browser/menu-focus.js",
+    "test:browser:storage": "node tests/browser/event-storage.js",
+    "test:browser": "node tests/browser/event-storage.js && node tests/browser/nostrdb-quotas.js && node tests/browser/app-bridge.js && node tests/browser/widget-pinning.js && node tests/browser/widget-pinning.js --gestures && node tests/browser/widget-pinning.js --menus && node tests/browser/widget-pinning.js --wheel && node tests/browser/menu-focus.js",
     "test:only": "node --test --test-only --experimental-test-module-mocks 'tests/**/*.test.js'"
   },
   "devDependencies": {

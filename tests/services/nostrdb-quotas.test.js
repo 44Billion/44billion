@@ -11,7 +11,7 @@ import {
 import {
   DEFAULT_NOSTRDB_QUOTAS, getNostrDbQuotaUsage, setNostrDbQuotaLimits,
   maintainNostrDbCache, queueCacheAccess, flushCacheAccess, ownerReferenceKeys,
-  startGlobalQuotaMaintenance
+  startGlobalQuotaMaintenance, cacheEventLimit, getNostrDbQuotaLimits
 } from '#services/idb/nostrdb/quotas.js'
 
 globalThis.indexedDB = indexedDB
@@ -216,8 +216,8 @@ it('updates LRU separately, at most once per minute, and ignores missing/promote
 it('public-limit reduction preserves cache; only cache excess triggers eviction across accounts', async t => {
   const a = await owner()
   const b = await owner()
-  const cold = signed()
-  const hot = signed()
+  const cold = signed({ content: 'x'.repeat(6000) })
+  const hot = signed({ content: 'x'.repeat(6000) })
   await a.db.add(cold)
   await b.db.add(hot)
   const latest = (await access(b.raw, hot)).lastAccessAt
@@ -295,7 +295,7 @@ it('keeps a pending replacement intact even when cache eviction cannot make it f
   const b = await owner()
   const old = signed({ kind: 30023, tags: [['d', 'post']], content: 'x'.repeat(200) })
   const other = signed()
-  const larger = signed({ kind: 30023, tags: [['d', 'post']], content: 'x'.repeat(800) })
+  const larger = signed({ kind: 30023, tags: [['d', 'post']], content: 'x'.repeat(6000) })
   await a.db.add(old)
   await b.db.add(other)
   await limits({ cacheBytes: byteSize(larger) - 1 })
@@ -507,4 +507,166 @@ it('defers bridge touches until delivery is acknowledged, including initial repl
   assert.equal((await access(a.raw, delivered.result)).lastAccessAt, now)
   const other = delivered.result.id === first.id ? second : first
   assert.equal((await access(a.raw, other)).lastAccessAt, now - 61000)
+})
+
+it('derives cache counts exactly from byte overrides, including old settings and zero', async () => {
+  for (const [mib, count] of [[0, 0], [64, 25000], [128, 50000], [256, 100000]]) {
+    assert.equal(cacheEventLimit(mib * 1048576), count)
+    await limits({ cacheBytes: mib * 1048576 })
+    assert.equal(getNostrDbQuotaLimits().cacheCount, count)
+  }
+  const max = Number.MAX_SAFE_INTEGER
+  assert.equal(cacheEventLimit(max), Number(BigInt(max) * 50000n / 134217728n))
+  settings.set('44billion:nostrdb-quotas:v1', JSON.stringify({ cacheBytes: 67108864, cacheCount: 999 }))
+  assert.equal(getNostrDbQuotaLimits().cacheCount, 25000)
+  await limits({ publicBytes: 1 })
+  assert.equal(Object.hasOwn(JSON.parse(settings.get('44billion:nostrdb-quotas:v1')), 'cacheCount'), false)
+})
+
+it('enforces proportional count during admission and cleans both cache limits after reduction', async () => {
+  const a = await owner()
+  const first = signed()
+  const second = signed()
+  await limits({ cacheBytes: 3000 }) // one event, though both fit in bytes
+  await a.db.add(first)
+  assert.equal((await a.db.add(second)).stored, true)
+  assert.equal(await row(a.raw, first), undefined)
+  assert.equal((await getNostrDbQuotaUsage()).cacheCount, 1)
+  await limits({ cacheBytes: 0 })
+  await maintainNostrDbCache()
+  const usage = await getNostrDbQuotaUsage()
+  assert.equal(usage.cacheBytes, 0)
+  assert.equal(usage.cacheCount, 0)
+})
+
+it('removes exact IDs and current coordinates atomically, normalizing and deduplicating targets', async () => {
+  const a = await owner()
+  const b = await owner()
+  const first = signed({ kind: 30023, tags: [['d', 'part:two']] })
+  const newer = signed({ kind: 30023, tags: [['d', 'part:two']] })
+  await a.db.add(first)
+  await a.db.add(newer)
+  await b.db.add(newer)
+  assert.equal((await a.db.removeLocal([['e', first.id]])).code, 'noop')
+  const result = await a.db.removeLocal([
+    ['e', newer.id.toUpperCase()], ['e', newer.id],
+    ['a', `030023:${newer.pubkey.toUpperCase()}:part:two`], ['e', '0'.repeat(64)]
+  ])
+  assert.deepEqual(result, { ok: true, code: 'deleted', message: 'Events were removed locally.', deleted: 1 })
+  assert.equal(await row(a.raw, newer), undefined)
+  assert.equal(await access(a.raw, newer), undefined)
+  assert.ok(await row(b.raw, newer))
+  assert.equal((await a.db.add(newer)).stored, true, 'no tombstone is created')
+})
+
+it('validates all local targets before deleting or checking access', async () => {
+  const a = await owner()
+  const event = signed()
+  await a.db.add(event)
+  for (const invalid of [[], null, [['x', event.id]], [['e', event.id, 'extra']], [['a', `65536:${event.pubkey}:`]], Array(101).fill(['e', event.id]), [['e', event.id], ['e', 'bad']]]) {
+    const result = await a.db.removeLocal(invalid, { assertAccess () { assert.fail('invalid input must be rejected first') } })
+    assert.equal(result.code, 'invalid')
+    assert.equal(result.deleted, 0)
+    assert.ok(await row(a.raw, event))
+  }
+  assert.equal((await a.db.removeLocal(Array(100).fill(['e', event.id]))).deleted, 1)
+})
+
+it('allows local removal above quotas, demotes referenced targets and removes protected/shared records', async () => {
+  const a = await owner()
+  const target = signed()
+  await a.db.add(target, { appId: APP })
+  const ref = signed({ tags: [['x', target.id]] }, a.secret)
+  await a.db.add(ref)
+  assert.equal(await access(a.raw, target), undefined)
+  await limits({ publicBytes: 0, cacheBytes: 0 })
+  assert.equal((await a.db.removeLocal([['e', ref.id]])).deleted, 1)
+  assert.ok(await access(a.raw, target))
+  assert.equal((await getNostrDbQuotaUsage()).cacheCount, 1)
+  assert.equal((await a.db.removeLocal([['e', target.id]])).deleted, 1)
+  assert.equal((await getNostrDbQuotaUsage()).publicBytes, 0)
+})
+
+it('removes deletion-request contributions and permits the deleted event to return', async () => {
+  const a = await owner()
+  const event = signed()
+  await a.db.add(event)
+  const deletion = signed({ kind: 5, tags: [['e', event.id]] })
+  await a.db.add(deletion)
+  assert.equal(await row(a.raw, event), undefined)
+  assert.equal((await a.db.removeLocal([['e', deletion.id]])).deleted, 1)
+  assert.equal((await a.db.add(event)).stored, true)
+})
+
+it('rolls back every local removal and reference transition if its transaction aborts', async t => {
+  const a = await owner()
+  const target = signed()
+  const ref = signed({ tags: [['x', target.id]] }, a.secret)
+  await a.db.add(target)
+  await a.db.add(ref)
+  const usage = await getNostrDbQuotaUsage()
+  const original = a.raw.transaction.bind(a.raw)
+  const mock = t.mock.method(a.raw, 'transaction', (...args) => {
+    const tx = original(...args)
+    if (args[1] === 'readwrite' && Array.isArray(args[0]) && args[0].includes('deletions')) {
+      const store = tx.objectStore('maintenance')
+      const put = store.put.bind(store)
+      store.put = value => {
+        const req = put(value)
+        req.addEventListener('success', () => tx.abort(), { once: true })
+        return req
+      }
+    }
+    return tx
+  })
+  assert.equal((await a.db.removeLocal([['e', ref.id], ['e', target.id]])).code, 'error')
+  mock.mock.restore()
+  assert.ok(await row(a.raw, ref))
+  assert.ok(await row(a.raw, target))
+  assert.equal(await access(a.raw, target), undefined)
+  assert.deepEqual(await getNostrDbQuotaUsage(), usage)
+})
+
+it('rechecks access under the lock and resolves an address only in the deletion transaction', async () => {
+  const a = await owner()
+  const first = signed({ kind: 30023, tags: [['d', '']] })
+  const newer = signed({ kind: 30023, tags: [['d', '']] })
+  await a.db.add(first)
+  const { runNostrDbMethod } = await import('#helpers/window-message/browser/nostrdb.js')
+  const permission = Promise.withResolvers()
+  const requested = Promise.withResolvers()
+  const deletion = runNostrDbMethod({
+    db: a.db, method: 'removeLocal', params: [[['a', `30023:${first.pubkey}:`]]],
+    requestPermission: async () => { requested.resolve(); await permission.promise }
+  })
+  await requested.promise
+  assert.equal((await a.db.add(newer)).stored, true)
+  permission.resolve()
+  assert.equal((await deletion).deleted, 1)
+  assert.equal(await row(a.raw, newer), undefined)
+  await a.db.add(newer)
+  let checks = 0
+  await assert.rejects(a.db.removeLocal([['e', newer.id]], {
+    assertAccess () {
+      if (++checks > 1) throw Object.assign(new Error('revoked'), { code: 'PUBKEY_NOT_IN_PERSONA' })
+    }
+  }), { code: 'PUBKEY_NOT_IN_PERSONA' })
+  assert.ok(await row(a.raw, newer))
+})
+
+it('removes personal copies by wrapper ID without needing a signer or decryptor', async () => {
+  const a = await owner()
+  a.db.personalCopyDecrypt = async event => event.content
+  a.db.personalCopyObfuscate = async (value, kind, scope) => `${scope}:${value}`
+  const inner = signed()
+  const wrapper = finalizeEvent(await buildPersonalCopyUnsignedEvent({
+    originalEvent: inner, ownerPubkey: a.pubkey, context: 'local-removal',
+    encrypt: async (kind, value) => value, obfuscate: a.db.personalCopyObfuscate
+  }), a.secret)
+  assert.equal((await a.db.add(wrapper)).stored, true)
+  a.db.personalCopyDecrypt = () => assert.fail('must not decrypt')
+  assert.equal((await a.db.removeLocal([['e', inner.id]])).code, 'noop')
+  await limits({ privateBytes: 0 })
+  assert.equal((await a.db.removeLocal([['e', wrapper.id]])).deleted, 1)
+  assert.equal((await getNostrDbQuotaUsage()).privateBytes, 0)
 })

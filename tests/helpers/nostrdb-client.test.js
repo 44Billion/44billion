@@ -54,7 +54,7 @@ describe('nostrdb app-page client bridge', () => {
     assert.equal(calls.length, 0)
     port.resolve('port')
     assert.equal(await pending, 'ok')
-    for (const method of ['add', 'addPersonalCopy', 'count', 'supports']) await store[method]()
+    for (const method of ['add', 'addPersonalCopy', 'count', 'removeLocal', 'supports']) await store[method]()
     const iterator = store.subscribe({ kinds: [3] })
     assert.deepEqual(await iterator.next(), { value: 'item', done: false })
     assert.ok(calls.every(message => message.payload.userPk === pubkey))
@@ -71,7 +71,7 @@ describe('nostrdb app-page client bridge', () => {
       tell: () => {}
     })
 
-    assert.deepEqual(Object.keys(nostrdb).sort(), ['add', 'addPersonalCopy', 'count', 'query', 'subscribe', 'supports'])
+    assert.deepEqual(Object.keys(nostrdb).sort(), ['add', 'addPersonalCopy', 'count', 'query', 'removeLocal', 'subscribe', 'supports'])
   })
 
   it('injects eventStore before the handshake', async () => {

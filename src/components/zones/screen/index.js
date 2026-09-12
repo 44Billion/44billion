@@ -340,6 +340,7 @@ f('system-views', ({ h }) => {
     <f-route props=${{ path: '/settings' }} />
     <f-route props=${{ path: '/app-updates' }} />
     <f-route props=${{ path: '/sticky-sessions' }} />
+    <f-route props=${{ path: '/event-storage' }} />
   `
 })
 

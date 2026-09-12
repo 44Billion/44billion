@@ -44,6 +44,11 @@ export function withNostrDbQuotaLock (callback) {
   return navigator.locks.request(QUOTA_LOCK, callback)
 }
 
+export function cacheEventLimit (bytes) {
+  if (!Number.isSafeInteger(bytes) || bytes < 0) throw new TypeError('Invalid cache byte limit')
+  return Number(BigInt(bytes) * 50000n / 134217728n)
+}
+
 export function getNostrDbQuotaLimits () {
   let overrides
   try { overrides = JSON.parse(globalThis.localStorage?.getItem(SETTINGS_KEY) ?? 'null') } catch {}
@@ -51,6 +56,7 @@ export function getNostrDbQuotaLimits () {
   for (const key of ['publicBytes', 'privateBytes', 'cacheBytes']) {
     if (Number.isSafeInteger(overrides?.[key]) && overrides[key] >= 0) limits[key] = overrides[key]
   }
+  limits.cacheCount = cacheEventLimit(limits.cacheBytes)
   return limits
 }
 
@@ -366,10 +372,12 @@ async function evict (dbs, limits, { extra = {}, excludeDb, excluded = new Set()
   return totals
 }
 
-export function withQuotaMutation (db, callback, { admission = false } = {}) {
+export function withQuotaMutation (db, callback, { admission = false, beforeMutation } = {}) {
   return withNostrDbQuotaLock(async () => {
+    beforeMutation?.()
     if (!admission) {
       await initializeUsage(db)
+      beforeMutation?.()
       return mutate(db, callback)
     }
     const dbs = await allDatabases()

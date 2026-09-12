@@ -54,7 +54,8 @@ try {
       // timeout: origin 1 recovers automatically; origin 2 requires retry.
       if (pathname === '/~~napp' && (blockedOrigins.has(request.webUrl.hostname) ||
         (request.webUrl.hostname === '1.localhost' && request.webUrl.searchParams.get('retry') === '0'))) return
-      const filename = { '/fixture.js': 'fixture.js', '/sw.js': 'sw.js' }[pathname]
+      const filename = { '/fixture.js': 'fixture.js', '/sw.js': 'sw.js' }[pathname] ??
+        (/^\/chunks\/[\w-]+\.js$/.test(pathname) ? pathname.slice(1) : null)
       if (filename) {
         response.setHeader('Content-Type', 'text/javascript')
         response.end(readFileSync(path.join(profile, filename)))
@@ -87,7 +88,9 @@ try {
     }
   }]
   const options = { absWorkingDir: repo, bundle: true, define, plugins, loader: { '.html': 'text', '.css': 'text', '.webp': 'dataurl', '.svg': 'text' } }
-  await esbuild.build({ ...options, entryPoints: ['tests/browser/app-bridge-fixture.js'], format: 'esm', outfile: path.join(profile, 'fixture.js') })
+  // Match the launcher build: lazy system routes and async NostrDB dependencies
+  // need split ESM chunks (esbuild can emit invalid wrappers without splitting).
+  await esbuild.build({ ...options, entryPoints: { fixture: 'tests/browser/app-bridge-fixture.js' }, format: 'esm', splitting: true, chunkNames: 'chunks/[name]-[hash]', outdir: profile })
   await esbuild.build({ ...options, entryPoints: ['src/service-workers/app/index.js'], format: 'iife', outfile: path.join(profile, 'sw.js') })
   const { targetId } = await send('Target.createTarget', { url: 'about:blank' })
   const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true })

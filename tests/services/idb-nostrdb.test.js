@@ -3536,7 +3536,8 @@ describe('nostrdb', () => {
       'multi_filters',
       'subscribe:scheduled',
       'subscribe:initial',
-      'app_export'
+      'app_export',
+      'removeLocal'
     ])
     db.bc?.close()
   })

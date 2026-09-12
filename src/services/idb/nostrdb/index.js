@@ -1,3 +1,4 @@
+import { normalizeLocalRemovalTargets, localRemovalResult } from './local-removal.js'
 import { withInitialResults } from './initial-subscription.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { encode as base93Encode } from 'libp2r2p/base93'
@@ -1303,8 +1304,43 @@ export class NostrDb {
       'multi_filters',
       'subscribe:scheduled',
       'subscribe:initial',
-      'app_export'
+      'app_export',
+      'removeLocal'
     ]
+  }
+
+  async removeLocal (targets, { assertAccess } = {}) {
+    const normalized = normalizeLocalRemovalTargets(targets)
+    if (!normalized) return localRemovalResult('invalid')
+    let accessError
+    const checkAccess = () => {
+      try { assertAccess?.() } catch (error) { accessError = error; throw error }
+    }
+    try {
+      checkAccess()
+      const db = await openNostrDb(this.ownerPubkey)
+      if (!db) return localRemovalResult('unavailable')
+      const deleted = await withQuotaMutation(db, async tx => {
+        let count = 0
+        for (const [type, value] of normalized) {
+          let key = type === 'e' ? eventIdIndexKey(value) : null
+          if (type === 'a') {
+            const { kind, pubkey, dtag } = parseAddress(value)
+            key = addressKey(kind, pubkey, dtag)
+          }
+          const stored = await run('get', [key], EVENTS_STORE, type === 'a' ? INDEX.address : null, { db, tx }).then(v => v.result)
+          if (!stored) continue
+          await deleteStoredEvent(db, tx, stored)
+          count++
+        }
+        checkAccess()
+        return count
+      }, { beforeMutation: checkAccess })
+      return localRemovalResult(deleted ? 'deleted' : 'noop', deleted)
+    } catch (error) {
+      if (accessError === error) throw error
+      return localRemovalResult(error?.code === 'unavailable' ? 'unavailable' : 'error')
+    }
   }
 
   async deleteDb () {

@@ -815,3 +815,28 @@ describe('nostrdb browser bridge helpers', () => {
     })
   })
 })
+
+describe('removeLocal permission boundary', () => {
+  const id = 'ab'.repeat(32)
+  it('uses exactly kind 5 permissions, including transport exceptions, without signing', async () => {
+    const { eventAccessPermissionRequestsForEvent } = await import('../../src/helpers/window-message/browser/event-permissions.js')
+    for (const targets of [[['e', id]], [['a', `30023:${id}:d`]], [['a', `26300:${id}:`]], [['a', `30023:${id}:d`], ['e', id]]]) {
+      const requested = []
+      let removed = false
+      await runNostrDbMethod({
+        db: { removeLocal: async received => { assert.deepEqual(received, targets); removed = true; return { ok: true } } },
+        method: 'removeLocal', params: [targets],
+        requestPermission: async req => requested.push({ name: req.name, eKind: req.eKind, ...(req.remember === undefined ? {} : { remember: req.remember }) }),
+        signEvent: () => assert.fail('must not sign')
+      })
+      assert.deepEqual(requested, eventAccessPermissionRequestsForEvent({ kind: 5, tags: targets }))
+      assert.equal(removed, true)
+    }
+  })
+  it('rejects invalid targets before permissions and denies without deleting', async () => {
+    const db = { removeLocal: () => assert.fail('must not delete') }
+    assert.equal((await runNostrDbMethod({ db, method: 'removeLocal', params: [[['e', id], ['bad', id]]], requestPermission: () => assert.fail('must not prompt') })).code, 'invalid')
+    await assert.rejects(runNostrDbMethod({ db, method: 'removeLocal', params: [[['e', id]]], requestPermission: async () => { throw new Error('denied') } }), /denied/)
+    await assert.rejects(runNostrDbMethod({ db, method: 'removeLocal', params: [[['e', id]]], requestPermission: async () => {}, assertAccess: () => { throw new Error('revoked') } }), /revoked/)
+  })
+})

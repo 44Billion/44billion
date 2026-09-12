@@ -402,6 +402,14 @@ describe('normalized global chunk cache', () => {
     await waitFor(async () => !(await getOwnerChunkCopy(owner.pubkey, deletedFixture.root, 0)))
     assert.equal(await getChunkPayloadForEvent(owner.pubkey, deletedId), null)
 
+    const localFixture = await chunkFixture(111)
+    const localEvent = await owner.signEvent(localFixture.template)
+    await db.add(localEvent, { signEvent: owner.signEvent })
+    assert.ok(await getOwnerChunkCopy(owner.pubkey, localFixture.root, 0))
+    assert.equal((await db.removeLocal([['e', localEvent.id]])).deleted, 1)
+    await waitFor(async () => !(await getOwnerChunkCopy(owner.pubkey, localFixture.root, 0)))
+    assert.equal(await getChunkPayloadForEvent(owner.pubkey, localEvent.id), null)
+
     const replacementFixture = await chunkFixture(110)
     const first = await owner.signEvent(replacementFixture.template)
     const second = await owner.signEvent({ ...replacementFixture.template, created_at: 401 })

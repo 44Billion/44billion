@@ -42,7 +42,7 @@ ephemeral and intentionally not persisted; they do not belong here or in
 - `44billion:vault-accepted-message-queue:v1` — pending vault messages.
 - `44billion:nostrdb-quotas:v1` — launcher-only global byte-limit overrides:
   `{ publicBytes, privateBytes, cacheBytes }`, non-negative safe integers. Defaults
-  are 512 MiB, 1 GiB and 128 MiB respectively; cache also has a fixed 50,000-event
+  are 512 MiB, 1 GiB and 128 MiB respectively; cache also has a proportional event
   ceiling. Account/app cleanup preserves this configuration.
 - `44billion:app-asset-budget:v1` — per-app cached byte budgets.
 - `local_embeddedOnlyRetentionAdmissions` — embedded-only retention admissions.
@@ -371,3 +371,16 @@ BroadcastChannel are in-memory coordination, not additional persisted keys.
 The account tracker also imports already available signed vault profiles and
 relay lists into NostrDB before relay delivery, preserving immediate offline
 access without echoing those cached events back to the vault.
+
+The event-storage settings screen (`/event-storage`) edits only the three existing
+NostrDB byte overrides. No separate count override is stored: the cache ceiling
+is `floor(cacheBytes × 50,000 / 134,217,728)`, computed with integer arithmetic
+(128 MiB → 50,000 events). Drafts and UI status are memory-only. Schema 3 remains
+unchanged. Public/private reductions preserve data; cache reductions schedule LRU.
+
+`eventStore.removeLocal` uses the common NostrDB deletion transaction and updates
+`events`, `deletions`, `cacheAccess`, and `maintenance.quotaUsage` together. It
+removes old tombstone contributions without creating new ones; external chunk
+cleanup/reconciliation remains post-commit. Audit/repair preserve the registered
+global configuration key; app cleanup and owner DB deletion still use existing
+quota-aware paths, including removal of the owner's auxiliary stores.
