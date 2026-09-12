@@ -142,13 +142,14 @@ f('event-storage', ({ h, s }) => {
     <style>${`
       event-storage {
         display: flex !important; flex-direction: column; flex-grow: 1;
-        width: 100%; max-width: 900px; height: 100%; min-height: 0;
+        width: 100%; min-width: 0; height: 100%; min-height: 0;
         background: ${cssVars.colors.bg}; color: ${cssVars.colors.fg};
-        .header { height: 55px; flex-shrink: 0; display: flex; align-items: center; padding: 0 10px; }
+        .header { width: 100%; max-width: 900px; margin-inline: auto; height: 55px; flex-shrink: 0; display: flex; align-items: center; padding: 0 10px; }
         .title { flex-grow: 1; font-weight: 500; font-size: 18rem; margin-left: 10px; }
         h2 { display: flex; align-items: center; gap: 10px; font-size: 16rem; font-weight: 600; margin: 0; }
         .category-icon { display: flex; width: 22px; height: 22px; flex-shrink: 0; }
-        .content { padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
+        .scroll-area { flex: 1; min-height: 0; overflow-y: auto; }
+        .content { width: 100%; max-width: 900px; margin-inline: auto; padding: 20px; display: flex; flex-direction: column; gap: 14px; }
         .card { background: ${cssVars.colors.bg2}; border-radius: 8px; padding: 18px; }
         .summary { display: flex; align-items: center; gap: 28px; }
         .donut { position: relative; width: 200px; height: 200px; flex-shrink: 0; }
@@ -181,58 +182,60 @@ f('event-storage', ({ h, s }) => {
       }
     `}</style>
     <div class="header"><back-btn /><div class="title">${t('Event storage')}</div></div>
-    <div class="content">
-      <div class="card summary" aria-busy=${!usage}>
-        <div class="donut">
-          ${s`<svg viewBox="0 0 200 200" aria-hidden="true">
-            <circle cx="100" cy="100" r="82" fill="none" stroke=${cssVars.colors.bg3} stroke-width="22" />
-            ${segments.map((value, i) => {
-              const size = total ? value / total * 100 : 0
-              const start = offset
-              offset += size
-              return s`<circle cx="100" cy="100" r="82" fill="none" stroke=${colors[i]} stroke-width="22" pathLength="100" stroke-dasharray=${`${size} ${100 - size}`} stroke-dashoffset=${-start} />`
-            })}
-          </svg>`}
-          <div class="center"><strong>${usage ? bytes(total) : t('Calculating…')}</strong><span class="muted">${usage ? t(total ? 'in events' : 'No events stored') : ''}</span></div>
+    <div class="scroll-area">
+      <div class="content">
+        <div class="card summary" aria-busy=${!usage}>
+          <div class="donut">
+            ${s`<svg viewBox="0 0 200 200" aria-hidden="true">
+              <circle cx="100" cy="100" r="82" fill="none" stroke=${cssVars.colors.bg3} stroke-width="22" />
+              ${segments.map((value, i) => {
+                const size = total ? value / total * 100 : 0
+                const start = offset
+                offset += size
+                return s`<circle cx="100" cy="100" r="82" fill="none" stroke=${colors[i]} stroke-width="22" pathLength="100" stroke-dasharray=${`${size} ${100 - size}`} stroke-dashoffset=${-start} />`
+              })}
+            </svg>`}
+            <div class="center"><strong>${usage ? bytes(total) : t('Calculating…')}</strong><span class="muted">${usage ? t(total ? 'in events' : 'No events stored') : ''}</span></div>
+          </div>
+          <div class="legend">${segments.map((value, i) => h({ key: `legend-${i}` })`
+            <div class="legend-row"><span class="swatch" style=${`background: ${colors[i]}`}></span><span class="legend-name">${t(segmentTitles[i])}</span><strong>${usage ? bytes(value) : '—'}</strong></div>
+          `)}</div>
         </div>
-        <div class="legend">${segments.map((value, i) => h({ key: `legend-${i}` })`
-          <div class="legend-row"><span class="swatch" style=${`background: ${colors[i]}`}></span><span class="legend-name">${t(segmentTitles[i])}</span><strong>${usage ? bytes(value) : '—'}</strong></div>
-        `)}</div>
-      </div>
-      <p>${t('Limits are shared across all accounts. Only event data is counted; app files and chunk payloads have separate budgets.')}</p>
-      ${quotaFields.map((key, i) => {
-        const preview = state.dirty$()[key] ? parseQuotaMiB(state.draft$()[key]) : limits[key]
-        const used = usage?.[key] ?? 0
-        const countKey = key.replace('Bytes', 'Count')
-        const isCache = key === 'cacheBytes'
-        const over = usage && (used > limits[key] || (isCache && usage.cacheCount > limits.cacheCount))
-        const reduction = preview !== null && preview < limits[key]
-        const iconProps = { size: '22px', color: colors[i], weight: 'regular' }
-        const icon = i === 0
-          ? h`<icon-database props=${iconProps} />`
-          : i === 1
-            ? h`<icon-server-bolt props=${iconProps} />`
-            : h`<icon-shield-lock props=${iconProps} />`
-        return h({ key })`<section class="card" aria-labelledby=${`${key}-title`}>
-          <h2 id=${`${key}-title`}><span class="category-icon" aria-hidden="true">${icon}</span><span>${t(titles[i])}</span></h2>
-          <p>${t(descriptions[i])}</p>
-          <div class="usage"><strong>${usage ? `${bytes(used)} / ${bytes(limits[key])}` : t('Calculating…')}</strong><span>${usage ? number(usage[countKey]) : '—'}${isCache ? ` / ${number(limits.cacheCount)}` : ''} ${t('events')}</span></div>
-          <div class="track" role="progressbar" aria-label=${t(titles[i])} aria-valuemin="0" aria-valuemax="100" aria-valuenow=${occupancy(used, limits[key])} aria-valuetext=${usage ? `${bytes(used)} / ${bytes(limits[key])}` : t('Calculating…')}><div class="fill" style=${`width: ${occupancy(used, limits[key])}%; background: ${colors[i]}`}></div></div>
-          ${over ? h`<p class="notice">${t('Above limit')}: ${t(isCache ? 'Automatic cache cleanup is scheduled.' : 'Events are kept. Growth is blocked while above the limit.')}</p>` : ''}
-          <label for=${`${key}-input`}>${t('Limit in MiB')}<input id=${`${key}-input`} type="text" inputmode="decimal" value=${state.draft$()[key]} disabled=${state.saving$()} aria-invalid=${preview === null} aria-describedby=${`${key}-hint`} oninput=${event => state.edit(key, event.target.value)} /></label>
-          <p id=${`${key}-hint`} class=${preview === null ? 'error' : 'muted'}>${preview === null ? t('Enter a non-negative MiB value within the supported range.') : isCache ? `${number(cacheEventLimit(preview))} ${t('events')}` : ''}</p>
-          ${reduction ? h`<p class="notice">${t(isCache ? 'Saving this reduction will schedule automatic cache cleanup.' : 'Events are kept. Growth is blocked while above the limit.')}</p>` : ''}
-        </section>`
-      })}
-      <div role="status" aria-live="polite">
-        ${state.external$() ? h`<p>${t('Limits changed in another window. Your edits were kept.')}</p>` : ''}
-        ${state.status$() ? h`<p class="success">${t(state.status$())}</p>` : ''}
-        ${state.error$() ? h`<p class="error">${t(state.error$() === 'save' ? 'Unable to save limits. Your changes are still here.' : 'Unable to read storage usage.')} <button disabled=${state.saving$()} onclick=${state.error$() === 'save' ? state.save : state.refresh}>${t('Try again')}</button></p>` : ''}
-      </div>
-      <div class="actions">
-        <button class="primary" disabled=${state.saving$() || !valid || !Object.keys(overrides).length} onclick=${state.save}>${t(state.saving$() ? 'Saving…' : 'Save limits')}</button>
-        <button disabled=${state.saving$() || !Object.keys(overrides).length} onclick=${state.discard}>${t('Discard changes')}</button>
-        <button disabled=${state.saving$()} onclick=${state.restore}>${t('Restore defaults')}</button>
+        <p>${t('Limits are shared across all accounts. Only event data is counted; app files and chunk payloads have separate budgets.')}</p>
+        ${quotaFields.map((key, i) => {
+          const preview = state.dirty$()[key] ? parseQuotaMiB(state.draft$()[key]) : limits[key]
+          const used = usage?.[key] ?? 0
+          const countKey = key.replace('Bytes', 'Count')
+          const isCache = key === 'cacheBytes'
+          const over = usage && (used > limits[key] || (isCache && usage.cacheCount > limits.cacheCount))
+          const reduction = preview !== null && preview < limits[key]
+          const iconProps = { size: '22px', color: colors[i], weight: 'regular' }
+          const icon = i === 0
+            ? h`<icon-database props=${iconProps} />`
+            : i === 1
+              ? h`<icon-server-bolt props=${iconProps} />`
+              : h`<icon-shield-lock props=${iconProps} />`
+          return h({ key })`<section class="card" aria-labelledby=${`${key}-title`}>
+            <h2 id=${`${key}-title`}><span class="category-icon" aria-hidden="true">${icon}</span><span>${t(titles[i])}</span></h2>
+            <p>${t(descriptions[i])}</p>
+            <div class="usage"><strong>${usage ? `${bytes(used)} / ${bytes(limits[key])}` : t('Calculating…')}</strong><span>${usage ? number(usage[countKey]) : '—'}${isCache ? ` / ${number(limits.cacheCount)}` : ''} ${t('events')}</span></div>
+            <div class="track" role="progressbar" aria-label=${t(titles[i])} aria-valuemin="0" aria-valuemax="100" aria-valuenow=${occupancy(used, limits[key])} aria-valuetext=${usage ? `${bytes(used)} / ${bytes(limits[key])}` : t('Calculating…')}><div class="fill" style=${`width: ${occupancy(used, limits[key])}%; background: ${colors[i]}`}></div></div>
+            ${over ? h`<p class="notice">${t('Above limit')}: ${t(isCache ? 'Automatic cache cleanup is scheduled.' : 'Events are kept. Growth is blocked while above the limit.')}</p>` : ''}
+            <label for=${`${key}-input`}>${t('Limit in MiB')}<input id=${`${key}-input`} type="text" inputmode="decimal" value=${state.draft$()[key]} disabled=${state.saving$()} aria-invalid=${preview === null} aria-describedby=${`${key}-hint`} oninput=${event => state.edit(key, event.target.value)} /></label>
+            <p id=${`${key}-hint`} class=${preview === null ? 'error' : 'muted'}>${preview === null ? t('Enter a non-negative MiB value within the supported range.') : isCache ? `${number(cacheEventLimit(preview))} ${t('events')}` : ''}</p>
+            ${reduction ? h`<p class="notice">${t(isCache ? 'Saving this reduction will schedule automatic cache cleanup.' : 'Events are kept. Growth is blocked while above the limit.')}</p>` : ''}
+          </section>`
+        })}
+        <div role="status" aria-live="polite">
+          ${state.external$() ? h`<p>${t('Limits changed in another window. Your edits were kept.')}</p>` : ''}
+          ${state.status$() ? h`<p class="success">${t(state.status$())}</p>` : ''}
+          ${state.error$() ? h`<p class="error">${t(state.error$() === 'save' ? 'Unable to save limits. Your changes are still here.' : 'Unable to read storage usage.')} <button disabled=${state.saving$()} onclick=${state.error$() === 'save' ? state.save : state.refresh}>${t('Try again')}</button></p>` : ''}
+        </div>
+        <div class="actions">
+          <button class="primary" disabled=${state.saving$() || !valid || !Object.keys(overrides).length} onclick=${state.save}>${t(state.saving$() ? 'Saving…' : 'Save limits')}</button>
+          <button disabled=${state.saving$() || !Object.keys(overrides).length} onclick=${state.discard}>${t('Discard changes')}</button>
+          <button disabled=${state.saving$()} onclick=${state.restore}>${t('Restore defaults')}</button>
+        </div>
       </div>
     </div>
   `

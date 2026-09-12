@@ -282,10 +282,23 @@ f('napp-updates', function () {
     <style>${/* css */`
       napp-updates {
         flex-grow: 1; /* use max width available */
-        max-width: 900px;
+        width: 100%;
+        min-width: 0;
+        min-height: 0;
         display: flex !important;
         flex-direction: column;
         height: 100%;
+
+        .header-1kuhvcxd8b, .mobile-updates-bar, .no-updates-bar, .body-cydfv983dfff {
+          width: 100%;
+          max-width: 900px;
+          margin-inline: auto;
+        }
+        .scroll-area {
+          flex: 1;
+          min-height: 0;
+          overflow-y: auto;
+        }
       }
 
       .header-1kuhvcxd8b {
@@ -323,11 +336,9 @@ f('napp-updates', function () {
       }
 
       .body-cydfv983dfff {
-        flex-grow: 1; /* take remaining height */
         display: flex;
         gap: 13px;
         flex-direction: column;
-        overflow-y: auto;
         padding: 10px 0;
       }
 
@@ -437,25 +448,27 @@ f('napp-updates', function () {
       </div>
     `
           : '')}
-    <div class='body-cydfv983dfff'>
-      ${allAppIds$().map(appId => this.h({ key: appId })`
-        <f-to-signals
-          props=${{
-            from: ['updateInfo', 'updateState', 'updatesPending'],
-            updateInfo: availableUpdates$()[appId],
-            updateState: updateStates$()[appId],
-            updatesPending: isSearching$() || isLoading$(),
-            appId,
-            publisherProfiles$,
-            publisherProfilesPending$,
-            onUpdate: () => handleUpdateSingle(appId),
-            render ({ h, props }) {
-              return h`<napp-update-card props=${props} />`
-            }
-          }}
-        />
-      `)}
-      ${allAppIds$().length === 0 ? this.h`<div style=${`padding: 20px; text-align: center; color: ${cssVars.colors.fg2}`}>${t('No apps found')}</div>` : ''}
+    <div class="scroll-area">
+      <div class='body-cydfv983dfff'>
+        ${allAppIds$().map(appId => this.h({ key: appId })`
+          <f-to-signals
+            props=${{
+              from: ['updateInfo', 'updateState', 'updatesPending'],
+              updateInfo: availableUpdates$()[appId],
+              updateState: updateStates$()[appId],
+              updatesPending: isSearching$() || isLoading$(),
+              appId,
+              publisherProfiles$,
+              publisherProfilesPending$,
+              onUpdate: () => handleUpdateSingle(appId),
+              render ({ h, props }) {
+                return h`<napp-update-card props=${props} />`
+              }
+            }}
+          />
+        `)}
+        ${allAppIds$().length === 0 ? this.h`<div style=${`padding: 20px; text-align: center; color: ${cssVars.colors.fg2}`}>${t('No apps found')}</div>` : ''}
+      </div>
     </div>
   `
 })

@@ -143,7 +143,9 @@ f('sticky-sessions', function () {
     <style>${/* css */`
       sticky-sessions {
         flex-grow: 1;
-        max-width: 900px;
+        width: 100%;
+        min-width: 0;
+        min-height: 0;
         display: flex !important;
         flex-direction: column;
         height: 100%;
@@ -151,6 +153,9 @@ f('sticky-sessions', function () {
         color: ${cssVars.colors.fg};
 
         .header {
+          width: 100%;
+          max-width: 900px;
+          margin-inline: auto;
           height: 55px;
           display: flex;
           align-items: center;
@@ -163,9 +168,16 @@ f('sticky-sessions', function () {
           font-size: 18rem;
           margin-left: 10px;
         }
-        .content {
-          padding: 20px;
+        .scroll-area {
+          flex: 1;
+          min-height: 0;
           overflow-y: auto;
+        }
+        .content {
+          width: 100%;
+          max-width: 900px;
+          margin-inline: auto;
+          padding: 20px;
           display: flex;
           flex-direction: column;
           gap: 12px;
@@ -246,90 +258,92 @@ f('sticky-sessions', function () {
       <back-btn />
       <div class="title">${t('Sticky Sessions')}</div>
     </div>
-    <div class="content">
-      ${sessions$().length === 0
-        ? [this.h`<div class="empty">${t('No saved sessions yet.')}</div>`]
-        : sessions$().map(session => {
-          const isPending = pendingRestore$().has(session.id)
-          return this.h({ key: session.id })`
-          <div class="session">
-            <div class="session-head">
-              <div class="session-date">${new Date(session.updatedAt).toLocaleString(getEffectiveLocale())}</div>
-              <div class="session-actions">
-                <div
-                  class=${{ 'session-action': true, primary: true, disabled: isPending }}
-                  onclick=${() => handlePrimaryAction(session)}
-                >${session.claimed ? t('Duplicate') : t('Restore')}</div>
-                <div
-                  class="session-action"
-                  onclick=${() => {
-                    requestStickySessionDelete({ localStorageArea: localStorage, snapshotId: session.id })
-                  }}
-                >${t('Delete')}</div>
-              </div>
-            </div>
-            ${session.workspaceKeys.map(wsKey => {
-              const ws = session.workspaces[wsKey]
-              if (!ws) return ''
-              const openKeys = Array.isArray(ws.openKeys) ? ws.openKeys : []
-              const minimizedKeys = Array.isArray(ws.minimizedKeys) ? ws.minimizedKeys : []
-              if (openKeys.length === 0 && minimizedKeys.length === 0) return ''
-              const wsUserPk = storage[`session_workspaceByKey_${wsKey}_userPk$`]()
-              const isDefaultUser = wsUserPk && wsUserPk === storage.session_defaultUserPk$()
-              const profile = wsUserPk ? storage[`session_accountByUserPk_${wsUserPk}_profile$`]() : null
-              const workspaceLabel = !wsUserPk
-                ? wsKey
-                : isDefaultUser
-                  ? t('Default User')
-                  : profile?.name || profile?.npub || wsUserPk
-              return this.h({ key: `${session.id}:${wsKey}` })`
-                <div class="workspace">
-                  <div class="workspace-label" title=${wsKey}>
-                    ${wsUserPk
-                      ? this.h`<div
-                          style=${`
-                            width: 16px;
-                            height: 16px;
-                            flex-shrink: 0;
-                            display: inline-block;
-                            overflow: hidden;
-                            border-radius: 50%;
-                          `}
-                        >
-                          <a-avatar
-                            props=${{
-                              pk$: wsUserPk,
-                              size: '16px',
-                              weight$: 'duotone',
-                              strokeWidth$: 1
-                            }}
-                          />
-                        </div>`
-                      : ''}
-                    <span>${workspaceLabel}</span>
-                  </div>
-                  <div class="workspace-apps">
-                    ${listSessionWorkspaceAppGroups({
-                      localStorageArea: localStorage,
-                      wsKey,
-                      openKeys,
-                      minimizedKeys
-                    }).map(group => this.h({ key: `${session.id}:${wsKey}:${group.appId}` })`
-                      <sticky-session-app-tile
-                        props=${{
-                          appId: group.appId,
-                          openCount: group.openCount,
-                          minimizedCount: group.minimizedCount
-                        }}
-                      />
-                    `)}
-                  </div>
+    <div class="scroll-area">
+      <div class="content">
+        ${sessions$().length === 0
+          ? [this.h`<div class="empty">${t('No saved sessions yet.')}</div>`]
+          : sessions$().map(session => {
+            const isPending = pendingRestore$().has(session.id)
+            return this.h({ key: session.id })`
+            <div class="session">
+              <div class="session-head">
+                <div class="session-date">${new Date(session.updatedAt).toLocaleString(getEffectiveLocale())}</div>
+                <div class="session-actions">
+                  <div
+                    class=${{ 'session-action': true, primary: true, disabled: isPending }}
+                    onclick=${() => handlePrimaryAction(session)}
+                  >${session.claimed ? t('Duplicate') : t('Restore')}</div>
+                  <div
+                    class="session-action"
+                    onclick=${() => {
+                      requestStickySessionDelete({ localStorageArea: localStorage, snapshotId: session.id })
+                    }}
+                  >${t('Delete')}</div>
                 </div>
-              `
-            }).filter(Boolean)}
-          </div>
-          `
-        })}
+              </div>
+              ${session.workspaceKeys.map(wsKey => {
+                const ws = session.workspaces[wsKey]
+                if (!ws) return ''
+                const openKeys = Array.isArray(ws.openKeys) ? ws.openKeys : []
+                const minimizedKeys = Array.isArray(ws.minimizedKeys) ? ws.minimizedKeys : []
+                if (openKeys.length === 0 && minimizedKeys.length === 0) return ''
+                const wsUserPk = storage[`session_workspaceByKey_${wsKey}_userPk$`]()
+                const isDefaultUser = wsUserPk && wsUserPk === storage.session_defaultUserPk$()
+                const profile = wsUserPk ? storage[`session_accountByUserPk_${wsUserPk}_profile$`]() : null
+                const workspaceLabel = !wsUserPk
+                  ? wsKey
+                  : isDefaultUser
+                    ? t('Default User')
+                    : profile?.name || profile?.npub || wsUserPk
+                return this.h({ key: `${session.id}:${wsKey}` })`
+                  <div class="workspace">
+                    <div class="workspace-label" title=${wsKey}>
+                      ${wsUserPk
+                        ? this.h`<div
+                            style=${`
+                              width: 16px;
+                              height: 16px;
+                              flex-shrink: 0;
+                              display: inline-block;
+                              overflow: hidden;
+                              border-radius: 50%;
+                            `}
+                          >
+                            <a-avatar
+                              props=${{
+                                pk$: wsUserPk,
+                                size: '16px',
+                                weight$: 'duotone',
+                                strokeWidth$: 1
+                              }}
+                            />
+                          </div>`
+                        : ''}
+                      <span>${workspaceLabel}</span>
+                    </div>
+                    <div class="workspace-apps">
+                      ${listSessionWorkspaceAppGroups({
+                        localStorageArea: localStorage,
+                        wsKey,
+                        openKeys,
+                        minimizedKeys
+                      }).map(group => this.h({ key: `${session.id}:${wsKey}:${group.appId}` })`
+                        <sticky-session-app-tile
+                          props=${{
+                            appId: group.appId,
+                            openCount: group.openCount,
+                            minimizedCount: group.minimizedCount
+                          }}
+                        />
+                      `)}
+                    </div>
+                  </div>
+                `
+              }).filter(Boolean)}
+            </div>
+            `
+          })}
+      </div>
     </div>
   `
 })

@@ -118,7 +118,9 @@ f('a-settings', function () {
     <style>${`
       a-settings {
         flex-grow: 1;
-        max-width: 900px;
+        width: 100%;
+        min-width: 0;
+        min-height: 0;
         display: flex !important;
         flex-direction: column;
         height: 100%;
@@ -126,6 +128,9 @@ f('a-settings', function () {
         color: ${cssVars.colors.fg};
 
         .header {
+          width: 100%;
+          max-width: 900px;
+          margin-inline: auto;
           height: 55px;
           display: flex;
           align-items: center;
@@ -139,9 +144,16 @@ f('a-settings', function () {
           font-size: 18rem;
           margin-left: 10px;
         }
-        .content {
-          padding: 20px;
+        .scroll-area {
+          flex: 1;
+          min-height: 0;
           overflow-y: auto;
+        }
+        .content {
+          width: 100%;
+          max-width: 900px;
+          margin-inline: auto;
+          padding: 20px;
           display: flex;
           flex-direction: column;
           gap: 20px;
@@ -242,134 +254,136 @@ f('a-settings', function () {
       <div class="title">${t('Settings')}</div>
     </div>
 
-    <div class="content">
-      <div class="section">
-        <div class="section-title">${t('General')}</div>
+    <div class="scroll-area">
+      <div class="content">
+        <div class="section">
+          <div class="section-title">${t('General')}</div>
 
-        <div class="item">
-          <div class="item-content">
-            <div class="item-title">${t('Language')}</div>
-            <div class="item-subtitle">${t('Choose the interface language')}</div>
+          <div class="item">
+            <div class="item-content">
+              <div class="item-title">${t('Language')}</div>
+              <div class="item-subtitle">${t('Choose the interface language')}</div>
+            </div>
+            <div class="update-mode-select-wrapper">
+              <select class="update-mode-select" name="locale" onchange=${e => setLocalePreference(e.target.value)}>
+                <option value=${AUTO_LOCALE} selected=${getLocalePreference() === AUTO_LOCALE}>${t('Automatic')}</option>
+                ${SUPPORTED_LOCALES.map(locale => this.h`
+                  <option value=${locale} selected=${getLocalePreference() === locale}>${LOCALE_NAMES[locale]}</option>
+                `)}
+              </select>
+              <icon-chevron-left class="update-mode-select-chevron" props=${{ rotate: 270, size: '16px' }} />
+            </div>
           </div>
-          <div class="update-mode-select-wrapper">
-            <select class="update-mode-select" name="locale" onchange=${e => setLocalePreference(e.target.value)}>
-              <option value=${AUTO_LOCALE} selected=${getLocalePreference() === AUTO_LOCALE}>${t('Automatic')}</option>
-              ${SUPPORTED_LOCALES.map(locale => this.h`
-                <option value=${locale} selected=${getLocalePreference() === locale}>${LOCALE_NAMES[locale]}</option>
-              `)}
-            </select>
-            <icon-chevron-left class="update-mode-select-chevron" props=${{ rotate: 270, size: '16px' }} />
+
+          <div class="item">
+            <div class="item-content">
+              <div class="item-title">${t('Auto Update')}</div>
+              <div class="item-subtitle">${t('When to install app updates')}</div>
+            </div>
+            <div class="update-mode-select-wrapper">
+              <select class="update-mode-select" name="appUpdateMode" onchange=${(e) => appUpdateMode$(e.target.value)}>
+                <option value="always" selected=${updateMode$() === 'always'}>${t('Always')}</option>
+                <option value="wifi" selected=${updateMode$() === 'wifi'}>${t('Wi-Fi only')}</option>
+                <option value="manual" selected=${updateMode$() === 'manual'}>${t('Manual')}</option>
+              </select>
+              <icon-chevron-left class="update-mode-select-chevron" props=${{ rotate: 270, size: '16px' }} />
+            </div>
+          </div>
+
+          <div class=${{
+            item: true,
+            'app-updates-item': true,
+            collapsed: !isManualUpdate$()
+          }} onclick=${() => location.pushState({}, '', '/app-updates')}>
+            <div class="item-content">
+              <div class="item-title">${t('App Updates')}</div>
+              <div class="item-subtitle">${t('Check for updates')}</div>
+            </div>
+            ${showAppUpdatesBadge$() ? this.h`<div class="badge">${appUpdateCount$()}</div>` : ''}
+          </div>
+
+          <div class="item">
+            <div class="item-content">
+              <div class="item-title">${t('Multi-Window Mode')}</div>
+              <div class="item-subtitle">${t('Toggle between single and multi-window mode')}</div>
+            </div>
+            <toggle-switch props=${{
+              checked: !isSingleWindow$(),
+              onChange: (checked) => isSingleWindow$(!checked)
+            }} />
+          </div>
+
+          <div class="item">
+            <div class="item-content">
+              <div class="item-title">${t('Sticky Sessions')}</div>
+              <div class="item-subtitle">${t('Remember open apps across browser sessions')}</div>
+            </div>
+            ${this.h({ key: `sticky-${stickyEnabled$()}-${stickyToggleReset$()}` })`
+              <toggle-switch
+                props=${{
+                  checked: stickyEnabled$(),
+                  onChange: handleStickyToggle
+                }}
+              />
+            `}
+          </div>
+
+          <div class=${{
+            item: true,
+            'app-updates-item': true,
+            collapsed: !stickyEnabled$()
+          }} onclick=${() => location.pushState({}, '', '/sticky-sessions')}>
+            <div class="item-content">
+              <div class="item-title">${t('Saved Sessions')}</div>
+              <div class="item-subtitle">${t('Manage saved sessions')}</div>
+            </div>
+            ${stickyBadgeCount$() > 0 ? this.h`<div class="badge">${stickyBadgeCount$()}</div>` : ''}
           </div>
         </div>
 
-        <div class="item">
-          <div class="item-content">
-            <div class="item-title">${t('Auto Update')}</div>
-            <div class="item-subtitle">${t('When to install app updates')}</div>
-          </div>
-          <div class="update-mode-select-wrapper">
-            <select class="update-mode-select" name="appUpdateMode" onchange=${(e) => appUpdateMode$(e.target.value)}>
-              <option value="always" selected=${updateMode$() === 'always'}>${t('Always')}</option>
-              <option value="wifi" selected=${updateMode$() === 'wifi'}>${t('Wi-Fi only')}</option>
-              <option value="manual" selected=${updateMode$() === 'manual'}>${t('Manual')}</option>
-            </select>
-            <icon-chevron-left class="update-mode-select-chevron" props=${{ rotate: 270, size: '16px' }} />
-          </div>
-        </div>
+        <div class="section">
+          <div class="section-title">${t('Advanced')}</div>
+          <button class="item" onclick=${() => location.pushState({}, '', '/event-storage')}>
+            <div class="item-content"><div class="item-title">${storageT('Event storage')}</div></div>
+          </button>
 
-        <div class=${{
-          item: true,
-          'app-updates-item': true,
-          collapsed: !isManualUpdate$()
-        }} onclick=${() => location.pushState({}, '', '/app-updates')}>
-          <div class="item-content">
-            <div class="item-title">${t('App Updates')}</div>
-            <div class="item-subtitle">${t('Check for updates')}</div>
-          </div>
-          ${showAppUpdatesBadge$() ? this.h`<div class="badge">${appUpdateCount$()}</div>` : ''}
-        </div>
-
-        <div class="item">
-          <div class="item-content">
-            <div class="item-title">${t('Multi-Window Mode')}</div>
-            <div class="item-subtitle">${t('Toggle between single and multi-window mode')}</div>
-          </div>
-          <toggle-switch props=${{
-            checked: !isSingleWindow$(),
-            onChange: (checked) => isSingleWindow$(!checked)
-          }} />
-        </div>
-
-        <div class="item">
-          <div class="item-content">
-            <div class="item-title">${t('Sticky Sessions')}</div>
-            <div class="item-subtitle">${t('Remember open apps across browser sessions')}</div>
-          </div>
-          ${this.h({ key: `sticky-${stickyEnabled$()}-${stickyToggleReset$()}` })`
-            <toggle-switch
-              props=${{
-                checked: stickyEnabled$(),
-                onChange: handleStickyToggle
-              }}
-            />
-          `}
-        </div>
-
-        <div class=${{
-          item: true,
-          'app-updates-item': true,
-          collapsed: !stickyEnabled$()
-        }} onclick=${() => location.pushState({}, '', '/sticky-sessions')}>
-          <div class="item-content">
-            <div class="item-title">${t('Saved Sessions')}</div>
-            <div class="item-subtitle">${t('Manage saved sessions')}</div>
-          </div>
-          ${stickyBadgeCount$() > 0 ? this.h`<div class="badge">${stickyBadgeCount$()}</div>` : ''}
-        </div>
-      </div>
-
-      <div class="section">
-        <div class="section-title">${t('Advanced')}</div>
-        <button class="item" onclick=${() => location.pushState({}, '', '/event-storage')}>
-          <div class="item-content"><div class="item-title">${storageT('Event storage')}</div></div>
-        </button>
-
-        <div class="item" style="cursor: default;">
-          <div class="input-group" style="width: 100%;">
-            <div class="item-title">${t('Credential Vault URL')}</div>
-            <div style="display: flex; gap: 8px; align-items: center;">
-              <input type="text" style=${{
-                flexGrow: 1,
-                borderColor: hasVaultUrlError$() ? cssVars.colors.fgError : cssVars.colors.bg3
-              }} value=${draftVaultUrl$()} oninput=${handleVaultUrlChange} />
-              ${draftVaultUrl$() !== vaultUrl$()
-                ? this.h`
-                  <button onclick=${saveVaultUrl} style=${`
-                    background: ${cssVars.colors.bgAccentPrimary};
-                    color: ${cssVars.colors.fgAccent};
-                    border: none;
-                    border-radius: 4px;
-                    width: 40px;
-                    height: 40px;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    cursor: pointer;
-                  `}><icon-check props=${{ size: '24px' }} /></button>
-                  <button onclick=${cancelVaultUrlChange} style=${`
-                    background: ${cssVars.colors.bg2};
-                    color: ${cssVars.colors.fg};
-                    border: none;
-                    border-radius: 4px;
-                    width: 40px;
-                    height: 40px;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    cursor: pointer;
-                  `}><icon-cancel props=${{ size: '24px' }} /></button>
-                `
-                : ''}
+          <div class="item" style="cursor: default;">
+            <div class="input-group" style="width: 100%;">
+              <div class="item-title">${t('Credential Vault URL')}</div>
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <input type="text" style=${{
+                  flexGrow: 1,
+                  borderColor: hasVaultUrlError$() ? cssVars.colors.fgError : cssVars.colors.bg3
+                }} value=${draftVaultUrl$()} oninput=${handleVaultUrlChange} />
+                ${draftVaultUrl$() !== vaultUrl$()
+                  ? this.h`
+                    <button onclick=${saveVaultUrl} style=${`
+                      background: ${cssVars.colors.bgAccentPrimary};
+                      color: ${cssVars.colors.fgAccent};
+                      border: none;
+                      border-radius: 4px;
+                      width: 40px;
+                      height: 40px;
+                      display: flex;
+                      align-items: center;
+                      justify-content: center;
+                      cursor: pointer;
+                    `}><icon-check props=${{ size: '24px' }} /></button>
+                    <button onclick=${cancelVaultUrlChange} style=${`
+                      background: ${cssVars.colors.bg2};
+                      color: ${cssVars.colors.fg};
+                      border: none;
+                      border-radius: 4px;
+                      width: 40px;
+                      height: 40px;
+                      display: flex;
+                      align-items: center;
+                      justify-content: center;
+                      cursor: pointer;
+                    `}><icon-cancel props=${{ size: '24px' }} /></button>
+                  `
+                  : ''}
+              </div>
             </div>
           </div>
         </div>

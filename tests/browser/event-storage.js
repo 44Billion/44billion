@@ -26,7 +26,7 @@ const bundle = await build({
     document.head.append(style); document.documentElement.classList.add(cssClasses.defaultTheme);
     f('storage-fixture', ({h}) => {
       const location = useLocation(router); useInitI18n(); fixture.location = location;
-      return h\`<f-route props=\${{path:'/event-storage'}} /><f-route props=\${{path:'/settings'}} />\`;
+      return h\`<f-route props=\${{path:'/event-storage'}} /><f-route props=\${{path:'/settings'}} /><f-route props=\${{path:'/sticky-sessions'}} /><f-route props=\${{path:'/app-updates'}} />\`;
     });
     document.body.insertAdjacentHTML('beforeend', '<storage-fixture></storage-fixture>');
     fixture.seed = async () => {
@@ -148,7 +148,52 @@ try {
   context = [...browser.contexts.values()].find(c => c.sessionId === context.sessionId && c.origin === origin && c.uniqueId !== oldId)
   await browser.until(() => evaluate('!!document.getElementById("publicBytes-input")'), 'direct reload')
   assert.equal(await evaluate('document.getElementById("publicBytes-input").value'), '0')
-  console.log('Event storage: drafts, proportional quota, errors, cross-tab updates, themes, responsive layout and routing passed')
+  // Reserve the toolbar's space in both orientations, as the production screen does.
+  // Empty account/app lists get tall fixture content so every view can be scrolled.
+  for (const [width, toolbarPosition] of [[1400, 'right'], [1400, 'bottom'], [390, 'bottom']]) {
+    await browser.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width < 500 }, context.sessionId)
+    await evaluate(`{
+      document.getElementById('toolbar-space')?.remove();
+      const toolbar = document.createElement('div'); toolbar.id = 'toolbar-space';
+      toolbar.style.flex = '0 0 48px';
+      document.body.append(toolbar);
+      document.body.style.display = 'flex';
+      document.body.style.flexDirection = '${toolbarPosition === 'right' ? 'row' : 'column'}';
+      document.querySelector('storage-fixture').style.cssText = 'flex:1;min-width:0;min-height:0;height:auto';
+    }`)
+    for (const [route, host, content, header] of [
+      ['/settings', 'a-settings', '.content', '.header'],
+      ['/sticky-sessions', 'sticky-sessions', '.content', '.header'],
+      ['/app-updates', 'napp-updates', '.body-cydfv983dfff', '.header-1kuhvcxd8b'],
+      ['/event-storage', 'event-storage', '.content', '.header']
+    ]) {
+      await evaluate(`fixture.location.pushState({}, '', '${route}')`)
+      await browser.until(() => evaluate(`!!document.querySelector('${host} ${content}')`), `${route} scroll layout`)
+      const geometry = await evaluate(`(() => {
+        const host = document.querySelector('${host}');
+        const content = host.querySelector('${content}');
+        const filler = document.createElement('div');
+        filler.style.cssText = 'height:2000px;flex-shrink:0'; content.append(filler);
+        const scroll = host.querySelector('.scroll-area'); scroll.scrollTop = 0;
+        const rect = el => { const r = el.getBoundingClientRect(); return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width}; };
+        return {scroll:rect(scroll), content:rect(content), header:rect(host.querySelector('${header}')), layer:rect(document.querySelector('storage-fixture')), clientWidth:scroll.clientWidth};
+      })()`)
+      assert.equal(geometry.scroll.right, geometry.layer.right, `${route}: scrollbar at layer edge`)
+      assert.equal(geometry.scroll.left, geometry.layer.left, `${route}: full-width scroll hit area`)
+      assert.equal(geometry.scroll.bottom, geometry.layer.bottom, `${route}: respects bottom toolbar`)
+      assert.ok(geometry.content.width <= 900, `${route}: bounded content`)
+      assert.ok(Math.abs(geometry.content.left - geometry.scroll.left - (geometry.clientWidth - geometry.content.width) / 2) <= 1, `${route}: centered content`)
+      assert.ok(geometry.header.width <= 900, `${route}: bounded header`)
+      for (const x of [geometry.scroll.left + 20, geometry.scroll.right - 20]) {
+        const before = await evaluate(`document.querySelector('${host} .scroll-area').scrollTop`)
+        await browser.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x, y: geometry.scroll.top + 150, deltaX: 0, deltaY: 150 }, context.sessionId)
+        await browser.until(() => evaluate(`document.querySelector('${host} .scroll-area').scrollTop > ${before}`), `${route}: wheel in outer gutter`)
+      }
+      assert.equal(await evaluate(`document.querySelector('${host} ${header}').getBoundingClientRect().top`), geometry.header.top, `${route}: header stays fixed`)
+      assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${route}: no horizontal overflow`)
+    }
+  }
+  console.log('Event storage: drafts, proportional quota, errors, cross-tab updates, themes, responsive layout and routing passed; all four settings views scroll across the available layer width')
 } finally {
   await browser.diagnose('/tmp/44billion-event-storage-browser')
   await browser.close()
