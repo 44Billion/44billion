@@ -1,6 +1,8 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { finalizeEvent } from 'libp2r2p/event'
+import { nip07Encrypt, nip07Decrypt } from 'libp2r2p/nip44-v3'
+import { base64ToBytes } from 'libp2r2p/base64'
 
 import {
   BROAD_EVENT_KIND,
@@ -772,9 +774,26 @@ describe('nostrdb browser bridge helpers', () => {
     assert.equal(await encrypt(1, '{"kind":1}'), 'cipher')
     assert.equal(await obfuscate('topicexample', 1006, '#t'), 'obf')
     assert.deepEqual(calls.map(call => call.message.payload.method), ['nip44v3_encrypt', 'obfuscate'])
-    assert.deepEqual(calls[0].message.payload.params, [pubkey, '1', '', 'eyJraW5kIjoxfQ'])
+    assert.deepEqual(calls[0].message.payload.params, [pubkey, '1', '', 'eyJraW5kIjoxfQ=='])
     assert.deepEqual(calls[1].message.payload.params, ['topicexample', '1006', '#t'])
     assert.equal(calls.every(call => call.message.payload.context === NOSTRDB_PERSONAL_COPY_CONTEXT), true)
+  })
+
+  it('personal-copy plaintext round-trips through the real NIP-44 v3 signer with query strings and Unicode', async () => {
+    const secret = new Uint8Array(32).fill(1)
+    const pubkey = finalizeEvent({ kind: 0, created_at: 1, tags: [], content: '' }, secret).pubkey
+    const encrypt = createNostrDbPersonalCopyEncrypt({
+      pubkey,
+      askVault: async ({ payload: { params } }) => ({ payload: nip07Encrypt(secret, ...params) })
+    })
+    for (const content of ['https://tabler.io/icons?icon=server-bolt', '😀', 'ação? <>& 😀']) {
+      for (const prefix of ['', 'a', 'ab']) {
+        const plaintext = JSON.stringify({ content: prefix + content, created_at: 1, kind: 9, tags: [] })
+        const ciphertext = await encrypt(9, plaintext)
+        const decoded = nip07Decrypt(secret, pubkey, '9', '', ciphertext)
+        assert.equal(new TextDecoder().decode(base64ToBytes(decoded)), plaintext)
+      }
+    }
   })
 
   it('creates a permissionless vault maintenance signer wrapper', async () => {

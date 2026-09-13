@@ -18,6 +18,11 @@ Kind 34601 chunk events store metadata in NostrDB and externalize their content
 into the shared `44billion_browser` chunk stores. Those are separate databases;
 an IndexedDB transaction cannot update both together.
 
+Personal-copy creation sends the inner JSON as UTF-8 bytes encoded in standard
+Base64 to the vault's NIP-44 v3 signer. Do not use Base64URL for this wire format:
+its `-`/`_` alphabet is rejected by the signer. This conversion precedes encryption
+and does not change stored ciphertext formats or require migrating existing copies.
+
 ## Scheduled routines
 
 `getNostrDb(owner)` caches one instance per owner in the current module context

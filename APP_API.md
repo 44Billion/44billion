@@ -64,8 +64,8 @@ vault signer:
 | `signEvent(event)`, `doubleSignEvent(...params)` | Sign event data. |
 | `nip04.encrypt(pubkey, plaintext)`, `nip04.decrypt(pubkey, ciphertext)` | NIP-04 encryption/decryption. |
 | `nip44.encrypt(pubkey, plaintext)`, `nip44.decrypt(pubkey, ciphertext)` | NIP-44 encryption/decryption. |
-| `nip44v3.encrypt(...params)`, `nip44v3.decrypt(...params)` | Vault NIP-44 v3 extension. |
-| `nip44v3.encryptDoubleDH(...params)`, `nip44v3.decryptDoubleDH(...params)` | Vault double-DH extension. |
+| `nip44v3.encrypt(...params)`, `nip44v3.decrypt(...params)` | Vault NIP-44 v3 extension. Plaintext bytes use standard Base64 on the signer wire, including the decrypted result. |
+| `nip44v3.encryptDoubleDH(...params)`, `nip44v3.decryptDoubleDH(...params)` | Vault double-DH extension; plaintext bytes likewise use standard Base64. |
 | `obfuscate(...params)` | Vault obfuscation extension. |
 
 `ns(name, ...namespaceParams)` returns a method object using that namespace.
@@ -279,8 +279,8 @@ const filter = {
 }
 const subscription = window.napp.eventStore.subscribe(filter, { initial: true })
 for await (const { result: wrapper } of subscription) {
-  const base64url = await window.nostr.nip44v3.decrypt(owner, '9', '', wrapper.content)
-  // Decode base64url bytes as UTF-8 JSON to obtain the inner event/template.
+  const base64 = await window.nostr.nip44v3.decrypt(owner, '9', '', wrapper.content)
+  // Decode standard Base64 bytes as UTF-8 JSON to obtain the inner event/template.
 }
 ```
 
