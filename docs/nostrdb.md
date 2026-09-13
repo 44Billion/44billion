@@ -28,6 +28,17 @@ buffers as Base64 inside encrypted JSON fields. These transport changes do not
 change stored ciphertext formats or require migrating existing copies. See
 `APP_API.md`.
 
+Local `addPersonalCopy` snapshots and validates the inner event once, then
+reuses its prepared mirrors and provenance during initial ingest. After signing,
+the launcher checks owner, kind, timestamp, ciphertext and tags, allowing the
+expected `imkc` proof completion. A module-private WeakMap binds preparation to
+the exact signed object; NostrDB consumes it once after signature verification
+and checks an event snapshot. This avoids decrypting the just-created wrapper
+and repeating its obfuscation calls. Cloned, changed, retried and externally
+received wrappers use ordinary full validation; app options cannot grant this
+trust. Normal quotas, provenance resolution, subscriptions and chunk staging
+still run. Preparation is memory-only and adds no persisted fields or schema.
+
 ## Scheduled routines
 
 `getNostrDb(owner)` caches one instance per owner in the current module context

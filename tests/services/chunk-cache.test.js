@@ -5,6 +5,7 @@ import NMMR from 'nmmr'
 import { encode } from 'libp2r2p/base93'
 import { finalizeEvent, isValidEvent } from 'libp2r2p/event'
 import { getPublicKey } from 'libp2r2p/key'
+import { createLocalPersonalCopy } from '#services/idb/nostrdb/personal-copy.js'
 import { buildPersonalCopyUnsignedEvent } from '#helpers/personal-copy.js'
 
 globalThis.indexedDB = indexedDB
@@ -198,6 +199,30 @@ describe('normalized global chunk cache', () => {
     assert.equal(result.storedEvent.pubkey, owner.pubkey)
     assert.equal(await db.count({ kinds: [1006] }), 0)
     assert.equal(await db.count({ kinds: [34601] }), 1)
+  })
+
+  it('local personal-copy chunks reuse preparation and retain payload staging', async () => {
+    const fixture = await chunkFixture(31)
+    const owner = ownerSigner(41)
+    const wrapper = await createLocalPersonalCopy({
+      originalEvent: fixture.event,
+      ownerPubkey: owner.pubkey,
+      encrypt: async () => 'encrypted-chunk',
+      obfuscate: async (value, kind, scope) => `obf:${kind}:${scope}:${value}`,
+      signEvent: owner.signEvent
+    })
+    const db = getNostrDb(owner.pubkey, {
+      maintenance: false,
+      personalCopyDecrypt: async () => assert.fail('must not decrypt a local preparation'),
+      personalCopyObfuscate: async () => assert.fail('must not recalculate local mirrors')
+    })
+    const result = await db.add(wrapper, { signEvent: owner.signEvent })
+    assert.equal(result.ok, true)
+    assert.equal(result.storedEvent.kind, 34601)
+    assert.equal(result.storedEvent.pubkey, owner.pubkey)
+    assert.equal(await db.count({ kinds: [1006] }), 0)
+    assert.equal(await db.count({ kinds: [34601] }), 1)
+    assert.deepEqual((await getChunkPayloadForEvent(owner.pubkey, result.storedEvent.id)).contentBytes, fixture.chunk.contentBytes)
   })
 
   it('persists neither wrapper nor payload when personal-copy decryption fails', async () => {

@@ -131,7 +131,13 @@ export function personalCopySourceId (innerEvent, { wrapperPubkey } = {}) {
   return describePersonalCopyInner(innerEvent, { wrapperPubkey })?.sourceId ?? null
 }
 
-export async function buildPersonalCopyUnsignedEvent ({
+export async function buildPersonalCopyUnsignedEvent (options) {
+  return (await preparePersonalCopyUnsignedEvent(options)).event
+}
+
+// Internal preparation keeps the validated inner snapshot alongside its wrapper.
+// Callers must bind it to the final signed wrapper before reusing it for ingest.
+export async function preparePersonalCopyUnsignedEvent ({
   originalEvent,
   ownerPubkey,
   context = '',
@@ -144,7 +150,7 @@ export async function buildPersonalCopyUnsignedEvent ({
   if (typeof encrypt !== 'function') throw new Error('PERSONAL_COPY_ENCRYPT_REQUIRED')
   if (typeof obfuscate !== 'function') throw new Error('PERSONAL_COPY_OBFUSCATE_REQUIRED')
 
-  const prepared = preparePersonalCopyInner(originalEvent, ownerPubkey)
+  const prepared = preparePersonalCopyInner(structuredClone(originalEvent), ownerPubkey)
   if (!prepared) throw new Error('INVALID_PERSONAL_COPY_INNER_EVENT')
   if (hearsay && prepared.signed) throw new Error('HEARSAY_SIGNED_EVENT')
   if (hearsay && prepared.selfOwned) throw new Error('HEARSAY_SELF_OWNED_EVENT')
@@ -156,22 +162,31 @@ export async function buildPersonalCopyUnsignedEvent ({
       : PERSONAL_COPY_PROVENANCE.DIRECT_RUMOR
   const plaintext = JSON.stringify(prepared.inner)
   const content = await encrypt(prepared.inner.kind, plaintext)
-  const tags = await buildPersonalCopyTags({
-    innerEvent: prepared.inner,
-    wrapperPubkey: ownerPubkey,
-    context,
-    provenance,
-    obfuscate
-  })
-
-  // The vault fills this proof while signing the outer wrapper.
-  tags.push(['imkc'])
+  const mirrors = await buildMirrorDataFromDescription(prepared, obfuscate)
+  const contextValue = await obfuscate(String(context ?? ''), PERSONAL_COPY_KIND, '')
+  const tags = [
+    ['k', String(prepared.inner.kind)],
+    ['c', contextValue],
+    [PERSONAL_COPY_PROVENANCE_TAG, provenance],
+    ...mirrors.tags,
+    // The vault fills this proof while signing the outer wrapper.
+    ['imkc']
+  ]
 
   return {
-    kind: PERSONAL_COPY_KIND,
-    created_at: prepared.inner.created_at,
-    tags,
-    content
+    event: {
+      kind: PERSONAL_COPY_KIND,
+      created_at: prepared.inner.created_at,
+      tags,
+      content
+    },
+    personalCopy: {
+      context: contextValue,
+      inner: prepared.inner,
+      provenance,
+      sourceId: mirrors.sourceId,
+      sourceMirror: mirrors.sourceMirror
+    }
   }
 }
 
@@ -207,8 +222,12 @@ export async function buildPersonalCopyMirrorData ({ innerEvent, wrapperPubkey, 
   if (!description) throw new Error('INVALID_PERSONAL_COPY_INNER_EVENT')
   if (typeof obfuscate !== 'function') throw new Error('PERSONAL_COPY_OBFUSCATE_REQUIRED')
 
+  return buildMirrorDataFromDescription(description, obfuscate)
+}
+
+async function buildMirrorDataFromDescription (description, obfuscate) {
   const tags = []
-  for (const tag of innerEvent.tags) {
+  for (const tag of description.inner.tags) {
     if (tag[0].length !== 1 || typeof tag[1] !== 'string') continue
     tags.push(['o', await obfuscate(tag[1], PERSONAL_COPY_KIND, `#${tag[0]}`)])
   }

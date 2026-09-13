@@ -3,6 +3,9 @@ import { afterEach, it } from 'node:test'
 import { indexedDB, IDBKeyRange } from 'fake-indexeddb'
 import { finalizeEvent } from 'libp2r2p/event'
 import { getPublicKey } from 'libp2r2p/key'
+import { encryptBytes, decryptBytes } from 'libp2r2p/nip44-v3'
+import { createLocalPersonalCopy } from '#services/idb/nostrdb/personal-copy.js'
+import { runNostrDbMethod } from '#helpers/window-message/browser/nostrdb.js'
 import { buildPersonalCopyUnsignedEvent } from '#helpers/personal-copy.js'
 import {
   getNostrDb, openNostrDb, deleteNostrDb, eventIdIndexKey,
@@ -896,4 +899,141 @@ it('does not discard newly arriving referenced events or already preserved versi
   assert.ok(await row(a.raw, old))
   assert.equal(await row(a.raw, newer), undefined)
   assert.deepEqual(await getNostrDbQuotaUsage(), before)
+})
+
+function localCopyFixture (account) {
+  const calls = { encrypt: 0, decrypt: 0, obfuscate: 0 }
+  const encoder = new TextEncoder()
+  const encrypt = async (kind, plaintext) => {
+    calls.encrypt++
+    return encryptBytes(account.secret, account.pubkey, kind, new Uint8Array(), encoder.encode(plaintext))
+  }
+  const obfuscate = async (value, kind, scope) => {
+    calls.obfuscate++
+    return `${kind}:${scope}:${value}`
+  }
+  const signEvent = async template => {
+    const contentKey = new Uint8Array(32).fill(7)
+    const pubkey = getPublicKey(contentKey)
+    const proofless = { ...template, tags: template.tags.map(tag => tag[0] === 'imkc' ? ['imkc', pubkey] : tag) }
+    const proof = finalizeEvent(proofless, contentKey)
+    return finalizeEvent({
+      ...template,
+      tags: template.tags.map(tag => tag[0] === 'imkc' ? ['imkc', pubkey, proof.sig] : tag)
+    }, account.secret)
+  }
+  account.db.personalCopyDecrypt = async event => {
+    calls.decrypt++
+    const kind = Number(event.tags.find(tag => tag[0] === 'k')[1])
+    return new TextDecoder().decode(decryptBytes(account.secret, account.pubkey, kind, new Uint8Array(), event.content))
+  }
+  account.db.personalCopyObfuscate = obfuscate
+  return { calls, encrypt, obfuscate, signEvent, ownerPubkey: account.pubkey }
+}
+
+it('local personal-copy ingest avoids decryption and repeated obfuscation with real signatures and ciphertext', async () => {
+  const a = await owner()
+  const fixture = localCopyFixture(a)
+  const tagCount = 24
+  const original = {
+    kind: 9, created_at: 123, content: 'ação 😀 ?',
+    tags: Array.from({ length: tagCount }, (_, i) => ['t', String(i)])
+  }
+  const result = await runNostrDbMethod({
+    db: a.db, method: 'addPersonalCopy', params: [original, { context: 'self' }], appId: APP,
+    signEvent: fixture.signEvent, personalCopyEncrypt: fixture.encrypt,
+    personalCopyObfuscate: fixture.obfuscate, requestPermission: async () => {}
+  })
+  assert.equal(result.result.stored, true)
+  assert.deepEqual(fixture.calls, { encrypt: 1, decrypt: 0, obfuscate: tagCount + 3 })
+  assert.ok(await row(a.raw, result.event))
+  assert.equal((await getNostrDbQuotaUsage()).privateBytes, byteSize(result.event))
+
+  // The preparation is consumed: even the very same object must be inspected
+  // on a later ordinary add. A serialized app option cannot bypass validation.
+  const before = fixture.calls.obfuscate
+  assert.equal((await a.db.add(result.event, { alreadyValidated: true, personalCopy: { inner: original } })).code, 'duplicate')
+  assert.equal(fixture.calls.decrypt, 1)
+  assert.equal(fixture.calls.obfuscate - before, tagCount + 2)
+})
+
+it('local preparation snapshots the inner event before awaiting encryption', async () => {
+  const a = await owner()
+  const fixture = localCopyFixture(a)
+  const original = { kind: 9, created_at: 123, content: 'before', tags: [['t', 'before']] }
+  const event = await createLocalPersonalCopy({
+    ...fixture, originalEvent: original,
+    encrypt: async (...args) => {
+      original.content = 'after'
+      original.tags[0][1] = 'after'
+      return fixture.encrypt(...args)
+    }
+  })
+  assert.equal((await a.db.add(event)).stored, true)
+  assert.equal(fixture.calls.decrypt, 0)
+  assert.ok(event.tags.some(tag => tag[1] === '1006:#t:before'))
+  assert.equal(JSON.parse(await a.db.personalCopyDecrypt(event)).content, 'before')
+})
+
+it('local preparation rejects unexpected signed fields, tag rewrites and template mutation', async () => {
+  const a = await owner()
+  const fixture = localCopyFixture(a)
+  const originalEvent = { kind: 9, created_at: 123, content: 'before', tags: [] }
+  for (const change of [
+    template => ({ ...template, content: 'different ciphertext' }),
+    template => ({ ...template, created_at: 124 }),
+    template => ({ ...template, kind: 1 }),
+    template => ({ ...template, tags: [...template.tags, ['x', 'extra']] }),
+    template => ({ ...template, tags: template.tags.map(tag => tag[0] === 'imkc' ? ['imkc', 'invalid'] : tag) }),
+    template => { template.content = 'mutated'; return template }
+  ]) {
+    await assert.rejects(createLocalPersonalCopy({
+      ...fixture, originalEvent,
+      signEvent: template => finalizeEvent(change(template), a.secret)
+    }), /INVALID_PERSONAL_COPY_SIGNATURE_RESULT/)
+  }
+  await assert.rejects(createLocalPersonalCopy({
+    ...fixture, originalEvent, signEvent: template => finalizeEvent(template, foreignSecret)
+  }), /INVALID_PERSONAL_COPY_SIGNATURE_RESULT/)
+  const denied = new Error('Permission denied')
+  await assert.rejects(createLocalPersonalCopy({
+    ...fixture, originalEvent, signEvent: () => { throw denied }
+  }), error => error === denied)
+  const badSignature = await createLocalPersonalCopy({
+    ...fixture, originalEvent, signEvent: async template => ({ ...await fixture.signEvent(template), sig: '0'.repeat(128) })
+  })
+  assert.equal((await a.db.add(badSignature)).code, 'invalid')
+  assert.equal((await getNostrDbQuotaUsage()).privateCount, 0)
+})
+
+it('cloned, changed and cross-owner wrappers do not reuse local preparation', async () => {
+  const a = await owner()
+  const b = await owner()
+  const fixture = localCopyFixture(a)
+  const originalEvent = { kind: 9, created_at: 123, content: 'original', tags: [] }
+  const event = await createLocalPersonalCopy({ ...fixture, originalEvent })
+  assert.equal((await a.db.add(structuredClone(event))).stored, true)
+  assert.equal(fixture.calls.decrypt, 1)
+  // A validly re-signed mutation must still have its plaintext inspected.
+  Object.assign(event, finalizeEvent({ ...event, content: 'bad cipher' }, a.secret))
+  assert.equal((await a.db.add(event)).code, 'invalid')
+  assert.equal(fixture.calls.decrypt, 2)
+  const other = await createLocalPersonalCopy({ ...fixture, originalEvent })
+  assert.equal((await b.db.add(other)).code, 'invalid')
+  assert.equal((await getNostrDbQuotaUsage()).privateCount, 1)
+})
+
+it('local personal copies preserve quota refusal and retry through ordinary admission', async () => {
+  const a = await owner()
+  const fixture = localCopyFixture(a)
+  const originalEvent = signed({ content: 'signed third-party copy' })
+  const event = await createLocalPersonalCopy({ ...fixture, originalEvent })
+  await limits({ privateBytes: 0 })
+  assert.equal((await a.db.add(event)).code, 'quota')
+  assert.equal(fixture.calls.decrypt, 0)
+  assert.equal(await row(a.raw, event), undefined)
+  await limits({ privateBytes: byteSize(event) })
+  assert.equal((await a.db.add(event)).stored, true)
+  assert.equal(fixture.calls.decrypt, 1)
+  assert.equal((await getNostrDbQuotaUsage()).privateCount, 1)
 })

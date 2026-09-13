@@ -72,6 +72,7 @@ import {
 } from './scheduled.js'
 import { buildCrdtMergeTemplate } from './crdt.js'
 import {
+  consumeLocalPersonalCopy,
   extractPersonalCopyChunkForAdd,
   normalizePersonalCopyForAdd,
   validatePersonalCopyForStorage
@@ -352,6 +353,7 @@ export class NostrDb {
     if (!isVerifiedEvent(event)) {
       return this.reportAddResult('add', event, addResult('invalid'))
     }
+    const localPersonalCopy = consumeLocalPersonalCopy(event, this.ownerPubkey)
     let chunkData = null
     let normalized
 
@@ -360,7 +362,7 @@ export class NostrDb {
         personalCopyEncryptionKind(event) === 34601
       if (claimedPersonalChunk) {
         if (!isValidEventShape(event) || !isValidEvent(event)) throw new Error('Invalid personal-copy wrapper')
-        const inner = await extractPersonalCopyChunkForAdd(event, {
+        const inner = localPersonalCopy?.inner ?? await extractPersonalCopyChunkForAdd(event, {
           decrypt: this.personalCopyDecrypt,
           obfuscate: this.personalCopyObfuscate,
           ownerPubkey: this.ownerPubkey
@@ -380,6 +382,8 @@ export class NostrDb {
         })
         normalized = { event: chunk.event, personalCopy: null }
         chunkData = chunk.data
+      } else if (localPersonalCopy) {
+        normalized = { event, personalCopy: localPersonalCopy }
       } else {
         normalized = await normalizePersonalCopyForAdd(event, {
           decrypt: this.personalCopyDecrypt,

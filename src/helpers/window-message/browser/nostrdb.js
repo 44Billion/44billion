@@ -1,3 +1,4 @@
+import { createLocalPersonalCopy } from '#services/idb/nostrdb/personal-copy.js'
 import { normalizeLocalRemovalTargets, localRemovalResult } from '#services/idb/nostrdb/local-removal.js'
 import {
   BROAD_EVENT_KIND,
@@ -9,7 +10,6 @@ import {
 import { NOSTRDB_ONE_SHOT_METHODS } from '../nostrdb-protocol.js'
 import {
   PERSONAL_COPY_KIND,
-  buildPersonalCopyUnsignedEvent,
   isPersonalCopyEvent,
   personalCopyEncryptionKind,
   personalCopyHintKinds,
@@ -406,7 +406,8 @@ export async function runNostrDbMethod ({
 
     const normalizedOptions = plainOptions(options)
     const { context = '', hearsay = false, ...addOptions } = normalizedOptions
-    const unsigned = await buildPersonalCopyUnsignedEvent({
+    const event = await createLocalPersonalCopy({
+      signEvent,
       originalEvent,
       ownerPubkey: db.ownerPubkey,
       context,
@@ -414,7 +415,6 @@ export async function runNostrDbMethod ({
       encrypt: personalCopyEncrypt,
       obfuscate: personalCopyObfuscate
     })
-    const event = await signEvent(unsigned)
     const result = await db.add(event, buildNostrDbAddOptions(addOptions, { appId, signEvent }))
     return { event: result?.storedEvent ?? event, result }
   }

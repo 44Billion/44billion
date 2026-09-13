@@ -1,5 +1,6 @@
 import {
   PERSONAL_COPY_KIND,
+  preparePersonalCopyUnsignedEvent,
   buildPersonalCopyMirrorData,
   describePersonalCopyInner,
   isPersonalCopyDerivedTag,
@@ -19,6 +20,28 @@ const SIG_RE = /^[0-9a-f]{128}$/i
 // mirror the source ID, effective author, and original one-letter tags. imkc
 // carries the content-key proof. Generated wrappers omit d; a manual outer d
 // receives ordinary NostrDB replacement behavior.
+
+// Object identity is an internal, one-use capability. Serialized app options,
+// copies of the wrapper and events received through sync cannot populate it.
+const localPreparations = new WeakMap()
+
+export async function createLocalPersonalCopy ({ signEvent, ...options }) {
+  const { event: unsigned, personalCopy } = await preparePersonalCopyUnsignedEvent(options)
+  const template = { ...unsigned, pubkey: options.ownerPubkey }
+  const signed = await signPersonalCopyTemplate(signEvent, template, { propagateErrors: true })
+  if (!signed) throw new Error('INVALID_PERSONAL_COPY_SIGNATURE_RESULT')
+  localPreparations.set(signed, metadataForEvent(personalCopy, signed))
+  return signed
+}
+
+// NostrDB still verifies the outer signature before consuming the preparation.
+// Mutation or a different owner falls back to ordinary full validation.
+export function consumeLocalPersonalCopy (event, ownerPubkey) {
+  const prepared = localPreparations.get(event)
+  localPreparations.delete(event)
+  if (!prepared || event.pubkey !== ownerPubkey || prepared.eventJson !== JSON.stringify(event)) return null
+  return prepared
+}
 
 export async function normalizePersonalCopyForAdd (event, {
   decrypt,
@@ -166,13 +189,14 @@ function metadataForEvent (personalCopy, event) {
   }
 }
 
-async function signPersonalCopyTemplate (signEvent, template) {
+async function signPersonalCopyTemplate (signEvent, template, { propagateErrors = false } = {}) {
   const before = JSON.stringify(template)
   let signed
 
   try {
     signed = await signEvent(template)
-  } catch {
+  } catch (error) {
+    if (propagateErrors) throw error
     return null
   }
 

@@ -293,6 +293,9 @@ This option requires the companion launcher update.
 Personal copies are private signed kind-1006 wrappers, never relay publications.
 `addPersonalCopy` encrypts and signs through the owner's vault and returns
 `{ event: wrapper, result }`; check `result.ok` before reporting a successful save.
+The launcher may reuse its own preparation during this initial insertion;
+there is no app-supplied validation bypass. Wrappers submitted through `add`
+still undergo full personal-copy validation.
 A self-authored unsigned input can contain only `kind`, `created_at`, `tags` and
 `content`; the launcher supplies the owner. An optional own `pubkey` is normalized
 away. Do not give an unsigned input an `id` or `sig`.
