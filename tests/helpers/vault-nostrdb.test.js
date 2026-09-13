@@ -6,6 +6,7 @@ globalThis.IS_DEVELOPMENT = true
 const {
   cancelTrustedVaultNostrDbSubscription,
   createTrustedVaultNostrDbPersonalCopyDecrypt,
+  createTrustedVaultNostrDbPersonalCopyEncrypt,
   createTrustedVaultNostrDbSignEvent,
   pruneNostrDbsForVaultAccounts,
   runTrustedVaultNostrDbMethod,
@@ -113,7 +114,7 @@ describe('trusted vault nostrdb bridge helpers', () => {
       ownerPubkey: 'a'.repeat(64),
       ask: async (port, message, options) => {
         calls.push({ port, message, options })
-        return { payload: 'eyJraW5kIjoxLCJjb250ZW50Ijoic2VjcmV0In0' }
+        return { payload: new TextEncoder().encode('{"kind":1,"content":"secret"}').buffer }
       }
     })
 
@@ -123,6 +124,24 @@ describe('trusted vault nostrdb bridge helpers', () => {
     assert.deepEqual(calls[0].message.payload.params, ['a'.repeat(64), '1', '', 'ciphertext'])
     assert.equal(calls[0].message.payload.context, 'nostrdb_personal_copy')
     assert.deepEqual(calls[0].options, { timeout: 120000 })
+  })
+
+  it('sends trusted-vault personal-copy JSON as UTF-8 ArrayBuffer', async () => {
+    const ownerPubkey = 'a'.repeat(64)
+    const plaintext = '{"content":"https://tabler.io/icons?icon=server-bolt 😀"}'
+    const encrypt = createTrustedVaultNostrDbPersonalCopyEncrypt({
+      vaultPort: 'vault-port',
+      ownerPubkey,
+      ask: async (port, { payload }, options) => {
+        assert.equal(port, 'vault-port')
+        assert.deepEqual(payload.params, [ownerPubkey, '9', '', new TextEncoder().encode(plaintext).buffer])
+        assert.equal(payload.method, 'nip44v3_encrypt')
+        assert.equal(payload.context, 'nostrdb_personal_copy')
+        assert.deepEqual(options, { timeout: 120000 })
+        return { payload: 'ciphertext' }
+      }
+    })
+    assert.equal(await encrypt(9, plaintext), 'ciphertext')
   })
 
   it('exports one trusted-vault app page with an after cursor', async () => {

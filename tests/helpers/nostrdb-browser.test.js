@@ -1,8 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { finalizeEvent } from 'libp2r2p/event'
-import { nip07Encrypt, nip07Decrypt } from 'libp2r2p/nip44-v3'
-import { base64ToBytes } from 'libp2r2p/base64'
+import { encryptBytes, decryptBytes } from 'libp2r2p/nip44-v3'
 
 import {
   BROAD_EVENT_KIND,
@@ -747,7 +746,7 @@ describe('nostrdb browser bridge helpers', () => {
     const decrypt = createNostrDbPersonalCopyDecrypt({
       askVault: async (message, options) => {
         calls.push({ message, options })
-        return { payload: 'eyJraW5kIjoxLCJjb250ZW50Ijoic2VjcmV0In0' }
+        return { payload: new TextEncoder().encode('{"kind":1,"content":"secret"}').buffer }
       },
       pubkey: 'f'.repeat(64)
     })
@@ -774,7 +773,7 @@ describe('nostrdb browser bridge helpers', () => {
     assert.equal(await encrypt(1, '{"kind":1}'), 'cipher')
     assert.equal(await obfuscate('topicexample', 1006, '#t'), 'obf')
     assert.deepEqual(calls.map(call => call.message.payload.method), ['nip44v3_encrypt', 'obfuscate'])
-    assert.deepEqual(calls[0].message.payload.params, [pubkey, '1', '', 'eyJraW5kIjoxfQ=='])
+    assert.deepEqual(calls[0].message.payload.params, [pubkey, '1', '', new TextEncoder().encode('{"kind":1}').buffer])
     assert.deepEqual(calls[1].message.payload.params, ['topicexample', '1006', '#t'])
     assert.equal(calls.every(call => call.message.payload.context === NOSTRDB_PERSONAL_COPY_CONTEXT), true)
   })
@@ -784,14 +783,14 @@ describe('nostrdb browser bridge helpers', () => {
     const pubkey = finalizeEvent({ kind: 0, created_at: 1, tags: [], content: '' }, secret).pubkey
     const encrypt = createNostrDbPersonalCopyEncrypt({
       pubkey,
-      askVault: async ({ payload: { params } }) => ({ payload: nip07Encrypt(secret, ...params) })
+      askVault: async ({ payload: { params } }) => ({ payload: encryptBytes(secret, params[0], params[1], new TextEncoder().encode(params[2]), new Uint8Array(params[3])) })
     })
     for (const content of ['https://tabler.io/icons?icon=server-bolt', '😀', 'ação? <>& 😀']) {
       for (const prefix of ['', 'a', 'ab']) {
         const plaintext = JSON.stringify({ content: prefix + content, created_at: 1, kind: 9, tags: [] })
         const ciphertext = await encrypt(9, plaintext)
-        const decoded = nip07Decrypt(secret, pubkey, '9', '', ciphertext)
-        assert.equal(new TextDecoder().decode(base64ToBytes(decoded)), plaintext)
+        const decoded = decryptBytes(secret, pubkey, '9', new Uint8Array(), ciphertext)
+        assert.equal(new TextDecoder().decode(decoded), plaintext)
       }
     }
   })

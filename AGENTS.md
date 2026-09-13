@@ -33,6 +33,11 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
 
 - Keep [`APP_API.md`](APP_API.md) updated in the same change that adds or changes
   an injected API. Consumers use the committed version on `main` as their contract.
+- NIP-44 v3 app methods and internal NostrDB callers send/receive `ArrayBuffer`
+  plaintext throughout the local launcher/vault channel, including Double DH
+  and scoped signers. `nip07-client.js` snapshots input before awaiting the
+  handshake. Base64 belongs only at the vault's remote bunker adapter and in
+  encrypted activity-log JSON; do not add conversions to the local bridge.
 - Document identity scope, permissions, handshake timing, errors, and subscription
   cleanup. Persona-scoped access must be checked in the launcher on every request
   and revoked for live subscriptions when membership changes.

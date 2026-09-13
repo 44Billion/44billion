@@ -64,11 +64,43 @@ vault signer:
 | `signEvent(event)`, `doubleSignEvent(...params)` | Sign event data. |
 | `nip04.encrypt(pubkey, plaintext)`, `nip04.decrypt(pubkey, ciphertext)` | NIP-04 encryption/decryption. |
 | `nip44.encrypt(pubkey, plaintext)`, `nip44.decrypt(pubkey, ciphertext)` | NIP-44 encryption/decryption. |
-| `nip44v3.encrypt(...params)`, `nip44v3.decrypt(...params)` | Vault NIP-44 v3 extension. Plaintext bytes use standard Base64 on the signer wire, including the decrypted result. |
-| `nip44v3.encryptDoubleDH(...params)`, `nip44v3.decryptDoubleDH(...params)` | Vault double-DH extension; plaintext bytes likewise use standard Base64. |
+| `nip44v3.encrypt(pubkey, kind, scope, plaintext)`, `nip44v3.decrypt(pubkey, kind, scope, ciphertext)` | NIP-44 v3 extension. Plaintext input/output is an `ArrayBuffer`; ciphertext is a string. |
+| `nip44v3.encryptDoubleDH(pubkey, kind, scope, plaintext, peerContentPubkey?)` | Same binary plaintext contract; returns `[ciphertext, senderContentPubkey]`. |
+| `nip44v3.decryptDoubleDH(pubkey, kind, scope, ciphertext, peerContentPubkey?, ownContentPubkey?)` | Returns plaintext as an `ArrayBuffer`. Optional content pubkeys select the Double DH keys. |
 | `obfuscate(...params)` | Vault obfuscation extension. |
 
 `ns(name, ...namespaceParams)` returns a method object using that namespace.
+
+NIP-44 v3 follows the [NIP-07 extension](https://github.com/nostr-land/nip44v3/blob/master/extensions/nip07.md):
+`kind` is a number, `scope` is a string (use `''` when absent), and plaintext is
+binary. The same contract applies to persona, namespace and `withSharedKey`
+signers. NIP-04 and NIP-44 v2 continue to accept/return ordinary plaintext strings.
+
+```js
+const bytes = new TextEncoder().encode('A private note 😀')
+const ciphertext = await window.nostr.nip44v3.encrypt(peerPubkey, 9, '', bytes.buffer)
+const plaintext = await window.nostr.nip44v3.decrypt(peerPubkey, 9, '', ciphertext)
+const text = new TextDecoder().decode(plaintext)
+```
+
+The v3 encrypt methods reject strings, typed-array views, `SharedArrayBuffer`s
+and detached buffers with `INVALID_PLAINTEXT_BUFFER`, before requesting
+permission. Pass an attached `ArrayBuffer`; for a view into a larger buffer,
+copy only the intended bytes (for example, `Uint8Array.from(view).buffer`). The
+bridge snapshots plaintext before waiting for the handshake or authorization;
+the caller's buffer is not transferred or detached. Decrypt returns a fresh
+`ArrayBuffer`, including for empty plaintext or bytes that are not valid UTF-8.
+
+Plaintext stays binary across the app, launcher and local vault signer. Only
+the vault's remote bunker adapter converts it to/from standard Base64 for
+NIP-46. The activity log also uses Base64 inside its encrypted JSON fields.
+Apps must not encode/decode Base64 themselves for these methods. Double DH is
+a launcher/vault extension using the same binary convention, not a method
+defined by the cited NIP-07 extension. Permissions, account access checks and
+rejection of vault errors remain unchanged.
+
+This replaces the earlier Base64-string app contract; update consumers together
+with the launcher. Existing stored ciphertexts do not change or need migration.
 `withSharedKey(...sharedKeyParams)` returns a method object using a shared-key
 context. Their arguments and extension-specific formats are forwarded to the
 configured vault; the launcher does not implement those cryptographic operations.
@@ -279,8 +311,8 @@ const filter = {
 }
 const subscription = window.napp.eventStore.subscribe(filter, { initial: true })
 for await (const { result: wrapper } of subscription) {
-  const base64 = await window.nostr.nip44v3.decrypt(owner, '9', '', wrapper.content)
-  // Decode standard Base64 bytes as UTF-8 JSON to obtain the inner event/template.
+  const plaintext = await window.nostr.nip44v3.decrypt(owner, 9, '', wrapper.content)
+  const inner = JSON.parse(new TextDecoder().decode(plaintext))
 }
 ```
 

@@ -4,6 +4,7 @@ import { injectEventStore } from '#helpers/window-message/nostrdb-client.js'
 import { createInstanceMetadataClient } from '#helpers/window-message/instance-metadata-client.js'
 import { createAppLocaleClient } from '#helpers/window-message/app-locale-client.js'
 import { createWidgetDragClient } from '#helpers/window-message/widget-drag-client.js'
+import { createNip07Method } from '#helpers/window-message/nip07-client.js'
 import { naddrDecode } from 'libp2r2p/nip19'
 import {
   DRAFT_SITE_MANIFEST,
@@ -506,16 +507,7 @@ function injectNip07 (promise) {
   const timeout = 5 * 60 * 1000
 
   function createNostrMethod (method, context) {
-    return (...params) => promise
-      .then(browserPort => ask(
-        browserPort,
-        { code: 'NIP07', payload: { ...context, method, params } },
-        { timeout }
-      ))
-      .then(({ payload, error }) => {
-        if (error) throw error
-        return payload
-      })
+    return createNip07Method({ method, context, connection: promise, ask, timeout })
   }
 
   function buildMethodsObject (methods, context) {

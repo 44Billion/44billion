@@ -1,8 +1,7 @@
 import { ask as defaultAsk, reply as defaultReply } from '../index.js'
-import { base64UrlToBytes } from 'libp2r2p/base64'
 import {
   personalCopyEncryptionKind,
-  plaintextBase64
+  plaintextArrayBuffer
 } from '#helpers/personal-copy.js'
 import { nostrDbStreamDonePayload } from '../nostrdb-protocol.js'
 import {
@@ -129,7 +128,7 @@ export function createTrustedVaultNostrDbPersonalCopyDecrypt ({
       }
     }, { timeout: 120000 })
     if (error) throw error
-    return textDecoder.decode(base64UrlToBytes(String(payload ?? '')))
+    return textDecoder.decode(payload)
   }
 }
 
@@ -148,7 +147,7 @@ export function createTrustedVaultNostrDbPersonalCopyEncrypt ({
         pubkey: ownerPubkey,
         ns: [''],
         method: 'nip44v3_encrypt',
-        params: [ownerPubkey, String(kind), '', plaintextBase64(plaintext)],
+        params: [ownerPubkey, String(kind), '', plaintextArrayBuffer(plaintext)],
         context: 'nostrdb_personal_copy'
       }
     }, { timeout: 120000 })

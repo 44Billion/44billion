@@ -18,10 +18,15 @@ Kind 34601 chunk events store metadata in NostrDB and externalize their content
 into the shared `44billion_browser` chunk stores. Those are separate databases;
 an IndexedDB transaction cannot update both together.
 
-Personal-copy creation sends the inner JSON as UTF-8 bytes encoded in standard
-Base64 to the vault's NIP-44 v3 signer. Do not use Base64URL for this wire format:
-its `-`/`_` alphabet is rejected by the signer. This conversion precedes encryption
-and does not change stored ciphertext formats or require migrating existing copies.
+Personal-copy creation sends the inner JSON as UTF-8 bytes in an `ArrayBuffer`
+to the vault's NIP-44 v3 signer. Both internal personal-copy readers decode
+the returned buffer directly with `TextDecoder`. App-facing NIP-44 v3 methods,
+Double DH and scoped signers use the same binary plaintext contract. Local
+nsec accounts encrypt/decrypt bytes directly; only remote bunker requests use
+standard Base64 plaintext on the NIP-46 wire. The vault's activity log represents
+buffers as Base64 inside encrypted JSON fields. These transport changes do not
+change stored ciphertext formats or require migrating existing copies. See
+`APP_API.md`.
 
 ## Scheduled routines
 

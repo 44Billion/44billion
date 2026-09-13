@@ -7,14 +7,13 @@ import {
   normalizeEventKind
 } from './event-permissions.js'
 import { NOSTRDB_ONE_SHOT_METHODS } from '../nostrdb-protocol.js'
-import { base64UrlToBytes } from 'libp2r2p/base64'
 import {
   PERSONAL_COPY_KIND,
   buildPersonalCopyUnsignedEvent,
   isPersonalCopyEvent,
   personalCopyEncryptionKind,
   personalCopyHintKinds,
-  plaintextBase64
+  plaintextArrayBuffer
 } from '#helpers/personal-copy.js'
 
 export const NOSTRDB_MERGE_CONTEXT = 'nostrdb_merge'
@@ -125,13 +124,13 @@ export function createNostrDbPersonalCopyDecrypt ({ askVault, pubkey, guard }) {
       }
     }, { timeout: 120000 })
     if (error) throw error
-    return textDecoder.decode(base64UrlToBytes(String(payload ?? '')))
+    return textDecoder.decode(payload)
   }
 }
 
 export function createNostrDbPersonalCopyEncrypt ({ askVault, pubkey, guard }) {
   return async (kind, plaintext) => {
-    const params = [pubkey, String(kind), '', plaintextBase64(plaintext)]
+    const params = [pubkey, String(kind), '', plaintextArrayBuffer(plaintext)]
     guard?.({ method: 'nip44v3_encrypt', params })
     const { payload, error } = await askVault({
       code: 'NIP07',

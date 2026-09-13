@@ -1,6 +1,5 @@
 import { getEventHash, isValidEvent } from 'libp2r2p/event'
 import { eventKinds } from '#constants/event.js'
-import { bytesToBase64 } from 'libp2r2p/base64'
 
 const textEncoder = new TextEncoder()
 const HEX64_RE = /^[0-9a-f]{64}$/i
@@ -231,9 +230,9 @@ export function isPersonalCopyDerivedTag (tag) {
     (tag[0] === 'k' || tag[0] === 'o' || tag[0] === PERSONAL_COPY_PROVENANCE_TAG)
 }
 
-export function plaintextBase64 (plaintext) {
-  // NIP-44 v3's signer wire format uses standard Base64, not Base64URL.
-  return bytesToBase64(textEncoder.encode(String(plaintext ?? '')))
+export function plaintextArrayBuffer (plaintext) {
+  // The local vault channel carries plaintext bytes without Base64 conversion.
+  return textEncoder.encode(String(plaintext ?? '')).buffer
 }
 
 function preparePersonalCopyInner (innerEvent, ownerPubkey) {

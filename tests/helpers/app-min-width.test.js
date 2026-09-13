@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import vm from 'node:vm'
+import { createNip07Method } from '../../src/helpers/window-message/nip07-client.js'
 
 const source = readFileSync(new URL('../../src/scripts/app-page.txt.js', import.meta.url), 'utf8')
 const injection = source.slice(source.indexOf('function injectNip07 ('), source.indexOf('// Intercept and cancel navigations'))
@@ -12,6 +13,8 @@ function setup () {
   const warnings = []
   const context = vm.createContext({
     window: {},
+    createNip07Method,
+    ask: () => assert.fail('setMinWidth must not use signer requests'),
     originalConsole: { warn: (...args) => warnings.push(args) },
     tell: (port, message) => messages.push({ port, ...structuredClone(message) })
   })
