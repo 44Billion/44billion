@@ -378,3 +378,28 @@ finish later, with shared payloads retaining their existing policies.
 Locally removed events may be received again. Existing queues/snapshots are not
 revoked, and subscriptions do not receive removal notifications. Normal kind 5
 processing, including its ephemeral variant, remains unchanged.
+
+## Native file downloads
+
+`await window.napp.getFileDownloadUrl(url)` prepares a native download address
+for `https://nostr.alt/nfile1…` (optional `?localOnly=1`). It waits for the app's
+launcher handshake and resolves to an absolute URL on the current app origin:
+`/~~nfile/<entity>?localOnly=1&~~bridgeId=<instance bridge>`.
+It accepts no arbitrary host, protocol, credential, fragment or other query
+parameter. Invalid input rejects; no separate permission is requested to build
+a URL. Keep the returned instance marker unchanged and prepare it before the
+user's click, then use an ordinary `<a href="…" target="file-download-frame">` targeting a
+named iframe owned by the app. `Content-Disposition` starts the native download;
+the app need not use the `download` attribute or open a popup. A separate iframe
+also prevents a missing-file response from navigating the main app document.
+
+The app service worker intercepts this reserved route before page routing. It
+streams through the existing nfile loader, supporting GET, HEAD, single byte
+ranges and cancellation, with `Content-Disposition: attachment`, a sanitized
+UTF-8 filename, and `X-Content-Type-Options: nosniff`. No complete file Blob is
+required. Images/videos continue using `https://nostr.alt/nfile1…` directly.
+`localOnly=1` forbids relay and network fallback; missing bytes fail locally.
+These URLs are instance-bound and are not portable share URLs. Closing the app
+instance can interrupt an active download. A service-worker restart recovers the
+same bridge; an identified instance never falls back to another tab's bridge.
+Confirmed files remain subject to the launcher's existing storage retention.

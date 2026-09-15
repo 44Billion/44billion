@@ -93,3 +93,20 @@ to the vault's account-metadata channel. Apps can treat the store as the local
 source of truth for their user's public events and private personal copies;
 third-party public events remain relay-backed caches. See [APP_API.md](APP_API.md)
 for personal-copy reads and subscriptions with initial replay.
+
+Apps can prepare native, streaming downloads of `nostr.alt/nfile1…` files with
+`window.napp.getFileDownloadUrl()`. The reserved route belongs to the app origin
+and bridge instance; `localOnly=1` never queries relays. See [APP_API.md](APP_API.md)
+for filename, range, cancellation and instance-lifetime behavior.
+
+Browser npm scripts run inside a Linux user-systemd service limited to 3 GiB
+(including Chrome, launcher, vault and build children), with swap disabled and
+an automatic 15-minute stop. The runner reports the observed memory peak.
+Stop an existing development runtime before testing so every process is inside
+that group. For individual scripts use
+`node bin/run-browser-tests.js -- node tests/browser/app-bridge.js`.
+Do not run multiple browser suites concurrently; unsupported systems fail
+explicitly instead of silently running without a memory limit.
+
+The library dependency uses the published `libp2r2p@^0.10.18` npm range.
+The lockfile records the resolved release. No sibling-library source imports are required.

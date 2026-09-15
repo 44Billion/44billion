@@ -71,7 +71,7 @@ function uniqueValidRelays (values) {
   return [...new Set(values
     .filter(value => typeof value === 'string')
     .map(value => {
-      try { return normalizeRelayUrl(value) } catch {}
+      try { return normalizeRelayUrl(value) } catch { return null }
     })
     .filter(isValidPublicRelayUrl))]
 }
@@ -87,6 +87,7 @@ function safeMime (value) {
 
 function contentDisposition (filename) {
   if (typeof filename !== 'string' || filename.length === 0 || /[\0\r\n]/.test(filename)) return 'inline'
+  filename = [...filename].map(character => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127 ? '_' : character).join('').replace(/[\\/:*?"<>|]/g, '_').replace(/^[. ]+|[. ]+$/g, '') || 'file'
   const encoded = encodeURIComponent(filename).replace(/['()*]/g, character =>
     `%${character.charCodeAt(0).toString(16).toUpperCase()}`
   )

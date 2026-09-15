@@ -137,6 +137,12 @@ let swPort
 let trustedAppPagePortForSw
 
 export function initMessageListener () {
+  navigator.serviceWorker?.addEventListener?.('message', event => {
+    if (event.data?.code !== 'GET_READY_STATUS') return
+    tellSwImReady().catch(error => {
+      console.warn('[trusted-app-page] Failed to re-register requested bridge', error)
+    })
+  })
   // Only way that worked for the sw to talk to this page
   // when it didn't have a MessageChannel port sent
   // from this page already

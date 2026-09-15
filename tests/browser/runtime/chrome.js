@@ -37,10 +37,14 @@ export async function launchChrome ({ externalNetwork = false, intercept = () =>
   const sessions = new Map()
   const logs = []
   const exceptions = []
+  const downloads = []
+  const fileChoosers = []
+  const workerVersions = new Map()
   let stderr = ''
   let buffer = ''
   let sequence = 0
   let stopped = false
+  const remember = (list, value, limit = 150) => { list.push(value); if (list.length > limit) list.splice(0, list.length - limit) }
   const exited = new Promise(resolve => child.once('exit', resolve))
   child.stderr.on('data', bytes => { stderr = (stderr + bytes).slice(-8000) })
   const fail = error => { for (const entry of pending.values()) { clearTimeout(entry.timer); entry.reject(error) } pending.clear() }
@@ -48,15 +52,19 @@ export async function launchChrome ({ externalNetwork = false, intercept = () =>
   child.once('exit', code => fail(new Error(`Chrome exited (${code}): ${stderr}`)))
   for (const pipe of [child.stdio[3], child.stdio[4]]) pipe.on('error', fail)
   const send = (method, params = {}, sessionId, timeoutMs = 30000) => new Promise((resolve, reject) => {
+    if (pending.size >= 128) { reject(new Error('Too many pending CDP requests')); return }
     const id = ++sequence
     const timer = setTimeout(() => { pending.delete(id); reject(new Error(`CDP timeout: ${method}`)) }, timeoutMs)
     pending.set(id, { resolve, reject, timer, method, sessionId, contextId: params.contextId })
     child.stdio[3].write(JSON.stringify({ id, method, params, sessionId }) + '\0')
   })
+  // Never debugger-pause a restarted service worker before it can handle fetch.
+  // The proxy blocks worker network traffic independently of CDP interception.
+  const targetFilter = [{ type: 'tab', exclude: true }, { type: 'browser', exclude: true }, { type: 'service_worker', exclude: true }, {}]
   const configure = async (sessionId, info) => {
     sessions.set(sessionId, info)
     await send('Runtime.enable', {}, sessionId)
-    await send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, sessionId)
+    await send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true, filter: targetFilter }, sessionId)
     if (['page', 'iframe'].includes(info.type)) {
       await send('Page.enable', {}, sessionId)
       await send('Log.enable', {}, sessionId)
@@ -88,6 +96,14 @@ export async function launchChrome ({ externalNetwork = false, intercept = () =>
         continue
       }
       const { method, params, sessionId } = message
+      if (method === 'Page.fileChooserOpened') remember(fileChoosers, { sessionId, ...params })
+      if (method === 'ServiceWorker.workerVersionUpdated') {
+        for (const version of params.versions) {
+          if (version.status === 'redundant') workerVersions.delete(version.versionId)
+          else workerVersions.set(version.versionId, version)
+        }
+      }
+      if (method === 'Browser.downloadWillBegin' || method === 'Browser.downloadProgress') remember(downloads, { method, ...params }, 1000)
       if (['Runtime.executionContextDestroyed', 'Runtime.executionContextsCleared', 'Target.detachedFromTarget'].includes(method)) {
         const affectedSession = params?.sessionId ?? sessionId
         for (const [id, entry] of pending) {
@@ -102,8 +118,10 @@ export async function launchChrome ({ externalNetwork = false, intercept = () =>
         exceptions.push({ sessionId, ...params })
         if (exceptions.length > 30) exceptions.shift()
       }
+      if (method === 'Target.detachedFromTarget') sessions.delete(params.sessionId)
+      if (method === 'Page.frameDetached') frames.delete(params.frameId)
       if (method === 'Page.frameNavigated') frames.set(params.frame.id, params.frame.url)
-      if (method === 'Target.attachedToTarget') configure(params.sessionId, params.targetInfo).catch(error => logs.push(String(error)))
+      if (method === 'Target.attachedToTarget') configure(params.sessionId, params.targetInfo).catch(error => remember(logs, String(error)))
       if (method === 'Runtime.executionContextCreated') contexts.set(`${sessionId}:${params.context.id}`, { ...params.context, sessionId })
       if (method === 'Runtime.executionContextDestroyed') contexts.delete(`${sessionId}:${params.executionContextId}`)
       if (method === 'Runtime.executionContextsCleared' || method === 'Target.detachedFromTarget') {
@@ -118,7 +136,7 @@ export async function launchChrome ({ externalNetwork = false, intercept = () =>
           if (response === false) return send('Fetch.failRequest', { requestId: params.requestId, errorReason: 'InternetDisconnected' }, sessionId)
           if (response) return send('Fetch.fulfillRequest', { requestId: params.requestId, ...response }, sessionId)
           return send('Fetch.continueRequest', { requestId: params.requestId }, sessionId)
-        }).catch(error => logs.push(String(error)))
+        }).catch(error => remember(logs, String(error)))
       }
     }
   })
@@ -136,9 +154,15 @@ export async function launchChrome ({ externalNetwork = false, intercept = () =>
   const contextFor = origin => [...contexts.values()].find(context => context.origin === origin && context.auxData?.isDefault && !frames.get(context.auxData.frameId)?.includes('/~~napp'))
   const evaluate = async (expression, origin = 'http://localhost:10000') => {
     const context = await until(() => contextFor(origin), `context ${origin}`)
-    const response = await send('Runtime.evaluate', { expression, contextId: context.id, returnByValue: true, awaitPromise: true, userGesture: true }, context.sessionId)
-    if (response.exceptionDetails) throw new Error(JSON.stringify(response.exceptionDetails))
-    return response.result.value
+    const objectGroup = `evaluation-${++sequence}`
+    try {
+      const response = await send('Runtime.evaluate', { expression, objectGroup, contextId: context.id, returnByValue: true, awaitPromise: true, userGesture: true }, context.sessionId)
+      if (response.exceptionDetails) throw new Error(JSON.stringify(response.exceptionDetails))
+      return response.result.value
+    } finally {
+      // Even returnByValue evaluations can create exception/DOM handles.
+      await send('Runtime.releaseObjectGroup', { objectGroup }, context.sessionId, 1000).catch(() => {})
+    }
   }
   const close = async () => {
     if (stopped) return
@@ -153,15 +177,15 @@ export async function launchChrome ({ externalNetwork = false, intercept = () =>
     await rm(profile, { recursive: true, force: true, maxRetries: 15, retryDelay: 100 })
   }
   try {
-    await send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true })
+    await send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true, filter: targetFilter })
     const { targetId } = await send('Target.createTarget', { url: 'about:blank' })
     const sessionId = await until(() => [...sessions].find(([, info]) => info.targetId === targetId)?.[0], 'Chrome page')
     return {
-      send, evaluate, until, contexts, logs, close, profile,
+      send, evaluate, until, contexts, logs, downloads, fileChoosers, workerVersions, close, profile,
       navigate: url => send('Page.navigate', { url }, sessionId),
       async diagnose (directory) {
         await mkdir(directory, { recursive: true })
-        await writeFile(path.join(directory, 'browser.json'), JSON.stringify({ stderr, exceptions, logs, contexts: [...contexts.values()] }, null, 2))
+        await writeFile(path.join(directory, 'browser.json'), JSON.stringify({ stderr, exceptions, logs, downloads, contexts: [...contexts.values()] }, null, 2))
         for (const origin of new Set([...contexts.values()].filter(context => context.auxData?.isDefault && context.origin.startsWith('http://')).map(context => context.origin))) {
           try { await writeFile(path.join(directory, new URL(origin).host.replaceAll(':', '-') + '.html'), await evaluate('document.documentElement.outerHTML', origin)) } catch {}
         }

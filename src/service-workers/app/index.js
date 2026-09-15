@@ -14,6 +14,7 @@ import {
   pruneReadyClients
 } from '#helpers/service-worker-bridge-router.js'
 import { isRetryableAppBridgeError } from '#helpers/window-message/app-bridge-error.js'
+import { attachmentHeaders, parseNfileUrl } from '#helpers/nfile-download-url.js'
 const appPageLoader = injectIntoTheHeadTag(
   _appPageLoader.replace('/* APP_PAGE_LOADER_THEME */', cssStrings.appPageLoaderTheme),
   `<script>${appPageLoaderScriptContent}</script>`
@@ -63,17 +64,35 @@ self.addEventListener('fetch', e => {
   // console.log('Service Worker: fetching', e.request.url)
   const requestUrl = new URL(e.request.url)
   const markerBridgeId = requestUrl.searchParams.get('~~bridgeId')
-  if (markerBridgeId && e.clientId) {
+  if (markerBridgeId && e.clientId && !requestUrl.pathname.startsWith('/~~nfile/')) {
     // Remember the bridge id before serving the first document: subsequent
     // requests from this app page (after the injected script strips the
     // marker) keep routing to the trusted iframe of the same tab.
     appPageBridgeIds.set(e.clientId, markerBridgeId)
   }
+  if (requestUrl.origin === self.location.origin && requestUrl.pathname.startsWith('/~~nfile/')) {
+    e.respondWith((async () => {
+      try {
+        if (!['GET', 'HEAD'].includes(e.request.method)) return new Response(null, { status: 405 })
+        if ([...requestUrl.searchParams].some(([key, value]) => key !== '~~bridgeId' && (key !== 'localOnly' || value !== '1')) || requestUrl.searchParams.getAll('~~bridgeId').length !== 1 || requestUrl.searchParams.getAll('localOnly').length > 1) throw new Error('INVALID_NFILE_URL')
+        const url = new URL(`https://nostr.alt/${requestUrl.pathname.slice('/~~nfile/'.length)}`)
+        if (requestUrl.searchParams.get('localOnly') === '1') url.searchParams.set('localOnly', '1')
+        parseNfileUrl(url.href)
+        const knownBridge = appPageBridgeIds.get(e.clientId)
+        if (!markerBridgeId || (knownBridge && knownBridge !== markerBridgeId)) throw new Error('APP_BRIDGE_UNAVAILABLE')
+        const response = await handleNfileRequest(e.request, url, { clientId: e.clientId, bridgeId: markerBridgeId })
+        return new Response(response.body, { status: response.status, headers: attachmentHeaders(response.headers) })
+      } catch {
+        return new Response(null, { status: 404, headers: attachmentHeaders({ 'content-length': '0' }) })
+      }
+    })())
+    return
+  }
   const isNfile = requestUrl.origin === 'https://nostr.alt' &&
     /^\/nfile1[0-9a-z]+$/.test(requestUrl.pathname)
   if (isNfile) {
     if (!['GET', 'HEAD'].includes(e.request.method) || e.request.mode === 'navigate') return
-    e.respondWith(handleNfileRequest(e.request, requestUrl))
+    e.respondWith(handleNfileRequest(e.request, requestUrl, { clientId: e.clientId }))
     return
   }
 
@@ -149,8 +168,8 @@ async function runWithBridgeRetry (task) {
   throw lastError
 }
 
-async function tryHandleNfileRequest (request, url) {
-  const selected = await selectClientToPostMessagesTo({ clientId: request.clientId })
+async function tryHandleNfileRequest (request, url, routing = {}) {
+  const selected = await selectClientToPostMessagesTo(routing)
   const toPort = selected.port
   const requestToken = globalThis.crypto?.randomUUID?.() || `${Date.now()}:${Math.random()}`
   let cancelSent = false
@@ -171,7 +190,8 @@ async function tryHandleNfileRequest (request, url) {
       range: request.headers.get('range'),
       localOnly: url.searchParams.get('localOnly') === '1',
       requestToken,
-      requestClientId: request.clientId
+      requestClientId: routing.clientId,
+      flowControlled: true
     }
   }, {
     targetOrigin: self.location.origin || '*',
@@ -210,6 +230,7 @@ async function tryHandleNfileRequest (request, url) {
   }
   const body = new ReadableStream({
     async pull (controller) {
+      tell(toPort, { code: 'PULL_NFILE', payload: { requestToken } }, {})
       try {
         while (true) {
           const next = await iterator.next()
@@ -237,8 +258,8 @@ async function tryHandleNfileRequest (request, url) {
   return new Response(body, { status, headers })
 }
 
-async function handleNfileRequest (request, url) {
-  return runWithBridgeRetry(() => tryHandleNfileRequest(request, url))
+async function handleNfileRequest (request, url, routing) {
+  return runWithBridgeRetry(() => tryHandleNfileRequest(request, url, routing))
 }
 
 async function tryHandleRequest (request) {
@@ -397,21 +418,32 @@ self.addEventListener('message', async e => {
 
 let bc
 function requestBridgeReady (bridgeId = '') {
-  return new Promise((resolve, reject) => {
-    const resolver = { resolve, reject, timer: null, bridgeId }
-    resolvers.push(resolver)
-
+  const pending = resolvers.find(resolver => resolver.bridgeId === bridgeId)
+  if (pending) return pending.promise
+  const { promise, resolve, reject } = Promise.withResolvers()
+  const resolver = { resolve, reject, promise, timer: null, bridgeId }
+  resolvers.push(resolver)
+  // Address the retained trusted document directly after worker restarts.
+  self.clients.matchAll({ includeUncontrolled: false, type: 'window' }).then(clients => {
+    for (const client of clients) {
+      const url = new URL(client.url)
+      if (url.pathname === '/~~napp' && (!bridgeId || url.searchParams.get('bridgeId') === bridgeId)) client.postMessage({ code: 'GET_READY_STATUS' })
+    }
+  }).catch(() => {})
+  // Older retained documents only listen on BroadcastChannel. Avoid replacing
+  // the newly established port twice when the direct request already worked.
+  const fallback = setTimeout(() => {
+    if (!resolvers.includes(resolver)) return
     bc ??= new BroadcastChannel('sw~~napp')
     bc.postMessage({ code: 'GET_READY_STATUS', payload: null })
-
-    resolver.timer = setTimeout(() => {
-      const index = resolvers.indexOf(resolver)
-      if (index > -1) resolvers.splice(index, 1)
-      reject(Object.assign(new Error('App bridge not ready'), {
-        code: APP_BRIDGE_UNAVAILABLE
-      }))
-    }, SW_FIRST_REPLY_TIMEOUT_MS)
-  })
+  }, 500)
+  resolver.timer = setTimeout(() => {
+    const index = resolvers.indexOf(resolver)
+    if (index > -1) resolvers.splice(index, 1)
+    reject(Object.assign(new Error('App bridge not ready'), { code: APP_BRIDGE_UNAVAILABLE }))
+  }, SW_FIRST_REPLY_TIMEOUT_MS)
+  promise.finally(() => clearTimeout(fallback)).catch(() => {})
+  return promise
 }
 
 function hasTrustedClientForBridge (clients, bridgeId) {
@@ -425,8 +457,25 @@ function hasTrustedClientForBridge (clients, bridgeId) {
   })
 }
 
-async function selectClientToPostMessagesTo ({ clientId = '' } = {}) {
-  const bridgeId = appPageBridgeIds.get(clientId) || ''
+async function recoverAppPageBridge (clientId) {
+  const client = await self.clients.get(clientId)
+  if (!client) throw new Error(APP_BRIDGE_UNAVAILABLE)
+  const bridgeId = await new Promise((resolve, reject) => {
+    const { port1, port2 } = new MessageChannel()
+    const timer = setTimeout(() => { port1.close(); reject(new Error(APP_BRIDGE_UNAVAILABLE)) }, SW_FIRST_REPLY_TIMEOUT_MS)
+    port1.onmessage = event => {
+      clearTimeout(timer); port1.close()
+      resolve(event.data?.bridgeId)
+    }
+    client.postMessage({ code: 'GET_APP_PAGE_BRIDGE' }, [port2])
+  })
+  if (!bridgeId) throw new Error(APP_BRIDGE_UNAVAILABLE)
+  appPageBridgeIds.set(clientId, bridgeId)
+  return bridgeId
+}
+
+async function selectClientToPostMessagesTo ({ clientId = '', bridgeId = appPageBridgeIds.get(clientId) || '' } = {}) {
+  if (clientId && !bridgeId) bridgeId = await recoverAppPageBridge(clientId)
   const strict = Boolean(bridgeId)
   let lastError
   for (let attempt = 0; attempt < MAX_SW_ROUTE_ATTEMPTS; attempt++) {

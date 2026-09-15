@@ -317,6 +317,28 @@ describe('normalized global chunk cache', () => {
     assert.equal(await getChunkPayloadForEvent(ownerA.pubkey, addedA.storedEvent.id), null)
   })
 
+  it('retains an IRFS root referenced by an owner personal copy of a foreign 1063', async () => {
+    const fixture = await chunkFixture(51)
+    const owner = ownerSigner(14)
+    const author = ownerSigner(15)
+    let plaintext
+    const db = getNostrDb(owner.pubkey, {
+      maintenance: false,
+      personalCopyDecrypt: async () => plaintext,
+      personalCopyObfuscate: async value => `obfuscated:${value}`
+    })
+    assert.equal((await db.add(fixture.event, { signEvent: owner.signEvent })).ok, true)
+    const reference = await author.signEvent({ kind: 1063, created_at: 200, content: '', tags: [['r', fixture.root], ['m', 'application/octet-stream'], ['service', 'irfs']] })
+    const wrapper = await owner.signEvent(await buildPersonalCopyUnsignedEvent({
+      originalEvent: reference, ownerPubkey: owner.pubkey, context: `dm:${owner.pubkey}`,
+      encrypt: async (_kind, value) => { plaintext = value; return 'encrypted-foreign-reference' },
+      obfuscate: async value => `obfuscated:${value}`
+    }))
+    assert.equal((await db.add(wrapper, { signEvent: owner.signEvent })).ok, true)
+    assert.equal(await db.purgeChunkRoot(fixture.root, { force: true }), 0)
+    assert.ok(await getOwnerChunkCopy(owner.pubkey, fixture.root, 0))
+  })
+
   it('enforces the grace period unless capacity pressure forces a purge', async () => {
     const fixture = await chunkFixture(60)
     const owner = ownerSigner(13)

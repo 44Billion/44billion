@@ -92,10 +92,9 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   monitor owns connectivity probes, capped retry delays, and browser wake-up
   listeners. `ConnectivityRetryCoordinator` owns waiters, cancellation, and
   concurrency of resumed app work; do not restore its duplicate probe timer.
-- These consumer changes depend on the companion libp2r2p monitor update.
-  Until it is published, validate against the sibling library locally. Update
-  the npm dependency and lockfile to a version containing it before shipping;
-  the current published version does not contain the monitor.
+- Use the published `libp2r2p@^0.10.18` range in package.json;
+  package-lock.json records the resolved release. Validate against the installed package rather than sibling
+  source imports; it includes the shared connectivity monitor.
 
 ## Development runtime and consumer tests
 
@@ -185,3 +184,32 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
 The account tracker also imports already available signed vault profiles and
 relay lists into NostrDB before relay delivery, preserving immediate offline
 access without echoing those cached events back to the vault.
+
+## Local file download contract
+
+- Keep `/~~nfile/<entity>` interception ahead of app-page routing. The injected
+  `getFileDownloadUrl` validates nostr.alt nfile URLs, waits for handshake, and
+  includes the exact instance bridge marker. Pass `FetchEvent.clientId`
+  explicitly; never read `Request.clientId` for nfile routing.
+- Identified bridges are strict across tabs and service-worker restarts. Preserve
+  localOnly, stream backpressure/cancellation, HEAD/ranges, attachment disposition
+  with sanitized names, and nosniff. Do not materialize downloads into file-sized
+  Blobs or route local misses to network.
+- Personal-copy chunk ingestion continues normalizing public local 34601 events
+  with separated bytes. Owner personal copies retain referenced roots through
+  inner `r` tags, including inner events from another author. No new encryption,
+  persistence schema or quota category is introduced for file attachments.
+
+- Chrome runtime tests exclude service workers from debugger-paused auto-attach.
+  Otherwise stopping/restarting a worker can hang its fetch before bootstrap.
+  The deny-by-default proxy still blocks worker network traffic. Observe download
+  and worker lifecycle events from the page/browser CDP sessions.
+
+- Run browser suites through `bin/run-browser-tests.js -- <command> [args]`.
+  It requires Linux user systemd, caps the complete owned process group at
+  3 GiB with zero swap and a 15-minute lifetime, and reports its observed peak.
+  There is no unbounded fallback. Stop existing local runtimes first: reusing
+  one outside the cgroup would leave build/vault memory outside the limit.
+  The service kills descendants on exit/failure. CDP evaluations release their
+  object group; bounded diagnostics and detached target cleanup belong in the
+  shared harness. Do not run multiple browser suites concurrently.

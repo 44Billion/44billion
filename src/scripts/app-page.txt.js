@@ -6,6 +6,7 @@ import { createAppLocaleClient } from '#helpers/window-message/app-locale-client
 import { createWidgetDragClient } from '#helpers/window-message/widget-drag-client.js'
 import { createNip07Method } from '#helpers/window-message/nip07-client.js'
 import { naddrDecode } from 'libp2r2p/nip19'
+import { fileDownloadUrl } from '#helpers/nfile-download-url.js'
 import {
   DRAFT_SITE_MANIFEST,
   MAIN_SITE_MANIFEST,
@@ -39,6 +40,14 @@ const SITE_MANIFEST_KINDS = new Set([
   NEXT_SITE_MANIFEST,
   DRAFT_SITE_MANIFEST
 ])
+let appBridgeId = ''
+// A restarted service worker has lost its client map. Re-identify this document
+// over a dedicated reply port, without falling back to another tab's bridge.
+navigator.serviceWorker?.addEventListener('message', event => {
+  if (event.data?.code !== 'GET_APP_PAGE_BRIDGE' || !event.ports[0]) return
+  event.ports[0].postMessage({ bridgeId: appBridgeId })
+  event.ports[0].close()
+})
 
 const localeClient = createAppLocaleClient({
   reportError: error => originalConsole.error('window.napp locale listener failed', error)
@@ -68,6 +77,12 @@ function injectLocale () {
   injectNip07(p.promise) // first thing
   injectLocale()
   Object.assign(window.napp, {
+    getFileDownloadUrl: async url => {
+      // Snapshot before the handshake, like the other injected APIs.
+      const value = String(url)
+      await p.promise
+      return fileDownloadUrl(value, { origin: location.origin, bridgeId: appBridgeId })
+    },
     onPersonaPublicKeysChanged: personaPublicKeysClient.onPersonaPublicKeysChanged,
     getInstanceMetadata: instanceMetadataClient.getInstanceMetadata,
     onInstanceMetadataChanged: instanceMetadataClient.onInstanceMetadataChanged
@@ -146,6 +161,7 @@ function tellParentImReady (p) {
     instanceMetadataClient.setMetadata(e.data.payload?.instanceMetadata)
     personaPublicKeysClient.setPublicKeys(e.data.payload?.personaPublicKeys)
     const bridgeId = e.data.payload?.bridgeId
+    appBridgeId = bridgeId || ''
     if (bridgeId) {
       navigator.serviceWorker?.controller?.postMessage({
         code: 'APP_PAGE_BRIDGE',

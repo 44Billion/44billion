@@ -1,3 +1,4 @@
+import { createNfileCredit } from './nfile-credit.js'
 import { readSubdomainLifecycle, subdomainStorage } from '#helpers/subdomain-mapping.js'
 import { personaPublicKeys, readAppPersonaPublicKeys } from '#services/personas/public-keys.js'
 import { serializeError } from '#helpers/error.js'
@@ -139,7 +140,7 @@ function listenToTrustedAppPageMessages ({
       if (state.currentPort !== trustedAppPagePort) return
       switch (e.data.code) {
         case 'STREAM_NFILE': {
-          const { entity, method, range, localOnly, requestToken } = e.data.payload || {}
+          const { entity, method, range, localOnly, requestToken, flowControlled } = e.data.payload || {}
           if (!requestToken || state.nfileDownloads.has(requestToken)) {
             reply(e, { error: new Error('INVALID_NFILE_REQUEST'), isLast: true }, { to: trustedAppPagePort })
             break
@@ -172,6 +173,12 @@ function listenToTrustedAppPageMessages ({
                 : null,
               signal
             })
+            const credit = flowControlled ? createNfileCredit() : null
+            if (credit) {
+              const close = downloader.close.bind(downloader)
+              downloader.grantRead = credit.grant
+              downloader.close = () => { credit.close(); close() }
+            }
             state.nfileDownloads.set(requestToken, downloader)
             const response = await downloader.open({ method, range, localOnly: localOnly === true })
             if (state.nfileDownloads.get(requestToken) !== downloader) break
@@ -181,6 +188,7 @@ function listenToTrustedAppPageMessages ({
             }, { to: trustedAppPagePort })
             if (response.body) {
               for await (const chunk of response.body) {
+                if (credit && !await credit.take()) break
                 if (state.nfileDownloads.get(requestToken) !== downloader) break
                 reply(e, { payload: { chunk }, isLast: false }, { to: trustedAppPagePort })
               }
@@ -196,6 +204,10 @@ function listenToTrustedAppPageMessages ({
             downloader?.close()
             state.nfileDownloads.delete(requestToken)
           }
+          break
+        }
+        case 'PULL_NFILE': {
+          state.nfileDownloads.get(e.data.payload?.requestToken)?.grantRead?.()
           break
         }
         case 'CANCEL_NFILE': {
