@@ -37,6 +37,8 @@ export const GLOBAL_LOCAL_KEYS = [
   'local_pendingStorageRepairPlan',
   'local_storageRepairInProgress',
   'local_storageRepairAttempts',
+  // Development-only marker for the launcher's full environment reset.
+  'local_devFullReset',
   'local_stickySessionSnapshots',
   'local_stickySessionClaims',
   'local_stickySessionSeenIds',

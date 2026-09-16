@@ -73,6 +73,11 @@ writers. New files are verified and stored before activating the manifest. Reloa
 preserve the app route, storage and eventStore; published draft updates still clear
 runtime data. A confirmed **Clear local app data and reload** action in the app
 menu clears only the selected user/app, coordinating other instances first.
+Above it, **Reset development environment and reload** deletes every account in
+the vault and all local data of every app in the browser, then reloads into a
+clean launcher. It aborts and reports an error when the vault is unreachable,
+because the accounts would come back on the next load. Reopen the local link
+printed by the watcher to reinstall the app files.
 
 Version locks protect files still used by open tabs. Installation failures keep
 the previous manifest; obsolete files are pruned once their versions are unused.

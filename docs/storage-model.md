@@ -49,6 +49,13 @@ ephemeral and intentionally not persisted; they do not belong here or in
 - `local_pendingStorageRepairPlan` — durable repair plan, retained until applied.
 - `local_storageRepairInProgress` — crash-safe repair marker.
 - `local_storageRepairAttempts` — repair retry counter.
+- `local_devFullReset` — development-only `{ attempts }` marker for the app
+  menu's full environment reset. The confirmed action wipes the vault and app
+  origins, writes this marker and reloads; the next boot deletes every
+  IndexedDB store, cache, OPFS entry and service worker of the launcher origin
+  before anything reopens them, then removes the marker and reloads again.
+  Leftovers after `MAX_FULL_RESET_ATTEMPTS` are reported and the marker is
+  dropped instead of reloading forever.
 - `local_stickySessionSnapshots` — per-tab snapshots of open/minimized windows:
   `{ [snapshotId]: { updatedAt, workspaceKeys, workspaces: { [wsKey]: { openKeys, minimizedKeys, routes } } } }`
   (`openKeys` keeps window order; `minimizedKeys` lists minimized instances,

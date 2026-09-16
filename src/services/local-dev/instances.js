@@ -29,7 +29,9 @@ export function notifyLocalInstances (message) {
 }
 function receive (message) {
   for (const instance of instances) {
-    if (instance.appId !== message.appId || (message.userPk && instance.userPk !== message.userPk)) continue
+    // A message without an app id addresses every local instance (full reset).
+    if (message.appId && instance.appId !== message.appId) continue
+    if (message.userPk && instance.userPk !== message.userPk) continue
     instance.enqueue(message)
   }
 }

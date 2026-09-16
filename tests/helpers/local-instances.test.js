@@ -59,3 +59,33 @@ test('reset pauses only the selected user/app and resumes instances after partia
   assert.equal(counts[2].paused, 0)
   assert.equal(counts[3].paused, 0)
 })
+
+test('a lifecycle message without an app id reaches every local instance', { timeout: 3000 }, async t => {
+  const oldStorage = globalThis.localStorage
+  const oldDevelopment = globalThis.IS_DEVELOPMENT
+  const oldChannel = globalThis.BroadcastChannel
+  globalThis.IS_DEVELOPMENT = true
+  const data = JSON.stringify({ app: { version: 'v1' }, other: { version: 'v1' } })
+  globalThis.localStorage = { getItem: () => data }
+  globalThis.BroadcastChannel = class { postMessage () {} }
+  const controllers = []
+  t.after(() => {
+    controllers.forEach(controller => controller.abort())
+    globalThis.BroadcastChannel = oldChannel
+    if (oldStorage === undefined) delete globalThis.localStorage; else globalThis.localStorage = oldStorage
+    if (oldDevelopment === undefined) delete globalThis.IS_DEVELOPMENT; else globalThis.IS_DEVELOPMENT = oldDevelopment
+  })
+  const { attachLocalInstance, notifyLocalInstances } = await import('#services/local-dev/instances.js')
+  const counts = []
+  for (const [appId, userPk] of [['app', '1'], ['other', '2']]) {
+    const controller = new AbortController(); controllers.push(controller)
+    const count = { paused: 0, reloaded: 0 }; counts.push(count)
+    await attachLocalInstance({ appId, userPk, signal: controller.signal, pause: async () => { count.paused++ }, reload: async () => { count.reloaded++ } })
+  }
+  notifyLocalInstances({ type: 'pause' })
+  for (let step = 0; step < 100; step++) {
+    if (counts.every(count => count.paused === 1)) break
+    await new Promise(resolve => setTimeout(resolve, 5))
+  }
+  assert.deepEqual(counts, [{ paused: 1, reloaded: 0 }, { paused: 1, reloaded: 0 }])
+})

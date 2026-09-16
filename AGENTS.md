@@ -155,6 +155,14 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   retains trusted bridge documents and their runtime service worker; ordinary app
   documents and workers must be gone. Recycling checks and remote draft cleanup
   retain their existing behavior.
+- A second confirmed menu action, rendered above that one, resets the whole
+  development environment: it asks the vault to delete its own accounts and
+  databases over the messenger (`LOCAL_DEV_WIPE`), clears every mapped app origin,
+  and leaves `local_devFullReset` plus a reload for the next boot, which deletes
+  all launcher IndexedDB stores, caches, OPFS entries and service workers before
+  anything reopens them. The vault wipe is mandatory: abort with a visible error
+  instead of reloading into an environment the vault would refill with the same
+  accounts. The marker retries once and is then dropped, never reloading forever.
 - Local controls use thenameisf and existing i18n/confirmation conventions, and
   are excluded from production builds. No new window.napp API is introduced.
 

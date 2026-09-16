@@ -21,6 +21,12 @@ import {
 } from '#services/sticky-sessions/index.js'
 import { useInitI18n } from '#i18n/index.js'
 
+// Development-only full reset: apply the pending wipe before the storage guard
+// or anything else opens IndexedDB, then reload into a clean environment.
+if (IS_DEVELOPMENT) {
+  await (await import('#services/local-dev/boot-reset.js')).applyPendingLocalDevFullReset()
+}
+
 installStorageEventGuard()
 
 // Clear old localStorage data from pre-v2 schema (bundle→siteManifest migration)

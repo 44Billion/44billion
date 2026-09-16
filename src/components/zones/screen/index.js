@@ -2100,7 +2100,11 @@ f('appLaunchersMenu', function () {
             }
           }
         `}</style>
-        ${IS_DEVELOPMENT ? this.h`<local-dev-reset-button props=${{ app$ }} />` : ''}
+        ${IS_DEVELOPMENT
+          ? this.h`
+            <local-dev-full-reset-button props=${{ app$ }} />
+            <local-dev-reset-button props=${{ app$ }} />`
+          : ''}
         <div class=${{ invisible: visibility === 'open' }}>
           <div class='icon-wrapper-271yiduh'><icon-maximize props=${{ size: '16px' }} /></div>
           <div class='menu-label' onclick=${openApp}>${visibility === 'closed' ? t('Open') : t('Maximize')}</div>
