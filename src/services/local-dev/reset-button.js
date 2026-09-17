@@ -1,5 +1,6 @@
 import { f, useGlobalStore, useWebStorage } from '#f'
 import { useConfirmationDialogStore } from '#zones/confirmation-dialog/index.js'
+import { useInfoDialogStore } from '#zones/info-dialog/index.js'
 import { getT, SUPPORTED_LOCALES } from '#i18n/index.js'
 import { cssVars } from '#assets/styles/theme.js'
 import '#shared/icons/icon-restore.js'
@@ -9,12 +10,14 @@ import { clearLocalAppData } from './instances.js'
 const en = {
   clear: 'Clear local app data and reload',
   confirm: 'Clear data',
+  errorTitle: 'Development reset',
   message: 'Clear stored data for {{app}}, user {{user}}? Other users and installed files will be kept.',
   failed: 'Some data could not be cleared. Close other instances and try again.'
 }
 const pt = {
   clear: 'Limpar dados do app local e recarregar',
   confirm: 'Limpar dados',
+  errorTitle: 'Redefinição de desenvolvimento',
   message: 'Limpar os dados de {{app}}, usuário {{user}}? Outros usuários e arquivos instalados serão mantidos.',
   failed: 'Alguns dados não foram apagados. Feche outras instâncias e tente novamente.'
 }
@@ -28,6 +31,7 @@ const t = (key, values) => translate(en[key], values)
 f('local-dev-reset-button', ({ h, props }) => {
   const storage = useWebStorage(localStorage)
   const { requestConfirmation } = useConfirmationDialogStore()
+  const { showInfo } = useInfoDialogStore()
   const state = useGlobalStore('local-dev-reset', () => ({ statuses$: {} }))
   const app = props.app$()
   if (!app || !isLocalDevApp(app.id)) return
@@ -39,7 +43,7 @@ f('local-dev-reset-button', ({ h, props }) => {
   const update = value => state.statuses$(previous => ({ ...previous, [key]: value }))
   const clear = async () => {
     if (state.statuses$()[key]?.busy) return
-    update({ busy: true, error: '' })
+    update({ busy: true })
     try {
       await requestConfirmation({
         title: t('clear'), confirmText: t('confirm'),
@@ -49,23 +53,22 @@ f('local-dev-reset-button', ({ h, props }) => {
     } catch (error) {
       if (error.code !== 'DENIED_BY_USER') {
         console.error('[local app reset]', error)
-        update({ busy: false, error: t('failed') })
+        update({ busy: false })
+        showInfo({ title: t('errorTitle'), message: t('failed') })
       }
-    } finally { update({ ...state.statuses$()[key], busy: false }) }
+    } finally { update({ busy: false }) }
   }
   return h`<div class='local-dev-reset'>
     <button type='button' disabled=${!!status.busy} onclick=${clear}>
       <span class='reset-icon' aria-hidden='true'><icon-restore props=${{ size: '16px' }} /></span>
       <span class='reset-label'>${t('clear')}</span>
     </button>
-    ${status.error ? h`<p role='alert'>${status.error}</p>` : ''}
     <style>${`local-dev-reset-button .local-dev-reset {
       button { display: flex; align-items: center; width: 100%; border: 0; background: transparent; color: inherit; padding: 0; text-align: start; cursor: pointer; }
       .reset-icon { display: flex; flex: 0 0 16px; margin: 10px; }
       .reset-label { flex: 1; min-height: 30px; padding: 10px 10px 10px 3px; }
       button:active { background: ${cssVars.colors.bg2}; }
       button:focus-visible { outline: 2px solid ${cssVars.colors.bgAccentPrimary}; }
-      p { padding: 0 12px; max-width: 280px; }
     }`}</style>
   </div>`
 })

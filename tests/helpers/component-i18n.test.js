@@ -38,6 +38,7 @@ mock.module('#shared/app-icon.js', { namedExports: {} })
 mock.module('#shared/icons/icon-x.js', { namedExports: {} })
 mock.module('#shared/icons/icon-check.js', { namedExports: {} })
 mock.module('#shared/icons/icon-help-hexagon-filled.js', { namedExports: {} })
+mock.module('#shared/icons/icon-info-hexagon-filled.js', { namedExports: {} })
 mock.module('#services/idb/browser/queries/permission.js', {
   namedExports: { hasPermission: async () => false, createOrUpdatePermission: async () => {} }
 })
@@ -67,12 +68,16 @@ const {
 const {
   useConfirmationDialogStore
 } = await import('../../src/components/zones/confirmation-dialog/index.js')
+const {
+  infoDialogLocales
+} = await import('../../src/components/zones/info-dialog/index.js')
 
 describe('component translation catalogs', () => {
   it('requires every supported locale and matching placeholders', () => {
     assert.deepEqual(SUPPORTED_LOCALES, ['en', 'fr', 'it', 'de', 'es', 'pt-BR', 'ru', 'zh-CN', 'zh-TW', 'ja', 'ko'])
     assert.equal(getT(assetBudgetLocales, { locale: 'en' })('More app storage?'), 'More app storage?')
     assert.equal(getT(permissionDialogLocales, { locale: 'en' })('Allow'), 'Allow')
+    assert.equal(getT(infoDialogLocales, { locale: 'en' })('Dismiss'), 'Dismiss')
     assert.throws(() => getT({ Hello: { en: 'Hello' } }), /missing translation/)
     assert.throws(() => getT({ Hello: { en: 'Hello' } }, {
       validation: { requiredLocales: ['en'] }

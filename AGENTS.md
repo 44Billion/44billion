@@ -165,6 +165,11 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   accounts. The marker retries once and is then dropped, never reloading forever.
 - Local controls use thenameisf and existing i18n/confirmation conventions, and
   are excluded from production builds. No new window.napp API is introduced.
+- Development reset failures are reported through the informational
+  `<info-dialog>` (card derived from the confirmation dialog: icon, title,
+  message and a single dismiss action), never as a notice inside the window
+  menu, which unmounts as soon as the menu closes. The dialog is mounted only
+  in the multi-napp zone and only in development builds.
 
 - Keep `storage-event-guard.js` ahead of component mounting. The installed
   thenameisf storage adapter writes received values back; delayed remove/set

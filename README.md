@@ -78,6 +78,8 @@ the vault and all local data of every app in the browser, then reloads into a
 clean launcher. It aborts and reports an error when the vault is unreachable,
 because the accounts would come back on the next load. Reopen the local link
 printed by the watcher to reinstall the app files.
+Failures of either development reset open an informational dialog (no action
+button, only dismiss) instead of a menu notice.
 
 Version locks protect files still used by open tabs. Installation failures keep
 the previous manifest; obsolete files are pruned once their versions are unused.

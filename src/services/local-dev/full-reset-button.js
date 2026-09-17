@@ -1,6 +1,7 @@
 import { f, useGlobalStore } from '#f'
 import { useConfirmationDialogStore } from '#zones/confirmation-dialog/index.js'
 import { useVaultActor, useVaultMessengerStore } from '#zones/vault-modal/index.js'
+import { useInfoDialogStore } from '#zones/info-dialog/index.js'
 import { getT, SUPPORTED_LOCALES } from '#i18n/index.js'
 import { cssVars } from '#assets/styles/theme.js'
 import '#shared/icons/icon-database.js'
@@ -10,6 +11,7 @@ import { requestLocalDevFullReset } from './full-reset.js'
 const en = {
   reset: 'Reset development environment and reload',
   confirm: 'Reset environment',
+  errorTitle: 'Development reset',
   message: 'Delete every account in the vault and all local data of every app in this browser? ' +
     'The launcher and the vault are cleared, other tabs reload, installed files are restored by the watcher. ' +
     'Development only.',
@@ -18,6 +20,7 @@ const en = {
 const pt = {
   reset: 'Redefinir ambiente de desenvolvimento e recarregar',
   confirm: 'Redefinir ambiente',
+  errorTitle: 'Redefinição de desenvolvimento',
   message: 'Apagar todas as contas do vault e todos os dados locais de todos os apps neste navegador? ' +
     'O launcher e o vault são limpos, outras abas recarregam e os arquivos instalados são restaurados pelo watcher. ' +
     'Somente em desenvolvimento.',
@@ -34,6 +37,7 @@ const t = (key, values) => translate(en[key], values)
 // where the watcher can reinstall the app files afterwards.
 f('local-dev-full-reset-button', ({ h, props }) => {
   const { requestConfirmation } = useConfirmationDialogStore()
+  const { showInfo } = useInfoDialogStore()
   const { askVault } = useVaultActor()
   const { isVaultMessengerReady$, vaultIframeRef$ } = useVaultMessengerStore()
   const state = useGlobalStore('local-dev-full-reset', () => ({ status$: {} }))
@@ -43,7 +47,7 @@ f('local-dev-full-reset-button', ({ h, props }) => {
   const update = value => state.status$({ ...state.status$(), ...value })
   const reset = async () => {
     if (state.status$()?.busy) return
-    update({ busy: true, error: '' })
+    update({ busy: true })
     try {
       await requestConfirmation({
         title: t('reset'), confirmText: t('confirm'), message: t('message')
@@ -68,7 +72,8 @@ f('local-dev-full-reset-button', ({ h, props }) => {
         return
       }
       console.error('[local-dev full reset]', error)
-      update({ busy: false, error: t('failed') })
+      update({ busy: false })
+      showInfo({ title: t('errorTitle'), message: t('failed') })
     }
   }
   return h`<div class='local-dev-full-reset'>
@@ -76,14 +81,12 @@ f('local-dev-full-reset-button', ({ h, props }) => {
       <span class='reset-icon' aria-hidden='true'><icon-database props=${{ size: '16px' }} /></span>
       <span class='reset-label'>${t('reset')}</span>
     </button>
-    ${status?.error ? h`<p role='alert'>${status.error}</p>` : ''}
     <style>${`local-dev-full-reset-button .local-dev-full-reset {
       button { display: flex; align-items: center; width: 100%; border: 0; background: transparent; color: inherit; padding: 0; text-align: start; cursor: pointer; }
       .reset-icon { display: flex; flex: 0 0 16px; margin: 10px; }
       .reset-label { flex: 1; min-height: 30px; padding: 10px 10px 10px 3px; }
       button:active { background: ${cssVars.colors.bg2}; }
       button:focus-visible { outline: 2px solid ${cssVars.colors.bgAccentPrimary}; }
-      p { padding: 0 12px; max-width: 280px; }
     }`}</style>
   </div>`
 })
