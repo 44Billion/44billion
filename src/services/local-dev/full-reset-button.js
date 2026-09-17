@@ -1,6 +1,6 @@
 import { f, useGlobalStore } from '#f'
 import { useConfirmationDialogStore } from '#zones/confirmation-dialog/index.js'
-import { useVaultActor } from '#zones/vault-modal/index.js'
+import { useVaultActor, useVaultMessengerStore } from '#zones/vault-modal/index.js'
 import { getT, SUPPORTED_LOCALES } from '#i18n/index.js'
 import { cssVars } from '#assets/styles/theme.js'
 import '#shared/icons/icon-database.js'
@@ -35,6 +35,7 @@ const t = (key, values) => translate(en[key], values)
 f('local-dev-full-reset-button', ({ h, props }) => {
   const { requestConfirmation } = useConfirmationDialogStore()
   const { askVault } = useVaultActor()
+  const { isVaultMessengerReady$, vaultIframeRef$ } = useVaultMessengerStore()
   const state = useGlobalStore('local-dev-full-reset', () => ({ status$: {} }))
   const app = props.app$()
   if (!app || !isLocalDevApp(app.id)) return
@@ -47,6 +48,12 @@ f('local-dev-full-reset-button', ({ h, props }) => {
       await requestConfirmation({
         title: t('reset'), confirmText: t('confirm'), message: t('message')
       })
+      // A vault iframe that never connected (or was removed) leaves the actor
+      // port dangling, so asking would only fail after the whole ask timeout.
+      // Fail fast instead so the developer can bring the vault back and retry.
+      if (!isVaultMessengerReady$() || !vaultIframeRef$()?.isConnected) {
+        throw new Error('Vault is not connected')
+      }
       // The vault wipe is a launcher/vault development command, not a signer
       // request, so it must skip the actor queue that refuses everything while
       // nobody is logged in: an environment stuck on the stub user is exactly

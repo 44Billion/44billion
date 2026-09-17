@@ -467,7 +467,7 @@ f('vault-migration-dialog', ({ h, props }) => {
   `
 })
 
-function useVaultMessengerStore ({ shouldInit = false } = {}) {
+export function useVaultMessengerStore ({ shouldInit = false } = {}) {
   if (!shouldInit) return useGlobalStore('vaultMessenger')
   return useGlobalStore('vaultMessenger', () => ({
     isWorkarounEnabled$: true,
