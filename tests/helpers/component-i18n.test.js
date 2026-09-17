@@ -125,6 +125,13 @@ describe('permission translations', () => {
     assert.match(format('ru', { name: 'eventAccessPersonal', eKind: 34601 }), /личным копиям/)
   })
 
+  it('labels file properties and site curation lists', () => {
+    assert.equal(format('en', { name: 'eventAccess', eKind: 1063 }), 'Can I access file properties?')
+    assert.match(format('pt-BR', { name: 'eventAccessPersonal', eKind: 1063 }), /propriedades do arquivo/)
+    assert.equal(format('en', { name: 'eventAccess', eKind: 30499 }), 'Can I access site lists?')
+    assert.match(format('pt-BR', { name: 'eventAccessPersonal', eKind: 30499 }), /listas de sites/)
+  })
+
   it('pluralizes deletion counts and preserves localized scope punctuation', () => {
     const event = count => ({ tags: Array.from({ length: count }, (_, index) => ['e', String(index)]) })
     assert.equal(format('en', { name: 'delete', eKind: 5, meta: { params: [event(1)] } }), 'Can I delete 1 item?')
