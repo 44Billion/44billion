@@ -220,6 +220,15 @@ No new tombstone is created. Its references remain intact; later arrivals of
 referenced targets must fit public quota rather than falling back to cache.
 The existing add result format is unchanged; success may include these discards.
 
+`addPersonalCopy(unsignedEvent, { context, autoDTag })` derives a wrapper `d`
+tag by default for inner events that live at a coordinate (replaceable kinds,
+including 0 and 3, and addressable kinds): the value is the obfuscated
+`kind:author:dtag` coordinate, and the store rejects a wrapper whose `d` does
+not match it. Pass `autoDTag: false` to keep the previous address-less shape;
+the option is ignored for inner kinds without a coordinate. Personal copies
+that share a derived address compete by provenance first (hearsay never
+displaces a signed/direct copy) and then by the newer inner version.
+
 Owner references can preserve third-party public events; other third-party events
 are disposable cache and may be evicted by approximate LRU. Expiration, explicit
 deletion and newer coordinate replacement still apply to preserved events.

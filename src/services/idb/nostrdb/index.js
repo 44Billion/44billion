@@ -25,6 +25,7 @@ import {
 } from './quotas.js'
 import { appIdToDbAppRef } from '#helpers/app.js'
 import {
+  PERSONAL_COPY_PROVENANCE,
   PERSONAL_COPY_KIND,
   isPersonalCopyEvent,
   personalCopyContextValue,
@@ -701,7 +702,7 @@ export class NostrDb {
             existingByAddress &&
             !existingIsPersonalCopyLoser &&
             !forceCoordinateReplace &&
-            !isNewer(event, existingByAddress.event)
+            !personalCopyWinsAddress(event, personalCopy?.provenance, existingByAddress.event)
           ) {
             const changed = mergeAppRef(existingByAddress, appRef)
             if (changed) await run('put', [existingByAddress], EVENTS_STORE, null, { db, tx })
@@ -3854,6 +3855,18 @@ export function isNewer (event, other) {
   if (event.created_at > other.created_at) return true
   if (event.created_at < other.created_at) return false
   return event.id < other.id
+}
+
+// Personal copies competing for the same wrapper address compare provenance
+// first: hearsay never displaces a direct/signed copy, and equal tiers keep the
+// newer inner version (created_at, then lower id).
+export function personalCopyWinsAddress (incoming, incomingProvenance, existing) {
+  const existingProvenance = personalCopyProvenanceValue(existing)
+  if (!incomingProvenance || !existingProvenance) return isNewer(incoming, existing)
+  const incomingIsHearsay = incomingProvenance === PERSONAL_COPY_PROVENANCE.HEARSAY_RUMOR
+  const existingIsHearsay = existingProvenance === PERSONAL_COPY_PROVENANCE.HEARSAY_RUMOR
+  if (incomingIsHearsay !== existingIsHearsay) return !incomingIsHearsay
+  return isNewer(incoming, existing)
 }
 
 export function currentUnixTime () {

@@ -1608,7 +1608,7 @@ describe('nostrdb', () => {
     assert.deepEqual((await queryResults(db, { kinds: [30023], search: 'body' })).map(e => e.id), [content.id])
   })
 
-  it('builds the personal-copy metadata shape without an automatic outer d tag', async () => {
+  it('builds the personal-copy metadata shape with a derived outer d tag for coordinate inners', async () => {
     const owner = hexId(30001)
     const inner = personalCopyRumor({
       tags: [['d', 'inner-address'], ['t', 'private']]
@@ -1621,14 +1621,38 @@ describe('nostrdb', () => {
       obfuscate: personalCopyObfuscate
     })
 
-    assert.deepEqual(tags.slice(0, 3), [
+    assert.deepEqual(tags.slice(0, 4), [
       ['k', '1'],
       ['c', 'obf:1006::conversation'],
-      ['v', PERSONAL_COPY_PROVENANCE.DIRECT_RUMOR]
+      ['v', PERSONAL_COPY_PROVENANCE.DIRECT_RUMOR],
+      ['d', `obf:1006:.coordinate:1:${inner.pubkey}:inner-address`]
     ])
-    assert.equal(tags.some(tag => tag[0] === 'd'), false)
     assert.equal(tags.some(tag => tag[0] === 'o' && tag[1] === 'obf:1006:#d:inner-address'), true)
     assert.equal(tags.some(tag => tag[0] === 'o' && tag[1] === `obf:1006:.id:${personalCopySourceId(inner)}`), true)
+  })
+
+  it('omits the outer d tag for regular inners and for the autoDTag opt-out', async () => {
+    const owner = hexId(30001)
+    const regular = personalCopyRumor({ tags: [['t', 'private']] })
+    const regularTags = await buildPersonalCopyTags({
+      innerEvent: regular,
+      wrapperPubkey: owner,
+      context: 'conversation',
+      provenance: PERSONAL_COPY_PROVENANCE.DIRECT_RUMOR,
+      obfuscate: personalCopyObfuscate
+    })
+    assert.equal(regularTags.some(tag => tag[0] === 'd'), false)
+
+    const addressable = personalCopyRumor({ kind: 30023, tags: [['d', 'address']] })
+    const optedOut = await buildPersonalCopyTags({
+      innerEvent: addressable,
+      wrapperPubkey: owner,
+      context: 'conversation',
+      provenance: PERSONAL_COPY_PROVENANCE.DIRECT_RUMOR,
+      autoDTag: false,
+      obfuscate: personalCopyObfuscate
+    })
+    assert.equal(optedOut.some(tag => tag[0] === 'd'), false)
   })
 
   it('searches strictly validated personal-copy wrappers through decrypted inner JSON', async () => {
@@ -2109,36 +2133,33 @@ describe('nostrdb', () => {
     )
   })
 
-  it('uses ordinary outer replacement for manual d tags without CRDT merging', async () => {
+  it('replaces an older non-owner copy at the same derived address without CRDT merging', async () => {
     const owner = hexId(30530)
     const plaintexts = new Map()
     const db = personalCopyDb(owner, plaintexts)
-    const olderInner = personalCopyRumor({ created_at: 120, content: 'older source' })
-    const newerInner = personalCopyRumor({ pubkey: B, created_at: 121, content: 'newer source' })
+    const olderInner = personalCopyRumor({ created_at: 120, content: 'older source', tags: [['d', 'shared']] })
+    const newerInner = personalCopyRumor({ created_at: 121, content: 'newer source', tags: [['d', 'shared']] })
     const older = await personalCopyWrapper({
       id: hexId(30531),
       owner,
       inner: olderInner,
-      context: 'manual-d',
-      content: 'cipher-manual-old',
-      extraTags: [['d', 'manual-coordinate']]
+      context: 'derived-d',
+      content: 'cipher-old'
     })
     const newer = await personalCopyWrapper({
       id: hexId(30532),
       owner,
       inner: newerInner,
-      context: 'manual-d',
-      content: 'cipher-manual-new',
-      extraTags: [['d', 'manual-coordinate']]
+      context: 'derived-d',
+      content: 'cipher-new'
     })
-    const staleInner = personalCopyRumor({ pubkey: C, created_at: 119, content: 'stale source' })
+    const staleInner = personalCopyRumor({ created_at: 119, content: 'stale source', tags: [['d', 'shared']] })
     const stale = await personalCopyWrapper({
       id: hexId(30533),
       owner,
       inner: staleInner,
-      context: 'manual-d',
-      content: 'cipher-manual-stale',
-      extraTags: [['d', 'manual-coordinate']]
+      context: 'derived-d',
+      content: 'cipher-stale'
     })
     rememberPersonalCopy(plaintexts, older, olderInner)
     rememberPersonalCopy(plaintexts, newer, newerInner)
@@ -2167,47 +2188,35 @@ describe('nostrdb', () => {
     )
   })
 
-  it('preserves same-source rows when an unrelated manual d coordinate blocks the incoming winner', async () => {
+  it('never lets a newer hearsay copy displace a direct copy at the same derived address', async () => {
     const owner = hexId(30540)
     const plaintexts = new Map()
     const db = personalCopyDb(owner, plaintexts)
-    const source = personalCopyRumor({ created_at: 130 })
-    const otherSource = personalCopyRumor({ pubkey: B, created_at: 130, content: 'other' })
+    const olderInner = personalCopyRumor({ created_at: 130, content: 'older', tags: [['d', 'shared']] })
+    const newerInner = personalCopyRumor({ created_at: 200, content: 'newer', tags: [['d', 'shared']] })
     const hearsay = await personalCopyWrapper({
       id: hexId(30543),
       owner,
-      inner: source,
-      context: 'blocked',
-      content: 'cipher-blocked-hearsay',
+      inner: newerInner,
+      context: 'tier',
+      content: 'cipher-hearsay',
       provenance: PERSONAL_COPY_PROVENANCE.HEARSAY_RUMOR,
-      extraTags: [['d', 'kept-coordinate']]
-    })
-    const blocker = await personalCopyWrapper({
-      id: hexId(1),
-      owner,
-      inner: otherSource,
-      context: 'blocked',
-      content: 'cipher-blocker',
-      extraTags: [['d', 'target-coordinate']]
     })
     const direct = await personalCopyWrapper({
-      id: hexId(9999),
+      id: hexId(30544),
       owner,
-      inner: source,
-      context: 'blocked',
-      content: 'cipher-blocked-direct',
-      extraTags: [['d', 'target-coordinate']]
+      inner: olderInner,
+      context: 'tier',
+      content: 'cipher-direct'
     })
-    rememberPersonalCopy(plaintexts, hearsay, source)
-    rememberPersonalCopy(plaintexts, blocker, otherSource)
-    rememberPersonalCopy(plaintexts, direct, source)
+    rememberPersonalCopy(plaintexts, hearsay, newerInner)
+    rememberPersonalCopy(plaintexts, direct, olderInner)
 
-    assertAddOk(await db.add(hearsay))
-    assertAddOk(await db.add(blocker))
-    assertAddOk(await db.add(direct), { code: 'superseded', stored: false, published: false })
+    assertAddOk(await db.add(direct))
+    assertAddOk(await db.add(hearsay), { code: 'superseded', stored: false, published: false })
 
     const stored = await queryResults(db, { kinds: [eventKinds.PERSONAL_COPY] })
-    assert.deepEqual(new Set(stored.map(event => event.id)), new Set([hearsay.id, blocker.id]))
+    assert.deepEqual(stored.map(event => event.id), [direct.id])
   })
 
   it('supports uFuzzy negative search terms', async () => {

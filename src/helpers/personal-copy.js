@@ -10,6 +10,7 @@ const SIGNED_EVENT_FIELDS = [...RUMOR_FIELDS, 'id', 'sig'].sort()
 
 export const PERSONAL_COPY_KIND = eventKinds.PERSONAL_COPY
 export const PERSONAL_COPY_PROVENANCE_TAG = 'v'
+export const PERSONAL_COPY_ADDRESS_SCOPE = '.coordinate'
 export const PERSONAL_COPY_PROVENANCE = Object.freeze({
   SIGNED_EVENT: '0',
   DIRECT_RUMOR: '1',
@@ -142,6 +143,7 @@ export async function preparePersonalCopyUnsignedEvent ({
   ownerPubkey,
   context = '',
   hearsay = false,
+  autoDTag = true,
   encrypt,
   obfuscate
 }) {
@@ -163,11 +165,19 @@ export async function preparePersonalCopyUnsignedEvent ({
   const plaintext = JSON.stringify(prepared.inner)
   const content = await encrypt(prepared.inner.kind, plaintext)
   const mirrors = await buildMirrorDataFromDescription(prepared, obfuscate)
+  const addressTag = autoDTag === false
+    ? null
+    : await personalCopyCoordinateTag({
+      innerEvent: prepared.inner,
+      wrapperPubkey: ownerPubkey,
+      obfuscate
+    })
   const contextValue = await obfuscate(String(context ?? ''), PERSONAL_COPY_KIND, '')
   const tags = [
     ['k', String(prepared.inner.kind)],
     ['c', contextValue],
     [PERSONAL_COPY_PROVENANCE_TAG, provenance],
+    ...(addressTag ? [addressTag] : []),
     ...mirrors.tags,
     // The vault fills this proof while signing the outer wrapper.
     ['imkc']
@@ -195,6 +205,7 @@ export async function buildPersonalCopyTags ({
   wrapperPubkey,
   context = '',
   provenance,
+  autoDTag = true,
   obfuscate
 }) {
   const description = describePersonalCopyInner(innerEvent, { wrapperPubkey })
@@ -208,13 +219,50 @@ export async function buildPersonalCopyTags ({
     wrapperPubkey,
     obfuscate
   })
+  const addressTag = autoDTag === false
+    ? null
+    : await personalCopyCoordinateTag({ innerEvent, wrapperPubkey, obfuscate })
 
   return [
     ['k', String(innerEvent.kind)],
     ['c', await obfuscate(String(context ?? ''), PERSONAL_COPY_KIND, '')],
     [PERSONAL_COPY_PROVENANCE_TAG, provenance],
+    ...(addressTag ? [addressTag] : []),
     ...mirrors.tags
   ]
+}
+
+// The wrapper address identifies the inner coordinate (kind, effective author
+// and `d` tag) so replaceable/addressable copies replace each other without
+// leaking the inner values. Kind 0/3 and the replaceable range use an empty
+// dtag; addressable kinds use their own.
+export async function personalCopyCoordinateTag ({ innerEvent, wrapperPubkey, obfuscate }) {
+  if (typeof obfuscate !== 'function') return null
+  const description = describePersonalCopyInner(innerEvent, { wrapperPubkey })
+  if (!description || !hasCoordinate(description.inner)) return null
+  const dtag = innerDTag(description.inner)
+  const value = await obfuscate(
+    `${description.inner.kind}:${description.effectivePubkey}:${dtag}`,
+    PERSONAL_COPY_KIND,
+    PERSONAL_COPY_ADDRESS_SCOPE
+  )
+  return ['d', value]
+}
+
+// Mirrors the store's getCoordinate eligibility (kind ranges plus a `d` tag
+// fallback) and keeps ephemeral inners out of the address space.
+function hasCoordinate (inner) {
+  if (inner.kind >= 20000 && inner.kind < 30000) return false
+  if (inner.tags.some(tag => Array.isArray(tag) && tag[0] === 'expiration' && tag[1] === String(inner.created_at))) return false
+  return inner.kind === 0 ||
+    inner.kind === 3 ||
+    (inner.kind >= 10000 && inner.kind < 20000) ||
+    (inner.kind >= 30000 && inner.kind < 40000) ||
+    inner.tags.some(tag => Array.isArray(tag) && tag[0] === 'd')
+}
+
+function innerDTag (inner) {
+  return inner.tags.find(tag => Array.isArray(tag) && tag[0] === 'd')?.[1] ?? ''
 }
 
 export async function buildPersonalCopyMirrorData ({ innerEvent, wrapperPubkey, obfuscate }) {
@@ -246,7 +294,7 @@ async function buildMirrorDataFromDescription (description, obfuscate) {
 
 export function isPersonalCopyDerivedTag (tag) {
   return Array.isArray(tag) &&
-    (tag[0] === 'k' || tag[0] === 'o' || tag[0] === PERSONAL_COPY_PROVENANCE_TAG)
+    (tag[0] === 'k' || tag[0] === 'o' || tag[0] === 'd' || tag[0] === PERSONAL_COPY_PROVENANCE_TAG)
 }
 
 export function plaintextArrayBuffer (plaintext) {

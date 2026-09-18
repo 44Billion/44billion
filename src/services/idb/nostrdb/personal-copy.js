@@ -7,6 +7,7 @@ import {
   isPersonalCopyEvent,
   parsePersonalCopyPlaintext,
   personalCopyContextValue,
+  personalCopyCoordinateTag,
   personalCopyEncryptionKind,
   personalCopyProvenanceValue
 } from '#helpers/personal-copy.js'
@@ -154,6 +155,19 @@ async function inspectPersonalCopyTags (event, innerDescription, { obfuscate, ow
   }
 
   const contextTag = ['c', context]
+  const dTags = event.tags.filter(tag => Array.isArray(tag) && tag[0] === 'd')
+  if (dTags.length > 1 || dTags.some(tag => tag.length !== 2 || typeof tag[1] !== 'string')) return null
+  const addressTag = dTags[0] ?? null
+  if (addressTag) {
+    // A wrapper address is derived, never app-chosen: reject a forged value so
+    // one app cannot squat another coordinate.
+    const expected = await personalCopyCoordinateTag({
+      innerEvent: innerDescription.inner,
+      wrapperPubkey: event.pubkey,
+      obfuscate
+    })
+    if (!expected || expected[1] !== addressTag[1]) return null
+  }
   const remainingTags = event.tags.filter(tag =>
     !isPersonalCopyDerivedTag(tag) &&
     !(Array.isArray(tag) && tag[0] === 'c')
@@ -162,6 +176,7 @@ async function inspectPersonalCopyTags (event, innerDescription, { obfuscate, ow
     ['k', String(innerKind)],
     contextTag,
     ['v', provenance],
+    ...(addressTag ? [addressTag] : []),
     ...mirrors.tags,
     ...remainingTags
   ]
