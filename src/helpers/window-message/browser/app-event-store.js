@@ -126,6 +126,7 @@ export function createAppEventStoreBridge ({
       const db = getNostrDb(scope.pubkey, {
         ...nostrDbMaintenanceOptions(maintenanceSignEvent),
         ...(personalCopyDecrypt ? { personalCopyDecrypt } : {}),
+        ...(personalCopyEncrypt ? { personalCopyEncrypt } : {}),
         ...(personalCopyObfuscate ? { personalCopyObfuscate } : {})
       })
       if (subscription) {

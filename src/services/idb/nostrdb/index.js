@@ -27,8 +27,12 @@ import { appIdToDbAppRef } from '#helpers/app.js'
 import {
   PERSONAL_COPY_PROVENANCE,
   PERSONAL_COPY_KIND,
+  buildPersonalCopyMirrorData,
+  describePersonalCopyInner,
   isPersonalCopyEvent,
+  parsePersonalCopyPlaintext,
   personalCopyContextValue,
+  personalCopyCoordinateTag,
   personalCopyEncryptionKind,
   personalCopyProvenanceValue
 } from '#helpers/personal-copy.js'
@@ -83,7 +87,8 @@ import {
   normalizeChunkEventForOwner,
   validateCanonicalOwnerChunkEvent
 } from './chunk-event.js'
-import { isValidEvent } from 'libp2r2p/event'
+import { classifyEvent, isValidEvent } from 'libp2r2p/event'
+import { isAddressableKind as isAddressableKindRange, isEphemeralKind as isEphemeralKindRange, isReplaceableKind } from 'libp2r2p/kind'
 import { verifyEventSignature } from './verification.js'
 
 export const NOSTRDB_VERSION = 3
@@ -276,6 +281,7 @@ export function getNostrDb (ownerPubkey, {
   maintenance = true,
   maintenanceOptions = {},
   personalCopyDecrypt,
+  personalCopyEncrypt,
   personalCopyObfuscate
 } = {}) {
   if (!storeCache.has(ownerPubkey)) {
@@ -283,6 +289,7 @@ export function getNostrDb (ownerPubkey, {
   }
   const db = storeCache.get(ownerPubkey)
   if (typeof personalCopyDecrypt === 'function') db.personalCopyDecrypt = personalCopyDecrypt
+  if (typeof personalCopyEncrypt === 'function') db.personalCopyEncrypt = personalCopyEncrypt
   if (typeof personalCopyObfuscate === 'function') db.personalCopyObfuscate = personalCopyObfuscate
   if (maintenance) startNostrDbMaintenance(db, maintenanceOptions)
   return db
@@ -432,6 +439,9 @@ export class NostrDb {
       }
 
       let eventToStore = event
+      let personalCopyToStore = personalCopy
+      let resolutionToStore = resolution
+      let mergedPersonalCopy = null
       const shouldMergeReplaceable = event.kind === 34601
         ? false
         : mergeReplaceable ?? (typeof signEvent === 'function' && event.pubkey === this.ownerPubkey)
@@ -448,23 +458,39 @@ export class NostrDb {
         : null
 
       if (mergedEvent) eventToStore = mergedEvent
+      if (personalCopy && !mergedEvent) {
+        mergedPersonalCopy = await this.mergePersonalCopyInner(event, personalCopy, {
+          mergeSource: crdtMergeSource,
+          signEvent,
+          now
+        })
+        if (mergedPersonalCopy) {
+          eventToStore = mergedPersonalCopy.event
+          personalCopyToStore = mergedPersonalCopy.personalCopy
+          resolutionToStore = await this.preparePersonalCopyProvenance(eventToStore, personalCopyToStore)
+          if (resolutionToStore === null) {
+            return this.reportAddResult('add', event, addResult('invalid'))
+          }
+        }
+      }
 
       const result = await this.addEvent(eventToStore, {
         now,
         appRef,
         forceCoordinateReplace: !!mergedEvent && crdtMergeSource === 'sync',
-        personalCopy: mergedEvent ? null : personalCopy,
-        personalCopyResolution: resolution,
+        personalCopy: mergedEvent ? null : personalCopyToStore,
+        personalCopyResolution: resolutionToStore,
         chunkData,
         blobRefs,
         log: false
       })
       if (result[PERSONAL_COPY_PROVENANCE_STALE] && attempt + 1 < PERSONAL_COPY_PROVENANCE_ATTEMPTS) continue
 
-      if (mergedEvent && result.stored && (result.code === 'stored' || result.code === 'replaced')) {
+      const mergedStoreEvent = mergedEvent ?? mergedPersonalCopy?.event ?? null
+      if (mergedStoreEvent && result.stored && (result.code === 'stored' || result.code === 'replaced')) {
         result.merged = true
         result.inputId = event.id
-        result.storedId = mergedEvent.id
+        result.storedId = mergedStoreEvent.id
       }
       if (result.stored && (result.code === 'stored' || result.code === 'replaced')) {
         if (eventToStore !== inputEvent) Object.defineProperty(result, 'storedEvent', { value: eventToStore })
@@ -572,6 +598,104 @@ export class NostrDb {
     }
   }
 
+  // Merges the plaintext inner of an owner-authored replaceable/addressable
+  // personal copy with the version currently stored at the wrapper address.
+  // Only contexts the owner fully controls participate, hearsay never merges,
+  // and the rewritten wrapper is a direct rumor because the merged content no
+  // longer matches any previous signature.
+  async mergePersonalCopyInner (event, personalCopy, { mergeSource, signEvent, now = currentUnixTime() } = {}) {
+    if (!personalCopy || personalCopy.provenance === PERSONAL_COPY_PROVENANCE.HEARSAY_RUMOR) return null
+    if (typeof signEvent !== 'function') return null
+    if (
+      typeof this.personalCopyDecrypt !== 'function' ||
+      typeof this.personalCopyEncrypt !== 'function' ||
+      typeof this.personalCopyObfuscate !== 'function'
+    ) return null
+    if (getCoordinate(event) === null) return null
+
+    const description = describePersonalCopyInner(personalCopy.inner, { wrapperPubkey: this.ownerPubkey })
+    if (!description || description.effectivePubkey !== this.ownerPubkey) return null
+    if (getCoordinate(description.inner) === null) return null
+
+    const context = personalCopy.context
+    const allowedContexts = await Promise.all([
+      this.personalCopyObfuscate('', PERSONAL_COPY_KIND, ''),
+      this.personalCopyObfuscate(`dm:${this.ownerPubkey}`, PERSONAL_COPY_KIND, '')
+    ])
+    if (!allowedContexts.includes(context)) return null
+
+    const db = await openNostrDb(this.ownerPubkey)
+    if (!db) return null
+    const address = addressKey(PERSONAL_COPY_KIND, this.ownerPubkey, getCoordinate(event))
+    const readTx = db.transaction([EVENTS_STORE], 'readonly')
+    const stored = await run('get', [address], EVENTS_STORE, INDEX.address, { db, tx: readTx }).then(value => value.result)
+    const storedEvent = stored?.event
+    if (!storedEvent || storedEvent.id === event.id) return null
+
+    const storedProvenance = personalCopyProvenanceValue(storedEvent)
+    if (
+      storedProvenance !== PERSONAL_COPY_PROVENANCE.SIGNED_EVENT &&
+      storedProvenance !== PERSONAL_COPY_PROVENANCE.DIRECT_RUMOR
+    ) return null
+
+    let storedInner
+    try {
+      storedInner = parsePersonalCopyPlaintext(storedEvent, await this.personalCopyDecrypt(storedEvent))
+    } catch { return null }
+    if (!storedInner || storedInner.kind !== description.inner.kind) return null
+    const storedDescription = describePersonalCopyInner(storedInner, { wrapperPubkey: this.ownerPubkey })
+    if (!storedDescription || storedDescription.effectivePubkey !== this.ownerPubkey) return null
+
+    const merged = buildCrdtMergeTemplate(
+      { ...description.inner, pubkey: this.ownerPubkey },
+      { ...storedInner, pubkey: this.ownerPubkey },
+      { mergeSource, now }
+    )
+    if (!merged) return null
+    const inner = { kind: merged.kind, created_at: merged.created_at, tags: merged.tags, content: merged.content }
+    if (JSON.stringify(inner) === JSON.stringify(storedInner)) return null
+    if (JSON.stringify(inner) === JSON.stringify(description.inner)) return null
+
+    const mirrors = await buildPersonalCopyMirrorData({
+      innerEvent: inner,
+      wrapperPubkey: this.ownerPubkey,
+      obfuscate: this.personalCopyObfuscate
+    })
+    const addressTag = await personalCopyCoordinateTag({
+      innerEvent: inner,
+      wrapperPubkey: this.ownerPubkey,
+      obfuscate: this.personalCopyObfuscate
+    })
+    if (!addressTag) return null
+
+    const wrapper = {
+      kind: PERSONAL_COPY_KIND,
+      created_at: inner.created_at,
+      tags: [
+        ['k', String(inner.kind)],
+        ['c', context],
+        ['v', PERSONAL_COPY_PROVENANCE.DIRECT_RUMOR],
+        addressTag,
+        ...mirrors.tags,
+        // The vault fills this proof while signing the outer wrapper.
+        ['imkc']
+      ],
+      content: await this.personalCopyEncrypt(inner.kind, JSON.stringify(inner))
+    }
+    const signed = await signEvent(wrapper)
+    if (!signed) return null
+    const mergedCopy = await validatePersonalCopyForStorage(signed, {
+      decrypt: this.personalCopyDecrypt,
+      obfuscate: this.personalCopyObfuscate,
+      ownerPubkey: this.ownerPubkey
+    })
+    if (!mergedCopy) return null
+    // A merged wrapper owns the address: it must replace the previous version
+    // even when timestamps tie, without letting callers force unrelated copies.
+    mergedCopy.mergedCoordinate = true
+    return { event: signed, personalCopy: mergedCopy }
+  }
+
   // Durable write path used internally by add() and compaction; it updates
   // IndexedDB/tombstones but does not publish events by itself.
   async addEvent (event, {
@@ -611,7 +735,7 @@ export class NostrDb {
       if (!personalCopyResolution) {
         return this.reportAddResult('addEvent', event, addResult('invalid'), { log })
       }
-      forceCoordinateReplace = false
+      forceCoordinateReplace = personalCopy.mergedCoordinate === true
     } else {
       personalCopy = null
       personalCopyResolution = null
@@ -3220,7 +3344,7 @@ function getCoordinateCursors (filter) {
 
 function getReplaceableCursors (filter) {
   if (!filter.authors || !filter.kinds || filter.dtags) return null
-  if (!filter.kinds.every(isRegularReplaceableKind)) return null
+  if (!filter.kinds.every(isReplaceableKind)) return null
 
   const cursors = []
   for (const author of filter.authors) {
@@ -3792,8 +3916,16 @@ function appNeutralKindSet () {
 }
 
 export function getCoordinate (event) {
-  if (isRegularReplaceableKind(event.kind)) return ''
-  if (isAddressableKind(event.kind)) return getDTag(event) ?? ''
+  // libp2r2p classification is the semantic source of truth: it covers the
+  // legacy kind ranges plus the tag-defined rules (`d === ''` is replaceable,
+  // `d !== ''` is addressable and an `expiration` matching created_at is
+  // ephemeral). Ephemeral events never own a coordinate.
+  const classes = classifyEvent(event)
+  if (classes.includes('ephemeral')) return null
+  if (classes.includes('replaceable')) return ''
+  if (classes.includes('addressable')) return getDTag(event) ?? ''
+  // Regular kinds still fall back to a manual `d` tag, preserving the previous
+  // behavior for app-defined events.
   return getDTag(event)
 }
 
@@ -3887,7 +4019,7 @@ export function getExpiration (event) {
 }
 
 export function isEphemeralKind (kind) {
-  return kind >= 20000 && kind < 30000
+  return isEphemeralKindRange(kind)
 }
 
 export function isHonoraryEphemeralEvent (event) {
@@ -4583,15 +4715,7 @@ function getDTag (event) {
 }
 
 function kindUsesDCoordinate (kind) {
-  return !isRegularReplaceableKind(kind)
-}
-
-function isRegularReplaceableKind (kind) {
-  return kind === 0 || kind === 3 || (kind >= 10000 && kind < 20000)
-}
-
-function isAddressableKind (kind) {
-  return kind >= 30000 && kind < 40000
+  return !isReplaceableKind(kind)
 }
 
 function channelName (ownerPubkey) {
@@ -4602,8 +4726,8 @@ export const __nostrDbInternals = {
   channelName,
   compareNewest,
   getCoordinate,
-  isAddressableKind,
-  isRegularReplaceableKind,
+  isAddressableKind: isAddressableKindRange,
+  isRegularReplaceableKind: isReplaceableKind,
   kindUsesDCoordinate,
   startNostrDbMaintenance,
   stopNostrDbMaintenance

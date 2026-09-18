@@ -2219,6 +2219,111 @@ describe('nostrdb', () => {
     assert.deepEqual(stored.map(event => event.id), [direct.id])
   })
 
+  it('merges owner personal copies of the same coordinate in an owner context', async () => {
+    const owner = hexId(30600)
+    const plaintexts = new Map()
+    let cipher = 0
+    let mergedPlaintext = null
+    const db = getNostrDb(owner, {
+      personalCopyDecrypt: async wrapper => plaintexts.get(wrapper.content) ?? '{}',
+      personalCopyEncrypt: async (kind, plaintext) => {
+        const content = `cipher-merged-${++cipher}`
+        mergedPlaintext = plaintext
+        plaintexts.set(content, plaintext)
+        return content
+      },
+      personalCopyObfuscate
+    })
+    const context = `dm:${owner}`
+    const olderInner = personalCopyTemplate({ kind: 30023, created_at: 100, tags: [['d', 'note'], ['t', 'one']], content: 'older' })
+    const newerInner = personalCopyTemplate({ kind: 30023, created_at: 200, tags: [['d', 'note'], ['t', 'two']], content: 'newer' })
+    const older = await personalCopyWrapper({ id: hexId(30601), owner, inner: olderInner, context, content: 'cipher-old' })
+    const newer = await personalCopyWrapper({ id: hexId(30602), owner, inner: newerInner, context, content: 'cipher-new' })
+    rememberPersonalCopy(plaintexts, older, olderInner)
+    rememberPersonalCopy(plaintexts, newer, newerInner)
+    const signedIds = [hexId(30603), hexId(30604), hexId(30605)]
+    const signEvent = async template => signedFromTemplate(template, { id: signedIds.shift(), pubkey: owner })
+
+    assertAddOk(await db.add(older, { signEvent, mergeSource: 'sync' }), { code: 'stored', stored: true })
+    const result = await db.add(newer, { signEvent, mergeSource: 'sync' })
+    assertAddOk(result, { code: 'replaced', stored: true })
+    assert.equal(result.merged, true)
+
+    const mergedInner = JSON.parse(mergedPlaintext)
+    assert.equal(mergedInner.kind, 30023)
+    assert.equal(mergedInner.created_at, 200)
+    assert.equal(mergedInner.tags.some(tag => tag[0] === 't' && tag[1] === 'one'), true)
+    assert.equal(mergedInner.tags.some(tag => tag[0] === 't' && tag[1] === 'two'), true)
+
+    const stored = await queryResults(db, { kinds: [eventKinds.PERSONAL_COPY] })
+    assert.equal(stored.length, 1)
+    assert.equal(stored[0].id, result.storedId)
+    assert.deepEqual(stored[0].tags.find(tag => tag[0] === 'v'), ['v', PERSONAL_COPY_PROVENANCE.DIRECT_RUMOR])
+    assert.deepEqual(
+      stored[0].tags.find(tag => tag[0] === 'd'),
+      ['d', `obf:1006:.coordinate:30023:${owner}:note`]
+    )
+
+    // Re-adding the same source is idempotent: the merge keeps a single row and
+    // the merged inner does not grow on the second pass.
+    const firstMerged = mergedPlaintext
+    const before = stored[0].id
+    await db.add(newer, { signEvent, mergeSource: 'sync' })
+    assert.equal(mergedPlaintext, firstMerged, 're-merging the same source is idempotent')
+    const after = await queryResults(db, { kinds: [eventKinds.PERSONAL_COPY] })
+    assert.equal(after.length, 1)
+    assert.ok(before)
+  })
+
+  it('does not merge personal copies outside owner contexts or for third-party inners', async () => {
+    const owner = hexId(30610)
+    const plaintexts = new Map()
+    const db = personalCopyDb(owner, plaintexts)
+    const olderInner = personalCopyRumor({ kind: 30023, created_at: 100, tags: [['d', 'note']], content: 'older' })
+    const newerInner = personalCopyRumor({ kind: 30023, created_at: 200, tags: [['d', 'note']], content: 'newer' })
+    const older = await personalCopyWrapper({ id: hexId(30611), owner, inner: olderInner, context: 'other', content: 'cipher-old' })
+    const newer = await personalCopyWrapper({ id: hexId(30612), owner, inner: newerInner, context: 'other', content: 'cipher-new' })
+    rememberPersonalCopy(plaintexts, older, olderInner)
+    rememberPersonalCopy(plaintexts, newer, newerInner)
+    let signCalls = 0
+    const signEvent = async () => {
+      signCalls++
+      throw new Error('personal copies must not merge outside owner contexts')
+    }
+
+    assertAddOk(await db.add(older, { signEvent, mergeSource: 'sync' }))
+    assertAddOk(await db.add(newer, { signEvent, mergeSource: 'sync' }), { code: 'replaced', stored: true })
+    assert.equal(signCalls, 0)
+    assert.deepEqual((await queryResults(db, { kinds: [eventKinds.PERSONAL_COPY] })).map(event => event.id), [newer.id])
+  })
+
+  it('converges on the same merged inner regardless of the sync arrival order', () => {
+    const owner = hexId(30620)
+    const first = { kind: 30023, created_at: 100, tags: [['d', 'note'], ['t', 'one'], ['p', B]], content: 'first' }
+    const second = { kind: 30023, created_at: 200, tags: [['d', 'note'], ['t', 'two']], content: 'second' }
+    const normalize = merged => ({
+      kind: merged.kind,
+      created_at: merged.created_at,
+      tags: merged.tags,
+      content: merged.content
+    })
+
+    const forward = normalize(buildCrdtMergeTemplate(
+      { ...second, pubkey: owner },
+      { ...first, pubkey: owner },
+      { mergeSource: 'sync' }
+    ))
+    const backward = normalize(buildCrdtMergeTemplate(
+      { ...first, pubkey: owner },
+      { ...second, pubkey: owner },
+      { mergeSource: 'sync' }
+    ))
+
+    assert.deepEqual(forward, backward)
+    assert.equal(forward.tags.some(tag => tag[0] === 't' && tag[1] === 'one'), true)
+    assert.equal(forward.tags.some(tag => tag[0] === 't' && tag[1] === 'two'), true)
+  })
+
   it('supports uFuzzy negative search terms', async () => {
     const db = getNostrDb(`${OWNER}40`)
     const match = event({ id: '1'.repeat(64), content: 'nostr protocol notes' })

@@ -191,7 +191,7 @@ describe('trusted vault nostrdb bridge helpers', () => {
       }),
       method: 'addEventsForApp',
       params: ['app-1', events]
-    }), { added: 1, skipped: 1 })
+    }), { added: 1, skipped: 1, storedIds: [events[0].id] })
 
     assert.deepEqual(added.map(call => call.event), events)
     assert.deepEqual(added.map(call => call.options.appId), ['app-1', 'app-1'])
@@ -242,7 +242,7 @@ describe('trusted vault nostrdb bridge helpers', () => {
       }),
       method: 'addEventsForApp',
       params: ['app-1', events]
-    }), { added: 1, skipped: 0 })
+    }), { added: 1, skipped: 0, storedIds: [events[0].id] })
 
     assert.deepEqual(added.map(call => call.event), events)
   })

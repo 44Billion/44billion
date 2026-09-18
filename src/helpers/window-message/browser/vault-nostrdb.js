@@ -219,6 +219,7 @@ export async function runTrustedVaultNostrDbMethod ({
   const db = getNostrDb(pubkey, {
     ...nostrDbMaintenanceOptions(maintenanceSignEvent),
     personalCopyDecrypt,
+    personalCopyEncrypt,
     personalCopyObfuscate
   })
   const signEvent = createTrustedVaultNostrDbSignEvent({
@@ -267,16 +268,23 @@ export async function runTrustedVaultNostrDbMethod ({
     }
     let added = 0
     let skipped = 0
+    const storedIds = []
     for (const event of eventRows) {
       const result = await db.add(event, {
         appId,
         mergeSource: 'sync',
         signEvent
       })
-      if (result?.ok === false) skipped++
-      else added++
+      if (result?.ok === false) {
+        skipped++
+        continue
+      }
+      added++
+      // A merged personal copy is rewritten under a new wrapper id; report what
+      // was actually stored so the vault can suppress an immediate echo.
+      storedIds.push(result?.storedEvent?.id ?? event.id)
     }
-    return { added, skipped }
+    return { added, skipped, storedIds }
   }
   return runNostrDbMethod({
     db,

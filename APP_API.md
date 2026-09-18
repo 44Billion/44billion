@@ -228,6 +228,11 @@ not match it. Pass `autoDTag: false` to keep the previous address-less shape;
 the option is ignored for inner kinds without a coordinate. Personal copies
 that share a derived address compete by provenance first (hearsay never
 displaces a signed/direct copy) and then by the newer inner version.
+Owner-authored copies of replaceable/addressable inner events in the `''` and
+`dm:<owner>` contexts are CRDT-merged in the plaintext inner when a version
+already exists at the same derived address (sync ingest merges deterministically
+in sync mode); the rewritten wrapper is a direct rumor and replaces the previous
+version. Hearsay copies never merge.
 
 Owner references can preserve third-party public events; other third-party events
 are disposable cache and may be evicted by approximate LRU. Expiration, explicit

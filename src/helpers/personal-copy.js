@@ -1,4 +1,5 @@
 import { getEventHash, isValidEvent } from 'libp2r2p/event'
+import { isAddressableKind, isEphemeralKind, isReplaceableKind } from 'libp2r2p/kind'
 import { eventKinds } from '#constants/event.js'
 
 const textEncoder = new TextEncoder()
@@ -252,12 +253,10 @@ export async function personalCopyCoordinateTag ({ innerEvent, wrapperPubkey, ob
 // Mirrors the store's getCoordinate eligibility (kind ranges plus a `d` tag
 // fallback) and keeps ephemeral inners out of the address space.
 function hasCoordinate (inner) {
-  if (inner.kind >= 20000 && inner.kind < 30000) return false
+  if (isEphemeralKind(inner.kind)) return false
   if (inner.tags.some(tag => Array.isArray(tag) && tag[0] === 'expiration' && tag[1] === String(inner.created_at))) return false
-  return inner.kind === 0 ||
-    inner.kind === 3 ||
-    (inner.kind >= 10000 && inner.kind < 20000) ||
-    (inner.kind >= 30000 && inner.kind < 40000) ||
+  return isReplaceableKind(inner.kind) ||
+    isAddressableKind(inner.kind) ||
     inner.tags.some(tag => Array.isArray(tag) && tag[0] === 'd')
 }
 
