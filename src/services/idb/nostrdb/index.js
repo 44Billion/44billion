@@ -35,6 +35,7 @@ import {
   personalCopyCoordinateTag,
   personalCopyCoordinateValue,
   personalCopyEncryptionKind,
+  personalCopyExpirationTag,
   personalCopyProvenanceValue
 } from '#helpers/personal-copy.js'
 import { run } from '#services/idb/browser/index.js'
@@ -135,11 +136,16 @@ events indexes
   byOwnerRef  ownerRefs, multiEntry
 
 deletions, keyPath "ref"
-  ref   "e:<base64url-id>:<base64url-pubkey>" or "a:<base64url-sha256-coordinate>"
-  tag   deletion target tag to preserve when compacting: ["e", id] or ["a", address]
+  ref   "e:<base64url-id>:<base64url-pubkey>",
+        "a:<kind>:<base64url-pubkey>:<base64url-sha256-dtag-or-empty>" or
+        "i:<base64url-source-mirror>:<base64url-context>:<author-key>"
+        (author-key is "*" for owner requests, otherwise base64url of the
+        expected inner author pubkey)
+  tag   deletion target tag: ["e", id] or ["a", address] for tombstones, or
+        ["i", sourceMirror, authorKey] for pending inner-id markers;
         e-tag requests may be stored as canonical a-tag tombstones when the
         referenced stored event has an address
-  ca    max created_at among stored deletion requests contributing this tombstone
+  ca    max created_at among stored deletion requests contributing this ref
   c     multiEntry contributors: [requestIdKey, requestCreatedAt]
 
 deletions indexes
@@ -421,19 +427,6 @@ export class NostrDb {
     const appRef = normalizeOptionalAppRef(appId)
     if (appRef === false) return this.reportAddResult('add', event, addResult('invalid_app'))
 
-    const now = currentUnixTime()
-
-    if (isExpiredForIngest(event, now)) {
-      return this.reportAddResult('add', event, addResult('expired'))
-    }
-
-    if (isNonDurableEvent(event)) {
-      this.publish(event, true)
-      return addResult('published', { published: true })
-    }
-
-    const crdtMergeSource = normalizeCrdtMergeSource(mergeSource)
-
     // Hearsay deletion envelopes are never authoritative: accepting one could
     // delete an owner's copies based on a third-party rumor. Report a normal
     // non-error result so sync/untrusted callers can discard it idempotently.
@@ -444,15 +437,40 @@ export class NostrDb {
       return this.reportAddResult('add', event, addResult('ignored'))
     }
 
+    const now = currentUnixTime()
+
+    if (isExpiredForIngest(event, now)) {
+      return this.reportAddResult('add', event, addResult('expired'))
+    }
+
+    if (isNonDurableEvent(event) || (personalCopy && isNonDurablePersonalCopyInner(personalCopy.inner))) {
+      this.publish(event, true)
+      return addResult('published', { published: true })
+    }
+
+    const crdtMergeSource = normalizeCrdtMergeSource(mergeSource)
+
     if (personalCopy && typeof this.personalCopyObfuscate === 'function') {
       const db = await openNostrDb(this.ownerPubkey)
       if (db) {
         const pending = await this.pendingInnerMirrors(db)
-        const mirrors = pending.get(personalCopy.context)
-        if (mirrors?.size) {
-          const sourceMirror = await this.personalCopyObfuscate(personalCopy.sourceId, PERSONAL_COPY_KIND, '.id')
-          if (mirrors.has(sourceMirror)) {
+        const sources = pending.get(personalCopy.context)
+        const sourceMirror = sources?.size
+          ? await this.personalCopyObfuscate(personalCopy.sourceId, PERSONAL_COPY_KIND, '.id')
+          : null
+        const authors = sourceMirror ? sources.get(sourceMirror) : null
+        if (authors?.size) {
+          if (authors.has('*')) {
             return this.reportAddResult('add', event, addResult('blocked'))
+          }
+          const effectivePubkey = describePersonalCopyInner(personalCopy.inner, {
+            wrapperPubkey: this.ownerPubkey
+          })?.effectivePubkey
+          if (effectivePubkey) {
+            const authorKey = bytesToBase64Url(textEncoder.encode(effectivePubkey))
+            if (authors.has(authorKey)) {
+              return this.reportAddResult('add', event, addResult('blocked'))
+            }
           }
         }
       }
@@ -634,7 +652,23 @@ export class NostrDb {
     if (personalCopy?.inner?.kind !== eventKinds.DELETION) return null
     if (typeof this.personalCopyObfuscate !== 'function') return null
 
+    const description = describePersonalCopyInner(personalCopy.inner, {
+      wrapperPubkey: this.ownerPubkey
+    })
+    if (!description) return null
+
     const context = personalCopy.context
+    const restrictedAuthor = description.effectivePubkey === this.ownerPubkey
+      ? null
+      : description.effectivePubkey
+    const authorKey = restrictedAuthor
+      ? bytesToBase64Url(textEncoder.encode(restrictedAuthor))
+      : '*'
+    const authorMirror = restrictedAuthor
+      ? await this.personalCopyObfuscate(restrictedAuthor, PERSONAL_COPY_KIND, '.pubkey')
+      : null
+    if (restrictedAuthor && typeof authorMirror !== 'string') return null
+
     const eventTargets = []
     const coordinateTargets = []
 
@@ -650,6 +684,7 @@ export class NostrDb {
       } else if (tag[0] === 'a') {
         const coordinate = parseAddress(tag[1])
         if (!coordinate) continue
+        if (restrictedAuthor && coordinate.pubkey !== restrictedAuthor) continue
         const wrapperCoordinate = await personalCopyCoordinateValue({
           kind: coordinate.kind,
           author: coordinate.pubkey,
@@ -667,6 +702,8 @@ export class NostrDb {
     return {
       context,
       createdAt: personalCopy.inner.created_at,
+      authorKey,
+      authorMirror,
       eventTargets,
       coordinateTargets
     }
@@ -675,10 +712,19 @@ export class NostrDb {
   rememberPendingInnerDeletions (db, context, pending) {
     const cache = db?.pendingInnerDeletions
     if (!cache) return
+    let sources = cache.get(context)
+    if (!sources) {
+      sources = new Map()
+      cache.set(context, sources)
+    }
     for (const target of pending) {
-      if (!target.mirror) continue
-      if (!cache.has(context)) cache.set(context, new Set())
-      cache.get(context).add(target.mirror)
+      if (!target.mirror || !target.authorKey) continue
+      let authors = sources.get(target.mirror)
+      if (!authors) {
+        authors = new Set()
+        sources.set(target.mirror, authors)
+      }
+      authors.add(target.authorKey)
     }
   }
 
@@ -691,16 +737,25 @@ export class NostrDb {
       const range = IDBKeyRange.bound('i:', 'i:\uffff')
       await scanCursor(db, DELETIONS_STORE, null, range, {
         onItem: row => {
-          const [prefix, mirrorKey, contextKey] = String(row?.ref ?? '').split(':')
-          if (prefix !== 'i' || !mirrorKey || !contextKey) return false
+          const [prefix, mirrorKey, contextKey, authorKey, ...rest] = String(row?.ref ?? '').split(':')
+          if (prefix !== 'i' || !mirrorKey || !contextKey || !authorKey || rest.length > 0) return false
           let context
           let mirror
           try {
             context = textDecoder.decode(base64UrlToBytes(contextKey))
             mirror = textDecoder.decode(base64UrlToBytes(mirrorKey))
           } catch { return false }
-          if (!mirrors.has(context)) mirrors.set(context, new Set())
-          mirrors.get(context).add(mirror)
+          let sources = mirrors.get(context)
+          if (!sources) {
+            sources = new Map()
+            mirrors.set(context, sources)
+          }
+          let authors = sources.get(mirror)
+          if (!authors) {
+            authors = new Set()
+            sources.set(mirror, authors)
+          }
+          authors.add(authorKey)
         }
       })
     } catch { /* An unreadable ledger must not block personal copies. */ }
@@ -778,6 +833,7 @@ export class NostrDb {
       obfuscate: this.personalCopyObfuscate
     })
     if (!addressTag) return null
+    const expirationTag = personalCopyExpirationTag(inner)
 
     const wrapper = {
       kind: PERSONAL_COPY_KIND,
@@ -788,6 +844,7 @@ export class NostrDb {
         ['v', PERSONAL_COPY_PROVENANCE.DIRECT_RUMOR],
         addressTag,
         ...mirrors.tags,
+        ...(expirationTag ? [expirationTag] : []),
         // The vault fills this proof while signing the outer wrapper.
         ['imkc']
       ],
@@ -876,7 +933,7 @@ export class NostrDb {
     if (isExpiredForIngest(event, now)) {
       return this.reportAddResult('addEvent', event, addResult('expired'), { log })
     }
-    if (isNonDurableEvent(event)) {
+    if (isNonDurableEvent(event) || (personalCopy && isNonDurablePersonalCopyInner(personalCopy.inner))) {
       return addResult('published', {
         message: 'Event is valid but non-durable; addEvent() does not store or publish it.'
       })
@@ -1191,6 +1248,15 @@ export class NostrDb {
       if (!personalCopy || personalCopy.inner.kind !== eventKinds.DELETION) continue
       // Legacy hearsay rows are never rewritten into owner-signed copies.
       if (personalCopy.provenance === PERSONAL_COPY_PROVENANCE.HEARSAY_RUMOR) continue
+      // Only owner-authored requests may be merged: rewriting a third-party
+      // signed request or rumor would attribute the merged request to the owner.
+      const description = describePersonalCopyInner(personalCopy.inner, {
+        wrapperPubkey: this.ownerPubkey
+      })
+      if (!description || description.effectivePubkey !== this.ownerPubkey) continue
+      // Expiring envelopes are left to purge/pruning so compaction does not have
+      // to choose a new expiration for the merged request.
+      if (personalCopyExpirationTag(personalCopy.inner) || getExpiration(wrapper) !== null) continue
 
       const targets = privateDeletionCompactionTargets(personalCopy.inner)
       if (targets.length === 0) continue
@@ -4351,6 +4417,13 @@ export function isNonDurableEvent (event) {
   return isEphemeralKind(event.kind) || isHonoraryEphemeralEvent(event)
 }
 
+// Personal copies wrap the inner in a durable kind-1006 event, so the wrapper
+// kind alone cannot tell whether the inner was ephemeral. Honor the inner's
+// non-durable semantics before storing the wrapper.
+function isNonDurablePersonalCopyInner (inner) {
+  return !!inner && (isEphemeralKind(inner.kind) || isHonoraryEphemeralEvent(inner))
+}
+
 export function shouldSkipStorage (event, now = currentUnixTime()) {
   return (
     isNonDurableEvent(event) ||
@@ -4418,13 +4491,14 @@ async function isBlockedByDeletion (db, tx, event) {
 // wrappers through the obfuscated source mirror and `a` maps the inner
 // coordinate to the wrapper address. The public deletion pipeline then applies
 // contributions, coordinate promotion and tombstones; `i:` rows remember inner
-// ids whose wrapper had not arrived yet.
-function pendingInnerDeletionRef (context, sourceMirror) {
-  // Both parts are obfuscation outputs encoded as base64url so the `:` used by
-  // every other deletion ref stays unambiguous.
+// ids whose wrapper had not arrived yet, scoped by the expected author (`*`
+// means the owner request may target any author).
+function pendingInnerDeletionRef (context, sourceMirror, authorKey) {
+  // The variable parts are encoded as base64url so the `:` used by every other
+  // deletion ref stays unambiguous.
   const mirrorKey = bytesToBase64Url(textEncoder.encode(String(sourceMirror)))
   const contextKey = bytesToBase64Url(textEncoder.encode(String(context)))
-  return `i:${mirrorKey}:${contextKey}`
+  return `i:${mirrorKey}:${contextKey}:${authorKey}`
 }
 
 // Applies a prepared private deletion inside the caller's write transaction.
@@ -4435,16 +4509,23 @@ async function applyPreparedPrivateDeletion (db, tx, requestId, ownerPubkey, pre
   const pending = []
 
   for (const eventTarget of prepared.eventTargets) {
-    const copies = await queryRecords(db, {
+    const filter = {
       kinds: [PERSONAL_COPY_KIND],
       authors: [ownerPubkey],
       '#o': [eventTarget.mirror],
       '#c': [prepared.context]
-    }, { countOnly: false, ignoreLimit: true, tx })
+    }
+    if (prepared.authorMirror) filter['&o'] = [prepared.authorMirror]
+    const copies = await queryRecords(db, filter, {
+      countOnly: false,
+      ignoreLimit: true,
+      tx
+    })
     for (const copy of copies) targets.push(['e', copy.id])
     pending.push({
-      ref: pendingInnerDeletionRef(prepared.context, eventTarget.mirror),
-      mirror: eventTarget.mirror
+      ref: pendingInnerDeletionRef(prepared.context, eventTarget.mirror, prepared.authorKey),
+      mirror: eventTarget.mirror,
+      authorKey: prepared.authorKey
     })
   }
 
@@ -4467,14 +4548,14 @@ async function applyPreparedPrivateDeletion (db, tx, requestId, ownerPubkey, pre
     pubkey: ownerPubkey,
     kind: eventKinds.DELETION,
     created_at: prepared.createdAt,
-    tags: [...targets, ...pending.map(target => ['i', target.mirror])]
+    tags: [...targets, ...pending.map(target => ['i', target.mirror, target.authorKey])]
   }
 
   await applyDeletionRequest(db, tx, request)
   for (const target of pending) {
     await addDeletionContribution(db, tx, {
       ref: target.ref,
-      tag: ['i', target.mirror],
+      tag: ['i', target.mirror, target.authorKey],
       type: 'i',
       upToCreatedAt: request.created_at
     }, request)

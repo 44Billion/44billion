@@ -174,12 +174,14 @@ export async function preparePersonalCopyUnsignedEvent ({
     contextValue,
     obfuscate
   })
+  const expirationTag = personalCopyExpirationTag(prepared.inner)
   const tags = [
     ['k', String(prepared.inner.kind)],
     ['c', contextValue],
     [PERSONAL_COPY_PROVENANCE_TAG, provenance],
     ...(addressTag ? [addressTag] : []),
     ...mirrors.tags,
+    ...(expirationTag ? [expirationTag] : []),
     // The vault fills this proof while signing the outer wrapper.
     ['imkc']
   ]
@@ -221,13 +223,15 @@ export async function buildPersonalCopyTags ({
   })
   const contextValue = await obfuscate(String(context ?? ''), PERSONAL_COPY_KIND, '')
   const addressTag = await personalCopyCoordinateTag({ innerEvent, wrapperPubkey, contextValue, obfuscate })
+  const expirationTag = personalCopyExpirationTag(innerEvent)
 
   return [
     ['k', String(innerEvent.kind)],
     ['c', contextValue],
     [PERSONAL_COPY_PROVENANCE_TAG, provenance],
     ...(addressTag ? [addressTag] : []),
-    ...mirrors.tags
+    ...mirrors.tags,
+    ...(expirationTag ? [expirationTag] : [])
   ]
 }
 
@@ -276,6 +280,23 @@ function hasCoordinate (inner) {
 
 function innerDTag (inner) {
   return inner.tags.find(tag => Array.isArray(tag) && tag[0] === 'd')?.[1] ?? ''
+}
+
+// NIP-40 expiration is copied from the inner event to the wrapper so the
+// wrapper inherits the same lifetime (including honorary ephemeral semantics).
+export function personalCopyExpirationTag (innerEvent) {
+  if (!Array.isArray(innerEvent?.tags)) return null
+
+  for (const tag of innerEvent.tags) {
+    if (!Array.isArray(tag) || tag[0] !== 'expiration' || typeof tag[1] !== 'string') continue
+    if (!/^\d+$/.test(tag[1])) continue
+
+    const timestamp = Number(tag[1])
+    if (!Number.isInteger(timestamp) || timestamp < 0 || timestamp > 0xffffffff) continue
+    return ['expiration', String(timestamp)]
+  }
+
+  return null
 }
 
 export async function buildPersonalCopyMirrorData ({ innerEvent, wrapperPubkey, obfuscate }) {

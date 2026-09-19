@@ -2488,6 +2488,352 @@ describe('nostrdb', () => {
     assert.deepEqual(tombstone.c, [[eventIdIndexKey(winner.id), winner.created_at]])
   })
 
+  it('scopes third-party private deletion e targets to the inner author', async () => {
+    const owner = hexId(30790)
+    const plaintexts = new Map()
+    const db = personalCopyDb(owner, plaintexts)
+    const context = 'dm:author-e'
+    const alice = signedPersonalCopyInner(91, { kind: 9, created_at: 100, content: 'alice' })
+    const bob = signedPersonalCopyInner(92, { kind: 9, created_at: 101, content: 'bob' })
+    const request = signedPersonalCopyInner(92, {
+      kind: 5,
+      created_at: 200,
+      tags: [['e', alice.id], ['e', bob.id], ['k', '9']],
+      content: ''
+    })
+    const aliceWrapper = await personalCopyWrapper({
+      id: hexId(30791),
+      owner,
+      inner: alice,
+      context,
+      content: 'cipher-alice',
+      provenance: PERSONAL_COPY_PROVENANCE.SIGNED_EVENT
+    })
+    const bobWrapper = await personalCopyWrapper({
+      id: hexId(30792),
+      owner,
+      inner: bob,
+      context,
+      content: 'cipher-bob',
+      provenance: PERSONAL_COPY_PROVENANCE.SIGNED_EVENT
+    })
+    const envelope = await personalCopyWrapper({
+      id: hexId(30793),
+      owner,
+      inner: request,
+      context,
+      content: 'cipher-request',
+      provenance: PERSONAL_COPY_PROVENANCE.SIGNED_EVENT
+    })
+    for (const [wrapper, inner] of [[aliceWrapper, alice], [bobWrapper, bob], [envelope, request]]) {
+      rememberPersonalCopy(plaintexts, wrapper, inner)
+    }
+
+    assertAddOk(await db.add(aliceWrapper))
+    assertAddOk(await db.add(bobWrapper))
+    assertAddOk(await db.add(envelope))
+
+    assert.deepEqual((await queryResults(db, { ids: [aliceWrapper.id] })).map(event => event.id), [aliceWrapper.id])
+    assert.deepEqual(await queryResults(db, { ids: [bobWrapper.id] }), [])
+  })
+
+  it('scopes third-party private deletion pending targets to the inner author', async () => {
+    const owner = hexId(30800)
+    const plaintexts = new Map()
+    const db = personalCopyDb(owner, plaintexts)
+    const context = 'dm:author-pending'
+    const alice = signedPersonalCopyInner(101, { kind: 9, created_at: 100, content: 'alice' })
+    const bob = signedPersonalCopyInner(102, { kind: 9, created_at: 101, content: 'bob' })
+    const request = signedPersonalCopyInner(102, {
+      kind: 5,
+      created_at: 200,
+      tags: [['e', alice.id], ['e', bob.id], ['k', '9']],
+      content: ''
+    })
+    const envelope = await personalCopyWrapper({
+      id: hexId(30801),
+      owner,
+      inner: request,
+      context,
+      content: 'cipher-request',
+      provenance: PERSONAL_COPY_PROVENANCE.SIGNED_EVENT
+    })
+    const aliceWrapper = await personalCopyWrapper({
+      id: hexId(30802),
+      owner,
+      inner: alice,
+      context,
+      content: 'cipher-alice',
+      provenance: PERSONAL_COPY_PROVENANCE.SIGNED_EVENT
+    })
+    const bobWrapper = await personalCopyWrapper({
+      id: hexId(30803),
+      owner,
+      inner: bob,
+      context,
+      content: 'cipher-bob',
+      provenance: PERSONAL_COPY_PROVENANCE.SIGNED_EVENT
+    })
+    rememberPersonalCopy(plaintexts, envelope, request)
+    rememberPersonalCopy(plaintexts, aliceWrapper, alice)
+    rememberPersonalCopy(plaintexts, bobWrapper, bob)
+
+    assertAddOk(await db.add(envelope))
+    assertAddOk(await db.add(aliceWrapper))
+    assertAddNotOk(await db.add(bobWrapper), { code: 'blocked' })
+  })
+
+  it('scopes third-party private deletion a targets to the inner author', async () => {
+    const owner = hexId(30810)
+    const plaintexts = new Map()
+    const db = personalCopyDb(owner, plaintexts)
+    const context = 'dm:author-a'
+    const alice = signedPersonalCopyInner(111, {
+      kind: 30023,
+      created_at: 100,
+      tags: [['d', 'alice']],
+      content: 'alice'
+    })
+    const bob = signedPersonalCopyInner(112, {
+      kind: 30023,
+      created_at: 101,
+      tags: [['d', 'bob']],
+      content: 'bob'
+    })
+    const request = signedPersonalCopyInner(112, {
+      kind: 5,
+      created_at: 200,
+      tags: [
+        ['a', `30023:${alice.pubkey}:alice`],
+        ['a', `30023:${bob.pubkey}:bob`],
+        ['k', '30023']
+      ],
+      content: ''
+    })
+    const aliceWrapper = await personalCopyWrapper({
+      id: hexId(30811),
+      owner,
+      inner: alice,
+      context,
+      content: 'cipher-alice',
+      provenance: PERSONAL_COPY_PROVENANCE.SIGNED_EVENT
+    })
+    const bobWrapper = await personalCopyWrapper({
+      id: hexId(30812),
+      owner,
+      inner: bob,
+      context,
+      content: 'cipher-bob',
+      provenance: PERSONAL_COPY_PROVENANCE.SIGNED_EVENT
+    })
+    const envelope = await personalCopyWrapper({
+      id: hexId(30813),
+      owner,
+      inner: request,
+      context,
+      content: 'cipher-request',
+      provenance: PERSONAL_COPY_PROVENANCE.SIGNED_EVENT
+    })
+    for (const [wrapper, inner] of [[aliceWrapper, alice], [bobWrapper, bob], [envelope, request]]) {
+      rememberPersonalCopy(plaintexts, wrapper, inner)
+    }
+
+    assertAddOk(await db.add(aliceWrapper))
+    assertAddOk(await db.add(bobWrapper))
+    assertAddOk(await db.add(envelope))
+
+    assert.deepEqual((await queryResults(db, { ids: [aliceWrapper.id] })).map(event => event.id), [aliceWrapper.id])
+    assert.deepEqual(await queryResults(db, { ids: [bobWrapper.id] }), [])
+  })
+
+  it('keeps owner wildcard deletions and restricts third-party direct rumors', async () => {
+    const owner = hexId(30820)
+    const plaintexts = new Map()
+    const db = personalCopyDb(owner, plaintexts)
+    const context = 'dm:wildcard'
+    const alice = signedPersonalCopyInner(121, { kind: 9, created_at: 100, content: 'alice' })
+    const aliceWrapper = await personalCopyWrapper({
+      id: hexId(30821),
+      owner,
+      inner: alice,
+      context,
+      content: 'cipher-alice',
+      provenance: PERSONAL_COPY_PROVENANCE.SIGNED_EVENT
+    })
+    rememberPersonalCopy(plaintexts, aliceWrapper, alice)
+    assertAddOk(await db.add(aliceWrapper))
+
+    const ownerRequest = personalCopyTemplate({
+      kind: 5,
+      created_at: 200,
+      tags: [['e', alice.id], ['k', '9']],
+      content: ''
+    })
+    const ownerEnvelope = await personalCopyWrapper({
+      id: hexId(30822),
+      owner,
+      inner: ownerRequest,
+      context,
+      content: 'cipher-owner'
+    })
+    rememberPersonalCopy(plaintexts, ownerEnvelope, ownerRequest)
+    assertAddOk(await db.add(ownerEnvelope))
+    assert.deepEqual(await queryResults(db, { ids: [aliceWrapper.id] }), [])
+
+    const rumorContext = 'dm:wildcard-rumor'
+    const rumorAliceWrapper = await personalCopyWrapper({
+      id: hexId(30823),
+      owner,
+      inner: alice,
+      context: rumorContext,
+      content: 'cipher-alice-rumor',
+      provenance: PERSONAL_COPY_PROVENANCE.SIGNED_EVENT
+    })
+    rememberPersonalCopy(plaintexts, rumorAliceWrapper, alice)
+    assertAddOk(await db.add(rumorAliceWrapper))
+
+    const bobRumor = personalCopyRumor({
+      pubkey: B,
+      kind: 5,
+      created_at: 201,
+      tags: [['e', alice.id], ['k', '9']],
+      content: ''
+    })
+    const rumorEnvelope = await personalCopyWrapper({
+      id: hexId(30824),
+      owner,
+      inner: bobRumor,
+      context: rumorContext,
+      content: 'cipher-rumor'
+    })
+    rememberPersonalCopy(plaintexts, rumorEnvelope, bobRumor)
+    assertAddOk(await db.add(rumorEnvelope))
+    assert.deepEqual((await queryResults(db, { ids: [rumorAliceWrapper.id] })).map(event => event.id), [rumorAliceWrapper.id])
+  })
+
+  it('skips third-party and expiring envelopes during private deletion compaction', async () => {
+    const owner = hexId(30830)
+    const plaintexts = new Map()
+    const db = personalCopyMutableDb(owner, plaintexts)
+    const context = 'dm:compact-skip'
+    const makeSignedEnvelope = async (seed, createdAt, targetId, wrapperId) => {
+      const inner = signedPersonalCopyInner(seed, {
+        kind: 5,
+        created_at: createdAt,
+        tags: [['e', hexId(targetId)], ['k', '9']],
+        content: ''
+      })
+      const wrapper = await personalCopyWrapper({
+        id: hexId(wrapperId),
+        owner,
+        inner,
+        context,
+        content: `cipher-signed-${wrapperId}`,
+        provenance: PERSONAL_COPY_PROVENANCE.SIGNED_EVENT
+      })
+      rememberPersonalCopy(plaintexts, wrapper, inner)
+      return wrapper
+    }
+    const makeOwnerEnvelope = async (createdAt, targetId, wrapperId, extraTags = []) => {
+      const inner = personalCopyTemplate({
+        kind: 5,
+        created_at: createdAt,
+        tags: [['e', hexId(targetId)], ['k', '9'], ...extraTags],
+        content: ''
+      })
+      const wrapper = await personalCopyWrapper({
+        id: hexId(wrapperId),
+        owner,
+        inner,
+        context,
+        content: `cipher-owner-${wrapperId}`
+      })
+      rememberPersonalCopy(plaintexts, wrapper, inner)
+      return wrapper
+    }
+    const makeRumorEnvelope = async (createdAt, targetId, wrapperId) => {
+      const inner = personalCopyRumor({
+        pubkey: B,
+        kind: 5,
+        created_at: createdAt,
+        tags: [['e', hexId(targetId)], ['k', '9']],
+        content: ''
+      })
+      const wrapper = await personalCopyWrapper({
+        id: hexId(wrapperId),
+        owner,
+        inner,
+        context,
+        content: `cipher-rumor-${wrapperId}`
+      })
+      rememberPersonalCopy(plaintexts, wrapper, inner)
+      return wrapper
+    }
+    const thirdPartyA = await makeSignedEnvelope(131, 100, 30831, 30832)
+    const thirdPartyB = await makeSignedEnvelope(132, 101, 30833, 30834)
+    const thirdPartyRumor = await makeRumorEnvelope(102, 30844, 30845)
+    const ownerA = await makeOwnerEnvelope(200, 30835, 30836)
+    const ownerB = await makeOwnerEnvelope(201, 30837, 30838)
+    const expiringA = await makeOwnerEnvelope(300, 30839, 30840, [['expiration', '4000000000']])
+    const expiringB = await makeOwnerEnvelope(301, 30841, 30842, [['expiration', '4000000000']])
+    for (const wrapper of [thirdPartyA, thirdPartyB, thirdPartyRumor, ownerA, ownerB, expiringA, expiringB]) {
+      assertAddOk(await db.addEvent(wrapper, { now: 1 }))
+    }
+
+    const result = await db.compactDeletionRequests({
+      author: owner,
+      createdAt: 500,
+      signEvent: template => signedFromTemplate(template, { id: hexId(30843), pubkey: owner })
+    })
+    assert.equal(result.compacted, true)
+    assert.deepEqual([...result.consumed].sort(), [ownerA.id, ownerB.id].sort())
+    for (const kept of [thirdPartyA, thirdPartyB, thirdPartyRumor, expiringA, expiringB]) {
+      assert.deepEqual((await queryResults(db, { ids: [kept.id] })).map(event => event.id), [kept.id])
+    }
+  })
+
+  it('propagates inner expiration and treats non-durable private inners as published', async () => {
+    const owner = hexId(30850)
+    const plaintexts = new Map()
+    const db = personalCopyDb(owner, plaintexts)
+    const context = 'dm:expiration'
+    const targetInner = personalCopyTemplate({ kind: 9, created_at: 100, content: 'target' })
+    const expiringInner = personalCopyTemplate({
+      kind: 5,
+      created_at: 200,
+      tags: [['e', personalCopySourceId(targetInner, { wrapperPubkey: owner })], ['k', '9'], ['expiration', '400']],
+      content: ''
+    })
+    const target = await personalCopyWrapper({ id: hexId(30851), owner, inner: targetInner, context, content: 'cipher-target' })
+    const envelope = await personalCopyWrapper({ id: hexId(30852), owner, inner: expiringInner, context, content: 'cipher-envelope' })
+    rememberPersonalCopy(plaintexts, target, targetInner)
+    rememberPersonalCopy(plaintexts, envelope, expiringInner)
+    assert.deepEqual(envelope.tags.find(tag => tag[0] === 'expiration'), ['expiration', '400'])
+
+    assertAddOk(await db.add(target))
+    assertAddOk(await db.addEvent(envelope, { now: 1 }))
+    assert.deepEqual(await queryResults(db, { ids: [target.id] }), [])
+    assert.equal(await db.purgeExpired({ now: 401 }), 1)
+    assert.deepEqual(await queryResults(db, { ids: [envelope.id] }), [])
+    assertAddOk(await db.add(target))
+
+    const ephemeralInner = personalCopyTemplate({ kind: 20000, created_at: 500, content: 'ephemeral' })
+    const ephemeral = await personalCopyWrapper({ id: hexId(30853), owner, inner: ephemeralInner, context, content: 'cipher-ephemeral' })
+    rememberPersonalCopy(plaintexts, ephemeral, ephemeralInner)
+    const ephemeralResult = await db.add(ephemeral)
+    assert.equal(ephemeralResult.code, 'published')
+    assert.equal(ephemeralResult.stored, false)
+    assert.deepEqual(await queryResults(db, { ids: [ephemeral.id] }), [])
+
+    const honoraryInner = personalCopyTemplate({ kind: 9, created_at: 1000, tags: [['expiration', '1000']], content: 'honorary' })
+    const honorary = await personalCopyWrapper({ id: hexId(30854), owner, inner: honoraryInner, context, content: 'cipher-honorary' })
+    rememberPersonalCopy(plaintexts, honorary, honoraryInner)
+    const honoraryResult = await withPatchedNow(1000, () => db.add(honorary))
+    assert.equal(honoraryResult.code, 'published')
+    assert.equal(honoraryResult.stored, false)
+    assert.deepEqual(await queryResults(db, { ids: [honorary.id] }), [])
+  })
+
   it('compacts private deletion envelopes per context and rekeys pending markers', async () => {
     const owner = hexId(30750)
     const plaintexts = new Map()

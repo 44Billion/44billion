@@ -240,20 +240,34 @@ the store applies it while ingesting and keeps the wrapper so paired devices
 apply the same removal. Targets are inner references — `['e', <inner id>]` for
 regular events and `['a', '<kind>:<author>:<dtag>']` for replaceable/addressable
 ones (`['k', <kind>]` documents the referenced kinds) — and only personal copies
-in the envelope's own `context` are affected. Resolution deletes the matching
-wrappers and records tombstones; an inner id with no local wrapper leaves a
-durable `i:` marker so a copy that arrives later (from sync or another device)
-is blocked instead of resurrecting the message. The deletion is applied in the
-same transaction that stores the envelope, so a losing, blocked or failed
-envelope never writes tombstones or pending markers.
+in the envelope's own `context` are affected. When the request's effective
+author is not the owner, the deletion is additionally restricted to copies of
+that author's events: coordinates from other authors are ignored, resolved
+event targets must carry the same author mirror, and durable `i:` markers
+remember the expected author so a late copy from another author is not blocked.
+Owner-authored requests (`v=1` templates or `v=0` signed by the owner) may
+target any local copy in the context. Resolution deletes the matching wrappers
+and records tombstones; an inner id with no local wrapper leaves a durable `i:`
+marker so a copy that arrives later (from sync or another device) is blocked
+instead of resurrecting the message. The deletion is applied in the same
+transaction that stores the envelope, so a losing, blocked or failed envelope
+never writes tombstones or pending markers.
 
 Kind-5 hearsay (`v=2`) is never authoritative: the store ignores it and returns
 `{ ok: true, code: 'ignored', stored: false, published: false }`, without
 applying the deletion or persisting the wrapper. Stored private deletion
 envelopes participate in the same maintenance as public kind-5 requests:
-compaction only merges envelopes from the same context (rewriting the wrapper
-as a direct rumor and preserving the advisory `k` tags) and pruning uses the
-same receipt grace and request cap.
+compaction only merges owner-authored envelopes from the same context that do
+not carry an expiration (rewriting the wrapper as a direct rumor and preserving
+the advisory `k` tags), while third-party and expiring envelopes are left to
+pruning and expiration purge with the same receipt grace and request cap.
+
+`addPersonalCopy` copies the inner's NIP-40 `expiration` tag to the wrapper for
+any inner kind. An already-expired inner is rejected with `expired`; a
+future-expiring wrapper is stored and later removed by `purgeExpired` together
+with its tombstones; honorary ephemeral inners (`expiration == created_at`) and
+ephemeral-kind inners are published without being stored, matching public event
+behavior.
 
 Owner references can preserve third-party public events; other third-party events
 are disposable cache and may be evicted by approximate LRU. Expiration, explicit
