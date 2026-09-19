@@ -243,7 +243,17 @@ ones (`['k', <kind>]` documents the referenced kinds) — and only personal copi
 in the envelope's own `context` are affected. Resolution deletes the matching
 wrappers and records tombstones; an inner id with no local wrapper leaves a
 durable `i:` marker so a copy that arrives later (from sync or another device)
-is blocked instead of resurrecting the message.
+is blocked instead of resurrecting the message. The deletion is applied in the
+same transaction that stores the envelope, so a losing, blocked or failed
+envelope never writes tombstones or pending markers.
+
+Kind-5 hearsay (`v=2`) is never authoritative: the store ignores it and returns
+`{ ok: true, code: 'ignored', stored: false, published: false }`, without
+applying the deletion or persisting the wrapper. Stored private deletion
+envelopes participate in the same maintenance as public kind-5 requests:
+compaction only merges envelopes from the same context (rewriting the wrapper
+as a direct rumor and preserving the advisory `k` tags) and pruning uses the
+same receipt grace and request cap.
 
 Owner references can preserve third-party public events; other third-party events
 are disposable cache and may be evicted by approximate LRU. Expiration, explicit

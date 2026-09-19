@@ -212,6 +212,7 @@ const ADD_MESSAGES = {
   stored: 'Event was stored.',
   replaced: 'Event replaced an older stored coordinate event.',
   duplicate: 'Event is already stored.',
+  ignored: 'Event was ignored.',
   superseded: 'A newer or tie-winning coordinate event is already stored.',
   published: 'Event was published to subscribers without being stored.',
   invalid: 'Event shape or signature is invalid.',
@@ -329,10 +330,6 @@ export class NostrDb {
     this.personalCopyDecrypt = null
     this.personalCopyEncrypt = null
     this.personalCopyObfuscate = null
-    // Lazily loaded map of context -> Set(inner source mirrors) that have a
-    // pending private deletion, so normal personal copies never pay an
-    // obfuscation round trip when nobody deleted anything.
-    this.pendingInnerDeletions = null
     this.bc = null
 
     if (typeof BroadcastChannel === 'function') {
@@ -437,12 +434,14 @@ export class NostrDb {
 
     const crdtMergeSource = normalizeCrdtMergeSource(mergeSource)
 
-    // A private deletion envelope is applied before it is stored: the request
-    // targets inner references, so it must resolve them against the wrappers
-    // that exist locally and leave pending markers for those that do not.
-    if (personalCopy?.inner?.kind === eventKinds.DELETION) {
-      const applied = await this.applyPrivateDeletion(event, personalCopy)
-      if (!applied) return this.reportAddResult('add', event, addResult('invalid'))
+    // Hearsay deletion envelopes are never authoritative: accepting one could
+    // delete an owner's copies based on a third-party rumor. Report a normal
+    // non-error result so sync/untrusted callers can discard it idempotently.
+    if (
+      personalCopy?.inner?.kind === eventKinds.DELETION &&
+      personalCopy.provenance === PERSONAL_COPY_PROVENANCE.HEARSAY_RUMOR
+    ) {
+      return this.reportAddResult('add', event, addResult('ignored'))
     }
 
     if (personalCopy && typeof this.personalCopyObfuscate === 'function') {
@@ -627,20 +626,17 @@ export class NostrDb {
     }
   }
 
-  // Applies a private deletion envelope (personal copy whose inner is kind 5).
-  // Only copies in the envelope's own context are touched, and the request is
-  // handed to the public deletion pipeline so contributions, coordinate
-  // promotion and tombstones stay in one place.
-  async applyPrivateDeletion (wrapper, personalCopy) {
-    if (personalCopy?.inner?.kind !== eventKinds.DELETION) return true
-    if (typeof this.personalCopyObfuscate !== 'function') return false
+  // Splits a private deletion envelope into the external obfuscations it needs.
+  // The return value is applied later by applyPreparedPrivateDeletion() inside
+  // the same write transaction that stores the envelope, so a losing or failed
+  // envelope never leaves tombstones or pending markers behind.
+  async preparePrivateDeletion (personalCopy) {
+    if (personalCopy?.inner?.kind !== eventKinds.DELETION) return null
+    if (typeof this.personalCopyObfuscate !== 'function') return null
 
     const context = personalCopy.context
-    const db = await openNostrDb(this.ownerPubkey)
-    if (!db) return false
-
-    const targets = []
-    const pending = []
+    const eventTargets = []
+    const coordinateTargets = []
 
     for (const tag of personalCopy.inner.tags) {
       if (!Array.isArray(tag)) continue
@@ -648,15 +644,9 @@ export class NostrDb {
       if (tag[0] === 'e') {
         const id = tag[1]
         if (!HEX64_RE.test(id ?? '')) continue
-        const sourceMirror = await this.personalCopyObfuscate(id, PERSONAL_COPY_KIND, '.id')
-        const copies = await queryRecords(db, {
-          kinds: [PERSONAL_COPY_KIND],
-          authors: [this.ownerPubkey],
-          '#o': [sourceMirror],
-          '#c': [context]
-        }, { countOnly: false, ignoreLimit: true })
-        for (const copy of copies) targets.push(['e', copy.id])
-        pending.push({ ref: pendingInnerDeletionRef(context, sourceMirror), mirror: sourceMirror })
+        const mirror = await this.personalCopyObfuscate(id, PERSONAL_COPY_KIND, '.id')
+        if (typeof mirror !== 'string') continue
+        eventTargets.push({ mirror })
       } else if (tag[0] === 'a') {
         const coordinate = parseAddress(tag[1])
         if (!coordinate) continue
@@ -668,52 +658,34 @@ export class NostrDb {
           obfuscate: this.personalCopyObfuscate
         })
         if (!wrapperCoordinate) continue
-        const address = addressKey(PERSONAL_COPY_KIND, this.ownerPubkey, wrapperCoordinate)
-        const tx = db.transaction([EVENTS_STORE], 'readonly')
-        const holder = await run('get', [address], EVENTS_STORE, INDEX.address, { db, tx }).then(value => value.result)
-        if (holder && personalCopyContextValue(holder.event) !== context) continue
-        targets.push(['a', `${PERSONAL_COPY_KIND}:${this.ownerPubkey}:${wrapperCoordinate}`])
+        coordinateTargets.push({
+          address: `${PERSONAL_COPY_KIND}:${this.ownerPubkey}:${wrapperCoordinate}`
+        })
       }
     }
 
-    if (targets.length === 0 && pending.length === 0) return true
-
-    const request = {
-      id: wrapper.id,
-      pubkey: this.ownerPubkey,
-      kind: eventKinds.DELETION,
-      created_at: personalCopy.inner.created_at,
-      tags: [...targets, ...pending.map(target => ['i', target.mirror])]
+    return {
+      context,
+      createdAt: personalCopy.inner.created_at,
+      eventTargets,
+      coordinateTargets
     }
-
-    await withQuotaMutation(db, async tx => {
-      await applyDeletionRequest(db, tx, request)
-      for (const target of pending) {
-        await addDeletionContribution(db, tx, {
-          ref: target.ref,
-          tag: ['i', target.mirror],
-          type: 'i',
-          upToCreatedAt: request.created_at
-        }, request)
-      }
-    })
-    this.rememberPendingInnerDeletions(context, pending)
-    return true
   }
 
-  rememberPendingInnerDeletions (context, pending) {
-    if (!this.pendingInnerDeletions) return
+  rememberPendingInnerDeletions (db, context, pending) {
+    const cache = db?.pendingInnerDeletions
+    if (!cache) return
     for (const target of pending) {
       if (!target.mirror) continue
-      if (!this.pendingInnerDeletions.has(context)) this.pendingInnerDeletions.set(context, new Set())
-      this.pendingInnerDeletions.get(context).add(target.mirror)
+      if (!cache.has(context)) cache.set(context, new Set())
+      cache.get(context).add(target.mirror)
     }
   }
 
-  // One prefix scan per DB instance: pending private deletions are rare, so the
+  // One prefix scan per DB handle: pending private deletions are rare, so the
   // normal personal-copy path avoids the vault obfuscation when there is none.
   async pendingInnerMirrors (db) {
-    if (this.pendingInnerDeletions) return this.pendingInnerDeletions
+    if (db.pendingInnerDeletions) return db.pendingInnerDeletions
     const mirrors = new Map()
     try {
       const range = IDBKeyRange.bound('i:', 'i:\uffff')
@@ -732,7 +704,7 @@ export class NostrDb {
         }
       })
     } catch { /* An unreadable ledger must not block personal copies. */ }
-    this.pendingInnerDeletions = mirrors
+    db.pendingInnerDeletions = mirrors
     return mirrors
   }
 
@@ -868,6 +840,12 @@ export class NostrDb {
       if (!personalCopy) {
         return this.reportAddResult('addEvent', event, addResult('invalid'), { log })
       }
+      if (
+        personalCopy.inner?.kind === eventKinds.DELETION &&
+        personalCopy.provenance === PERSONAL_COPY_PROVENANCE.HEARSAY_RUMOR
+      ) {
+        return this.reportAddResult('addEvent', event, addResult('ignored'), { log })
+      }
       if (!personalCopyResolution) {
         personalCopyResolution = await this.preparePersonalCopyProvenance(event, personalCopy)
       }
@@ -907,6 +885,18 @@ export class NostrDb {
     const db = await openNostrDb(this.ownerPubkey)
     if (!db) return this.reportAddResult('addEvent', event, addResult('unavailable'), { log })
 
+    // Obfuscation calls are external (vault) awaits, so they must happen before
+    // the write transaction opens; the transaction below only performs
+    // IndexedDB work with the prepared targets.
+    const isPrivateDeletion = personalCopy?.inner?.kind === eventKinds.DELETION
+    const incomingDeletionWins = personalCopyResolution?.incomingWins !== false
+    const privateDeletion = isPrivateDeletion && incomingDeletionWins
+      ? await this.preparePrivateDeletion(personalCopy)
+      : null
+    if (isPrivateDeletion && incomingDeletionWins && privateDeletion === null) {
+      return this.reportAddResult('addEvent', event, addResult('invalid'), { log })
+    }
+
     let chunkStage = null
     if (chunkData) {
       try {
@@ -919,6 +909,7 @@ export class NostrDb {
 
     const record = toStoredRecord(event, { now, appRef, chunkData, blobRefs })
     let result
+    let privateDeletionPending = []
     try {
       result = await withQuotaMutation(db, async tx => {
         let replaced = false
@@ -998,6 +989,16 @@ export class NostrDb {
           await applyDeletionRequest(db, tx, event)
         }
 
+        if (privateDeletion) {
+          privateDeletionPending = await applyPreparedPrivateDeletion(
+            db,
+            tx,
+            event.id,
+            this.ownerPubkey,
+            privateDeletion
+          )
+        }
+
         for (const id of consumeDeletionRequestIds) {
           await deleteStoredDeletionRequestById(db, tx, id, event.pubkey)
         }
@@ -1013,6 +1014,10 @@ export class NostrDb {
         Object.defineProperty(result, PERSONAL_COPY_PROVENANCE_STALE, { value: true })
       }
       return this.reportAddResult('addEvent', event, result, { log, error })
+    }
+
+    if (privateDeletion && privateDeletionPending.length > 0 && result.stored) {
+      this.rememberPendingInnerDeletions(db, privateDeletion.context, privateDeletionPending)
     }
 
     if (['stored', 'replaced', 'duplicate'].includes(result.code)) {
@@ -1057,6 +1062,25 @@ export class NostrDb {
     if (!db) return compactResult()
 
     const maxRefs = Number.isInteger(maxTargetRefs) && maxTargetRefs > 0 ? maxTargetRefs : DELETION_COMPACTION_MAX_TAGS
+    const publicResult = await this.compactPublicDeletionRequests(db, {
+      signEvent,
+      author,
+      maxRefs,
+      createdAt,
+      signal
+    })
+    if (publicResult.compacted) return publicResult
+
+    return this.compactPrivateDeletionRequests(db, {
+      signEvent,
+      author,
+      maxRefs,
+      createdAt,
+      signal
+    })
+  }
+
+  async compactPublicDeletionRequests (db, { signEvent, author, maxRefs, createdAt, signal }) {
     let requests
     let infos
 
@@ -1124,6 +1148,139 @@ export class NostrDb {
 
     this.publish(signed, true)
     return compactResult({ compacted: true, created: signed, consumed, targets: tags })
+  }
+
+  async compactPrivateDeletionRequests (db, { signEvent, author, maxRefs, createdAt, signal }) {
+    if (
+      typeof this.personalCopyDecrypt !== 'function' ||
+      typeof this.personalCopyEncrypt !== 'function' ||
+      typeof this.personalCopyObfuscate !== 'function'
+    ) return compactResult()
+
+    let wrappers
+
+    try {
+      wrappers = await queryRecords(db, {
+        authors: [author],
+        kinds: [PERSONAL_COPY_KIND],
+        '#k': [String(eventKinds.DELETION)]
+      }, {
+        countOnly: false,
+        ignoreLimit: true
+      })
+    } catch {
+      throwIfAborted(signal)
+      return compactResult()
+    }
+
+    const groups = new Map()
+
+    for (const wrapper of wrappers) {
+      throwIfAborted(signal)
+
+      let personalCopy
+      try {
+        personalCopy = await validatePersonalCopyForStorage(wrapper, {
+          decrypt: this.personalCopyDecrypt,
+          obfuscate: this.personalCopyObfuscate,
+          ownerPubkey: this.ownerPubkey
+        })
+      } catch {
+        personalCopy = null
+      }
+      if (!personalCopy || personalCopy.inner.kind !== eventKinds.DELETION) continue
+      // Legacy hearsay rows are never rewritten into owner-signed copies.
+      if (personalCopy.provenance === PERSONAL_COPY_PROVENANCE.HEARSAY_RUMOR) continue
+
+      const targets = privateDeletionCompactionTargets(personalCopy.inner)
+      if (targets.length === 0) continue
+
+      const infos = groups.get(personalCopy.context) ?? []
+      infos.push({ event: wrapper, targets, inner: personalCopy.inner })
+      groups.set(personalCopy.context, infos)
+    }
+
+    let best = null
+
+    for (const [context, infos] of [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+      if (infos.length < 2) continue
+
+      const selection = selectDeletionCompaction(infos, maxRefs)
+      if (!selection) continue
+      if (!best || compareDeletionCompaction(selection, best.selection) > 0) {
+        best = { context, selection }
+      }
+    }
+
+    if (!best) return compactResult()
+
+    const { context, selection } = best
+    const consumed = selection.selected.map(info => info.event.id)
+    const maxConsumedCreatedAt = Math.max(...selection.selected.map(info => info.event.created_at))
+    const templateCreatedAt = selection.createdAt ?? Math.max(
+      normalizeTimestamp(createdAt, Math.floor(Date.now() / 1000)),
+      maxConsumedCreatedAt
+    )
+    const targetTags = [...selection.targets.values()].map(row => [...row.tag])
+    const kindTags = mergedPrivateDeletionKindTags(selection.selected)
+    const inner = {
+      kind: eventKinds.DELETION,
+      created_at: templateCreatedAt,
+      tags: [...targetTags, ...kindTags],
+      content: ''
+    }
+
+    throwIfAborted(signal)
+
+    let mirrors
+    let content
+    try {
+      mirrors = await buildPersonalCopyMirrorData({
+        innerEvent: inner,
+        wrapperPubkey: this.ownerPubkey,
+        obfuscate: this.personalCopyObfuscate
+      })
+      content = await this.personalCopyEncrypt(inner.kind, JSON.stringify(inner))
+    } catch {
+      return compactResult()
+    }
+
+    const template = {
+      kind: PERSONAL_COPY_KIND,
+      created_at: inner.created_at,
+      tags: [
+        ['k', String(inner.kind)],
+        ['c', context],
+        ['v', PERSONAL_COPY_PROVENANCE.DIRECT_RUMOR],
+        ...mirrors.tags,
+        // The vault fills this proof while signing the outer wrapper.
+        ['imkc']
+      ],
+      content
+    }
+
+    throwIfAborted(signal)
+    const signed = await signEvent(template)
+    throwIfAborted(signal)
+    if (!signed) return compactResult()
+
+    const signedCopy = await validatePersonalCopyForStorage(signed, {
+      decrypt: this.personalCopyDecrypt,
+      obfuscate: this.personalCopyObfuscate,
+      ownerPubkey: this.ownerPubkey
+    })
+    if (!signedCopy || signedCopy.inner.kind !== eventKinds.DELETION) return compactResult()
+
+    const saved = await this.addEvent(signed, { consumeDeletionRequestIds: consumed })
+    if (!saved.stored) return compactResult()
+
+    this.publish(signed, true, saved[STORED_RECORD])
+    return compactResult({
+      compacted: true,
+      created: signed,
+      consumed,
+      targets: [...targetTags, ...kindTags]
+    })
   }
 
   async maintainDeletionRequests ({
@@ -1270,18 +1427,27 @@ export class NostrDb {
     const deleteCount = Math.min(total - maxRequests, deleteLimit)
     if (deleteCount <= 0) return deletionPruneResult()
 
-    let ids
+    let infos
 
     try {
-      ids = await selectDeletionRequestPruneIds(db, author, {
+      const publicInfos = await selectDeletionRequestPruneInfos(db, author, {
         cutoffMs,
         limit: deleteCount,
         signal
       })
+      const privateInfos = await selectPrivateDeletionRequestPruneInfos(db, author, {
+        cutoffMs,
+        limit: deleteCount,
+        signal
+      })
+      infos = [...publicInfos, ...privateInfos]
+        .sort(compareDeletionPruneInfo)
+        .slice(0, deleteCount)
     } catch {
       throwIfAborted(signal)
       return deletionPruneResult()
     }
+    const ids = infos.map(info => info.id)
     if (ids.length === 0) return deletionPruneResult()
 
     const deleted = []
@@ -4261,6 +4427,71 @@ function pendingInnerDeletionRef (context, sourceMirror) {
   return `i:${mirrorKey}:${contextKey}`
 }
 
+// Applies a prepared private deletion inside the caller's write transaction.
+// The caller only reaches this point after the envelope won provenance and
+// address checks, so a losing or failed envelope never writes contributions.
+async function applyPreparedPrivateDeletion (db, tx, requestId, ownerPubkey, prepared) {
+  const targets = []
+  const pending = []
+
+  for (const eventTarget of prepared.eventTargets) {
+    const copies = await queryRecords(db, {
+      kinds: [PERSONAL_COPY_KIND],
+      authors: [ownerPubkey],
+      '#o': [eventTarget.mirror],
+      '#c': [prepared.context]
+    }, { countOnly: false, ignoreLimit: true, tx })
+    for (const copy of copies) targets.push(['e', copy.id])
+    pending.push({
+      ref: pendingInnerDeletionRef(prepared.context, eventTarget.mirror),
+      mirror: eventTarget.mirror
+    })
+  }
+
+  for (const coordinateTarget of prepared.coordinateTargets) {
+    const holder = await run(
+      'get',
+      [coordinateTarget.address],
+      EVENTS_STORE,
+      INDEX.address,
+      { db, tx }
+    ).then(value => value.result)
+    if (holder && personalCopyContextValue(holder.event) !== prepared.context) continue
+    targets.push(['a', coordinateTarget.address])
+  }
+
+  if (targets.length === 0 && pending.length === 0) return []
+
+  const request = {
+    id: requestId,
+    pubkey: ownerPubkey,
+    kind: eventKinds.DELETION,
+    created_at: prepared.createdAt,
+    tags: [...targets, ...pending.map(target => ['i', target.mirror])]
+  }
+
+  await applyDeletionRequest(db, tx, request)
+  for (const target of pending) {
+    await addDeletionContribution(db, tx, {
+      ref: target.ref,
+      tag: ['i', target.mirror],
+      type: 'i',
+      upToCreatedAt: request.created_at
+    }, request)
+  }
+  return pending
+}
+
+// A deletion request is either a public kind-5 event or a personal-copy
+// wrapper whose encrypted inner is kind 5. The plaintext `k` tag is enough to
+// recognize stored wrappers without decrypting them again.
+function isDeletionRequestEvent (event) {
+  if (!event) return false
+  if (event.kind === eventKinds.DELETION) return true
+  return event.kind === PERSONAL_COPY_KIND &&
+    personalCopyEncryptionKind(event) === eventKinds.DELETION
+}
+
 async function applyDeletionRequest (db, tx, request) {
   const targets = await deletionTargetsFromRequest(db, tx, request)
   for (const target of targets) {
@@ -4404,7 +4635,7 @@ async function deleteStoredDeletionRequestById (db, tx, id, author) {
   const target = await run('get', [eventIdIndexKey(id)], EVENTS_STORE, null, { db, tx })
     .then(v => v.result)
 
-  if (!target || target.event.kind !== 5 || target.event.pubkey !== author) return false
+  if (!target || !isDeletionRequestEvent(target.event) || target.event.pubkey !== author) return false
 
   await deleteStoredEvent(db, tx, target)
   return true
@@ -4436,8 +4667,11 @@ export async function deleteStoredEvent (db, tx, stored) {
     }
   }
 
-  if (stored.event.kind === 5) {
+  if (isDeletionRequestEvent(stored.event)) {
     await removeDeletionRequestContributions(db, tx, stored.i)
+    // The pending-inner cache is loaded lazily from the `i:` rows; invalidate
+    // it on every removal path so a pruned or evicted request stops blocking.
+    db.pendingInnerDeletions = null
   }
 }
 
@@ -4488,10 +4722,18 @@ async function countDeletionRequestKeys (db, author, signal) {
       return true
     }
   })
-  return count
+  throwIfAborted(signal)
+
+  const privateCount = await queryRecords(db, {
+    authors: [author],
+    kinds: [PERSONAL_COPY_KIND],
+    '#k': [String(eventKinds.DELETION)]
+  }, { countOnly: true, ignoreLimit: true })
+
+  return count + (Number.isFinite(privateCount) ? privateCount : 0)
 }
 
-async function selectDeletionRequestPruneIds (db, author, { cutoffMs, limit, signal }) {
+async function selectDeletionRequestPruneInfos (db, author, { cutoffMs, limit, signal }) {
   const selected = []
   let after = null
 
@@ -4512,7 +4754,63 @@ async function selectDeletionRequestPruneIds (db, author, { cutoffMs, limit, sig
   }
 
   selected.sort(compareDeletionPruneInfo)
-  return selected.map(info => info.id)
+  return selected
+}
+
+// Private deletion envelopes are rare, so the bounded scan materializes the
+// matching wrappers and keeps only the best `limit` candidates. The rows are
+// still counted and weighted exactly like public requests, including `i:`
+// pending inner ids.
+async function selectPrivateDeletionRequestPruneInfos (db, author, { cutoffMs, limit, signal }) {
+  const selected = []
+  let wrappers
+
+  try {
+    wrappers = await queryRecords(db, {
+      authors: [author],
+      kinds: [PERSONAL_COPY_KIND],
+      '#k': [String(eventKinds.DELETION)]
+    }, { countOnly: false, ignoreLimit: true })
+  } catch {
+    throwIfAborted(signal)
+    return selected
+  }
+
+  if (wrappers.length === 0) return selected
+
+  const tx = db.transaction([EVENTS_STORE, DELETIONS_STORE], 'readonly')
+  const done = txDone(tx)
+
+  try {
+    for (const wrapper of wrappers) {
+      throwIfAborted(signal)
+
+      const stored = await run('get', [eventIdIndexKey(wrapper.id)], EVENTS_STORE, null, { db, tx })
+        .then(value => value.result)
+      if (!stored || !isDeletionRequestEvent(stored.event)) continue
+
+      const receivedAt = Number.isFinite(stored.ra) ? stored.ra : -Infinity
+      if (receivedAt > cutoffMs) continue
+
+      const rows = uniqueDeletionRows(await getDeletionRowsForRequest(db, tx, stored.i))
+      const addressTargetCount = rows.filter(isAddressDeletionRow).length
+      const eventTargetCount = rows.length - addressTargetCount
+
+      addDeletionPruneCandidate(selected, {
+        id: stored.event.id,
+        createdAt: stored.event.created_at,
+        receivedAt,
+        score: (addressTargetCount * DELETION_REQUEST_ADDRESS_TARGET_WEIGHT) + eventTargetCount
+      }, limit)
+    }
+
+    await done
+  } catch {
+    throwIfAborted(signal)
+  }
+
+  selected.sort(compareDeletionPruneInfo)
+  return selected
 }
 
 async function deletionRequestKeyBatch (db, author, { after = null, batchSize, signal }) {
@@ -4606,6 +4904,51 @@ function compareDeletionPruneInfo (a, b) {
   if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt
   if (a.receivedAt !== b.receivedAt) return a.receivedAt - b.receivedAt
   return a.id.localeCompare(b.id)
+}
+
+// Compaction of private deletion envelopes operates on their inner refs, so a
+// merged wrapper re-resolves them against the copies that exist at write time.
+function privateDeletionCompactionTargets (inner) {
+  const rows = []
+  const seen = new Set()
+
+  for (const tag of inner.tags) {
+    if (!Array.isArray(tag)) continue
+
+    if (tag[0] === 'e') {
+      const id = tag[1]
+      if (!HEX64_RE.test(id ?? '')) continue
+      const ref = `e:${id}`
+      if (seen.has(ref)) continue
+      seen.add(ref)
+      rows.push({ ref, tag: ['e', id], type: 'e' })
+    } else if (tag[0] === 'a') {
+      if (typeof tag[1] !== 'string' || !parseAddress(tag[1])) continue
+      const ref = `a:${tag[1]}`
+      if (seen.has(ref)) continue
+      seen.add(ref)
+      rows.push({ ref, tag: ['a', tag[1]], type: 'a' })
+    }
+  }
+
+  return rows
+}
+
+// Keep the advisory kind tags on the merged inner: the wrapper mirrors are
+// derived from them, and the app's deletion subscription filters on `#o`.
+function mergedPrivateDeletionKindTags (selected) {
+  const tags = new Map()
+
+  for (const info of selected) {
+    for (const tag of info.inner.tags) {
+      if (!Array.isArray(tag) || tag[0] !== 'k' || typeof tag[1] !== 'string') continue
+      const kind = Number(tag[1])
+      if (!Number.isInteger(kind) || kind < 0 || kind > 0xffffffff || tag[1] !== String(kind)) continue
+      tags.set(tag[1], ['k', tag[1]])
+    }
+  }
+
+  return [...tags.values()].sort((a, b) => Number(a[1]) - Number(b[1]))
 }
 
 // Address tombstones are compacted only with requests at the same cutoff.

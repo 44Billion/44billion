@@ -6,9 +6,9 @@ import { getPublicKey } from 'libp2r2p/key'
 import { encryptBytes, decryptBytes } from 'libp2r2p/nip44-v3'
 import { createLocalPersonalCopy } from '#services/idb/nostrdb/personal-copy.js'
 import { runNostrDbMethod } from '#helpers/window-message/browser/nostrdb.js'
-import { buildPersonalCopyUnsignedEvent } from '#helpers/personal-copy.js'
+import { buildPersonalCopyUnsignedEvent, personalCopySourceId } from '#helpers/personal-copy.js'
 import {
-  getNostrDb, openNostrDb, deleteNostrDb, eventIdIndexKey,
+  getNostrDb, openNostrDb, deleteNostrDb, deletionEventRef, eventIdIndexKey,
   NOSTRDB_PREFIX, toStoredRecord
 } from '#services/idb/nostrdb/index.js'
 import {
@@ -1036,4 +1036,37 @@ it('local personal copies preserve quota refusal and retry through ordinary admi
   assert.equal((await a.db.add(event)).stored, true)
   assert.equal(fixture.calls.decrypt, 1)
   assert.equal((await getNostrDbQuotaUsage()).privateCount, 1)
+})
+
+it('rolls back a private deletion when the envelope admission fails', async () => {
+  const a = await owner()
+  const fixture = localCopyFixture(a)
+  const original = { kind: 9, created_at: 123, content: 'delete me', tags: [] }
+  const target = await createLocalPersonalCopy({ ...fixture, originalEvent: original })
+  assert.equal((await a.db.add(target)).stored, true)
+
+  const deletion = await createLocalPersonalCopy({
+    ...fixture,
+    originalEvent: {
+      kind: 5,
+      created_at: 200,
+      tags: [['e', personalCopySourceId(original, { wrapperPubkey: a.pubkey })], ['k', '9']],
+      content: ''
+    }
+  })
+
+  await limits({ privateBytes: byteSize(target) })
+  const refused = await a.db.add(deletion)
+  assert.equal(refused.code, 'quota')
+  assert.equal(refused.quotaCategory, 'private')
+  assert.ok(await row(a.raw, target))
+  assert.equal(await row(a.raw, deletion), undefined)
+  assert.equal(await request(a.raw.transaction('deletions').objectStore('deletions').get(deletionEventRef(target.id, a.pubkey))), undefined)
+  assert.equal((await a.db.pendingInnerMirrors(a.raw)).size, 0)
+
+  await limits({ privateBytes: byteSize(target) + byteSize(deletion) })
+  assert.equal((await a.db.add(deletion)).stored, true)
+  assert.equal(await row(a.raw, target), undefined)
+  const tombstone = await request(a.raw.transaction('deletions').objectStore('deletions').get(deletionEventRef(target.id, a.pubkey)))
+  assert.equal(Number.isInteger(tombstone?.ca), true)
 })
