@@ -19,6 +19,7 @@ import {
   isOwnerReferenced,
   putQuotaEvent,
   queueCacheAccess,
+  referenceKeysFromTags,
   startGlobalQuotaMaintenance,
   withNostrDbQuotaLock,
   withQuotaMutation
@@ -118,7 +119,10 @@ events, keyPath "i"
   cr/ci/ct/ch/cb optional externalized chunk root/index/total/content hash/byte length
   br    optional multiEntry roots referenced by public or decrypted personal r tags
   eventBytes UTF-8 JSON byte length of stored event, excluding internal metadata
-  ownerRefs normalized owner-only references: e:<idKey> / a:<kind>:<pubkeyKey>:<dTagKey>
+  ownerRefs multiEntry references served by byOwnerRef: owner public events use
+            e:<idKey> / a:<kind>:<pubkeyKey>:<dTagKey>; personal copies use
+            h:<base64url-context>:<same e/a ref>
+  hrefs optional personal-copy identity refs checked by the unreferenced-hearsay prune
   event original Nostr event; chunk events omit content and are rehydrated on reads
 
 events indexes
@@ -203,6 +207,9 @@ const UNCLAIMED_APP_DATA_RETRY_MS = 60 * 1000
 const CHUNK_ROOT_GRACE_MS = 10 * 60 * 1000
 const CHUNK_MAINTENANCE_INTERVAL_MS = 60 * 1000
 const CHUNK_PURGE_BATCH_SIZE = 256
+const HEARSAY_PRUNE_GRACE_MS = 10 * 60 * 1000
+const HEARSAY_PRUNE_INTERVAL_MS = 10 * 60 * 1000
+const HEARSAY_PRUNE_BATCH_SIZE = 100
 const textEncoder = new TextEncoder()
 const textDecoder = new TextDecoder()
 const dbCache = new Map()
@@ -965,6 +972,10 @@ export class NostrDb {
     }
 
     const record = toStoredRecord(event, { now, appRef, chunkData, blobRefs })
+    const personalCopyRefs = personalCopy ? personalCopyReferenceKeys(event, personalCopy) : null
+    if (personalCopy?.provenance === PERSONAL_COPY_PROVENANCE.HEARSAY_RUMOR) {
+      record.hrefs = personalCopyHearsayRefs(personalCopy, this.ownerPubkey)
+    }
     let result
     let privateDeletionPending = []
     try {
@@ -1060,7 +1071,7 @@ export class NostrDb {
           await deleteStoredDeletionRequestById(db, tx, id, event.pubkey)
         }
 
-        await putQuotaEvent(db, tx, record)
+        await putQuotaEvent(db, tx, record, { personalCopyRefs })
         return addResult(replaced ? 'replaced' : 'stored', { stored: true, storedRecord: record })
       }, { admission: true })
     } catch (error) {
@@ -1557,6 +1568,108 @@ export class NostrDb {
       })
     } catch {
       return 0
+    }
+  }
+
+  // Hearsays are context copies: they are only useful while another personal
+  // copy in the same context references them. The identity refs are stored on
+  // the hearsay record and referrers contribute `h:` keys to byOwnerRef, so the
+  // check is one index lookup per ref and needs no new store or index.
+  async pruneUnreferencedHearsays ({
+    now = currentUnixTime(),
+    graceMs = HEARSAY_PRUNE_GRACE_MS,
+    batchSize = HEARSAY_PRUNE_BATCH_SIZE
+  } = {}) {
+    const db = await openNostrDb(this.ownerPubkey)
+    if (!db) return 0
+
+    const cutoff = now * 1000 - normalizeDurationMs(graceMs, HEARSAY_PRUNE_GRACE_MS)
+    const maxDeletions = normalizePositiveInteger(batchSize, HEARSAY_PRUNE_BATCH_SIZE)
+    const range = IDBKeyRange.bound(
+      ['v', tagValueIndexKey(String(PERSONAL_COPY_PROVENANCE.HEARSAY_RUMOR)), 0],
+      ['v', tagValueIndexKey(String(PERSONAL_COPY_PROVENANCE.HEARSAY_RUMOR)), 0xffffffff]
+    )
+    // Hearsays are only created for replies/quotes to unsigned rumors, so this
+    // exact `v=2` scan is expected to be tiny; deletions are still capped.
+    const candidates = []
+
+    try {
+      await scanCursor(db, EVENTS_STORE, INDEX.tag, range, {
+        onItem: stored => {
+          if (stored?.k !== PERSONAL_COPY_KIND) return true
+          if (personalCopyProvenanceValue(stored.event) !== PERSONAL_COPY_PROVENANCE.HEARSAY_RUMOR) return true
+          const receivedAt = Number.isFinite(stored.ra) ? stored.ra : -Infinity
+          if (receivedAt > cutoff) return true
+          candidates.push(stored)
+          return true
+        }
+      })
+    } catch {
+      return 0
+    }
+
+    let removed = 0
+
+    for (const stored of candidates) {
+      if (removed >= maxDeletions) break
+
+      const legacyDeletionRequest = personalCopyEncryptionKind(stored.event) === eventKinds.DELETION
+      if (!legacyDeletionRequest && await hearsayHasReference(db, stored)) continue
+
+      try {
+        const deleted = await withQuotaMutation(db, async tx => {
+          const current = await run('get', [stored.i], EVENTS_STORE, null, { db, tx })
+            .then(value => value.result)
+          if (!current) return false
+          await deleteStoredEvent(db, tx, current)
+          return true
+        })
+        if (deleted) removed++
+      } catch { /* keep trying the remaining candidates */ }
+    }
+
+    return removed
+  }
+
+  startHearsayMaintenance ({
+    intervalMs = HEARSAY_PRUNE_INTERVAL_MS,
+    runImmediately = true
+  } = {}) {
+    const delay = Number.isInteger(intervalMs) && intervalMs > 0
+      ? intervalMs
+      : HEARSAY_PRUNE_INTERVAL_MS
+    let stopped = false
+    let running = false
+    let timer = null
+
+    const schedule = milliseconds => {
+      if (stopped) return
+      timer = setTimeout(tick, milliseconds)
+      timer.unref?.()
+    }
+
+    const tick = async () => {
+      if (stopped) return
+      if (running) {
+        schedule(delay)
+        return
+      }
+
+      running = true
+      try {
+        await this.pruneUnreferencedHearsays()
+      } catch {
+      } finally {
+        running = false
+        schedule(delay)
+      }
+    }
+
+    schedule(runImmediately ? 0 : delay)
+
+    return () => {
+      stopped = true
+      if (timer) clearTimeout(timer)
     }
   }
 
@@ -2383,6 +2496,7 @@ function startNostrDbMaintenance (db, { signEvent } = {}) {
     intervalMs: UNCLAIMED_APP_DATA_PURGE_INTERVAL_MS
   }))
   startMaintenanceTask(db, 'expiration', () => db.startExpirationPurge())
+  startMaintenanceTask(db, 'hearsays', () => db.startHearsayMaintenance())
   if (typeof signEvent === 'function') {
     db.deletionRequestMaintenanceSignEvent = signEvent
     startMaintenanceTask(db, 'deletionRequests', () => db.startDeletionRequestMaintenance({
@@ -4424,6 +4538,54 @@ function isNonDurablePersonalCopyInner (inner) {
   return !!inner && (isEphemeralKind(inner.kind) || isHonoraryEphemeralEvent(inner))
 }
 
+function personalCopyContextKey (personalCopy) {
+  return bytesToBase64Url(textEncoder.encode(String(personalCopy?.context ?? '')))
+}
+
+// Wrapper tags carrying derived metadata are not references. Any remaining
+// single-letter tag (for example an app-provided `e`/`q`/`x`) keeps the same
+// public-reference semantics as before.
+function personalCopyReferenceTags (event) {
+  return (event?.tags ?? []).filter(tag =>
+    Array.isArray(tag) &&
+    !['k', 'c', 'v', 'd', 'o', 'imkc'].includes(tag[0])
+  )
+}
+
+// Personal-copy inner references share the byOwnerRef index with owner public
+// refs, but use an `h:` namespace that includes the copy context; the wrapper's
+// remaining tags keep their plain `e:`/`a:` owner-reference form.
+function personalCopyReferenceKeys (event, personalCopy) {
+  if (!personalCopy?.inner) return []
+  const contextKey = personalCopyContextKey(personalCopy)
+  const wrapperRefs = referenceKeysFromTags(personalCopyReferenceTags(event))
+  const innerRefs = referenceKeysFromTags(personalCopy.inner.tags)
+    .map(ref => `h:${contextKey}:${ref}`)
+  return [...wrapperRefs, ...innerRefs]
+}
+
+// Identity refs by which another copy in the same context can reference this
+// hearsay. `e:` covers id references; addressable/replaceable hearsays also
+// accept coordinate references.
+function personalCopyHearsayRefs (personalCopy, ownerPubkey) {
+  if (personalCopy?.provenance !== PERSONAL_COPY_PROVENANCE.HEARSAY_RUMOR) return []
+  if (!HEX64_RE.test(personalCopy.sourceId ?? '')) return []
+
+  const description = describePersonalCopyInner(personalCopy.inner, {
+    wrapperPubkey: ownerPubkey
+  })
+  if (!description) return []
+
+  const contextKey = personalCopyContextKey(personalCopy)
+  const refs = [`h:${contextKey}:e:${eventIdIndexKey(personalCopy.sourceId)}`]
+  const coordinate = getCoordinate(personalCopy.inner)
+  if (coordinate !== null) {
+    const address = addressKey(personalCopy.inner.kind, description.effectivePubkey, coordinate).join(':')
+    refs.push(`h:${contextKey}:a:${address}`)
+  }
+  return refs
+}
+
 export function shouldSkipStorage (event, now = currentUnixTime()) {
   return (
     isNonDurableEvent(event) ||
@@ -4571,6 +4733,39 @@ function isDeletionRequestEvent (event) {
   if (event.kind === eventKinds.DELETION) return true
   return event.kind === PERSONAL_COPY_KIND &&
     personalCopyEncryptionKind(event) === eventKinds.DELETION
+}
+
+// Returns true when another record references this hearsay (or when the record
+// predates the identity metadata and must be kept conservatively).
+async function hearsayHasReference (db, stored) {
+  const hrefs = [...new Set(Array.isArray(stored.hrefs) ? stored.hrefs : [])]
+    .filter(href => typeof href === 'string' && href.startsWith('h:'))
+  if (hrefs.length === 0) return true
+
+  const tx = db.transaction([EVENTS_STORE], 'readonly')
+  const done = txDone(tx)
+  let referenced = false
+
+  try {
+    for (const href of hrefs) {
+      await scanKeyCursor(db, EVENTS_STORE, INDEX.ownerRef, IDBKeyRange.only(href), {
+        tx,
+        onItem: item => {
+          if (item.primaryKey === stored.i) return true
+          referenced = true
+          return false
+        }
+      })
+      if (referenced) break
+    }
+    await done
+  } catch {
+    try { tx.abort() } catch {}
+    await done.catch(() => {})
+    return true
+  }
+
+  return referenced
 }
 
 async function applyDeletionRequest (db, tx, request) {

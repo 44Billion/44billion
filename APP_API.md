@@ -269,6 +269,13 @@ with its tombstones; honorary ephemeral inners (`expiration == created_at`) and
 ephemeral-kind inners are published without being stored, matching public event
 behavior.
 
+Unsigned-rumor personal copies (`v=2`, hearsay) are context copies: they are
+kept only while another personal copy in the same context references the
+rumor's inner id or coordinate. References are read from the inner's
+single-letter tags (`e`, `q`, `a`, etc.), not from content URIs. A signed or
+direct copy of the same source still replaces the hearsay; otherwise an
+unreferenced hearsay is pruned after 10 minutes.
+
 Owner references can preserve third-party public events; other third-party events
 are disposable cache and may be evicted by approximate LRU. Expiration, explicit
 deletion and newer coordinate replacement still apply to preserved events.

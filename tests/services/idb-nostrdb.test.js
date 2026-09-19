@@ -2834,6 +2834,139 @@ describe('nostrdb', () => {
     assert.deepEqual(await queryResults(db, { ids: [honorary.id] }), [])
   })
 
+  it('keeps personal-copy inner and wrapper reference namespaces separate', async () => {
+    const owner = hexId(30910)
+    const plaintexts = new Map()
+    const db = personalCopyDb(owner, plaintexts)
+    const context = 'dm:refs'
+    const wrapperTarget = hexId(30911)
+    const innerReference = hexId(30912)
+    const inner = personalCopyTemplate({
+      kind: 9,
+      created_at: 100,
+      tags: [['q', innerReference]],
+      content: 'refs'
+    })
+    const wrapper = await personalCopyWrapper({
+      id: hexId(30913),
+      owner,
+      inner,
+      context,
+      content: 'cipher-refs',
+      extraTags: [['x', wrapperTarget]]
+    })
+    rememberPersonalCopy(plaintexts, wrapper, inner)
+    assertAddOk(await db.add(wrapper))
+
+    const encodedContext = await personalCopyObfuscate(context, 1006, '')
+    const contextKey = Buffer.from(encodedContext).toString('base64url')
+    assert.deepEqual(fakeStore(owner, 'events').records.get(eventIdIndexKey(wrapper.id)).ownerRefs, [
+      `e:${eventIdIndexKey(wrapperTarget)}`,
+      `h:${contextKey}:e:${eventIdIndexKey(innerReference)}`
+    ])
+  })
+
+  it('prunes unreferenced hearsays while keeping same-context references', async () => {
+    const owner = hexId(30900)
+    const plaintexts = new Map()
+    const db = personalCopyDb(owner, plaintexts)
+    const context = 'dm:hearsay-retention'
+    const otherContext = 'dm:hearsay-other'
+    const makeHearsay = async (id, createdAt, content) => {
+      const inner = personalCopyRumor({ pubkey: B, kind: 9, created_at: createdAt, content })
+      const wrapper = await personalCopyWrapper({
+        id: hexId(id),
+        owner,
+        inner,
+        context,
+        content: `cipher-${id}`,
+        provenance: PERSONAL_COPY_PROVENANCE.HEARSAY_RUMOR
+      })
+      rememberPersonalCopy(plaintexts, wrapper, inner)
+      return { inner, wrapper }
+    }
+
+    const first = await makeHearsay(30901, 100, 'first')
+    assertAddOk(await db.addEvent(first.wrapper, { now: 1 }))
+    const encodedContext = await personalCopyObfuscate(context, 1006, '')
+    const contextKey = Buffer.from(encodedContext).toString('base64url')
+    const sourceKey = eventIdIndexKey(personalCopySourceId(first.inner, { wrapperPubkey: owner }))
+    assert.deepEqual(
+      fakeStore(owner, 'events').records.get(eventIdIndexKey(first.wrapper.id)).hrefs,
+      [`h:${contextKey}:e:${sourceKey}`]
+    )
+
+    assert.equal(await db.pruneUnreferencedHearsays({ now: 1 }), 0)
+    assert.deepEqual((await queryResults(db, { ids: [first.wrapper.id] })).map(event => event.id), [first.wrapper.id])
+    assert.equal(await db.pruneUnreferencedHearsays({ now: 700 }), 1)
+    assert.deepEqual(await queryResults(db, { ids: [first.wrapper.id] }), [])
+
+    const second = await makeHearsay(30902, 101, 'second')
+    assertAddOk(await db.addEvent(second.wrapper, { now: 1 }))
+    const replyInner = personalCopyTemplate({
+      kind: 9,
+      created_at: 200,
+      tags: [['q', personalCopySourceId(second.inner, { wrapperPubkey: owner })]],
+      content: 'reply'
+    })
+    const reply = await personalCopyWrapper({
+      id: hexId(30903),
+      owner,
+      inner: replyInner,
+      context,
+      content: 'cipher-reply'
+    })
+    rememberPersonalCopy(plaintexts, reply, replyInner)
+    assertAddOk(await db.addEvent(reply, { now: 1 }))
+    assert.equal(await db.pruneUnreferencedHearsays({ now: 700 }), 0)
+    assert.deepEqual((await queryResults(db, { ids: [second.wrapper.id] })).map(event => event.id), [second.wrapper.id])
+
+    await db.removeLocal([['e', reply.id]])
+    assert.equal(await db.pruneUnreferencedHearsays({ now: 700 }), 1)
+    assert.deepEqual(await queryResults(db, { ids: [second.wrapper.id] }), [])
+
+    const third = await makeHearsay(30904, 102, 'third')
+    assertAddOk(await db.addEvent(third.wrapper, { now: 1 }))
+    const otherReplyInner = personalCopyTemplate({
+      kind: 9,
+      created_at: 201,
+      tags: [['q', personalCopySourceId(third.inner, { wrapperPubkey: owner })]],
+      content: 'other context reply'
+    })
+    const otherReply = await personalCopyWrapper({
+      id: hexId(30905),
+      owner,
+      inner: otherReplyInner,
+      context: otherContext,
+      content: 'cipher-other-reply'
+    })
+    rememberPersonalCopy(plaintexts, otherReply, otherReplyInner)
+    assertAddOk(await db.addEvent(otherReply, { now: 1 }))
+    assert.equal(await db.pruneUnreferencedHearsays({ now: 700 }), 1)
+    assert.deepEqual(await queryResults(db, { ids: [third.wrapper.id] }), [])
+
+    const legacyInner = personalCopyRumor({
+      pubkey: B,
+      kind: 5,
+      created_at: 300,
+      tags: [['e', hexId(30906)], ['k', '9']],
+      content: ''
+    })
+    const legacy = await personalCopyWrapper({
+      id: hexId(30907),
+      owner,
+      inner: legacyInner,
+      context,
+      content: 'cipher-legacy',
+      provenance: PERSONAL_COPY_PROVENANCE.HEARSAY_RUMOR
+    })
+    rememberPersonalCopy(plaintexts, legacy, legacyInner)
+    seedPersonalCopyRecord(owner, legacy)
+    fakeStore(owner, 'events').records.get(eventIdIndexKey(legacy.id)).ra = 1000
+    assert.equal(await db.pruneUnreferencedHearsays({ now: 700 }), 1)
+    assert.deepEqual(await queryResults(db, { ids: [legacy.id] }), [])
+  })
+
   it('compacts private deletion envelopes per context and rekeys pending markers', async () => {
     const owner = hexId(30750)
     const plaintexts = new Map()
@@ -2985,13 +3118,7 @@ describe('nostrdb', () => {
     })
     assert.equal(compacted.compacted, false)
 
-    const pruned = await db.pruneDeletionRequests({
-      author: owner,
-      maxDeletionRequests: 0,
-      pruneGraceMs: 0,
-      now: 100
-    })
-    assert.deepEqual([...pruned.deleted].sort(), [first.id, second.id].sort())
+    await db.pruneUnreferencedHearsays({ now: 700 })
     assert.deepEqual(await queryResults(db, { ids: [first.id, second.id] }), [])
   })
 

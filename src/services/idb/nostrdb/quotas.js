@@ -102,8 +102,12 @@ export function initialQuotaUsage (ready = false) {
 
 export function ownerReferenceKeys (event, owner) {
   if (event.pubkey !== owner) return []
+  return referenceKeysFromTags(event.tags)
+}
+
+export function referenceKeysFromTags (tags) {
   const refs = new Set()
-  for (const tag of event.tags) {
+  for (const tag of Array.isArray(tags) ? tags : []) {
     if (tag[0]?.length !== 1 || typeof tag[1] !== 'string') continue
     const value = tag[1]
     if (/^[0-9a-f]{64}$/i.test(value)) {
@@ -120,9 +124,11 @@ export function ownerReferenceKeys (event, owner) {
   return [...refs].sort()
 }
 
-function prepareRecord (db, row) {
+function prepareRecord (db, row, { personalCopyRefs } = {}) {
   row.eventBytes = encoder.encode(JSON.stringify(row.event)).byteLength
-  row.ownerRefs = ownerReferenceKeys(row.event, db.name.slice(NOSTRDB_PREFIX.length))
+  row.ownerRefs = isPersonalCopyEvent(row.event)
+    ? [...new Set(Array.isArray(personalCopyRefs) ? personalCopyRefs : [])].sort()
+    : ownerReferenceKeys(row.event, db.name.slice(NOSTRDB_PREFIX.length))
   return row
 }
 
@@ -253,10 +259,10 @@ export async function accountDeletedEvent (db, tx, row) {
   ctx.excluded.add(row.i)
 }
 
-export async function putQuotaEvent (db, tx, row) {
+export async function putQuotaEvent (db, tx, row, options) {
   const ctx = contexts.get(tx)
   if (!ctx) throw new Error('Event insertion requires a quota transaction')
-  prepareRecord(db, row)
+  prepareRecord(db, row, options)
   await request(tx.objectStore(EVENTS_STORE).put(row))
   changeEventTotals(ctx.usage, row, 1)
   await setCacheClassification(db, tx, row, ctx.usage)
@@ -270,6 +276,9 @@ async function reconcileChangedReferences (db, tx, ctx, admission, before) {
   const seen = new Set()
   const promotions = []
   for (const ref of ctx.refs) {
+    // `h:` keys are personal-copy inner references used by the hearsay prune;
+    // they must not participate in public-cache promotion.
+    if (!ref.startsWith('e:') && !ref.startsWith('a:')) continue
     let row
     if (ref.startsWith('e:')) row = await request(store.get(ref.slice(2)))
     else {
