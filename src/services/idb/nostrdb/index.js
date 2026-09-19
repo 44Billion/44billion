@@ -1071,7 +1071,7 @@ export class NostrDb {
           await deleteStoredDeletionRequestById(db, tx, id, event.pubkey)
         }
 
-        await putQuotaEvent(db, tx, record, { personalCopyRefs })
+        await putQuotaEvent(db, tx, record, { personalCopy, personalCopyRefs })
         return addResult(replaced ? 'replaced' : 'stored', { stored: true, storedRecord: record })
       }, { admission: true })
     } catch (error) {
@@ -1598,6 +1598,7 @@ export class NostrDb {
         onItem: stored => {
           if (stored?.k !== PERSONAL_COPY_KIND) return true
           if (personalCopyProvenanceValue(stored.event) !== PERSONAL_COPY_PROVENANCE.HEARSAY_RUMOR) return true
+          if (stored.event.pubkey !== this.ownerPubkey) return true
           const receivedAt = Number.isFinite(stored.ra) ? stored.ra : -Infinity
           if (receivedAt > cutoff) return true
           candidates.push(stored)
@@ -4728,9 +4729,10 @@ async function applyPreparedPrivateDeletion (db, tx, requestId, ownerPubkey, pre
 // A deletion request is either a public kind-5 event or a personal-copy
 // wrapper whose encrypted inner is kind 5. The plaintext `k` tag is enough to
 // recognize stored wrappers without decrypting them again.
-function isDeletionRequestEvent (event) {
+function isDeletionRequestEvent (event, ownerPubkey = null) {
   if (!event) return false
   if (event.kind === eventKinds.DELETION) return true
+  if (ownerPubkey === null || event.pubkey !== ownerPubkey) return false
   return event.kind === PERSONAL_COPY_KIND &&
     personalCopyEncryptionKind(event) === eventKinds.DELETION
 }
@@ -4911,20 +4913,20 @@ async function deleteStoredDeletionRequestById (db, tx, id, author) {
   const target = await run('get', [eventIdIndexKey(id)], EVENTS_STORE, null, { db, tx })
     .then(v => v.result)
 
-  if (!target || !isDeletionRequestEvent(target.event) || target.event.pubkey !== author) return false
+  if (!target || !isDeletionRequestEvent(target.event, author)) return false
 
   await deleteStoredEvent(db, tx, target)
   return true
 }
 
 export async function deleteStoredEvent (db, tx, stored) {
+  const owner = db.name.startsWith(NOSTRDB_PREFIX)
+    ? db.name.slice(NOSTRDB_PREFIX.length)
+    : null
   await accountDeletedEvent(db, tx, stored)
   await run('delete', [stored.i], EVENTS_STORE, null, { db, tx })
 
   if (stored.event.kind === 34601 && stored.cr && Number.isSafeInteger(stored.ci)) {
-    const owner = db.name.startsWith(NOSTRDB_PREFIX)
-      ? db.name.slice(NOSTRDB_PREFIX.length)
-      : null
     if (owner) {
       tx.addEventListener('complete', () => {
         removeChunkCopy(owner, stored.cr, stored.ci, { eventId: stored.event.id }).catch(() => {})
@@ -4933,9 +4935,6 @@ export async function deleteStoredEvent (db, tx, stored) {
   }
 
   if (stored.br?.length) {
-    const owner = db.name.startsWith(NOSTRDB_PREFIX)
-      ? db.name.slice(NOSTRDB_PREFIX.length)
-      : null
     if (owner) {
       tx.addEventListener('complete', () => {
         scheduleBlobReferenceReconciliation(owner, stored.br)
@@ -4943,7 +4942,7 @@ export async function deleteStoredEvent (db, tx, stored) {
     }
   }
 
-  if (isDeletionRequestEvent(stored.event)) {
+  if (isDeletionRequestEvent(stored.event, owner)) {
     await removeDeletionRequestContributions(db, tx, stored.i)
     // The pending-inner cache is loaded lazily from the `i:` rows; invalidate
     // it on every removal path so a pruned or evicted request stops blocking.
@@ -5063,7 +5062,7 @@ async function selectPrivateDeletionRequestPruneInfos (db, author, { cutoffMs, l
 
       const stored = await run('get', [eventIdIndexKey(wrapper.id)], EVENTS_STORE, null, { db, tx })
         .then(value => value.result)
-      if (!stored || !isDeletionRequestEvent(stored.event)) continue
+      if (!stored || !isDeletionRequestEvent(stored.event, author)) continue
 
       const receivedAt = Number.isFinite(stored.ra) ? stored.ra : -Infinity
       if (receivedAt > cutoffMs) continue

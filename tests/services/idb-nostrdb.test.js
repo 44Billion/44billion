@@ -30,6 +30,7 @@ const {
   toStoredRecord,
   __nostrDbInternals
 } = await import('../../src/services/idb/nostrdb/index.js')
+const { putQuotaEvent, withQuotaMutation } = await import('../../src/services/idb/nostrdb/quotas.js')
 import { buildCrdtMergeTemplate } from '../../src/services/idb/nostrdb/crdt.js'
 import { isScheduledDurableFuture } from '../../src/services/idb/nostrdb/scheduled.js'
 import { eventKinds } from '../../src/constants/event.js'
@@ -2869,7 +2870,7 @@ describe('nostrdb', () => {
   it('prunes unreferenced hearsays while keeping same-context references', async () => {
     const owner = hexId(30900)
     const plaintexts = new Map()
-    const db = personalCopyDb(owner, plaintexts)
+    const db = personalCopyDb(owner, plaintexts, { maintenance: false })
     const context = 'dm:hearsay-retention'
     const otherContext = 'dm:hearsay-other'
     const makeHearsay = async (id, createdAt, content) => {
@@ -2965,6 +2966,65 @@ describe('nostrdb', () => {
     fakeStore(owner, 'events').records.get(eventIdIndexKey(legacy.id)).ra = 1000
     assert.equal(await db.pruneUnreferencedHearsays({ now: 700 }), 1)
     assert.deepEqual(await queryResults(db, { ids: [legacy.id] }), [])
+  })
+
+  it('rejects foreign or unvalidated 1006 rows in the quota writer', async () => {
+    const owner = hexId(30930)
+    const plaintexts = new Map()
+    personalCopyDb(owner, plaintexts, { maintenance: false })
+    const raw = await openNostrDb(owner)
+
+    const foreignInner = personalCopyTemplate({ kind: 9, created_at: 100, content: 'foreign' })
+    const foreignWrapper = await personalCopyWrapper({
+      id: hexId(30931),
+      owner: B,
+      inner: foreignInner,
+      context: 'dm:foreign',
+      content: 'cipher-foreign'
+    })
+    const foreignRow = toStoredRecord(foreignWrapper)
+    await assert.rejects(
+      withQuotaMutation(raw, tx => putQuotaEvent(raw, tx, foreignRow)),
+      /Foreign personal copy/
+    )
+    assert.equal(fakeStore(owner, 'events').records.get(foreignRow.i), undefined)
+
+    const ownerInner = personalCopyTemplate({ kind: 9, created_at: 101, content: 'owner' })
+    const ownerWrapper = await personalCopyWrapper({
+      id: hexId(30932),
+      owner,
+      inner: ownerInner,
+      context: 'dm:owner',
+      content: 'cipher-owner'
+    })
+    const ownerRow = toStoredRecord(ownerWrapper)
+    await assert.rejects(
+      withQuotaMutation(raw, tx => putQuotaEvent(raw, tx, ownerRow)),
+      /Unvalidated personal copy/
+    )
+    assert.equal(fakeStore(owner, 'events').records.get(ownerRow.i), undefined)
+  })
+
+  it('does not prune foreign 1006 hearsays', async () => {
+    const owner = hexId(30940)
+    const plaintexts = new Map()
+    const db = personalCopyDb(owner, plaintexts, { maintenance: false })
+    await openNostrDb(owner)
+
+    const foreignInner = personalCopyRumor({ pubkey: B, kind: 9, created_at: 100, content: 'foreign hearsay' })
+    const foreignWrapper = await personalCopyWrapper({
+      id: hexId(30941),
+      owner: C,
+      inner: foreignInner,
+      context: 'dm:foreign-hearsay',
+      content: 'cipher-foreign-hearsay',
+      provenance: PERSONAL_COPY_PROVENANCE.HEARSAY_RUMOR
+    })
+    seedPersonalCopyRecord(owner, foreignWrapper)
+    fakeStore(owner, 'events').records.get(eventIdIndexKey(foreignWrapper.id)).ra = 1000
+
+    assert.equal(await db.pruneUnreferencedHearsays({ now: 700 }), 0)
+    assert.deepEqual((await queryResults(db, { ids: [foreignWrapper.id] })).map(event => event.id), [foreignWrapper.id])
   })
 
   it('compacts private deletion envelopes per context and rekeys pending markers', async () => {
@@ -4828,8 +4888,9 @@ function personalCopyObfuscate (value, kind, scope) {
   return Promise.resolve(`obf:${kind}:${scope}:${value}`)
 }
 
-function personalCopyDb (owner, plaintexts) {
+function personalCopyDb (owner, plaintexts, options = {}) {
   return getNostrDb(owner, {
+    ...options,
     personalCopyDecrypt: async wrapper => plaintexts.get(wrapper.content) ?? '{}',
     personalCopyObfuscate
   })

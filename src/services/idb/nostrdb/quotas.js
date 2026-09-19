@@ -124,16 +124,35 @@ export function referenceKeysFromTags (tags) {
   return [...refs].sort()
 }
 
+function ownerFromDb (db) {
+  return db.name.startsWith(NOSTRDB_PREFIX) ? db.name.slice(NOSTRDB_PREFIX.length) : null
+}
+
 function prepareRecord (db, row, { personalCopyRefs } = {}) {
+  const owner = ownerFromDb(db)
   row.eventBytes = encoder.encode(JSON.stringify(row.event)).byteLength
-  row.ownerRefs = isPersonalCopyEvent(row.event)
-    ? [...new Set(Array.isArray(personalCopyRefs) ? personalCopyRefs : [])].sort()
-    : ownerReferenceKeys(row.event, db.name.slice(NOSTRDB_PREFIX.length))
+  if (isOwnerPersonalCopy(db, row)) {
+    if (Array.isArray(personalCopyRefs)) {
+      row.ownerRefs = [...new Set(personalCopyRefs)].sort()
+    } else if (!Array.isArray(row.ownerRefs)) {
+      row.ownerRefs = []
+    }
+  } else {
+    row.ownerRefs = ownerReferenceKeys(row.event, owner)
+  }
   return row
 }
 
 function foreignPublic (db, row) {
-  return !isPersonalCopyEvent(row.event) && row.event.pubkey !== db.name.slice(NOSTRDB_PREFIX.length)
+  return row.event.pubkey !== ownerFromDb(db)
+}
+
+function isOwnerPersonalCopy (db, row) {
+  return isPersonalCopyEvent(row.event) && row.event.pubkey === ownerFromDb(db)
+}
+
+function eventQuotaCategory (db, row) {
+  return isOwnerPersonalCopy(db, row) ? 'private' : 'public'
 }
 
 export async function isOwnerReferenced (db, tx, row) {
@@ -146,7 +165,7 @@ export async function isOwnerReferenced (db, tx, row) {
   return await request(index.getKey(ref)) !== undefined
 }
 
-function changeEventTotals (usage, row, sign, category = isPersonalCopyEvent(row.event) ? 'private' : 'public') {
+function changeEventTotals (usage, row, sign, category) {
   usage[`${category}Bytes`] += sign * row.eventBytes
   usage[`${category}Count`] += sign
 }
@@ -198,7 +217,7 @@ async function initializeUsage (db) {
           prepareRecord(db, row)
           await request(tx.objectStore(EVENTS_STORE).put(row))
         } else {
-          changeEventTotals(usage, row, 1)
+          changeEventTotals(usage, row, 1, eventQuotaCategory(db, row))
           await setCacheClassification(db, tx, row, usage, { initial: true })
         }
       })
@@ -251,7 +270,7 @@ export async function accountDeletedEvent (db, tx, row) {
   if (!ctx) throw new Error('Event deletion requires a quota transaction')
   const store = tx.objectStore(CACHE)
   const cached = await request(store.get(row.i))
-  changeEventTotals(ctx.usage, row, -1, cached ? 'cache' : undefined)
+  changeEventTotals(ctx.usage, row, -1, cached ? 'cache' : eventQuotaCategory(db, row))
   if (cached) {
     await request(store.delete(row.i))
   }
@@ -259,12 +278,24 @@ export async function accountDeletedEvent (db, tx, row) {
   ctx.excluded.add(row.i)
 }
 
-export async function putQuotaEvent (db, tx, row, options) {
+export async function putQuotaEvent (db, tx, row, { personalCopy, personalCopyRefs } = {}) {
   const ctx = contexts.get(tx)
   if (!ctx) throw new Error('Event insertion requires a quota transaction')
-  prepareRecord(db, row, options)
+  // The quota writer is the only internal storage path: a personal copy must
+  // be owner-signed and carry the metadata produced by its validation.
+  if (isPersonalCopyEvent(row.event)) {
+    if (row.event.pubkey !== ownerFromDb(db)) throw new Error('Foreign personal copy')
+    if (
+      !personalCopy ||
+      personalCopy.eventId !== row.event.id ||
+      personalCopy.eventJson !== JSON.stringify(row.event)
+    ) {
+      throw new Error('Unvalidated personal copy')
+    }
+  }
+  prepareRecord(db, row, { personalCopyRefs })
   await request(tx.objectStore(EVENTS_STORE).put(row))
-  changeEventTotals(ctx.usage, row, 1)
+  changeEventTotals(ctx.usage, row, 1, eventQuotaCategory(db, row))
   await setCacheClassification(db, tx, row, ctx.usage)
   if (foreignPublic(db, row) && !await isOwnerReferenced(db, tx, row)) ctx.admitsCache = true
   for (const ref of row.ownerRefs) ctx.refs.add(ref)
