@@ -325,7 +325,12 @@ export class NostrDb {
     this.maintenanceStops = new Map()
     this.deletionRequestMaintenanceSignEvent = null
     this.personalCopyDecrypt = null
+    this.personalCopyEncrypt = null
     this.personalCopyObfuscate = null
+    // Lazily loaded map of context -> Set(inner source mirrors) that have a
+    // pending private deletion, so normal personal copies never pay an
+    // obfuscation round trip when nobody deleted anything.
+    this.pendingInnerDeletions = null
     this.bc = null
 
     if (typeof BroadcastChannel === 'function') {
@@ -429,6 +434,28 @@ export class NostrDb {
     }
 
     const crdtMergeSource = normalizeCrdtMergeSource(mergeSource)
+
+    // A private deletion envelope is applied before it is stored: the request
+    // targets inner references, so it must resolve them against the wrappers
+    // that exist locally and leave pending markers for those that do not.
+    if (personalCopy?.inner?.kind === eventKinds.DELETION) {
+      const applied = await this.applyPrivateDeletion(event, personalCopy)
+      if (!applied) return this.reportAddResult('add', event, addResult('invalid'))
+    }
+
+    if (personalCopy && typeof this.personalCopyObfuscate === 'function') {
+      const db = await openNostrDb(this.ownerPubkey)
+      if (db) {
+        const pending = await this.pendingInnerMirrors(db)
+        const mirrors = pending.get(personalCopy.context)
+        if (mirrors?.size) {
+          const sourceMirror = await this.personalCopyObfuscate(personalCopy.sourceId, PERSONAL_COPY_KIND, '.id')
+          if (mirrors.has(sourceMirror)) {
+            return this.reportAddResult('add', event, addResult('blocked'))
+          }
+        }
+      }
+    }
 
     for (let attempt = 0; attempt < PERSONAL_COPY_PROVENANCE_ATTEMPTS; attempt++) {
       const resolution = personalCopy
@@ -596,6 +623,107 @@ export class NostrDb {
       snapshot: personalCopyProvenanceSnapshot(filter, storedEvents),
       winnerId: winner.event.id
     }
+  }
+
+  // Applies a private deletion envelope (personal copy whose inner is kind 5).
+  // Only copies in the envelope's own context are touched, and the request is
+  // handed to the public deletion pipeline so contributions, coordinate
+  // promotion and tombstones stay in one place.
+  async applyPrivateDeletion (wrapper, personalCopy) {
+    if (personalCopy?.inner?.kind !== eventKinds.DELETION) return true
+    if (typeof this.personalCopyObfuscate !== 'function') return false
+
+    const context = personalCopy.context
+    const db = await openNostrDb(this.ownerPubkey)
+    if (!db) return false
+
+    const targets = []
+    const pending = []
+
+    for (const tag of personalCopy.inner.tags) {
+      if (!Array.isArray(tag)) continue
+
+      if (tag[0] === 'e') {
+        const id = tag[1]
+        if (!HEX64_RE.test(id ?? '')) continue
+        const sourceMirror = await this.personalCopyObfuscate(id, PERSONAL_COPY_KIND, '.id')
+        const copies = await queryRecords(db, {
+          kinds: [PERSONAL_COPY_KIND],
+          authors: [this.ownerPubkey],
+          '#o': [sourceMirror],
+          '#c': [context]
+        }, { countOnly: false, ignoreLimit: true })
+        for (const copy of copies) targets.push(['e', copy.id])
+        pending.push(['i', pendingInnerDeletionRef(context, sourceMirror)])
+      } else if (tag[0] === 'a') {
+        const coordinate = parseAddress(tag[1])
+        if (!coordinate) continue
+        const wrapperCoordinate = await this.personalCopyObfuscate(
+          `${coordinate.kind}:${coordinate.pubkey}:${coordinate.dtag}`,
+          PERSONAL_COPY_KIND,
+          '.coordinate'
+        )
+        const address = addressKey(PERSONAL_COPY_KIND, this.ownerPubkey, wrapperCoordinate)
+        const tx = db.transaction([EVENTS_STORE], 'readonly')
+        const holder = await run('get', [address], EVENTS_STORE, INDEX.address, { db, tx }).then(value => value.result)
+        if (holder && personalCopyContextValue(holder.event) !== context) continue
+        targets.push(['a', `${PERSONAL_COPY_KIND}:${this.ownerPubkey}:${wrapperCoordinate}`])
+      }
+    }
+
+    if (targets.length === 0 && pending.length === 0) return true
+
+    const request = {
+      id: wrapper.id,
+      pubkey: this.ownerPubkey,
+      kind: eventKinds.DELETION,
+      created_at: personalCopy.inner.created_at,
+      tags: [...targets, ...pending]
+    }
+
+    await withQuotaMutation(db, async tx => {
+      await applyDeletionRequest(db, tx, request)
+      for (const tag of pending) {
+        await addDeletionContribution(db, tx, {
+          ref: tag[1],
+          tag: ['i', tag[1]],
+          type: 'i',
+          upToCreatedAt: request.created_at
+        }, request)
+      }
+    })
+    this.rememberPendingInnerDeletions(context, pending)
+    return true
+  }
+
+  rememberPendingInnerDeletions (context, pending) {
+    if (!this.pendingInnerDeletions) return
+    for (const tag of pending) {
+      const [, refContext, mirror] = tag[1].split('\u0000')
+      if (refContext !== context || !mirror) continue
+      if (!this.pendingInnerDeletions.has(context)) this.pendingInnerDeletions.set(context, new Set())
+      this.pendingInnerDeletions.get(context).add(mirror)
+    }
+  }
+
+  // One prefix scan per DB instance: pending private deletions are rare, so the
+  // normal personal-copy path avoids the vault obfuscation when there is none.
+  async pendingInnerMirrors (db) {
+    if (this.pendingInnerDeletions) return this.pendingInnerDeletions
+    const mirrors = new Map()
+    try {
+      const range = IDBKeyRange.bound('i\u0000', 'i\u0000\uffff')
+      await scanCursor(db, DELETIONS_STORE, null, range, {
+        onItem: row => {
+          const [prefix, context, mirror] = String(row?.ref ?? '').split('\u0000')
+          if (prefix !== 'i' || !context || !mirror) return false
+          if (!mirrors.has(context)) mirrors.set(context, new Set())
+          mirrors.get(context).add(mirror)
+        }
+      })
+    } catch { /* An unreadable ledger must not block personal copies. */ }
+    this.pendingInnerDeletions = mirrors
+    return mirrors
   }
 
   // Merges the plaintext inner of an owner-authored replaceable/addressable
@@ -4106,6 +4234,16 @@ async function isBlockedByDeletion (db, tx, event) {
   ).then(v => v.result)
 
   return !!coordinateDeletion && event.created_at <= coordinateDeletion.ca
+}
+
+// A private deletion request is an ordinary personal copy whose inner is a
+// kind-5 request. Its targets are inner references: `e` resolves to the stored
+// wrappers through the obfuscated source mirror and `a` maps the inner
+// coordinate to the wrapper address. The public deletion pipeline then applies
+// contributions, coordinate promotion and tombstones; `i:` rows remember inner
+// ids whose wrapper had not arrived yet.
+function pendingInnerDeletionRef (context, sourceMirror) {
+  return `i\u0000${context}\u0000${sourceMirror}`
 }
 
 async function applyDeletionRequest (db, tx, request) {

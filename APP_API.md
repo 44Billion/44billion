@@ -234,6 +234,16 @@ already exists at the same derived address (sync ingest merges deterministically
 in sync mode); the rewritten wrapper is a direct rumor and replaces the previous
 version. Hearsay copies never merge.
 
+A personal copy whose inner is a kind-5 event is a **private deletion request**:
+the store applies it while ingesting and keeps the wrapper so paired devices
+apply the same removal. Targets are inner references — `['e', <inner id>]` for
+regular events and `['a', '<kind>:<author>:<dtag>']` for replaceable/addressable
+ones (`['k', <kind>]` documents the referenced kinds) — and only personal copies
+in the envelope's own `context` are affected. Resolution deletes the matching
+wrappers and records tombstones; an inner id with no local wrapper leaves a
+durable `i:` marker so a copy that arrives later (from sync or another device)
+is blocked instead of resurrecting the message.
+
 Owner references can preserve third-party public events; other third-party events
 are disposable cache and may be evicted by approximate LRU. Expiration, explicit
 deletion and newer coordinate replacement still apply to preserved events.
