@@ -1625,13 +1625,13 @@ describe('nostrdb', () => {
       ['k', '1'],
       ['c', 'obf:1006::conversation'],
       ['v', PERSONAL_COPY_PROVENANCE.DIRECT_RUMOR],
-      ['d', `obf:1006:.coordinate:1:${inner.pubkey}:inner-address`]
+      ['d', `obf:1006:.coordinate:obf:1006::conversation:1:${inner.pubkey}:inner-address`]
     ])
     assert.equal(tags.some(tag => tag[0] === 'o' && tag[1] === 'obf:1006:#d:inner-address'), true)
     assert.equal(tags.some(tag => tag[0] === 'o' && tag[1] === `obf:1006:.id:${personalCopySourceId(inner)}`), true)
   })
 
-  it('omits the outer d tag for regular inners and for the autoDTag opt-out', async () => {
+  it('requires the derived outer d tag for coordinate inners and omits it for regular inners', async () => {
     const owner = hexId(30001)
     const regular = personalCopyRumor({ tags: [['t', 'private']] })
     const regularTags = await buildPersonalCopyTags({
@@ -1644,15 +1644,31 @@ describe('nostrdb', () => {
     assert.equal(regularTags.some(tag => tag[0] === 'd'), false)
 
     const addressable = personalCopyRumor({ kind: 30023, tags: [['d', 'address']] })
-    const optedOut = await buildPersonalCopyTags({
+    const addressed = await buildPersonalCopyTags({
       innerEvent: addressable,
       wrapperPubkey: owner,
       context: 'conversation',
       provenance: PERSONAL_COPY_PROVENANCE.DIRECT_RUMOR,
-      autoDTag: false,
       obfuscate: personalCopyObfuscate
     })
-    assert.equal(optedOut.some(tag => tag[0] === 'd'), false)
+    assert.deepEqual(
+      addressed.find(tag => tag[0] === 'd'),
+      ['d', `obf:1006:.coordinate:obf:1006::conversation:30023:${addressable.pubkey}:address`]
+    )
+
+    // A coordinate wrapper without the derived `d` is rejected on ingest.
+    const plaintexts = new Map()
+    const db = personalCopyDb(owner, plaintexts)
+    const withoutD = event({
+      id: hexId(30002),
+      pubkey: owner,
+      kind: eventKinds.PERSONAL_COPY,
+      created_at: addressable.created_at,
+      tags: addressed.filter(tag => tag[0] !== 'd').concat([['imkc', B, '1'.repeat(128)]]),
+      content: 'cipher-without-d'
+    })
+    rememberPersonalCopy(plaintexts, withoutD, addressable)
+    assertAddNotOk(await db.add(withoutD), { code: 'invalid' })
   })
 
   it('searches strictly validated personal-copy wrappers through decrypted inner JSON', async () => {
@@ -2261,7 +2277,7 @@ describe('nostrdb', () => {
     assert.deepEqual(stored[0].tags.find(tag => tag[0] === 'v'), ['v', PERSONAL_COPY_PROVENANCE.DIRECT_RUMOR])
     assert.deepEqual(
       stored[0].tags.find(tag => tag[0] === 'd'),
-      ['d', `obf:1006:.coordinate:30023:${owner}:note`]
+      ['d', `obf:1006:.coordinate:obf:1006::dm:${owner}:30023:${owner}:note`]
     )
 
     // Re-adding the same source is idempotent: the merge keeps a single row and

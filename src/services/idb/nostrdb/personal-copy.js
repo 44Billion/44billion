@@ -157,17 +157,21 @@ async function inspectPersonalCopyTags (event, innerDescription, { obfuscate, ow
   const contextTag = ['c', context]
   const dTags = event.tags.filter(tag => Array.isArray(tag) && tag[0] === 'd')
   if (dTags.length > 1 || dTags.some(tag => tag.length !== 2 || typeof tag[1] !== 'string')) return null
-  const addressTag = dTags[0] ?? null
-  if (addressTag) {
-    // A wrapper address is derived, never app-chosen: reject a forged value so
-    // one app cannot squat another coordinate.
-    const expected = await personalCopyCoordinateTag({
-      innerEvent: innerDescription.inner,
-      wrapperPubkey: event.pubkey,
-      obfuscate
-    })
-    if (!expected || expected[1] !== addressTag[1]) return null
+  // A wrapper address is derived, never app-chosen. Coordinate inners must
+  // carry exactly the derived `d` (context included); regular inners must not
+  // carry one at all.
+  const expectedAddress = await personalCopyCoordinateTag({
+    innerEvent: innerDescription.inner,
+    wrapperPubkey: event.pubkey,
+    contextValue: context,
+    obfuscate
+  })
+  if (expectedAddress === null) {
+    if (dTags.length > 0) return null
+  } else if (dTags.length !== 1 || dTags[0][1] !== expectedAddress[1]) {
+    return null
   }
+  const addressTag = dTags[0] ?? null
   const remainingTags = event.tags.filter(tag =>
     !isPersonalCopyDerivedTag(tag) &&
     !(Array.isArray(tag) && tag[0] === 'c')

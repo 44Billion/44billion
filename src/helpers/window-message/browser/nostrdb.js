@@ -405,14 +405,13 @@ export async function runNostrDbMethod ({
     await requestPersonalKinds([innerKind], permissionContext)
 
     const normalizedOptions = plainOptions(options)
-    const { context = '', hearsay = false, autoDTag, ...addOptions } = normalizedOptions
+    const { context = '', hearsay = false, ...addOptions } = normalizedOptions
     const event = await createLocalPersonalCopy({
       signEvent,
       originalEvent,
       ownerPubkey: db.ownerPubkey,
       context,
       hearsay,
-      autoDTag,
       encrypt: personalCopyEncrypt,
       obfuscate: personalCopyObfuscate
     })

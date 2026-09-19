@@ -144,7 +144,6 @@ export async function preparePersonalCopyUnsignedEvent ({
   ownerPubkey,
   context = '',
   hearsay = false,
-  autoDTag = true,
   encrypt,
   obfuscate
 }) {
@@ -166,14 +165,15 @@ export async function preparePersonalCopyUnsignedEvent ({
   const plaintext = JSON.stringify(prepared.inner)
   const content = await encrypt(prepared.inner.kind, plaintext)
   const mirrors = await buildMirrorDataFromDescription(prepared, obfuscate)
-  const addressTag = autoDTag === false
-    ? null
-    : await personalCopyCoordinateTag({
-      innerEvent: prepared.inner,
-      wrapperPubkey: ownerPubkey,
-      obfuscate
-    })
   const contextValue = await obfuscate(String(context ?? ''), PERSONAL_COPY_KIND, '')
+  // The address includes the context: the same inner coordinate in two
+  // contexts is two independent copies.
+  const addressTag = await personalCopyCoordinateTag({
+    innerEvent: prepared.inner,
+    wrapperPubkey: ownerPubkey,
+    contextValue,
+    obfuscate
+  })
   const tags = [
     ['k', String(prepared.inner.kind)],
     ['c', contextValue],
@@ -206,7 +206,6 @@ export async function buildPersonalCopyTags ({
   wrapperPubkey,
   context = '',
   provenance,
-  autoDTag = true,
   obfuscate
 }) {
   const description = describePersonalCopyInner(innerEvent, { wrapperPubkey })
@@ -220,13 +219,12 @@ export async function buildPersonalCopyTags ({
     wrapperPubkey,
     obfuscate
   })
-  const addressTag = autoDTag === false
-    ? null
-    : await personalCopyCoordinateTag({ innerEvent, wrapperPubkey, obfuscate })
+  const contextValue = await obfuscate(String(context ?? ''), PERSONAL_COPY_KIND, '')
+  const addressTag = await personalCopyCoordinateTag({ innerEvent, wrapperPubkey, contextValue, obfuscate })
 
   return [
     ['k', String(innerEvent.kind)],
-    ['c', await obfuscate(String(context ?? ''), PERSONAL_COPY_KIND, '')],
+    ['c', contextValue],
     [PERSONAL_COPY_PROVENANCE_TAG, provenance],
     ...(addressTag ? [addressTag] : []),
     ...mirrors.tags
@@ -237,17 +235,33 @@ export async function buildPersonalCopyTags ({
 // and `d` tag) so replaceable/addressable copies replace each other without
 // leaking the inner values. Kind 0/3 and the replaceable range use an empty
 // dtag; addressable kinds use their own.
-export async function personalCopyCoordinateTag ({ innerEvent, wrapperPubkey, obfuscate }) {
+export async function personalCopyCoordinate ({ innerEvent, wrapperPubkey, contextValue = '', obfuscate }) {
   if (typeof obfuscate !== 'function') return null
   const description = describePersonalCopyInner(innerEvent, { wrapperPubkey })
   if (!description || !hasCoordinate(description.inner)) return null
-  const dtag = innerDTag(description.inner)
-  const value = await obfuscate(
-    `${description.inner.kind}:${description.effectivePubkey}:${dtag}`,
+  return personalCopyCoordinateValue({
+    kind: description.inner.kind,
+    author: description.effectivePubkey,
+    dtag: innerDTag(description.inner),
+    contextValue,
+    obfuscate
+  })
+}
+
+// The wrapper `d` is always derived, never app-chosen: context, inner kind,
+// effective author and dtag (empty for replaceable kinds 0/3 and 10000–19999).
+export async function personalCopyCoordinateValue ({ kind, author, dtag, contextValue = '', obfuscate }) {
+  if (typeof obfuscate !== 'function') return null
+  return obfuscate(
+    `${contextValue}:${kind}:${author}:${dtag}`,
     PERSONAL_COPY_KIND,
     PERSONAL_COPY_ADDRESS_SCOPE
   )
-  return ['d', value]
+}
+
+export async function personalCopyCoordinateTag (options) {
+  const value = await personalCopyCoordinate(options)
+  return value === null ? null : ['d', value]
 }
 
 // Mirrors the store's getCoordinate eligibility (kind ranges plus a `d` tag

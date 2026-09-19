@@ -33,6 +33,7 @@ import {
   parsePersonalCopyPlaintext,
   personalCopyContextValue,
   personalCopyCoordinateTag,
+  personalCopyCoordinateValue,
   personalCopyEncryptionKind,
   personalCopyProvenanceValue
 } from '#helpers/personal-copy.js'
@@ -197,6 +198,7 @@ const CHUNK_ROOT_GRACE_MS = 10 * 60 * 1000
 const CHUNK_MAINTENANCE_INTERVAL_MS = 60 * 1000
 const CHUNK_PURGE_BATCH_SIZE = 256
 const textEncoder = new TextEncoder()
+const textDecoder = new TextDecoder()
 const dbCache = new Map()
 const storeCache = new Map()
 let globalChunkMaintenance
@@ -654,15 +656,18 @@ export class NostrDb {
           '#c': [context]
         }, { countOnly: false, ignoreLimit: true })
         for (const copy of copies) targets.push(['e', copy.id])
-        pending.push(['i', pendingInnerDeletionRef(context, sourceMirror)])
+        pending.push({ ref: pendingInnerDeletionRef(context, sourceMirror), mirror: sourceMirror })
       } else if (tag[0] === 'a') {
         const coordinate = parseAddress(tag[1])
         if (!coordinate) continue
-        const wrapperCoordinate = await this.personalCopyObfuscate(
-          `${coordinate.kind}:${coordinate.pubkey}:${coordinate.dtag}`,
-          PERSONAL_COPY_KIND,
-          '.coordinate'
-        )
+        const wrapperCoordinate = await personalCopyCoordinateValue({
+          kind: coordinate.kind,
+          author: coordinate.pubkey,
+          dtag: coordinate.dtag,
+          contextValue: context,
+          obfuscate: this.personalCopyObfuscate
+        })
+        if (!wrapperCoordinate) continue
         const address = addressKey(PERSONAL_COPY_KIND, this.ownerPubkey, wrapperCoordinate)
         const tx = db.transaction([EVENTS_STORE], 'readonly')
         const holder = await run('get', [address], EVENTS_STORE, INDEX.address, { db, tx }).then(value => value.result)
@@ -678,15 +683,15 @@ export class NostrDb {
       pubkey: this.ownerPubkey,
       kind: eventKinds.DELETION,
       created_at: personalCopy.inner.created_at,
-      tags: [...targets, ...pending]
+      tags: [...targets, ...pending.map(target => ['i', target.mirror])]
     }
 
     await withQuotaMutation(db, async tx => {
       await applyDeletionRequest(db, tx, request)
-      for (const tag of pending) {
+      for (const target of pending) {
         await addDeletionContribution(db, tx, {
-          ref: tag[1],
-          tag: ['i', tag[1]],
+          ref: target.ref,
+          tag: ['i', target.mirror],
           type: 'i',
           upToCreatedAt: request.created_at
         }, request)
@@ -698,11 +703,10 @@ export class NostrDb {
 
   rememberPendingInnerDeletions (context, pending) {
     if (!this.pendingInnerDeletions) return
-    for (const tag of pending) {
-      const [, refContext, mirror] = tag[1].split('\u0000')
-      if (refContext !== context || !mirror) continue
+    for (const target of pending) {
+      if (!target.mirror) continue
       if (!this.pendingInnerDeletions.has(context)) this.pendingInnerDeletions.set(context, new Set())
-      this.pendingInnerDeletions.get(context).add(mirror)
+      this.pendingInnerDeletions.get(context).add(target.mirror)
     }
   }
 
@@ -712,11 +716,17 @@ export class NostrDb {
     if (this.pendingInnerDeletions) return this.pendingInnerDeletions
     const mirrors = new Map()
     try {
-      const range = IDBKeyRange.bound('i\u0000', 'i\u0000\uffff')
+      const range = IDBKeyRange.bound('i:', 'i:\uffff')
       await scanCursor(db, DELETIONS_STORE, null, range, {
         onItem: row => {
-          const [prefix, context, mirror] = String(row?.ref ?? '').split('\u0000')
-          if (prefix !== 'i' || !context || !mirror) return false
+          const [prefix, mirrorKey, contextKey] = String(row?.ref ?? '').split(':')
+          if (prefix !== 'i' || !mirrorKey || !contextKey) return false
+          let context
+          let mirror
+          try {
+            context = textDecoder.decode(base64UrlToBytes(contextKey))
+            mirror = textDecoder.decode(base64UrlToBytes(mirrorKey))
+          } catch { return false }
           if (!mirrors.has(context)) mirrors.set(context, new Set())
           mirrors.get(context).add(mirror)
         }
@@ -792,6 +802,7 @@ export class NostrDb {
     const addressTag = await personalCopyCoordinateTag({
       innerEvent: inner,
       wrapperPubkey: this.ownerPubkey,
+      contextValue: context,
       obfuscate: this.personalCopyObfuscate
     })
     if (!addressTag) return null
@@ -4243,7 +4254,11 @@ async function isBlockedByDeletion (db, tx, event) {
 // contributions, coordinate promotion and tombstones; `i:` rows remember inner
 // ids whose wrapper had not arrived yet.
 function pendingInnerDeletionRef (context, sourceMirror) {
-  return `i\u0000${context}\u0000${sourceMirror}`
+  // Both parts are obfuscation outputs encoded as base64url so the `:` used by
+  // every other deletion ref stays unambiguous.
+  const mirrorKey = bytesToBase64Url(textEncoder.encode(String(sourceMirror)))
+  const contextKey = bytesToBase64Url(textEncoder.encode(String(context)))
+  return `i:${mirrorKey}:${contextKey}`
 }
 
 async function applyDeletionRequest (db, tx, request) {
