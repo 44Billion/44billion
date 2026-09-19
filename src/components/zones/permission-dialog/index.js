@@ -554,7 +554,7 @@ function getLocales () {
     'time events': l('time events', 'événements horaires', 'eventi con orario', 'Zeitereignisse', 'eventos con hora', 'eventos com horário', 'события со временем', '时间事件', '時間事件', '時刻イベント', '시간 이벤트'),
     calendars: l('calendars', 'calendriers', 'calendari', 'Kalender', 'calendarios', 'calendários', 'календари', '日历', '行事曆', 'カレンダー', '캘린더'),
     'event RSVPs': l('event RSVPs', 'réponses aux invitations', 'risposte agli inviti', 'Veranstaltungszusagen', 'respuestas a invitaciones', 'respostas a convites', 'ответы на приглашения', '活动回复', '活動回覆', 'イベント出欠回答', '이벤트 참석 응답'),
-    'file properties': l('file properties', 'propriétés du fichier', 'proprietà del file', 'Dateieigenschaften', 'propiedades del archivo', 'propriedades do arquivo', 'свойства файла', '文件属性', '檔案屬性', 'ファイルのプロパティ', '파일 속성'),
+    'file properties': l('file properties', 'propriétés du fichier', 'proprietà del file', 'Dateieigenschaften', 'propiedades del archivo', 'propriedades de arquivo', 'свойства файла', '文件属性', '檔案屬性', 'ファイルのプロパティ', '파일 속성'),
     files: l('files', 'fichiers', 'file', 'Dateien', 'archivos', 'arquivos', 'файлы', '文件', '檔案', 'ファイル', '파일'),
     'site manifests': l('site manifests', 'manifestes de sites', 'manifesti dei siti', 'Website-Manifeste', 'manifiestos de sitios', 'manifestos de sites', 'манифесты сайтов', '站点清单', '網站資訊清單', 'サイトマニフェスト', '사이트 매니페스트'),
     '(next) site manifests': l('(next) site manifests', 'prochains manifestes de sites', 'prossimi manifesti dei siti', 'nächste Website-Manifeste', 'próximos manifiestos de sitios', 'próximos manifestos de sites', 'следующие манифесты сайтов', '（下一版）站点清单', '（下一版）網站資訊清單', '（次版）サイトマニフェスト', '(다음) 사이트 매니페스트'),

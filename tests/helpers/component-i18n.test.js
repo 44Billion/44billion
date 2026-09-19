@@ -127,7 +127,7 @@ describe('permission translations', () => {
 
   it('labels file properties and site curation lists', () => {
     assert.equal(format('en', { name: 'eventAccess', eKind: 1063 }), 'Can I access file properties?')
-    assert.match(format('pt-BR', { name: 'eventAccessPersonal', eKind: 1063 }), /propriedades do arquivo/)
+    assert.match(format('pt-BR', { name: 'eventAccessPersonal', eKind: 1063 }), /propriedades de arquivo/)
     assert.equal(format('en', { name: 'eventAccess', eKind: 30499 }), 'Can I access site lists?')
     assert.match(format('pt-BR', { name: 'eventAccessPersonal', eKind: 30499 }), /listas de sites/)
   })
