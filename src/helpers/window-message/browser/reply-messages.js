@@ -16,7 +16,10 @@ export async function getSiteManifestResponse (appId) {
 export async function getEventsMessage (filter, relays) {
   try {
     // this means that the one requesting the events already picked the relays
-    if (relays.length > 0) return nostrRelays.getEvents(filter, relays)
+    if (relays.length > 0) {
+      const response = await nostrRelays.getEvents(filter, relays)
+      return { ...response, result: response.result.map(({ event }) => event) }
+    }
 
     // TODO: infer the strategy by looking at the filter
     const strategy = { code: 'WRITE_RELAYS' }

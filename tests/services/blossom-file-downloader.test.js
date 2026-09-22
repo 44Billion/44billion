@@ -25,9 +25,9 @@ async function runDownload (bytes, {
   serverHints = []
 } = {}) {
   const getEvents = mock.method(nostrRelays, 'getEvents', async () => ({
-    result: publishedServers.length
+    result: (publishedServers.length
       ? [{ kind: 10063, created_at: 1, tags: publishedServers.map(server => ['server', server]) }]
-      : []
+      : []).map(event => ({ event, relay: event.meta?.relay ?? 'wss://fixture.test' }))
   }))
   const previousFetch = globalThis.fetch
   let getCount = 0
@@ -129,7 +129,7 @@ describe('BlossomFileDownloader pseudo chunks', () => {
     const fileHash = hash(bytes)
     let getAttempts = 0
     const previousFetch = globalThis.fetch
-    mock.method(nostrRelays, 'getEvents', async () => ({ result: [] }))
+    mock.method(nostrRelays, 'getEvents', async () => ({ result: ([]).map(event => ({ event, relay: event.meta?.relay ?? 'wss://fixture.test' })) }))
     globalThis.fetch = mock.fn(async (url, options = {}) => {
       if (options.method === 'HEAD') {
         return new Response(null, {
@@ -168,7 +168,7 @@ describe('BlossomFileDownloader pseudo chunks', () => {
     const bytes = Uint8Array.of(1, 2, 3)
     const fileHash = hash(bytes)
     const previousFetch = globalThis.fetch
-    mock.method(nostrRelays, 'getEvents', async () => ({ result: [] }))
+    mock.method(nostrRelays, 'getEvents', async () => ({ result: ([]).map(event => ({ event, relay: event.meta?.relay ?? 'wss://fixture.test' })) }))
     globalThis.fetch = mock.fn(async (url, options = {}) => {
       if (options.method === 'HEAD') return new Response(null, { status: 200 })
       throw new TypeError('Failed to fetch')
@@ -196,7 +196,7 @@ describe('BlossomFileDownloader pseudo chunks', () => {
     const bytes = Uint8Array.of(1, 2, 3)
     const fileHash = hash(bytes)
     const previousFetch = globalThis.fetch
-    mock.method(nostrRelays, 'getEvents', async () => ({ result: [] }))
+    mock.method(nostrRelays, 'getEvents', async () => ({ result: ([]).map(event => ({ event, relay: event.meta?.relay ?? 'wss://fixture.test' })) }))
     const getUrls = []
     globalThis.fetch = mock.fn(async (url, options = {}) => {
       if (options.method === 'HEAD') {

@@ -322,7 +322,9 @@ Usage:
   const total = await db.count([{ kinds: [1] }, { kinds: [30023] }])
 
   const sub = db.subscribe({ '#t': ['nostr'], search: 'relay' })
-  for await (const { result: event } of sub) {
+  for await (const item of sub) {
+    if (item.type !== 'event') continue
+    const event = item.event
     // receives future matching events added through this module or another tab
   }
 
@@ -1863,11 +1865,11 @@ export class NostrDb {
       filters = parseFilterInput(filterOrFilters, options)
     } catch (error) {
       logNostrDbIssue('query', { ownerPubkey: this.ownerPubkey }, error)
-      return queryResult([], undefined)
+      throw error
     }
 
     const db = await openNostrDb(this.ownerPubkey)
-    if (!db) return queryResult([], filters[0])
+    if (!db) throw new Error('IndexedDB is unavailable')
 
     try {
       const results = await queryParsedFilters(db, filters, {
@@ -1881,7 +1883,7 @@ export class NostrDb {
       return queryResult(results, filters[0])
     } catch (error) {
       logNostrDbIssue('query', { ownerPubkey: this.ownerPubkey }, error)
-      return queryResult([], filters[0])
+      throw error
     }
   }
 
@@ -1919,11 +1921,11 @@ export class NostrDb {
       'subscribe:scheduled',
       'subscribe:initial',
       'app_export',
-      'removeLocal'
+      'remove'
     ]
   }
 
-  async removeLocal (targets, { assertAccess } = {}) {
+  async remove (targets, { assertAccess } = {}) {
     const normalized = normalizeLocalRemovalTargets(targets)
     if (!normalized) return localRemovalResult('invalid')
     let accessError
@@ -1934,8 +1936,8 @@ export class NostrDb {
       checkAccess()
       const db = await openNostrDb(this.ownerPubkey)
       if (!db) return localRemovalResult('unavailable')
-      const deleted = await withQuotaMutation(db, async tx => {
-        let count = 0
+      const removed = await withQuotaMutation(db, async tx => {
+        const matches = new Map()
         for (const [type, value] of normalized) {
           let key = type === 'e' ? eventIdIndexKey(value) : null
           if (type === 'a') {
@@ -1944,13 +1946,15 @@ export class NostrDb {
           }
           const stored = await run('get', [key], EVENTS_STORE, type === 'a' ? INDEX.address : null, { db, tx }).then(v => v.result)
           if (!stored) continue
-          await deleteStoredEvent(db, tx, stored)
-          count++
+          const id = stored.event.id
+          if (!matches.has(id)) matches.set(id, { stored, targets: [] })
+          matches.get(id).targets.push([type, value])
         }
+        for (const { stored } of matches.values()) await deleteStoredEvent(db, tx, stored)
         checkAccess()
-        return count
+        return [...matches].map(([id, { targets }]) => ({ id, targets }))
       }, { beforeMutation: checkAccess })
-      return localRemovalResult(deleted ? 'deleted' : 'noop', deleted)
+      return localRemovalResult(removed.length ? 'deleted' : 'noop', removed)
     } catch (error) {
       if (accessError === error) throw error
       return localRemovalResult(error?.code === 'unavailable' ? 'unavailable' : 'error')
@@ -2044,7 +2048,7 @@ export class NostrDb {
     const appRef = idsOnly ? undefined : normalizeReadAppRef(options)
     const subscription = createSubscription(filters, {
       idsOnly,
-      limit: filters[0]?.limit ?? Infinity,
+      limit: options.initial === true ? Infinity : filters[0]?.limit ?? Infinity,
       ownerPubkey: this.ownerPubkey,
       scheduled: options?.scheduled === true,
       claimEvent: appRef ? event => this.queueAppClaim(event, appRef) : null
@@ -2054,17 +2058,17 @@ export class NostrDb {
     const iterator = subscription.iterator(() => {
       this.subscriptions.delete(subscription)
     })
-    const live = hydrateChunkSubscription(this.ownerPubkey, iterator)
-    const delivery = options.initial === true
-      ? withInitialResults(live, () => this.query(filterOrFilters, { ...options, [SNAPSHOT_READ]: true }))
-      : live
+    const stream = options.initial === true
+      ? withInitialResults(iterator, () => this.query(filterOrFilters, { ...options, [SNAPSHOT_READ]: true }), () => subscription.pendingCount())
+      : iterator
+    const delivery = hydrateChunkSubscription(this.ownerPubkey, stream)
     if (!appRef || options.deferCacheAccess || filters[0]?.algorithm === 'sync') return delivery
     const owner = this.ownerPubkey
     return {
       [Symbol.asyncIterator] () { return this },
       async next () {
         const item = await delivery.next()
-        if (!item.done) queueCacheAccess(owner, [item.value?.result])
+        if (!item.done && item.value?.type === 'event') queueCacheAccess(owner, [item.value?.event])
         return item
       },
       return: value => delivery.return?.(value),
@@ -2079,7 +2083,7 @@ export class NostrDb {
       if (!normalizeReadAppRef(options)) return
       const filters = parseFilterInput(filterOrFilters, options)
       if (filters[0]?.algorithm === 'sync') return
-      queueCacheAccess(this.ownerPubkey, payload?.results ?? [payload?.result])
+      queueCacheAccess(this.ownerPubkey, payload?.results ?? [payload?.event])
     } catch {}
   }
 
@@ -3252,17 +3256,22 @@ async function hydrateChunkResults (ownerPubkey, results) {
 }
 
 function hydrateChunkSubscription (ownerPubkey, iterator) {
+  let closed = false
   return {
     [Symbol.asyncIterator] () { return this },
     async next () {
       while (true) {
+        if (closed) return { done: true }
         const item = await iterator.next()
-        if (item.done || typeof item.value?.result === 'string') return item
-        const event = await hydrateChunkEvent(ownerPubkey, item.value?.result)
-        if (event) return { ...item, value: { ...item.value, result: event } }
+        if (closed) return { done: true }
+        if (item.done || item.value?.type !== 'event') return item
+        const event = await hydrateChunkEvent(ownerPubkey, item.value?.event)
+        if (closed) return { done: true }
+        if (event) return { ...item, value: { ...item.value, event } }
       }
     },
     return (value) {
+      closed = true
       return iterator.return?.(value) ?? Promise.resolve({ done: true, value })
     },
     throw (error) {
@@ -3871,9 +3880,8 @@ function createSubscription (filters, {
 
   const emit = (filter, event, storedRecord) => {
     const score = queryScore(event, storedRecord, filter)
-    const value = idsOnly ? event.id : event
     const wrapped = {
-      result: value,
+      ...(idsOnly ? { type: 'id', id: event.id } : { type: 'event', event }),
       meta: {
         algorithm: queryAlgorithm(filter),
         sort: querySort(filter),
@@ -3906,6 +3914,7 @@ function createSubscription (filters, {
     : null
 
   const subscription = {
+    pendingCount: () => queue.length,
     push (event, storedRecord) {
       if (closed) return
       const filter = matchingFilter(event, storedRecord)
@@ -3937,6 +3946,7 @@ function createSubscription (filters, {
           return p.promise
         },
         return () {
+          queue.length = 0
           close()
           return Promise.resolve({ done: true })
         }

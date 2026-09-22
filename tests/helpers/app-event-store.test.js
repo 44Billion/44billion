@@ -53,7 +53,7 @@ function fixture (overrides = {}) {
         recordCacheAccess: (...args) => accesses.push({ pubkey, args }),
         query: async (filter, options) => ({ results: [{ kind: 3, pubkey }], options }),
         count: async () => pubkey === owner ? 1 : 2,
-        removeLocal: async (targets, { assertAccess }) => { assertAccess(); return { ok: true, deleted: targets.length } },
+        remove: async (targets, { assertAccess }) => { assertAccess(); return { ok: true, deleted: targets.length } },
         supports: async () => ({ owner: pubkey }),
         add: async (event, options) => ({ signed: await options.signEvent(event), appId: options.appId }),
         subscribe: (filter, options) => {
@@ -156,9 +156,9 @@ describe('persona event store bridge', () => {
     assert.equal(f.streams[0].options.appId, 'chat-app')
     assert.equal(f.streams[0].options.deferCacheAccess, true)
     assert.equal(f.accesses.length, 0)
-    f.streams[0].iterator.push({ result: { kind: 3, pubkey: peer } })
+    f.streams[0].iterator.push({ type: 'event', event: { kind: 3, pubkey: peer } })
     await setImmediate()
-    assert.equal(f.replies.at(-1).payload.result.pubkey, peer)
+    assert.equal(f.replies.at(-1).payload.event.pubkey, peer)
     assert.equal(f.accesses.length, 1)
     f.state.members = [owner]
     f.bridge.revalidateSubscriptions()
@@ -173,7 +173,7 @@ describe('persona event store bridge', () => {
     const pending = f.request({ method: 'subscribe', userPk: peer, subscriptionId: 'sub', params: [{ kinds: [3] }] })
     await setImmediate()
     f.state.members = [owner]
-    f.streams[0].iterator.push({ result: { kind: 3, pubkey: peer } })
+    f.streams[0].iterator.push({ type: 'event', event: { kind: 3, pubkey: peer } })
     await pending
     assert.equal(f.replies.length, 1)
     assert.equal(f.replies[0].error.code, 'PUBKEY_NOT_IN_PERSONA')
@@ -207,11 +207,11 @@ describe('persona event store bridge', () => {
   })
 })
 
-it('removeLocal rejects persona revocation during permission authorization and never signs', async () => {
+it('remove rejects persona revocation during permission authorization and never signs', async () => {
   const pending = Promise.withResolvers()
   const entered = Promise.withResolvers()
   const f = fixture({ requestPermission: async () => { entered.resolve(); await pending.promise } })
-  const request = f.request({ method: 'removeLocal', userPk: peer, params: [[['e', 'ab'.repeat(32)]]] })
+  const request = f.request({ method: 'remove', userPk: peer, params: [[['e', 'ab'.repeat(32)]]] })
   await entered.promise
   f.state.members = [owner]
   pending.resolve()

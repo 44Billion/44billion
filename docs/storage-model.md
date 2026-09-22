@@ -386,7 +386,7 @@ is `floor(cacheBytes × 50,000 / 134,217,728)`, computed with integer arithmetic
 (128 MiB → 50,000 events). Drafts and UI status are memory-only. Schema 3 remains
 unchanged. Public/private reductions preserve data; cache reductions schedule LRU.
 
-`eventStore.removeLocal` uses the common NostrDB deletion transaction and updates
+`eventStore.remove` uses the common NostrDB deletion transaction and updates
 `events`, `deletions`, `cacheAccess`, and `maintenance.quotaUsage` together. It
 removes old tombstone contributions without creating new ones; external chunk
 cleanup/reconciliation remains post-commit. Audit/repair preserve the registered

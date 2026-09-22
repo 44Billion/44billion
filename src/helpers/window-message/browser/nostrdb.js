@@ -352,9 +352,10 @@ export function createNostrDbSubscriptionAuthorizer ({ app, requestPermission, p
       if (explicitPersonalKinds !== null) await requestOnce(explicitPersonalKinds.map(kind => eventAccessPersonalPermission(kind)))
     },
     async authorizeItem (item) {
+      if (item?.type !== 'event') return
       if (explicitKinds === null) return
       if (explicitKinds !== null && explicitPersonalKinds !== null) return
-      await requestOnce(resultPermissionRequests(item?.result, {
+      await requestOnce(resultPermissionRequests(item?.event, {
         mayIncludeNormal: mayIncludeNormalEvents(explicitKinds),
         mayIncludePersonal: mayIncludePersonalCopies(explicitKinds)
       }))
@@ -379,12 +380,12 @@ export async function runNostrDbMethod ({
   const args = Array.isArray(params) ? params : []
   const permissionContext = { app, requestPermission, params: args }
 
-  if (method === 'removeLocal') {
+  if (method === 'remove') {
     const targets = normalizeLocalRemovalTargets(args[0])
     if (!targets) return localRemovalResult('invalid')
     await requestPermissions(eventAccessPermissionRequestsForEvent({ kind: 5, tags: targets }), permissionContext)
     assertAccess?.()
-    return db.removeLocal(targets, { assertAccess })
+    return db.remove(targets, { assertAccess })
   }
 
   if (method === 'add') {

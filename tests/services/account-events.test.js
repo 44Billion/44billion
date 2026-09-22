@@ -32,7 +32,7 @@ function trackerFixture (t, { cached, add } = {}) {
       })()
       const abort = () => wake.resolve()
       signal.addEventListener('abort', abort, { once: true })
-      call.push = event => { if (!call.stopped) { queue.push(event); wake.resolve() } }
+      call.push = event => { if (!call.stopped) { queue.push({ type: 'event', event, relay: relays[0] }); wake.resolve() } }
       stream.stopAndDrain = () => { call.stopped = true; wake.resolve() }
       call.end = stream.stopAndDrain
       calls.push(call)
@@ -181,7 +181,7 @@ test('account tracking starts without a relay list, imports all kinds, discovers
       getEventsFeedGenerator (filter, relays, options) {
         calls.push({ filter, relays, options })
         // This snapshot represents events already accepted by the transport.
-        const stream = (async function * () { yield * feeds.get(relays[0]) })()
+        const stream = (async function * () { yield * feeds.get(relays[0]).map(event => ({ type: 'event', event, relay: relays[0] })) })()
         stream.stopAndDrain = () => {}
         return stream
       }
@@ -207,12 +207,14 @@ test('account tracking starts without a relay list, imports all kinds, discovers
 test('initial subscription preserves live arrivals during the snapshot and closes pending work', async () => {
   let finish
   let closed = false
-  const live = { next: async () => ({ done: false, value: { result: 'live' } }), return: async () => { closed = true } }
+  const live = { next: async () => ({ done: false, value: { type: 'id', id: 'live' } }), return: async () => { closed = true } }
   const stream = withInitialResults(live, () => new Promise(resolve => { finish = resolve }))
   const first = stream.next()
+  await Promise.resolve()
   finish({ results: ['stored'] })
-  assert.deepEqual(await first, { done: false, value: { result: 'stored' } })
-  assert.deepEqual(await stream.next(), { done: false, value: { result: 'live' } })
+  assert.deepEqual(await first, { done: false, value: { type: 'id', id: 'stored', meta: { algorithm: undefined, sort: undefined, score: undefined } } })
+  assert.deepEqual((await stream.next()).value, { type: 'eose' })
+  assert.deepEqual(await stream.next(), { done: false, value: { type: 'id', id: 'live' } })
   await stream.return()
   assert.equal(closed, true)
   const waiting = withInitialResults(live, () => new Promise(resolve => { finish = resolve }))

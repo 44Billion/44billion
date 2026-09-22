@@ -92,7 +92,7 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   monitor owns connectivity probes, capped retry delays, and browser wake-up
   listeners. `ConnectivityRetryCoordinator` owns waiters, cancellation, and
   concurrency of resumed app work; do not restore its duplicate probe timer.
-- Use the published `libp2r2p@^0.10.18` range in package.json;
+- Use the published `libp2r2p@^0.10.19` range in package.json;
   package-lock.json records the resolved release. Validate against the installed package rather than sibling
   source imports; it includes the shared connectivity monitor.
 

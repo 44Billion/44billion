@@ -315,7 +315,7 @@ payloads remain outside that budget. Event quotas do not replace it.
 
 ## Explicit local removal
 
-`NostrDb.removeLocal(targets)` is exposed through the app bridge with the same
+`NostrDb.remove(targets)` is exposed through the app bridge with the same
 permission requests as `{ kind: 5, tags: targets }`, without signing that descriptor.
 See [the API contract](../APP_API.md#local-event-removal) for validation and scope.
 It resolves IDs exactly and addresses to their current version inside a single
@@ -329,3 +329,15 @@ cascade or subscription notification is produced. Local success confirms the
 NostrDB commit, not completion of external payload reconciliation. Buffered reads
 are not revoked and removed events can arrive again. This also works above quotas;
 reference removals may demote remaining targets to cache and schedule cleanup.
+
+## Read and removal contracts
+
+`query` rejects validation and storage failures; an empty result means a successful
+read with no matches. `subscribe` emits event/ID envelopes with query score
+metadata. With `initial: true`, the filter limit applies to the snapshot only;
+`eose` separates it from buffered/live delivery, and overlap is deduplicated by
+ID (plus score for sync). Deduplication state is discarded after the overlap.
+See [APP_API.md](../APP_API.md) for shapes and cancellation/authorization details.
+`remove` resolves every normalized target before deleting any record and returns
+`removed: [{ id, targets }]` only after transaction commit; errors/noops return
+an empty report. No storage schema changes are required by these contracts.

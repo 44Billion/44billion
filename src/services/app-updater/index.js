@@ -829,7 +829,9 @@ export default class AppUpdater {
     }
     const relays = await this._draftWatchRelays(targets, deps)
 
-    for await (const event of _nostrRelays.getEventsFeedGenerator(filter, relays, { signal })) {
+    for await (const item of _nostrRelays.getEventsFeedGenerator(filter, relays, { signal })) {
+      if (item.type !== 'event') continue
+      const { event } = item
       await this._handleDraftUpdateEvent(event, targets, {
         _getSiteManifestFromDb,
         _addressObjToAppId,

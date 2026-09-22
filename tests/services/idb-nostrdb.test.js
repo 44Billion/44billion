@@ -1142,7 +1142,7 @@ describe('nostrdb', () => {
     }
   })
 
-  it('logs query and count errors before returning fallbacks', async () => {
+  it('rejects query failures while count retains its fallback', async () => {
     const owner = `${OWNER}71`
     const db = getNostrDb(owner)
     assertAddOk(await db.add(event({ id: '1'.repeat(64), created_at: 10 })))
@@ -1156,7 +1156,7 @@ describe('nostrdb', () => {
       }
 
       resetConsoleLogs()
-      assert.deepEqual(await queryResults(db, { kinds: [1] }), [])
+      await assert.rejects(db.query({ kinds: [1] }), /boom/)
       assertConsoleIssue(consoleErrors, { method: 'query', ownerPubkey: owner, hasError: true })
 
       resetConsoleLogs()
@@ -2922,7 +2922,7 @@ describe('nostrdb', () => {
     assert.equal(await db.pruneUnreferencedHearsays({ now: 700 }), 0)
     assert.deepEqual((await queryResults(db, { ids: [second.wrapper.id] })).map(event => event.id), [second.wrapper.id])
 
-    await db.removeLocal([['e', reply.id]])
+    await db.remove([['e', reply.id]])
     assert.equal(await db.pruneUnreferencedHearsays({ now: 700 }), 1)
     assert.deepEqual(await queryResults(db, { ids: [second.wrapper.id] }), [])
 
@@ -3996,6 +3996,24 @@ describe('nostrdb', () => {
     db.bc?.close()
   })
 
+  it('limits only the snapshot, preserves ID metadata and deduplicates its overlap', async () => {
+    const db = getNostrDb(`${OWNER}initial-limit`)
+    const older = event({ id: '1'.repeat(64), created_at: 10 })
+    const newest = event({ id: '2'.repeat(64), created_at: 20 })
+    const later = event({ id: '3'.repeat(64), created_at: 30 })
+    assertAddOk(await db.add(older))
+    const query = db.query.bind(db)
+    db.query = async (...args) => { assertAddOk(await db.add(newest)); return query(...args) }
+    const iterator = db.subscribe({ kinds: [1], limit: 1, ids_only: true }, { initial: true })
+    try {
+      assert.deepEqual((await iterator.next()).value, { type: 'id', id: newest.id, meta: { algorithm: 'created_at', sort: 'desc', score: 20 } })
+      assert.deepEqual((await iterator.next()).value, { type: 'eose' })
+      const next = iterator.next()
+      assertAddOk(await db.add(later))
+      assert.equal(await subscriptionResult(next), later.id)
+    } finally { await iterator.return(); db.query = query; db.bc?.close() }
+  })
+
   it('initial replay buffers writes during the snapshot and releases the live subscription', async () => {
     const db = getNostrDb(`${OWNER}initial-replay`)
     const stored = event({ id: '1'.repeat(64), kind: 1 })
@@ -4010,6 +4028,7 @@ describe('nostrdb', () => {
     const iterator = db.subscribe({ kinds: [1] }, { initial: true })
     try {
       assert.deepEqual(await subscriptionResult(iterator.next()), stored)
+      assert.deepEqual((await iterator.next()).value, { type: 'eose' })
       assert.deepEqual(await subscriptionResult(iterator.next()), arrived)
     } finally {
       await iterator.return()
@@ -4195,7 +4214,7 @@ describe('nostrdb', () => {
 
       assert.deepEqual(await withTimeout(next), {
         value: {
-          result: match,
+          type: 'event', event: match,
           meta: {
             algorithm: 'sync',
             sort: 'asc',
@@ -4613,7 +4632,7 @@ describe('nostrdb', () => {
     const db = new NostrDb(`${OWNER}6`)
 
     assertAddNotOk(await db.add(event({ id: '1'.repeat(64) })), { code: 'unavailable' })
-    assert.deepEqual(await queryResults(db, { kinds: [1] }), [])
+    await assert.rejects(db.query({ kinds: [1] }), /IndexedDB is unavailable/)
     assert.equal(await db.count({ kinds: [1] }), 0)
     assert.deepEqual(await db.supports(), [
       'search',
@@ -4628,7 +4647,7 @@ describe('nostrdb', () => {
       'subscribe:scheduled',
       'subscribe:initial',
       'app_export',
-      'removeLocal'
+      'remove'
     ])
     db.bc?.close()
   })
@@ -4687,7 +4706,7 @@ async function exportEventBatches (db, appId, options) {
 async function subscriptionResult (promise, ms) {
   const next = await withTimeout(promise, ms)
   assert.equal(next.done, false)
-  return next.value.result
+  return next.value.type === 'id' ? next.value.id : next.value.event
 }
 
 function resetConsoleLogs () {

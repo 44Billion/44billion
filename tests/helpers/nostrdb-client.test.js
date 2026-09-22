@@ -54,7 +54,7 @@ describe('nostrdb app-page client bridge', () => {
     assert.equal(calls.length, 0)
     port.resolve('port')
     assert.equal(await pending, 'ok')
-    for (const method of ['add', 'addPersonalCopy', 'count', 'removeLocal', 'supports']) await store[method]()
+    for (const method of ['add', 'addPersonalCopy', 'count', 'remove', 'supports']) await store[method]()
     const iterator = store.subscribe({ kinds: [3] })
     assert.deepEqual(await iterator.next(), { value: 'item', done: false })
     assert.ok(calls.every(message => message.payload.userPk === pubkey))
@@ -71,7 +71,7 @@ describe('nostrdb app-page client bridge', () => {
       tell: () => {}
     })
 
-    assert.deepEqual(Object.keys(nostrdb).sort(), ['add', 'addPersonalCopy', 'count', 'query', 'removeLocal', 'subscribe', 'supports'])
+    assert.deepEqual(Object.keys(nostrdb).sort(), ['add', 'addPersonalCopy', 'count', 'query', 'remove', 'subscribe', 'supports'])
   })
 
   it('injects eventStore before the handshake', async () => {
@@ -142,7 +142,7 @@ describe('nostrdb app-page client bridge', () => {
       ask: async () => ({ payload: null }),
       askStream: async function * (port, message, options) {
         calls.push({ type: 'askStream', port, message, options })
-        yield { payload: { result: { id: 'event' }, meta: { score: 1 } } }
+        yield { payload: { type: 'event', event: { id: 'event' }, meta: { score: 1 } } }
       },
       tell: (port, message) => calls.push({ type: 'tell', port, message }),
       makeSubscriptionId: () => 'sub-1'
@@ -150,7 +150,7 @@ describe('nostrdb app-page client bridge', () => {
 
     const iterator = nostrdb.subscribe({ kinds: [1] })
     assert.deepEqual(await iterator.next(), {
-      value: { result: { id: 'event' }, meta: { score: 1 } },
+      value: { type: 'event', event: { id: 'event' }, meta: { score: 1 } },
       done: false
     })
     assert.deepEqual(await iterator.return(), { done: true })

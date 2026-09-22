@@ -21,7 +21,7 @@ export function normalizeLocalRemovalTargets (targets) {
   return [...normalized.values()]
 }
 
-export function localRemovalResult (code, deleted = 0) {
+export function localRemovalResult (code, removed = []) {
   const messages = {
     deleted: 'Events were removed locally.',
     noop: 'No matching local events were found.',
@@ -29,5 +29,5 @@ export function localRemovalResult (code, deleted = 0) {
     unavailable: 'IndexedDB or quota coordination is unavailable.',
     error: 'Local event removal failed.'
   }
-  return { ok: code === 'deleted' || code === 'noop', code, message: messages[code], deleted }
+  return { ok: code === 'deleted' || code === 'noop', code, message: messages[code], deleted: removed.length, removed }
 }

@@ -634,7 +634,7 @@ describe('nostrdb browser bridge helpers', () => {
       params: [{ kinds: [34601] }]
     })
     await chunks.authorizeBeforeStart()
-    await chunks.authorizeItem({ result: { kind: 34601 } })
+    await chunks.authorizeItem({ type: 'event', event: { kind: 34601 } })
     assert.deepEqual(chunkCalls, [])
 
     const explicitCalls = []
@@ -644,7 +644,7 @@ describe('nostrdb browser bridge helpers', () => {
       params: [{ kinds: [1, 30023] }]
     })
     await explicit.authorizeBeforeStart()
-    await explicit.authorizeItem({ result: { kind: 1 } })
+    await explicit.authorizeItem({ type: 'event', event: { kind: 1 } })
     assert.deepEqual(explicitCalls, [
       [EVENT_ACCESS_PERMISSION, 1],
       [EVENT_ACCESS_PERMISSION, 30023]
@@ -657,9 +657,9 @@ describe('nostrdb browser bridge helpers', () => {
       params: [{ authors: ['a'.repeat(64)] }]
     })
     await dynamic.authorizeBeforeStart()
-    await dynamic.authorizeItem({ result: { kind: 1 } })
-    await dynamic.authorizeItem({ result: { kind: 1 } })
-    await dynamic.authorizeItem({ result: 'id-only' })
+    await dynamic.authorizeItem({ type: 'event', event: { kind: 1 } })
+    await dynamic.authorizeItem({ type: 'event', event: { kind: 1 } })
+    await dynamic.authorizeItem({ type: 'event', event: 'id-only' })
     assert.deepEqual(dynamicCalls, [
       [EVENT_ACCESS_PERMISSION, BROAD_EVENT_KIND],
       [EVENT_ACCESS_PERSONAL_PERMISSION, BROAD_EVENT_KIND]
@@ -674,7 +674,7 @@ describe('nostrdb browser bridge helpers', () => {
       params: [{ kinds: [1006], '#k': ['1'] }]
     })
     await explicit.authorizeBeforeStart()
-    await explicit.authorizeItem({ result: { kind: 1006, tags: [['k', '1']] } })
+    await explicit.authorizeItem({ type: 'event', event: { kind: 1006, tags: [['k', '1']] } })
     assert.deepEqual(explicitCalls, [
       [EVENT_ACCESS_PERSONAL_PERMISSION, 1]
     ])
@@ -686,8 +686,8 @@ describe('nostrdb browser bridge helpers', () => {
       params: [{ kinds: [1006] }]
     })
     await dynamic.authorizeBeforeStart()
-    await dynamic.authorizeItem({ result: { kind: 1006, tags: [['k', '30023']] } })
-    await dynamic.authorizeItem({ result: { kind: 1006, tags: [['k', '30023']] } })
+    await dynamic.authorizeItem({ type: 'event', event: { kind: 1006, tags: [['k', '30023']] } })
+    await dynamic.authorizeItem({ type: 'event', event: { kind: 1006, tags: [['k', '30023']] } })
     assert.deepEqual(dynamicCalls, [
       [EVENT_ACCESS_PERSONAL_PERMISSION, 30023]
     ])
@@ -834,7 +834,7 @@ describe('nostrdb browser bridge helpers', () => {
   })
 })
 
-describe('removeLocal permission boundary', () => {
+describe('remove permission boundary', () => {
   const id = 'ab'.repeat(32)
   it('uses exactly kind 5 permissions, including transport exceptions, without signing', async () => {
     const { eventAccessPermissionRequestsForEvent } = await import('../../src/helpers/window-message/browser/event-permissions.js')
@@ -842,8 +842,8 @@ describe('removeLocal permission boundary', () => {
       const requested = []
       let removed = false
       await runNostrDbMethod({
-        db: { removeLocal: async received => { assert.deepEqual(received, targets); removed = true; return { ok: true } } },
-        method: 'removeLocal', params: [targets],
+        db: { remove: async received => { assert.deepEqual(received, targets); removed = true; return { ok: true } } },
+        method: 'remove', params: [targets],
         requestPermission: async req => requested.push({ name: req.name, eKind: req.eKind, ...(req.remember === undefined ? {} : { remember: req.remember }) }),
         signEvent: () => assert.fail('must not sign')
       })
@@ -852,9 +852,9 @@ describe('removeLocal permission boundary', () => {
     }
   })
   it('rejects invalid targets before permissions and denies without deleting', async () => {
-    const db = { removeLocal: () => assert.fail('must not delete') }
-    assert.equal((await runNostrDbMethod({ db, method: 'removeLocal', params: [[['e', id], ['bad', id]]], requestPermission: () => assert.fail('must not prompt') })).code, 'invalid')
-    await assert.rejects(runNostrDbMethod({ db, method: 'removeLocal', params: [[['e', id]]], requestPermission: async () => { throw new Error('denied') } }), /denied/)
-    await assert.rejects(runNostrDbMethod({ db, method: 'removeLocal', params: [[['e', id]]], requestPermission: async () => {}, assertAccess: () => { throw new Error('revoked') } }), /revoked/)
+    const db = { remove: () => assert.fail('must not delete') }
+    assert.equal((await runNostrDbMethod({ db, method: 'remove', params: [[['e', id], ['bad', id]]], requestPermission: () => assert.fail('must not prompt') })).code, 'invalid')
+    await assert.rejects(runNostrDbMethod({ db, method: 'remove', params: [[['e', id]]], requestPermission: async () => { throw new Error('denied') } }), /denied/)
+    await assert.rejects(runNostrDbMethod({ db, method: 'remove', params: [[['e', id]]], requestPermission: async () => {}, assertAccess: () => { throw new Error('revoked') } }), /revoked/)
   })
 })

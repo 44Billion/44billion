@@ -844,8 +844,8 @@ describe('AppUpdater', () => {
       })
       const fakeNostrRelays = {
         getEventsFeedGenerator: mock.fn(async function * () {
-          yield wrongEvent
-          yield rightEvent
+          yield { type: 'event', event: wrongEvent, relay: 'wss://fixture.test' }
+          yield { type: 'event', event: rightEvent, relay: 'wss://fixture.test' }
         })
       }
 

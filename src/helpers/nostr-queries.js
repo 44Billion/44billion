@@ -27,7 +27,7 @@ export async function getSiteManifest (appIdObj, userRelays, { signal } = {}) {
     throw response.errors?.[0]?.reason ||
       new Error('Failed to fetch site manifest events')
   }
-  const manifests = response.result ?? []
+  const manifests = (response.result ?? []).map(({ event }) => event)
   return manifests.sort((a, b) => b.created_at - a.created_at)[0]
 }
 // Generic alias for fetching any parameterized replaceable event from relays by { kind, pubkey, dTag }
@@ -76,7 +76,7 @@ export async function getEventsByStrategy (filter, st /*, timeoutMs = 3000 */) {
 
         const promises = Object.entries(usersByRelay).map(([pickedRelay, authors]) =>
           nostrRelays.getEvents({ ...filter, authors }, [pickedRelay])
-            .then(response => response.result ?? [])
+            .then(response => (response.result ?? []).map(({ event }) => event))
         )
 
         const results = await Promise.allSettled(promises)
@@ -137,7 +137,7 @@ export async function getEventsByStrategy (filter, st /*, timeoutMs = 3000 */) {
           }
         })
         const { result } = await nostrRelays.getEvents(filter, [...pickedRelays])
-        return result
+        return result.map(({ event }) => event)
       }
     }
     default: throw new Error('Pick a strategy')

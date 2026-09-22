@@ -190,7 +190,7 @@ const features = await eventStore.supports()
 ```
 
 The public methods are `add`, `addPersonalCopy`, `query`, `count`, `subscribe`,
-`removeLocal`, and `supports`. Reads and writes may request the corresponding launcher
+`remove`, and `supports`. Reads and writes may request the corresponding launcher
 permission. The event store remains scoped to the instance's workspace account
 and app; selecting a persona does not merge its members' event stores. Bridge
 errors reject method promises or the iterator's `next()` promise.
@@ -325,9 +325,10 @@ call it explicitly when consuming the iterator manually.
 ```js
 const subscription = eventStore.subscribe({ kinds: [1] })
 
-for await (const result of subscription) {
-  renderEvent(result)
-  if (shouldStop(result)) break // automatically calls return()
+for await (const item of subscription) {
+  if (item.type !== 'event') continue
+  renderEvent(item.event)
+  if (shouldStop(item.event)) break // automatically calls return()
 }
 ```
 
@@ -335,14 +336,19 @@ When calling `next()` manually, cancel explicitly with
 `await subscription.return()` when the consumer no longer needs results.
 
 
-`subscribe(filter, { initial: true })` registers live delivery before querying
-stored matches, then emits the snapshot followed by buffered and future matches.
-Each item is `{ result: event }` (live items may also include metadata). Snapshot
-and live results can overlap; deduplicate by event ID. Existing filters, app
-claims and permissions apply to both phases. `return()` cancels live delivery
-also while the snapshot is pending. Without `initial`, subscriptions remain
-future-only. Feature detection: `(await eventStore.supports()).includes('subscribe:initial')`.
-This option requires the companion launcher update.
+`subscribe(filter, { initial: true })` registers live before reading its snapshot.
+It emits `{ type: 'event', event, meta: { algorithm, sort, score } }`, or
+`{ type: 'id', id, meta }` with `ids_only`, then `{ type: 'eose' }`, then buffered
+and future matches. Nostr events are not decorated. An empty snapshot still
+emits `eose`; snapshot failure rejects the read and closes without this marker.
+The filter's `limit` bounds only the snapshot. Without `initial`, there is no
+marker and the existing live limit still applies. Snapshot/live overlap is
+suppressed by ID (and score with `algo:sync`); this temporary deduplication state
+is discarded after draining the overlap, so later sync changes still arrive.
+Cancellation/revocation stops pending delivery. Claims and permissions apply to
+events, not control markers. `query` retains `{ results, meta }` and rejects
+validation/database failures rather than reporting an empty page.
+Feature detection: `(await eventStore.supports()).includes('subscribe:initial')`.
 
 ### Personal copies
 
@@ -369,7 +375,9 @@ const filter = {
   '#c': [context], '#v': ['0', '1']
 }
 const subscription = window.napp.eventStore.subscribe(filter, { initial: true })
-for await (const { result: wrapper } of subscription) {
+for await (const item of subscription) {
+  if (item.type !== 'event') continue
+  const wrapper = item.event
   const plaintext = await window.nostr.nip44v3.decrypt(owner, 9, '', wrapper.content)
   const inner = JSON.parse(new TextDecoder().decode(plaintext))
 }
@@ -389,16 +397,22 @@ retain their own connectivity requirements.
 
 ### Local event removal
 
-`removeLocal` is available on `window.napp.eventStore` and stores returned by
-`getWindowNappEventStoreFor(pubkey)`. `supports()` includes `removeLocal`.
+`removed` reports the normalized targets that actually resolved to each distinct
+event, including both ID and coordinate when they match the same record. All
+targets resolve before deletion inside the transaction; the report is returned
+only after commit. Missing targets are omitted; noop/failure returns `removed: []`.
+
+`remove` is available on `window.napp.eventStore` and stores returned by
+`getWindowNappEventStoreFor(pubkey)`. `supports()` includes `remove`.
 Calls wait for the existing launcher handshake.
 
 ```js
-await window.napp.eventStore.removeLocal([
+await window.napp.eventStore.remove([
   ['e', eventId],
   ['a', `${kind}:${pubkey}:${d}`]
 ])
-// { ok: true, code: 'deleted', message: 'Events were removed locally.', deleted: 2 }
+// { ok: true, code: 'deleted', message: 'Events were removed locally.',
+//   deleted: 2, removed: [{ id, targets: [['e', id]] }, ...] }
 ```
 
 Pass 1–100 exact two-element pairs, exclusively `e` or `a`. The entire input is

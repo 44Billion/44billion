@@ -453,7 +453,7 @@ describe('normalized global chunk cache', () => {
     const localEvent = await owner.signEvent(localFixture.template)
     await db.add(localEvent, { signEvent: owner.signEvent })
     assert.ok(await getOwnerChunkCopy(owner.pubkey, localFixture.root, 0))
-    assert.equal((await db.removeLocal([['e', localEvent.id]])).deleted, 1)
+    assert.equal((await db.remove([['e', localEvent.id]])).deleted, 1)
     await waitFor(async () => !(await getOwnerChunkCopy(owner.pubkey, localFixture.root, 0)))
     assert.equal(await getChunkPayloadForEvent(owner.pubkey, localEvent.id), null)
 

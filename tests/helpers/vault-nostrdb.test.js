@@ -255,7 +255,7 @@ describe('trusted vault nostrdb bridge helpers', () => {
     const db = {
       async * subscribe (...params) {
         assert.deepEqual(params, [{ kinds: [1] }])
-        yield { result: { id: 'event' }, meta: { source: 'local' } }
+        yield { type: 'event', event: { id: 'event' }, meta: { source: 'local' } }
       }
     }
 
@@ -278,7 +278,7 @@ describe('trusted vault nostrdb bridge helpers', () => {
 
     assert.deepEqual(replies, [
       {
-        message: { payload: { result: { id: 'event' }, meta: { source: 'local' } }, isLast: false },
+        message: { payload: { type: 'event', event: { id: 'event' }, meta: { source: 'local' } }, isLast: false },
         options: { to: 'vault-port' }
       },
       {

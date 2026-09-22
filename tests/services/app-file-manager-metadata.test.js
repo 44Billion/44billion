@@ -194,7 +194,7 @@ describe('lazy AppFileManager icon metadata', () => {
 
   it('falls back to direct blossom server URLs when the data URL fetch is CORS-blocked', async () => {
     const getEvents = mock.method(nostrRelays, 'getEvents', async () => ({
-      result: [{ kind: 10063, created_at: 1, tags: [['server', 'https://blossom.test']] }]
+      result: ([{ kind: 10063, created_at: 1, tags: [['server', 'https://blossom.test']] }]).map(event => ({ event, relay: event.meta?.relay ?? 'wss://fixture.test' }))
     }))
     const previousFetch = globalThis.fetch
     globalThis.fetch = mock.fn(async () => new Response(null, { status: 200 }))

@@ -23,16 +23,16 @@ describe('publisher profile queries', () => {
       _nostrRelays: {
         async getEvents (filter, selectedRelays) {
           calls.push({ authors: filter.authors, relay: selectedRelays[0] })
-          if (selectedRelays[0] !== 'wss://remaining.test') return { result: [] }
+          if (selectedRelays[0] !== 'wss://remaining.test') return { result: ([]).map(event => ({ event, relay: event.meta?.relay ?? 'wss://fixture.test' })) }
           return {
-            result: pubkeys.map((pubkey, index) => ({
+            result: (pubkeys.map((pubkey, index) => ({
               id: String(index + 1).repeat(64),
               kind: 0,
               pubkey,
               created_at: 1,
               tags: [],
               content: JSON.stringify({ name: `Author ${index + 1}` })
-            }))
+            }))).map(event => ({ event, relay: event.meta?.relay ?? 'wss://fixture.test' }))
           }
         }
       },
@@ -60,7 +60,7 @@ describe('publisher profile queries', () => {
       _nostrRelays: {
         async getEvents (filter, selectedRelays) {
           calls.push({ authors: filter.authors, relay: selectedRelays[0] })
-          return { result: [] }
+          return { result: ([]).map(event => ({ event, relay: event.meta?.relay ?? 'wss://fixture.test' })) }
         }
       },
       _freeRelays: [

@@ -139,11 +139,11 @@ export function createAppEventStoreBridge ({
         for await (const item of subscription.iterator) {
           if (!active()) return
           scope.assertAvailable()
-          await authorizer.authorizeItem(item)
+          if (item.type === 'event') await authorizer.authorizeItem(item)
           if (!active()) return
           scope.assertAvailable()
           reply(event, { payload: item, isLast: false })
-          db.recordCacheAccess?.(item, ...readParams)
+          if (item.type === 'event') db.recordCacheAccess?.(item, ...readParams)
         }
         if (active()) reply(event, { payload: nostrDbStreamDonePayload(subscriptionId), isLast: true })
         return

@@ -36,6 +36,7 @@ export async function getBlossomServersForPubkey ({ pubkey, serverHints, relays,
     if (!serverHints.length) throw error
   }
 
+  events = events.map(({ event }) => event)
   events.sort((a, b) => b.created_at - a.created_at)
   const best = events[0]
   const publishedServers = (best?.tags ?? [])

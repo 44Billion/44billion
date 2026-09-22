@@ -66,7 +66,10 @@ export function trackAccountEvents ({ pubkey, signal, pool, seeds, db, getStored
     const stream = pool.getEventsFeedGenerator(filter, [entry.relay], { signal })
     entry.stream = stream
     try {
-      for await (const event of stream) {
+      for await (const item of stream) {
+        if (item.type === 'error') { reportError(item.error); continue }
+        if (item.type !== 'event') continue
+        const { event } = item
         if (signal.aborted) break
         if (entry.discovery && event.kind !== 10002) continue
         if (event.pubkey !== pubkey || !shouldStoreAccountEvent(event)) continue

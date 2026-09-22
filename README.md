@@ -114,6 +114,3 @@ that group. For individual scripts use
 `node bin/run-browser-tests.js -- node tests/browser/app-bridge.js`.
 Do not run multiple browser suites concurrently; unsupported systems fail
 explicitly instead of silently running without a memory limit.
-
-The library dependency uses the published `libp2r2p@^0.10.18` npm range.
-The lockfile records the resolved release. No sibling-library source imports are required.
