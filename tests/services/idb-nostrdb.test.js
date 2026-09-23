@@ -1760,6 +1760,10 @@ describe('nostrdb', () => {
         provenance: PERSONAL_COPY_PROVENANCE.HEARSAY_RUMOR
       },
       {
+        inner: personalCopyRumor({ pubkey: owner, content: 'hearsay self' }),
+        provenance: PERSONAL_COPY_PROVENANCE.HEARSAY_RUMOR
+      },
+      {
         inner: selfSigned,
         provenance: PERSONAL_COPY_PROVENANCE.SIGNED_EVENT
       }
@@ -1971,6 +1975,26 @@ describe('nostrdb', () => {
       assert.equal(stored.id, direct.id)
       assert.equal(stored.tags.find(tag => tag[0] === 'v')[1], PERSONAL_COPY_PROVENANCE.DIRECT_RUMOR)
     }
+  })
+
+  it('preserves owner hearsay and replaces it with the matching direct template', async () => {
+    const owner = hexId(31901)
+    const plaintexts = new Map()
+    const db = personalCopyDb(owner, plaintexts)
+    const template = personalCopyTemplate({ created_at: 65, content: 'claimed mine' })
+    const rumor = { ...template, pubkey: owner }
+    const hearsay = await personalCopyWrapper({ id: hexId(31902), owner, inner: rumor, context: 'dm', content: 'owner-hearsay', provenance: PERSONAL_COPY_PROVENANCE.HEARSAY_RUMOR })
+    rememberPersonalCopy(plaintexts, hearsay, rumor)
+    assertAddOk(await db.add(hearsay))
+    assert.equal((await queryResults(db, { kinds: [eventKinds.PERSONAL_COPY] }))[0].id, hearsay.id)
+    const direct = await personalCopyWrapper({ id: hexId(31903), owner, inner: template, context: 'dm', content: 'owner-direct' })
+    rememberPersonalCopy(plaintexts, direct, template)
+    assertAddOk(await db.add(direct))
+    const rows = await queryResults(db, { kinds: [eventKinds.PERSONAL_COPY] })
+    assert.equal(rows.length, 1)
+    assert.equal(rows[0].id, direct.id)
+    assertAddOk(await db.add(hearsay))
+    assert.equal((await queryResults(db, { kinds: [eventKinds.PERSONAL_COPY] }))[0].id, direct.id)
   })
 
   it('keeps the lower outer ID when source, context, provenance, and timestamp tie', async () => {

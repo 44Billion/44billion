@@ -26,7 +26,7 @@ export function trackAccountEvents ({ pubkey, signal, pool, seeds, db, getStored
     if (signal.aborted) return
     const entry = { relay, discovery, retired: new AbortController(), stream: null }
     if (!discovery) writes.set(relay, entry)
-    maintain(entry).catch(error => { if (!signal.aborted) reportError(error) })
+    maintain(entry).catch(error => { if (!signal.aborted) reportError(error, { relay: entry.relay }) })
   }
   function reconcile (event) {
     const relays = new Set(writeRelays(event))
@@ -44,7 +44,7 @@ export function trackAccountEvents ({ pubkey, signal, pool, seeds, db, getStored
     const stopped = AbortSignal.any([signal, entry.retired.signal])
     let delay = 1000
     while (!stopped.aborted) {
-      try { await run(entry) } catch (error) { if (!signal.aborted) reportError(error) }
+      try { await run(entry) } catch (error) { if (!signal.aborted) reportError(error, { relay: entry.relay }) }
       if (stopped.aborted) return
       await new Promise(resolve => {
         const finish = () => { clearTimeout(timer); stopped.removeEventListener('abort', finish); resolve() }
@@ -67,7 +67,7 @@ export function trackAccountEvents ({ pubkey, signal, pool, seeds, db, getStored
     entry.stream = stream
     try {
       for await (const item of stream) {
-        if (item.type === 'error') { reportError(item.error); continue }
+        if (item.type === 'error') { reportError(item.error, { relay: item.relay ?? entry.relay }); continue }
         if (item.type !== 'event') continue
         const { event } = item
         if (signal.aborted) break

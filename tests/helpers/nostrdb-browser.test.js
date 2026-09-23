@@ -207,7 +207,7 @@ describe('nostrdb browser bridge helpers', () => {
     assert.equal('hearsay' in added.options, false)
   })
 
-  it('rejects hearsay for self-owned, signed, or identityless inner events', async () => {
+  it('rejects hearsay for signed or identityless inner events', async () => {
     const owner = 'f'.repeat(64)
     const db = { ownerPubkey: owner, async add () { throw new Error('UNEXPECTED_ADD') } }
     const options = {
@@ -220,14 +220,6 @@ describe('nostrdb browser bridge helpers', () => {
       requestPermission: async () => {},
       app: { id: 'app' }
     }
-
-    await assert.rejects(
-      runNostrDbMethod({
-        ...options,
-        params: [{ pubkey: owner, kind: 1, created_at: 1, tags: [], content: 'mine' }, { hearsay: true }]
-      }),
-      /HEARSAY_SELF_OWNED_EVENT/
-    )
 
     const signed = finalizeEvent({ kind: 1, created_at: 1, tags: [['hearsay']], content: 'signed' }, new Uint8Array(32).fill(1))
     await assert.rejects(

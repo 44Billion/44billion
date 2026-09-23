@@ -99,20 +99,19 @@ export function describePersonalCopyInner (innerEvent, { wrapperPubkey } = {}) {
 
   if (!hasExactFields(innerEvent, RUMOR_FIELDS) || !hasValidInnerBase(innerEvent)) return null
   if (!HEX64_RE.test(innerEvent.pubkey || '')) return null
-  if (HEX64_RE.test(wrapperPubkey || '') && innerEvent.pubkey === wrapperPubkey) return null
+  const selfOwned = innerEvent.pubkey === wrapperPubkey
   const sourceId = hashPersonalCopyInner(innerEvent, innerEvent.pubkey)
   if (!HEX64_RE.test(sourceId || '')) return null
 
   return {
     inner: innerEvent,
     signed: false,
-    selfOwned: false,
+    selfOwned,
     effectivePubkey: innerEvent.pubkey,
     sourceId,
-    allowedProvenances: [
-      PERSONAL_COPY_PROVENANCE.DIRECT_RUMOR,
-      PERSONAL_COPY_PROVENANCE.HEARSAY_RUMOR
-    ]
+    allowedProvenances: selfOwned
+      ? [PERSONAL_COPY_PROVENANCE.HEARSAY_RUMOR]
+      : [PERSONAL_COPY_PROVENANCE.DIRECT_RUMOR, PERSONAL_COPY_PROVENANCE.HEARSAY_RUMOR]
   }
 }
 
@@ -152,10 +151,10 @@ export async function preparePersonalCopyUnsignedEvent ({
   if (typeof encrypt !== 'function') throw new Error('PERSONAL_COPY_ENCRYPT_REQUIRED')
   if (typeof obfuscate !== 'function') throw new Error('PERSONAL_COPY_OBFUSCATE_REQUIRED')
 
-  const prepared = preparePersonalCopyInner(structuredClone(originalEvent), ownerPubkey)
+  const prepared = preparePersonalCopyInner(structuredClone(originalEvent), ownerPubkey, hearsay)
   if (!prepared) throw new Error('INVALID_PERSONAL_COPY_INNER_EVENT')
   if (hearsay && prepared.signed) throw new Error('HEARSAY_SIGNED_EVENT')
-  if (hearsay && prepared.selfOwned) throw new Error('HEARSAY_SELF_OWNED_EVENT')
+  if (hearsay && !prepared.inner.pubkey) throw new Error('HEARSAY_AUTHOR_REQUIRED')
 
   const provenance = hearsay
     ? PERSONAL_COPY_PROVENANCE.HEARSAY_RUMOR
@@ -336,7 +335,7 @@ export function plaintextArrayBuffer (plaintext) {
   return textEncoder.encode(String(plaintext ?? '')).buffer
 }
 
-function preparePersonalCopyInner (innerEvent, ownerPubkey) {
+function preparePersonalCopyInner (innerEvent, ownerPubkey, hearsay) {
   if (!isPlainObject(innerEvent)) return null
 
   if (hasExactFields(innerEvent, SIGNED_EVENT_FIELDS)) {
@@ -350,7 +349,7 @@ function preparePersonalCopyInner (innerEvent, ownerPubkey) {
   if (!hasExactFields(innerEvent, RUMOR_FIELDS) || !hasValidInnerBase(innerEvent)) return null
   if (!HEX64_RE.test(innerEvent.pubkey || '')) return null
 
-  if (innerEvent.pubkey !== ownerPubkey) {
+  if (innerEvent.pubkey !== ownerPubkey || hearsay) {
     return describePersonalCopyInner(innerEvent, { wrapperPubkey: ownerPubkey })
   }
 

@@ -1,6 +1,6 @@
 {
   "name": "44billion",
-  "author": "Arthur Fran\u00e7a",
+  "author": "Arthur França",
   "version": "1.0.0",
   "description": "Notsr App (napp) Launcher",
   "main": "index.js",
@@ -50,7 +50,7 @@
     "@dicebear/styles": "^10.3.0",
     "@leeoniya/ufuzzy": "^1.0.19",
     "@noble/hashes": "^2.0.1",
-    "libp2r2p": "^0.10.19",
+    "libp2r2p": "^0.10.20",
     "meilisearch": "^0.54.0",
     "mime": "^4.0.7",
     "nmmr": "^2.0.0",

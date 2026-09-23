@@ -1,3 +1,5 @@
+import { signerStates } from '#services/signer-state.js'
+import { connectSignerStatePort } from './signer-state-port.js'
 import { createNfileCredit } from './nfile-credit.js'
 import { readSubdomainLifecycle, subdomainStorage } from '#helpers/subdomain-mapping.js'
 import { personaPublicKeys, readAppPersonaPublicKeys } from '#services/personas/public-keys.js'
@@ -630,7 +632,12 @@ function createAppPageMessageListener ({
     })
     const initialPublicKeys = connectPersonaPublicKeysPort(personaPublicKeys, {
       record, port: appPagePort, signal: documentSignal,
-      onChange: eventStoreBridge.revalidateSubscriptions
+      onChange: keys => { eventStoreBridge.revalidateSubscriptions(keys); signerStates.invalidate() }
+    })
+    connectSignerStatePort({
+      port: appPagePort, signal: documentSignal, ownerPubkey: userPkB16,
+      readKeys: () => readAppPersonaPublicKeys(record),
+      readFlags: pubkey => readSignerAccountFlags(base16ToBase62(pubkey, { mode: 'integer', minLength: 43 }), { defaultUserPk })
     })
     documentSignal.addEventListener('abort', eventStoreBridge.dispose, { once: true })
     appPagePort.addEventListener('message', event => {

@@ -108,6 +108,36 @@ The ordinary, unnamespaced public-key getters are answered directly by the
 launcher. Other operations may require the vault, account unlock and permission.
 Bridge errors reject the returned promise; inspect their `code` when provided.
 
+## Signer availability
+
+```js
+const state = await window.napp.getSignerState({ pubkey }) // omit for the instance owner
+const unsubscribe = window.napp.onSignerStateChanged(state => {
+  // Informational: each subsequent operation still checks permission and availability.
+}, { pubkey })
+await unsubscribe.ready // asynchronous setup/authorization errors
+unsubscribe()
+```
+
+The subscription registers before delivering its initial snapshot; no separate
+initial query is needed. Snapshots contain `pubkey`, `connection` (`unknown`,
+`connected`, `disconnected`), `access` (`allowed`, `revoked`), `isLocked` and
+`isReadOnly`. Account flags are null while unknown/disconnected. Temporary
+launcher accounts are read-only. Lock changes are emitted even if persona
+membership is unchanged. Availability queries do not prompt for signing. Authenticated document lifecycle
+messages report navigation/unload, and a serial five-second heartbeat with a
+two-second timeout detects unresponsive ports and subsequent recovery.
+
+Identity authorization matches `getWindowNostrFor` and
+`getWindowNappEventStoreFor`. Unauthorized setup rejects with
+`PUBKEY_NOT_IN_PERSONA`; losing access delivers one terminal `revoked` snapshot
+with unknown connection and null account flags, then closes the subscription.
+Unsubscribe and document unload suppress queued callbacks. The returned
+unsubscribe function's `ready` promise reports asynchronous setup failure.
+Listeners are invoked in notification order; async listener bodies must guard
+their own overlapping work. The scoped signer/store objects themselves keep
+their existing surfaces; availability is queried on `window.napp` with `pubkey`.
+
 ## Instance metadata
 
 ```js
@@ -360,7 +390,11 @@ there is no app-supplied validation bypass. Wrappers submitted through `add`
 still undergo full personal-copy validation.
 A self-authored unsigned input can contain only `kind`, `created_at`, `tags` and
 `content`; the launcher supplies the owner. An optional own `pubkey` is normalized
-away. Do not give an unsigned input an `id` or `sig`.
+away for direct copies. With `{ hearsay: true }`, an unsigned rumor must have
+an explicit `pubkey`, including when it equals the owner: its author is preserved
+and its provenance remains `v=2`. It is not a self template or signed proof.
+Do not give an unsigned input an `id` or `sig`. A matching direct/signed original
+supersedes hearsay; hearsay cannot perform authoritative merges or deletions.
 
 Always supply the intended context: `dm:<peer hex pubkey>` for a conversation,
 including the owner's own pubkey for self chat, or `''` for generic private

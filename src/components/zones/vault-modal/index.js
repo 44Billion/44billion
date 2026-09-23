@@ -1,6 +1,8 @@
+import { watchSignerConnection } from '#services/signer-connection.js'
 import { f, useGlobalStore, useGlobalSignal, useClosestStore, useStore, useTask, useCallback, useComputed, useSignal } from '#f'
 import { useWebStorage } from '#f'
 import { tell, ask, reply } from '#helpers/window-message/index.js'
+import { signerStates } from '#services/signer-state.js'
 import { setAccountsState } from '#zones/screen/use-init-or-reset-screen.js'
 import {
   cancelTrustedVaultNostrDbSubscription,
@@ -500,6 +502,7 @@ f('vault-messenger', function () {
   // meaning <vault-messenger> won't fully init,
   // the port won't be stuck to the previous one
   useTask(({ cleanup }) => cleanup(() => {
+    signerStates.setConnection('disconnected')
     vaultPort$(null)
     connectedVaultUrl$(null)
     vaultIframeSrc$('about:blank')
@@ -579,6 +582,7 @@ f('vault-messenger', function () {
   // boot recovery state and closes the dialog if it's still open.
   useTask(({ track }) => {
     const port = track(() => vaultPort$())
+    signerStates.setConnection(port ? 'connected' : 'disconnected')
     if (!port) return
     clearRecoveryTimer()
     autoReloadAttempted = false
@@ -780,6 +784,7 @@ function initMessageListener ({
   }, { signal: componentSignal })
 
   async function applyVaultAccountsState (accounts) {
+    signerStates.setAccounts(accounts)
     try {
       await pruneNostrDbsForVaultAccounts(accounts)
     } catch (err) {
@@ -789,6 +794,10 @@ function initMessageListener ({
   }
 
   function listenToVaultMessages ({ vaultPort, signal }) {
+    watchSignerConnection({
+      signal, update: state => signerStates.setConnection(state),
+      ping: async () => { const response = await ask(vaultPort, { code: 'VAULT_PING', payload: null }, { timeout: 2000 }); return !response.error && response.payload === true }
+    })
     const accountState = createAccountStateCoordinator({
       applyAccountsState: applyVaultAccountsState,
       closeVault: () => vaultModalStore.close(),
@@ -805,6 +814,10 @@ function initMessageListener ({
 
     vaultPort.addEventListener('message', async e => {
       switch (e.data.code) {
+        case 'VAULT_CONNECTION_STATE': {
+          signerStates.setConnection(e.data.payload?.connected === true ? 'connected' : 'disconnected')
+          break
+        }
         case 'CHANGE_DIMENSIONS': {
           widgetHeight$(e.data.payload.height)
           break

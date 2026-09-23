@@ -404,3 +404,13 @@ No stores, indices, settings fields or schema-version changes are introduced;
 previous overlapping summaries are not migrated and existing DBs are not reset
 automatically. Audit/repair continue preserving the global settings and using
 ordinary quota-aware cleanup paths.
+
+## Signer state and owner-attributed hearsay
+
+Signer availability subscriptions are document-scoped, in-memory bridge state;
+no WebStorage key or IndexedDB schema is added. Persona revocation closes them.
+Personal-copy `v=2` validation accepts an explicit inner author equal to the
+wrapper owner. It preserves that author and never upgrades it to a self template.
+Existing provenance precedence, merge exclusion, kind-5 authority checks and
+hearsay reference pruning apply unchanged. Audit/repair use the shared validator;
+there is no legacy rewrite or migration and no new storage classification.

@@ -1,3 +1,4 @@
+import { createSignerStateClient } from '#helpers/window-message/signer-state-client.js'
 import { createPersonaPublicKeysClient } from '#helpers/window-message/persona-public-keys-client.js'
 import { tell, ask } from '#helpers/window-message/index.js'
 import { injectEventStore } from '#helpers/window-message/nostrdb-client.js'
@@ -41,6 +42,7 @@ const SITE_MANIFEST_KINDS = new Set([
   DRAFT_SITE_MANIFEST
 ])
 let appBridgeId = ''
+let signerStateClient
 // A restarted service worker has lost its client map. Re-identify this document
 // over a dedicated reply port, without falling back to another tab's bridge.
 navigator.serviceWorker?.addEventListener('message', event => {
@@ -76,6 +78,11 @@ function injectLocale () {
   const p = Promise.withResolvers()
   injectNip07(p.promise) // first thing
   injectLocale()
+  signerStateClient = createSignerStateClient({ handshake: p.promise, ask, tell, reportError: originalConsole.error })
+  Object.assign(window.napp, {
+    getSignerState: signerStateClient.getSignerState,
+    onSignerStateChanged: signerStateClient.onSignerStateChanged
+  })
   Object.assign(window.napp, {
     getFileDownloadUrl: async url => {
       // Snapshot before the handshake, like the other injected APIs.
@@ -174,6 +181,7 @@ function tellParentImReady (p) {
   }, { once: true })
   browserPort.addEventListener('message', e => {
     if (e.data.code === 'LOCALE_CHANGED') localeClient.setLocale(e.data.payload?.locale)
+    else if (e.data.code === 'SIGNER_STATE_CHANGED') signerStateClient.receive(e.data.payload)
     else if (e.data.code === 'PERSONA_PUBLIC_KEYS_CHANGED') personaPublicKeysClient.setPublicKeys(e.data.payload)
     else if (e.data.code === 'INSTANCE_METADATA_CHANGED') instanceMetadataClient.setMetadata(e.data.payload)
     else if (e.data.code === 'WIDGET_SELECT_MODE') {
@@ -181,7 +189,10 @@ function tellParentImReady (p) {
     }
   })
   window.addEventListener('pagehide', event => {
-    if (!event.persisted) tell(browserPort, { code: 'INSTANCE_DOCUMENT_UNLOADED', payload: null })
+    if (!event.persisted) {
+      signerStateClient.close()
+      tell(browserPort, { code: 'INSTANCE_DOCUMENT_UNLOADED', payload: null })
+    }
   })
   browserPort.start()
   tell(window.parent, readyMsg, { targetOrigin: '*', transfer: [appPagePortForBrowser] })
