@@ -1,9 +1,31 @@
 import { isEphemeralEvent } from 'libp2r2p/event'
-import { CUSTOM_APP_DATA, REGULAR_CUSTOM_APP_DATA } from 'libp2r2p/kind'
+import {
+  eventKinds, isEphemeralKind,
+  CUSTOM_APP_DATA, REGULAR_CUSTOM_APP_DATA, PERSONAL_COPY,
+  GIFT_WRAP, PRIVATE_DIRECT_MESSAGE, SEAL, ENCRYPTED_DIRECT_MESSAGE,
+  PRIVATE_CHANNEL_BROADCAST, MUTE_LIST, BOOKMARKS, BOOKMARK_SET,
+  KIND_MUTE_SET, DRAFT_LONG, DRAFT_CLASSIFIED_LISTING, BINARY_DATA_CHUNK
+} from 'libp2r2p/kind'
 import { isValidPublicRelayUrl, normalizeRelayUrl } from 'libp2r2p/url'
 
+// These belong to app/private-message/file flows, not automatic account import.
+const excludedKinds = new Set([
+  CUSTOM_APP_DATA, REGULAR_CUSTOM_APP_DATA, PERSONAL_COPY,
+  GIFT_WRAP, PRIVATE_DIRECT_MESSAGE, SEAL, ENCRYPTED_DIRECT_MESSAGE,
+  PRIVATE_CHANNEL_BROADCAST, MUTE_LIST, BOOKMARKS, BOOKMARK_SET,
+  KIND_MUTE_SET, DRAFT_LONG, DRAFT_CLASSIFIED_LISTING, BINARY_DATA_CHUNK
+])
+const accountKinds = [...new Set(Object.values(eventKinds))]
+  .filter(kind => !isEphemeralKind(kind) && !excludedKinds.has(kind))
+  .sort((a, b) => a - b)
+const allowedKinds = new Set(accountKinds)
+// 44b-relay silently truncates longer lists. Deduplicate before splitting.
+const MAX_KINDS_PER_FILTER = 30
+const kindGroups = Array.from({ length: Math.ceil(accountKinds.length / MAX_KINDS_PER_FILTER) }, (_, index) =>
+  accountKinds.slice(index * MAX_KINDS_PER_FILTER, (index + 1) * MAX_KINDS_PER_FILTER))
+
 export function shouldStoreAccountEvent (event) {
-  return event.kind !== CUSTOM_APP_DATA && event.kind !== REGULAR_CUSTOM_APP_DATA && !isEphemeralEvent(event)
+  return allowedKinds.has(event.kind) && !isEphemeralEvent(event)
 }
 
 function writeRelays (event) {
@@ -24,9 +46,11 @@ export function trackAccountEvents ({ pubkey, signal, pool, seeds, db, getStored
   const latest = new Map([0, 10002].map(kind => [kind, getStoredEvent(kind)]))
   function start (relay, discovery = false) {
     if (signal.aborted) return
-    const entry = { relay, discovery, retired: new AbortController(), stream: null }
+    const entry = { relay, retired: new AbortController(), streams: new Set() }
     if (!discovery) writes.set(relay, entry)
-    maintain(entry).catch(error => { if (!signal.aborted) reportError(error, { relay: entry.relay }) })
+    for (const kinds of discovery ? [[10002]] : kindGroups) {
+      maintain(entry, kinds).catch(error => { if (!signal.aborted) reportError(error, { relay: entry.relay }) })
+    }
   }
   function reconcile (event) {
     const relays = new Set(writeRelays(event))
@@ -34,17 +58,17 @@ export function trackAccountEvents ({ pubkey, signal, pool, seeds, db, getStored
       if (relays.has(relay)) continue
       writes.delete(relay)
       entry.retired.abort()
-      entry.stream?.stopAndDrain()
+      for (const stream of entry.streams) stream.stopAndDrain()
     }
     for (const relay of relays) {
       if (!writes.has(relay)) start(relay)
     }
   }
-  async function maintain (entry) {
+  async function maintain (entry, kinds) {
     const stopped = AbortSignal.any([signal, entry.retired.signal])
     let delay = 1000
     while (!stopped.aborted) {
-      try { await run(entry) } catch (error) { if (!signal.aborted) reportError(error, { relay: entry.relay }) }
+      try { await run(entry, kinds) } catch (error) { if (!signal.aborted) reportError(error, { relay: entry.relay }) }
       if (stopped.aborted) return
       await new Promise(resolve => {
         const finish = () => { clearTimeout(timer); stopped.removeEventListener('abort', finish); resolve() }
@@ -61,17 +85,17 @@ export function trackAccountEvents ({ pubkey, signal, pool, seeds, db, getStored
       if (!result.ok) reportError(new Error(`Account event storage failed: ${result.code}`))
     } catch (error) { if (!signal.aborted) reportError(error) }
   }
-  async function run (entry) {
-    const filter = { authors: [pubkey], ...(entry.discovery ? { kinds: [10002] } : {}) }
+  async function run (entry, kinds) {
+    const filter = { authors: [pubkey], kinds: [...kinds] }
     const stream = pool.getEventsFeedGenerator(filter, [entry.relay], { signal })
-    entry.stream = stream
+    entry.streams.add(stream)
     try {
       for await (const item of stream) {
         if (item.type === 'error') { reportError(item.error, { relay: item.relay ?? entry.relay }); continue }
         if (item.type !== 'event') continue
         const { event } = item
         if (signal.aborted) break
-        if (entry.discovery && event.kind !== 10002) continue
+        if (!kinds.includes(event.kind)) continue
         if (event.pubkey !== pubkey || !shouldStoreAccountEvent(event)) continue
         if (event.kind === 0 || event.kind === 10002) {
           const previous = latest.get(event.kind)
@@ -87,7 +111,7 @@ export function trackAccountEvents ({ pubkey, signal, pool, seeds, db, getStored
         await persist(event)
       }
     } finally {
-      entry.stream = null
+      entry.streams.delete(stream)
     }
   }
   // Vault account metadata is already signed and can seed the local store

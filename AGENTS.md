@@ -181,14 +181,19 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
 
 - `useTrackAccountEvents` owns the account feeds and aborts them on account
   removal or root unmount. Seeds track only kind 10002. Current write relays track
-  history and live events without a kind filter. Reconcile write membership on
-  newer relay lists, retaining unchanged feeds and using `stopAndDrain()` for
-  removed feeds so accepted events finish processing. A relay that is also a
+  history and live events with explicit known-kind filters, deduplicated and split
+  into groups of at most 30 to avoid relay truncation. Each group retries
+  independently. Reconcile write membership on newer relay lists, retaining
+  unchanged feeds and using `stopAndDrain()` for every group on removed relays
+  so accepted events finish processing. A relay that is also a
   seed retains its independent discovery feed. Account abort discards pending
   delivery, including draining feeds. This requires the companion libp2r2p API.
-- Store account events in the owner's existing NostrDB. Exclude NIP-78 kinds
-  78/30078 (apps must claim them directly) and ephemeral events, including the
-  library's tag-defined ephemeral classification. Only kinds 0 and 10002 are
+- Store eligible known account kinds in the owner's existing NostrDB. Keep the
+  automatic-import exclusions documented in README.md for app data, personal
+  copies, private messaging, private-oriented lists/drafts and binary chunks.
+  Reject unknown kinds and ephemeral events, including the library's tag-defined
+  ephemeral classification. This policy does not restrict explicit app ingestion.
+  Only kinds 0 and 10002 are
   forwarded to the vault account-metadata channel. The event store owns version
   selection. No new persisted cursor, key or database is introduced.
 - Event-store subscriptions support opt-in initial replay, with live delivery

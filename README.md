@@ -88,14 +88,33 @@ its classification. Local development does not validate remote upload/discovery;
 use the publishing workflow to check those paths.
 
 
-Account event tracking continuously imports public events authored by available
+Account event tracking continuously imports selected known public kinds authored by available
 accounts from their current write relays into each owner's event store. Seed
 relays are queried only for relay lists (10002). A newer relay list starts feeds
 on added write relays and stops removed ones, draining events already accepted
 before removal. A removed relay that is also a seed keeps only its relay-list
 discovery feed. Account removal or root unmount cancels pending delivery.
-NIP-78 app data (78/30078) and ephemeral events are excluded; apps must ingest
-app data themselves. Only profiles (0) and relay lists (10002) additionally go
+Write feeds explicitly select kinds from libp2r2p's `eventKinds`, deduplicated
+and split into groups of at most 30 (currently 85 kinds in three feeds per relay).
+Each group retries independently; removing a relay stops and drains all its groups.
+This avoids broad filters and 44b-relay's truncation of longer kind lists. Seeds
+retain their separate kind-10002 discovery feed. Unknown kinds are not imported;
+new known kinds enter through updates to the library's list, subject to exclusions.
+
+Automatic import excludes ephemeral kinds and tag-defined ephemeral events, plus:
+
+- NIP-78 app data (78/30078) and personal copies (1006).
+- Encrypted DMs (4), seals (13), private DMs (14), gift wraps (1059) and private
+  channel broadcasts (3560).
+- Mute lists (10000), bookmarks (10003), bookmark sets (30003) and kind mute sets
+  (30007).
+- Long-form drafts (30024), classified-listing drafts (30403) and binary chunks
+  (34601).
+
+These exclusions affect automatic account import only. Apps retain their own
+explicit ingestion flows; the policy does not prohibit storing these kinds in
+NostrDB. File metadata (1063), deletions (5), follows (3) and other eligible public
+lists remain included. Only profiles (0) and relay lists (10002) additionally go
 to the vault's account-metadata channel. Apps can treat the store as the local
 source of truth for their user's public events and private personal copies;
 third-party public events remain relay-backed caches. See [APP_API.md](APP_API.md)
