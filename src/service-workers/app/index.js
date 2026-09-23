@@ -42,6 +42,12 @@ self.addEventListener('activate', () => {
 })
 
 self.addEventListener('fetch', e => {
+  const mapUrl = new URL(e.request.url)
+  if (mapUrl.origin === self.location.origin && mapUrl.pathname.startsWith('/~~sourcemaps/')) {
+    e.respondWith(fetch(e.request, { cache: 'no-store' }))
+    return
+  }
+
   // Don't add `if (!e.clientId) return` guard clause
   // or else for '/~~napp' initial page load the sw may call the server
   // instead of handling the request by itself

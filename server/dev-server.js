@@ -1,4 +1,6 @@
 import { createServer } from 'node:http'
+import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import { access, realpath } from 'node:fs/promises'
 import path from 'node:path'
 import { launcherRoot, healthPath, runtimeProtocol } from '../bin/dev-runtime.js'
@@ -126,10 +128,5 @@ async function fetchResponseToHttpRes (response, res) {
     return
   }
 
-  const chunks = []
-  for await (const chunk of response.body) {
-    chunks.push(chunk)
-  }
-  res.write(Buffer.concat(chunks))
-  res.end()
+  await pipeline(Readable.fromWeb(response.body), res)
 }

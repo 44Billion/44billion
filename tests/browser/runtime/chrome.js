@@ -25,7 +25,7 @@ async function localProxy () {
   return { port: server.address().port, close: async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)) } }
 }
 
-export async function launchChrome ({ externalNetwork = false, intercept = () => null } = {}) {
+export async function launchChrome ({ externalNetwork = false, intercept = () => null, onEvent = () => {} } = {}) {
   const profile = await mkdtemp(path.join(os.tmpdir(), '44billion-chrome-'))
   const proxy = externalNetwork ? null : await localProxy()
   const args = ['--headless=new', '--no-sandbox', '--disable-dev-shm-usage', '--disable-background-networking', '--no-first-run', '--no-default-browser-check', '--remote-debugging-pipe', '--window-size=1280,900', `--user-data-dir=${profile}`]
@@ -96,6 +96,7 @@ export async function launchChrome ({ externalNetwork = false, intercept = () =>
         continue
       }
       const { method, params, sessionId } = message
+      onEvent({ method, params, sessionId })
       if (method === 'Page.fileChooserOpened') remember(fileChoosers, { sessionId, ...params })
       if (method === 'ServiceWorker.workerVersionUpdated') {
         for (const version of params.versions) {
@@ -181,7 +182,7 @@ export async function launchChrome ({ externalNetwork = false, intercept = () =>
     const { targetId } = await send('Target.createTarget', { url: 'about:blank' })
     const sessionId = await until(() => [...sessions].find(([, info]) => info.targetId === targetId)?.[0], 'Chrome page')
     return {
-      send, evaluate, until, contexts, logs, downloads, fileChoosers, workerVersions, close, profile,
+      sessionId, send, evaluate, until, contexts, logs, downloads, fileChoosers, workerVersions, close, profile,
       navigate: url => send('Page.navigate', { url }, sessionId),
       async diagnose (directory) {
         await mkdir(directory, { recursive: true })

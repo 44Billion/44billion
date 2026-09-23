@@ -133,3 +133,36 @@ that group. For individual scripts use
 `node bin/run-browser-tests.js -- node tests/browser/app-bridge.js`.
 Do not run multiple browser suites concurrently; unsupported systems fail
 explicitly instead of silently running without a memory limit.
+
+### Browser source maps
+
+`bin/build-settings.js` contains the single `EMIT_SOURCEMAPS` switch (default
+`true`). It controls production builds, including launcher chunks, service workers
+and injected bridge scripts. Development always emits source maps, regardless of
+this flag. Set it to `false` and rebuild production to omit both map artifacts and
+`sourceMappingURL` references. This does not revoke copies already downloaded by
+someone else.
+
+Maps include original source text (including bundled dependencies) and are served
+as JSON from `/~~sourcemaps/<sha256>.map` on the launcher and numeric app origins.
+Deploy the complete `dist/44billion` output, including `~~sourcemaps`. Only the
+current build is retained; an old tab may get a 404 until reloaded. Hashes prevent
+old code from using a different build's map. The shared router used by the
+production server provides these routes without separate server configuration.
+
+Map responses use `Cache-Control: no-store`. Both service workers send these
+requests directly to the network, without Cache Storage, offline fallback or app
+bridge access. Maps are fetched on demand by debugging tools, not precached.
+Enable JavaScript source maps in browser DevTools to inspect original files and
+set breakpoints. Injected scripts appear under `/~~injected/` as debugger names;
+these names are not additional HTTP script routes.
+
+The development build publishes code and maps together in memory on port 8080
+and streams reload notifications at `/esbuild`. Failed builds retain the previous
+successful snapshot and report failure to the development supervisor.
+
+Validation: `npm test`, `npm run build`, and
+`node bin/run-browser-tests.js -- node tests/browser/sourcemaps.js` (after a
+production build and with the development runtime stopped). The Chrome check
+uses the production router and bundles on temporary local ports; external traffic
+is blocked and the existing 3 GiB runner limit applies.

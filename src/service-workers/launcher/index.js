@@ -135,6 +135,12 @@ self.addEventListener('activate', e => {
 })
 
 self.addEventListener('fetch', e => {
+  const mapUrl = new URL(e.request.url)
+  if (mapUrl.origin === self.location.origin && mapUrl.pathname.startsWith('/~~sourcemaps/')) {
+    e.respondWith(fetch(e.request, { cache: 'no-store' }))
+    return
+  }
+
   if (!isSameOriginGet(e.request)) return
   const { pathname } = new URL(e.request.url)
 

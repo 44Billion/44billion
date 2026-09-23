@@ -231,3 +231,18 @@ access without echoing those cached events back to the vault.
   The service kills descendants on exit/failure. CDP evaluations release their
   object group; bounded diagnostics and detached target cleanup belong in the
   shared harness. Do not run multiple browser suites concurrently.
+
+## Browser source maps
+
+- `bin/build-settings.js` owns `EMIT_SOURCEMAPS` for every production build layer.
+  Development always emits maps regardless of the flag. Preserve original-source
+  mappings through worker rebundling and separate maps for injected scripts;
+  disabling the flag must leave no map files or directives in production.
+- Build outputs are finalized as one snapshot before development serving/readiness.
+  Keep port 8080 and the `/esbuild` reload stream compatible with the supervisor.
+- `/~~sourcemaps/<sha256>.map` is reserved on root/numeric app origins. Serve only
+  current build artifacts with JSON/no-store headers and an actual 404 for misses.
+  Both workers must bypass caches and app bridge processing for this route.
+- Run the protected `tests/browser/sourcemaps.js` check after a production build
+  when changing mapping, serving or worker routing. It exercises actual bundles
+  and the shared production router without starting the production server.

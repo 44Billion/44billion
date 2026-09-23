@@ -42,7 +42,7 @@ export default {
         format: 'iife', // Firefox compatibility
         splitting: false, // Firefox compatibility
         write: false,
-        plugins: build.initialOptions.plugins.filter(p => p.name !== 'sw-module'), // Avoid recursion
+        plugins: build.initialOptions.plugins.filter(p => !['sw-module', 'build-output'].includes(p.name)), // Avoid recursion
         define: {
           ...build.initialOptions.define,
           LAUNCHER_SW_VERSION: JSON.stringify(version)
@@ -50,13 +50,17 @@ export default {
         platform: build.initialOptions.platform,
         target: build.initialOptions.target,
         minify: build.initialOptions.minify,
-        sourcemap: build.initialOptions.sourcemap,
+        sourcemap: build.initialOptions.sourcemap ? 'inline' : false,
+        sourcesContent: true,
+        sourceRoot: (build.initialOptions.absWorkingDir || process.cwd()) + '/',
+        absWorkingDir: build.initialOptions.absWorkingDir,
         keepNames: build.initialOptions.keepNames
       })
       const jsOutput = result.outputFiles.find(file => !file.path.endsWith('.map'))
 
       return {
         contents: jsOutput.text,
+        resolveDir: process.cwd(),
         loader: 'js'
       }
     })
