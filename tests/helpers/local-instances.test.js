@@ -16,7 +16,7 @@ mock.module('#zones/screen/helpers/draft-app-runtime-reset.js', {
 })
 mock.module('#services/idb/nostrdb/index.js', {
   namedExports: {
-    getNostrDb: owner => ({ deleteEventsByApp: async appId => deleted.push({ owner, appId }) })
+    deleteNostrDbAppData: async (owner, appId) => deleted.push({ owner, appId })
   }
 })
 

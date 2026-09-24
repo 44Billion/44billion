@@ -12,8 +12,8 @@ const HEX32 = /^[0-9a-f]{64}$/i
 function defaultGetNostrDb (ownerPubkey) {
   return {
     async deleteEventsByApp (appId) {
-      const { getNostrDb } = await import('#services/idb/nostrdb/index.js')
-      return getNostrDb(ownerPubkey).deleteEventsByApp(appId)
+      const { deleteNostrDbAppData } = await import('#services/idb/nostrdb/index.js')
+      return deleteNostrDbAppData(ownerPubkey, appId)
     }
   }
 }

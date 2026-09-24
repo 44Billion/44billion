@@ -1,3 +1,4 @@
+import { startNostrDbAccountMaintenance } from '#services/nostrdb-account-lifecycle.js'
 import { useMemo, useTask, useWebStorage } from '#f'
 import { relayPool, seedRelays } from 'libp2r2p/relay'
 import { base62ToBase16 } from 'libp2r2p/base62'
@@ -13,17 +14,21 @@ export default function useTrackAccountEvents () {
     const tracker = createAccountEventTracker({ pool: relayPool, seeds: seedRelays, signal: controller.signal })
     return { controller, tracker }
   })
-  useTask(({ cleanup }) => cleanup(() => runtime.controller.abort()))
+  useTask(({ cleanup }) => {
+    cleanup(startNostrDbAccountMaintenance())
+    cleanup(() => runtime.controller.abort())
+  })
   useTask(({ track }) => {
-    const { userPks, defaultPk } = track(() => ({
-      userPks: storage.session_accountUserPks$() ?? [],
-      defaultPk: storage.session_defaultUserPk$()
-    }))
-    const accounts = [...new Set(userPks.filter(pk => pk !== defaultPk))]
-    runtime.tracker.setAccounts(accounts.map(pk => {
+    const accounts = track(() => {
+      const defaultPk = storage.session_defaultUserPk$()
+      return [...new Set(storage.session_accountUserPks$() ?? [])].filter(pk => pk !== defaultPk)
+        .map(pk => ({ pk, isReadOnly: storage[`session_accountByUserPk_${pk}_isReadOnly$`]() === true }))
+    })
+    runtime.tracker.setAccounts(accounts.map(({ pk, isReadOnly }) => {
       const pubkey = base62ToBase16(pk, { mode: 'integer', byteLength: 32 })
       return {
-        pubkey, db: getNostrDb(pubkey), coverage: createAccountEventCoverage(pubkey),
+        pubkey, isReadOnly,
+        ...(isReadOnly ? {} : { getDb: () => getNostrDb(pubkey), coverage: createAccountEventCoverage(pubkey) }),
         getStoredEvent: kind => storage[`session_accountByUserPk_${pk}_${kind === 0 ? 'profile' : 'relays'}$`]?.()?.meta?.events?.find(event => event.kind === kind),
         sendToVault: event => tellVault({ code: 'UPDATE_ACCOUNT_EVENTS', payload: { pubkey, events: [event] } })
       }

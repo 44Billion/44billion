@@ -341,6 +341,19 @@ permissions and before returning results. Existing event permissions still
 apply, with the target account identified in permission requests. Signing and
 personal-copy cryptography use the target account and its lock/read-only rules.
 
+Read-only accounts have no local NostrDB. `add`, `addPersonalCopy`, `remove`,
+`query`, `count` and `subscribe` reject with `READ_ONLY_ACCOUNT`; the launcher's
+provisional identity uses `READ_ONLY_TEMPORARY_ACCOUNT`. Rejection precedes DB
+creation and permission prompts. Persona checks take precedence, so an
+inaccessible pubkey still returns `PUBKEY_NOT_IN_PERSONA` without exposing its
+account state. `supports()` remains a static capability query and opens no DB.
+Changing to read-only closes subscriptions and deletes that owner's NostrDB and
+chunk references. An interrupted deletion blocks access with
+`NOSTRDB_DELETION_PENDING` until cleanup succeeds, including after returning to a
+writable account. Old DB instances cannot reopen erased data. Merely locking a
+private-key account does not forbid storage of already-signed public events;
+operations requiring the signer retain the ordinary lock restrictions.
+
 Subscriptions belong to the requesting document. They are cancelled on document
 unload, and scoped subscriptions fail with `PUBKEY_NOT_IN_PERSONA` when the
 member is removed, including while waiting for new events. Apps should follow

@@ -26,7 +26,6 @@ const MAX_KINDS_PER_FILTER = 30
 const groupsOf = (items, size) => Array.from({ length: Math.ceil(items.length / size) }, (_, index) => items.slice(index * size, (index + 1) * size))
 const kindGroups = groupsOf(accountKinds, MAX_KINDS_PER_FILTER)
 export const ACCOUNT_OVERLAP_SECONDS = 10 * 60
-const REFRESH_MS = 5 * 60 * 1000
 
 export function shouldStoreAccountEvent (event) {
   return allowedKinds.has(event.kind) && !isEphemeralEvent(event)
@@ -59,8 +58,8 @@ function permanent (error) {
 }
 
 // One coordinator per launcher root. Identity state and durable progress remain
-// owner-scoped even when feeds combine accounts (including read-only accounts).
-export function createAccountEventTracker ({ pool, seeds, signal, reportError = console.error, warn = console.warn, now = () => Math.floor(Date.now() / 1000), refreshMs = REFRESH_MS, random = Math.random }) {
+// owner-scoped even when feeds combine accounts. Read-only feeds are separate.
+export function createAccountEventTracker ({ pool, seeds, signal, reportError = console.error, warn = console.warn, now = () => Math.floor(Date.now() / 1000), random = Math.random }) {
   const accounts = new Map()
   const entries = new Map()
   const tasks = new Set()
@@ -82,14 +81,14 @@ export function createAccountEventTracker ({ pool, seeds, signal, reportError = 
     const desired = new Map()
     function group (relay, kinds, account) {
       relay = normalizeRelayUrl(relay)
-      const key = JSON.stringify([relay, kinds])
-      if (!desired.has(key)) desired.set(key, { relay, kinds, members: [] })
+      const key = JSON.stringify([relay, kinds, !!account.isReadOnly])
+      if (!desired.has(key)) desired.set(key, { relay, kinds, isReadOnly: !!account.isReadOnly, members: [] })
       desired.get(key).members.push(account)
     }
     for (const account of accounts.values()) {
       for (const relay of new Set(seeds)) group(relay, [10002], account)
       for (const relay of new Set(writeRelays(account.latest.get(10002)))) {
-        for (const kinds of kindGroups) group(relay, kinds, account)
+        for (const kinds of account.isReadOnly ? [[0, 10002]] : kindGroups) group(relay, kinds, account)
       }
     }
     const next = new Map()
@@ -118,7 +117,7 @@ export function createAccountEventTracker ({ pool, seeds, signal, reportError = 
     if (!account?.active || signal.aborted) return
     if (!filter.kinds.includes(event.kind) || !filter.authors.includes(event.pubkey) || !shouldStoreAccountEvent(event)) return
     if ((filter.since !== undefined && event.created_at < filter.since) || (filter.until !== undefined && event.created_at > filter.until)) return
-    const result = await account.db.add(event)
+    const result = account.isReadOnly ? { ok: true } : await account.db.add(event)
     // Duplicate, older replaceable versions and locally deleted originals are
     // already durably resolved. Other refusals must not advance coverage.
     if (!result.ok && !['duplicate', 'superseded', 'ignored', 'blocked'].includes(result.code)) {
@@ -227,48 +226,29 @@ export function createAccountEventTracker ({ pool, seeds, signal, reportError = 
     let initialComplete = false
     let background
     let until
-    let refreshAt = Infinity
+    let liveEpoch
+    let liveUntil = -Infinity
     let next = stream.next()
     try {
       while (!signal.aborted) {
-        // Periodic refresh is a separate bounded read; it never interrupts an
-        // initialized live stream or advances coverage from the latest live ID.
-        const refreshAbort = new AbortController()
-        const wakeSignal = AbortSignal.any([entry.signal, refreshAbort.signal])
-        const outcome = refreshAt === Infinity || entry.signal.aborted
-          ? await next
-          : await Promise.race([next, pause(Math.max(0, refreshAt - Date.now()), wakeSignal).then(() => null)])
-        refreshAbort.abort()
-        if (outcome === null) {
-          if (entry.signal.aborted) continue
-          try {
-            const current = await recordsFor(entry)
-            const cutoff = now()
-            // Regroup refreshes by last confirmed edge, including overlap even
-            // where an earlier attempt already covered those seconds.
-            const refreshes = new Map()
-            for (const [account, rows] of current) {
-              for (const row of rows) {
-                const start = Math.max(0, Math.min(row.intervals.at(-1)?.[1] ?? cutoff, cutoff) - ACCOUNT_OVERLAP_SECONDS)
-                const key = JSON.stringify([start, row.kind])
-                if (!refreshes.has(key)) refreshes.set(key, { authors: [], kinds: [row.kind], since: start, until: cutoff })
-                refreshes.get(key).authors.push(account.pubkey)
-              }
-            }
-            for (const job of combineJobs(refreshes.values())) await scan(entry, job, current)
-          } catch (error) {
-            if (!entry.signal.aborted) report(error, entry, 'recent', error.accountFilter)
-            if (permanent(error)) refreshAt = Infinity
-          }
-          if (refreshAt !== Infinity) refreshAt = Date.now() + refreshMs
-          continue
-        }
+        const outcome = await next
         if (outcome.done) break
         const item = outcome.value
         if (item.type === 'error') throw item.error
         if (item.type === 'event') {
           if (!initialComplete) { count++; oldest = Math.min(oldest, item.event.created_at) }
           await persist(entry, item.event, initialComplete ? { authors: entry.authors, kinds: entry.kinds } : filter)
+        }
+        if (item.type === 'live-progress' && !entry.signal.aborted) {
+          if (!initialComplete || normalizeRelayUrl(item.relay) !== entry.relay ||
+              !Number.isSafeInteger(item.epoch) || !Number.isSafeInteger(item.since) ||
+              !Number.isSafeInteger(item.until) || item.since < 0 || item.until < item.since ||
+              (liveEpoch !== undefined && liveEpoch !== item.epoch)) throw new Error('Invalid account live progress')
+          liveEpoch = item.epoch
+          if (item.until > liveUntil) {
+            await mark(entry, records, { authors: entry.authors, kinds: entry.kinds, since: item.since, until: item.until })
+            liveUntil = item.until
+          }
         }
         if (item.type === 'eose') {
           assertHistoryReport(item)
@@ -296,7 +276,6 @@ export function createAccountEventTracker ({ pool, seeds, signal, reportError = 
             }
           }
           initialComplete = true
-          refreshAt = Date.now() + refreshMs
           if (!entry.signal.aborted) background = backfill(entry, since - 1)
         }
         next = stream.next()
@@ -312,10 +291,52 @@ export function createAccountEventTracker ({ pool, seeds, signal, reportError = 
       if (background) await background
     }
   }
+  async function readMetadata (entry, filter, firstPage) {
+    const pending = [{ filter, page: firstPage }]
+    while (pending.length && !entry.signal.aborted) {
+      const { filter, page } = pending.pop()
+      let count = page?.count ?? 0
+      let report = page?.report
+      if (!page) {
+        for await (const item of pool.getEventsGenerator({ ...filter, limit: ACCOUNT_PAGE_SIZE }, [entry.relay], { signal: entry.signal, timeoutAfterFirstEose: null })) {
+          if (item.type === 'error') throw item.error
+          if (item.type === 'event') { count++; await persist(entry, item.event, filter) }
+          if (item.type === 'eose') report = item
+        }
+      }
+      assertHistoryReport(report)
+      if (count < ACCOUNT_PAGE_SIZE && report.relays[0].status === 'eose') continue
+      const key = filter.authors.length > 1 ? 'authors' : filter.kinds.length > 1 ? 'kinds' : null
+      if (!key) { warn('Replaceable metadata response saturated', { relay: entry.relay, ...filter }); continue }
+      const middle = Math.ceil(filter[key].length / 2)
+      pending.push({ filter: { ...filter, [key]: filter[key].slice(0, middle) } }, { filter: { ...filter, [key]: filter[key].slice(middle) } })
+    }
+  }
+
+  async function runReadOnly (entry) {
+    const filter = { authors: entry.authors, kinds: entry.kinds, limit: ACCOUNT_PAGE_SIZE }
+    const stream = pool.getEventsFeedGenerator(filter, [entry.relay], { signal, snapshot: true, timeoutAfterFirstEose: null })
+    entry.stream = stream
+    let count = 0
+    let complete = false
+    try {
+      for await (const item of stream) {
+        if (item.type === 'error') throw item.error
+        if (item.type === 'event') { if (!complete) count++; await persist(entry, item.event, filter) }
+        if (item.type === 'eose') {
+          assertHistoryReport(item)
+          if (!entry.signal.aborted) await readMetadata(entry, { ...filter, until: item.snapshot.until }, { count, report: item })
+          complete = true
+        }
+      }
+      if (!complete && !entry.signal.aborted) throw new Error('Account metadata feed ended before EOSE')
+    } finally { entry.stream = null; await stream.return() }
+  }
+
   async function maintain (entry) {
     let delay = 1000
     while (!entry.signal.aborted) {
-      try { await run(entry); delay = 1000 } catch (error) {
+      try { await (entry.isReadOnly ? runReadOnly(entry) : run(entry)); delay = 1000 } catch (error) {
         if (!entry.signal.aborted) report(error, entry, 'initial-or-live', error.accountFilter)
         if (permanent(error)) return
       }
@@ -336,12 +357,17 @@ export function createAccountEventTracker ({ pool, seeds, signal, reportError = 
       const wanted = new Set(configs.map(config => config.pubkey))
       for (const [pubkey, account] of accounts) if (!wanted.has(pubkey)) { account.active = false; accounts.delete(pubkey) }
       for (const config of configs) {
-        if (accounts.has(config.pubkey)) continue
+        const previous = accounts.get(config.pubkey)
+        if (previous && !!previous.isReadOnly === !!config.isReadOnly) continue
+        if (previous) previous.active = false
         const cached = [0, 10002].map(kind => config.getStoredEvent(kind)).filter(event => event?.pubkey === config.pubkey)
         const account = { ...config, identity: crypto.randomUUID(), active: true, latest: new Map(cached.map(event => [event.kind, event])) }
         let initialized
         account.initialize = () => {
+          if (account.isReadOnly) return Promise.resolve()
+          if (account.db?.accessError && account.getDb) { initialized = null; account.db = null }
           initialized ??= (async () => {
+            account.db ??= account.getDb()
             await account.coverage.reconcile(accountKinds, signal)
             for (const event of cached) {
               signal.throwIfAborted()

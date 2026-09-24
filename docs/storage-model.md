@@ -46,6 +46,13 @@ ephemeral and intentionally not persisted; they do not belong here or in
   ceiling. Account/app cleanup preserves this configuration.
 - `44billion:app-asset-budget:v1` — per-app cached byte budgets.
 - `local_embeddedOnlyRetentionAdmissions` — embedded-only retention admissions.
+- `local_nostrDbPendingDeletions` — `{ [ownerHexPubkey]: token }`, a durable
+  intent to delete a read-only owner's NostrDB and shared chunk-cache references.
+  Record before deletion and retain on failure; startup and a 30-second local
+  cleanup retry resume unfinished work. Remove each entry only after both parts
+  finish. Even a now-writable owner remains blocked while its intent exists.
+  The audit validates owner keys/tokens and preserves unresolved intents; repair
+  does not silently clear this barrier. This timer performs no relay queries.
 - `local_pendingStorageRepairPlan` — durable repair plan, retained until applied.
 - `local_storageRepairInProgress` — crash-safe repair marker.
 - `local_storageRepairAttempts` — repair retry counter.
@@ -213,11 +220,28 @@ subsequently queried again. Unrelated maintenance keys remain untouched. The
 launcher-wide audit does not scan internal IDB rows or trigger a repair reload for
 invalid coverage; owner removal uses the existing whole-database repair path.
 
-Recent sync overlaps ten minutes and refreshes every five minutes. Completed old
-ranges are not revisited. Saturated pages subdivide before coverage confirmation;
+Recent sync overlaps ten minutes on opening/resuming. There is no periodic
+historical refresh. Ordered `live-progress` controls commit observed connection
+intervals every 60 seconds, including periods with no events, only after preceding
+writes succeed. Different epochs do not bridge gaps. Completed old ranges are
+not revisited. Saturated pages subdivide before coverage confirmation;
 a saturated single author/kind/second is deliberately accepted with a warning,
 possibly missing events beyond the relay's 200-event page. Coverage is best effort
 relative to each relay's responses, not proof of remote completeness.
+
+Read-only and temporary accounts have no NostrDB. Only metadata (kinds 0/10002)
+continues to flow from relays to the vault, with in-memory version comparison.
+Changing to read-only invalidates subscriptions, maintenance and retained DB
+instances, deletes the whole owner database (including coverage), and removes
+its chunk references without deleting another owner's payloads. Access stays
+blocked while deletion is pending. The `44billion:nostrdb-account-access:v1` Web
+Lock serializes transitions and retries; the existing quota lock coordinates DB
+deletion with admissions, and chunk cleanup uses its existing cache lock. These
+lock names are ephemeral, not persisted keys. `versionchange` also invalidates
+old instances, even if storage notifications arrive after deletion. Cleanup of
+an absent owner database does not create one. Vault lock/unlock does not delete
+writable-account data. Account profiles, relay lists, workspaces and app installs
+are outside this deletion scope.
 
 - `events` — Nostr events with app references. Schema 3 adds `eventBytes`
   (UTF-8 JSON bytes of `event`) and `ownerRefs` (normalized outer owner tag

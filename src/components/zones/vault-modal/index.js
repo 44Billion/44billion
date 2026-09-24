@@ -1,3 +1,4 @@
+import { reconcileNostrDbAccounts } from '#services/nostrdb-account-lifecycle.js'
 import { watchSignerConnection } from '#services/signer-connection.js'
 import { f, useGlobalStore, useGlobalSignal, useClosestStore, useStore, useTask, useCallback, useComputed, useSignal } from '#f'
 import { useWebStorage } from '#f'
@@ -784,6 +785,7 @@ function initMessageListener ({
   }, { signal: componentSignal })
 
   async function applyVaultAccountsState (accounts) {
+    await reconcileNostrDbAccounts(accounts)
     signerStates.setAccounts(accounts)
     try {
       await pruneNostrDbsForVaultAccounts(accounts)

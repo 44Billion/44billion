@@ -1,3 +1,4 @@
+import { assertNostrDbAccess } from '#services/idb/nostrdb/access.js'
 import { getDb } from '../index.js'
 
 export const CHUNK_PAYLOADS_STORE = 'chunkPayloads'
@@ -151,6 +152,7 @@ export async function stageChunkPayload ({ contentHash, contentBytes, owner, pro
     CHUNK_PAYLOADS_STORE,
     CHUNK_STATE_STORE
   ], 'readwrite', async transaction => {
+    if (owner) assertNostrDbAccess(owner)
     const payloadStore = transaction.objectStore(CHUNK_PAYLOADS_STORE)
     const stateStore = transaction.objectStore(CHUNK_STATE_STORE)
     const state = await requestResult(stateStore.get(STATE_KEY)) || initialState()
@@ -259,6 +261,7 @@ export async function commitChunkCopy ({
   protectedRoot = false
 }) {
   const notification = await withChunkCacheLock(() => withStores(ALL_STORES, 'readwrite', async transaction => {
+    assertNostrDbAccess(owner)
     const payloadStore = transaction.objectStore(CHUNK_PAYLOADS_STORE)
     const copyStore = transaction.objectStore(CHUNK_COPIES_STORE)
     const associationStore = transaction.objectStore(CHUNK_PAYLOAD_ROOTS_STORE)
@@ -362,6 +365,7 @@ export async function setOwnerRootReferenceCount (owner, root, referenceCount) {
     CHUNK_ROOTS_STORE,
     CHUNK_STATE_STORE
   ], 'readwrite', async transaction => {
+    if (owner) assertNostrDbAccess(owner)
     const payloadStore = transaction.objectStore(CHUNK_PAYLOADS_STORE)
     const associationStore = transaction.objectStore(CHUNK_PAYLOAD_ROOTS_STORE)
     const rootStore = transaction.objectStore(CHUNK_ROOTS_STORE)

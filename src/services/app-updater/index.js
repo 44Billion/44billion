@@ -40,8 +40,8 @@ export const MAX_ACTIVE_EMBEDDED_APPS = 50
 function defaultGetNostrDb (ownerPubkey) {
   return {
     async deleteEventsByApp (appId) {
-      const { getNostrDb } = await import('#services/idb/nostrdb/index.js')
-      return getNostrDb(ownerPubkey).deleteEventsByApp(appId)
+      const { deleteNostrDbAppData } = await import('#services/idb/nostrdb/index.js')
+      return deleteNostrDbAppData(ownerPubkey, appId)
     }
   }
 }

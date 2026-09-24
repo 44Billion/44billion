@@ -92,7 +92,7 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   monitor owns connectivity probes, capped retry delays, and browser wake-up
   listeners. `ConnectivityRetryCoordinator` owns waiters, cancellation, and
   concurrency of resumed app work; do not restore its duplicate probe timer.
-- Use the published `libp2r2p@^0.10.21` range in package.json;
+- Use the published `libp2r2p@^0.10.22` range in package.json;
   package-lock.json records the resolved release. Validate against the installed package rather than sibling
   source imports; it includes the shared connectivity monitor.
 
@@ -179,8 +179,8 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
 
 ## Account event ingestion
 
-- `useTrackAccountEvents` owns one coordinator, groups account authors (including
-  read-only accounts) by relay/eligible kind set, and cancels on removal/unmount.
+- `useTrackAccountEvents` owns one coordinator, groups writable account authors
+  by relay/eligible kind set, and cancels on removal/unmount.
   Seeds independently discover kind 10002; write groups use at most 30 kinds and
   500 authors. Retiring groups stop and drain accepted events; account removal
   discards that account's pending delivery. Preserve unchanged groups.
@@ -189,7 +189,7 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   relay coverage, and fence checkpoints against database resets. Event commits
   precede checkpoint commits. Maintenance readwrite transactions serialize tabs;
   invalid coverage resets safely without touching unrelated maintenance records.
-- Grouped recent snapshots and periodic refresh use ten minutes of overlap;
+- Grouped recent snapshots and resumptions use ten minutes of overlap;
   historical queries combine only matching bounds. Saturated pages subdivide
   time, then authors/kinds. The explicit single-author/kind/second saturation
   tradeoff warns and marks coverage (possible excess loss); do not silently add
@@ -205,8 +205,28 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
 - Event-store subscriptions support opt-in initial replay, with live delivery
   registered before the snapshot. Preserve cancellation and deduplication by ID.
 
-The account tracker also imports already available signed vault profiles and
-relay lists into NostrDB before relay delivery, preserving immediate offline
+- No periodic history refresh: process automatic `live-progress` controls in
+  event order and confirm coverage only after preceding writes commit. Cancel a
+  failed live attempt, discard its buffered events and resume with overlap.
+  Ignore unknown controls. Do not use progress to bridge disconnected epochs.
+- Read-only accounts have separate unrestricted replaceable snapshots: seeds
+  kind 10002, write relays kinds 0/10002, forwarding only newer vault metadata.
+  Never create their NostrDB, coverage or cached-event import. React to flag
+  changes even when pubkey membership is unchanged.
+- All eventStore operations except static `supports` reject read-only owners
+  before DB creation or prompts; persona authorization comes first. Use
+  `READ_ONLY_ACCOUNT` / `READ_ONLY_TEMPORARY_ACCOUNT`. Vault lock alone is not
+  a public-event storage restriction.
+- Read-only transitions durably fence access with
+  `local_nostrDbPendingDeletions`, cancel idle streams/maintenance, close old
+  instances across tabs and delete owner DB + chunk references. Retry incomplete
+  cleanup after reload and before writable access resumes. Never swallow chunk
+  cleanup failures or recreate absent owner DBs during cleanup. Preserve shared
+  payloads, vault metadata, workspaces and installations. Run protected
+  `tests/browser/nostrdb-readonly.js` for the two-tab lifecycle regression.
+
+For writable accounts, the tracker imports already available signed vault profiles
+and relay lists into NostrDB before relay delivery, preserving immediate offline
 access without echoing those cached events back to the vault.
 
 ## Local file download contract

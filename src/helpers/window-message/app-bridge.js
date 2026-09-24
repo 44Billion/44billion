@@ -1,3 +1,4 @@
+import { assertNostrDbAccess, isNostrDbAccessError } from '#services/idb/nostrdb/access.js'
 import { signerStates } from '#services/signer-state.js'
 import { connectSignerStatePort } from './signer-state-port.js'
 import { createNfileCredit } from './nfile-credit.js'
@@ -156,9 +157,13 @@ function listenToTrustedAppPageMessages ({
               timeoutMs: 5000,
               guard: guardSigner
             })
-          const cacheDb = signEvent
-            ? getNostrDb(userPkB16, { ...nostrDbMaintenanceOptions(signEvent) })
-            : null
+          let cacheDb = null
+          if (signEvent) {
+            try {
+              assertNostrDbAccess(userPkB16)
+              cacheDb = getNostrDb(userPkB16, { ...nostrDbMaintenanceOptions(signEvent) })
+            } catch (error) { if (!isNostrDbAccessError(error)) throw error }
+          }
           let downloader
           try {
             downloader = new NFileDownloader(entity, {

@@ -1,3 +1,5 @@
+import { assertNostrDbAccess } from '#services/idb/nostrdb/access.js'
+import { NOSTRDB_CAPABILITIES } from '#services/idb/nostrdb/capabilities.js'
 import { ask as defaultAsk, reply as defaultReply } from '../index.js'
 import {
   personalCopyEncryptionKind,
@@ -45,6 +47,7 @@ function normalizePubkey (value) {
 
 function accountPubkeysFromVaultAccounts (accounts) {
   return new Set((Array.isArray(accounts) ? accounts : [])
+    .filter(account => !account.isReadOnly)
     .map(account => normalizePubkey(account?.pubkey))
     .filter(Boolean))
 }
@@ -191,6 +194,8 @@ export async function runTrustedVaultNostrDbMethod ({
   ask = defaultAsk
 }) {
   const pubkey = normalizeTrustedVaultNostrDbOwner(ownerPubkey)
+  if (method === 'supports') return [...NOSTRDB_CAPABILITIES]
+  assertNostrDbAccess(pubkey)
   const maintenanceSignEvent = createTrustedVaultNostrDbSignEvent({
     vaultPort,
     ownerPubkey: pubkey,
@@ -252,6 +257,7 @@ export async function runTrustedVaultNostrDbMethod ({
     })?.[Symbol.asyncIterator]?.()
     const next = iterator ? await iterator.next() : { done: true }
     await iterator?.return?.()
+    assertNostrDbAccess(pubkey)
     const batch = Array.isArray(next.value) ? next.value : []
     const events = batch.slice(0, requested)
     return {
@@ -326,6 +332,7 @@ export async function streamTrustedVaultNostrDbSubscription (e, {
     if (subscriptions.has(subscriptionId)) throw new Error('NOSTRDB_SUBSCRIPTION_EXISTS')
 
     const pubkey = normalizeTrustedVaultNostrDbOwner(ownerPubkey)
+    assertNostrDbAccess(pubkey)
     const maintenanceSignEvent = createTrustedVaultNostrDbSignEvent({
       vaultPort,
       ownerPubkey: pubkey,
@@ -350,6 +357,8 @@ export async function streamTrustedVaultNostrDbSubscription (e, {
     subscription.iterator = iterator
 
     for await (const item of iterator) {
+      assertNostrDbAccess(pubkey)
+      if (subscription.cancelled) break
       reply(e, { payload: item, isLast: false }, { to: vaultPort })
     }
     if (!subscription.cancelled) {

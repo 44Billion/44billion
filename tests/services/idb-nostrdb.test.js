@@ -1299,7 +1299,7 @@ describe('nostrdb', () => {
 
   it('uses key cursors for sync ids_only time scans without fetching event values', async () => {
     const owner = `${OWNER}55`
-    const db = getNostrDb(owner)
+    const db = getNostrDb(owner, { maintenance: false })
     const old = event({ id: '1'.repeat(64), created_at: 10 })
     const newer = event({ id: '2'.repeat(64), created_at: 20 })
     const outside = event({ id: '3'.repeat(64), created_at: 30 })
@@ -5179,6 +5179,13 @@ class FakeObjectStore {
       this.data.getCount++
       return this.data.records.get(key)
     }, this.tx)
+  }
+
+  getAll (range, limit = Infinity) {
+    return request(() => [...this.data.records.values()]
+      .filter(value => !range || range.includes(getByKeyPath(value, this.data.keyPath)))
+      .sort((a, b) => compareKeys(getByKeyPath(a, this.data.keyPath), getByKeyPath(b, this.data.keyPath)))
+      .slice(0, limit), this.tx)
   }
 
   put (value) {

@@ -1,3 +1,5 @@
+import { assertNostrDbAccountFlags, assertNostrDbAccess, watchNostrDbAccess } from '#services/idb/nostrdb/access.js'
+import { NOSTRDB_CAPABILITIES } from '#services/idb/nostrdb/capabilities.js'
 import { base16ToBase62 } from 'libp2r2p/base62'
 import { nostrDbStreamDonePayload } from '../nostrdb-protocol.js'
 import { guardSignerRequest } from './signer-guard.js'
@@ -32,6 +34,7 @@ export function createAppEventStoreBridge ({
 }) {
   const subscriptions = new Map()
   let disposed = false
+  const stopAccessWatch = watchNostrDbAccess(revalidateSubscriptions)
 
   // An explicit invalid target must never fall back to the workspace account.
   function resolveScope (payload) {
@@ -39,7 +42,7 @@ export function createAppEventStoreBridge ({
     const pubkey = scoped && typeof payload.userPk === 'string'
       ? payload.userPk.toLowerCase()
       : scoped ? payload.userPk : ownerPubkey
-    const assertAvailable = () => {
+    const assertPersona = () => {
       if (scoped && (
         typeof pubkey !== 'string' || !/^[0-9a-f]{64}$/.test(pubkey) ||
         !readPersonaPublicKeys().includes(pubkey)
@@ -49,8 +52,13 @@ export function createAppEventStoreBridge ({
         })
       }
     }
-    assertAvailable()
+    assertPersona()
     const userPk = base16ToBase62(pubkey, { mode: 'integer', minLength: 43 })
+    const assertAvailable = () => {
+      assertPersona()
+      assertNostrDbAccountFlags(readAccountFlags(userPk))
+      assertNostrDbAccess(pubkey)
+    }
     const onAttention = kind => notifySignerRequestAttention?.({ kind, userPk })
     const guard = ({ method, params }) => guardSignerRequest({
       method, params, account: readAccountFlags(userPk), onAttention
@@ -67,7 +75,7 @@ export function createAppEventStoreBridge ({
       })
       assertAvailable()
     }
-    return { pubkey, userPk, assertAvailable, guard, onAttention, permission }
+    return { pubkey, userPk, assertAvailable, assertPersona, guard, onAttention, permission }
   }
 
   // Cancellation closes idle iterators and prevents pending permissions from starting a stream.
@@ -95,6 +103,7 @@ export function createAppEventStoreBridge ({
 
   function dispose () {
     disposed = true
+    stopAccessWatch()
     for (const id of subscriptions.keys()) stop(id)
   }
 
@@ -107,6 +116,8 @@ export function createAppEventStoreBridge ({
     const active = () => !disposed && !subscription?.cancelled
     try {
       const scope = resolveScope(payload)
+      if (method === 'supports') { reply(event, { payload: [...NOSTRDB_CAPABILITIES] }); return }
+      scope.assertAvailable()
       if (method === 'subscribe') {
         if (!subscriptionId) throw new Error('NOSTRDB_SUBSCRIPTION_ID_REQUIRED')
         if (subscriptions.has(subscriptionId)) throw new Error('NOSTRDB_SUBSCRIPTION_EXISTS')

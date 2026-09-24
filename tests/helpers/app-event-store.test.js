@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { setImmediate } from 'node:timers/promises'
 import { base16ToBase62 } from 'libp2r2p/base62'
+import { notifyNostrDbAccessChanged } from '../../src/services/idb/nostrdb/access.js'
 import { createAppEventStoreBridge } from '../../src/helpers/window-message/browser/app-event-store.js'
 
 const owner = '11'.repeat(32)
@@ -120,7 +121,7 @@ describe('persona event store bridge', () => {
     assert.equal(f.replies.at(-1).error.code, 'PUBKEY_NOT_IN_PERSONA')
   })
 
-  it('uses the target account lock/read-only flags and leaves reads available', async () => {
+  it('blocks readonly storage but leaves locked-account reads available', async () => {
     const f = fixture()
     for (const [flags, code] of [
       [{ isLocked: true }, 'VAULT_LOCKED'],
@@ -131,7 +132,8 @@ describe('persona event store bridge', () => {
       await f.request({ method: 'add', userPk: peer, params: [{ kind: 3, tags: [] }] })
       assert.equal(f.replies.at(-1).error.code, code)
       await f.request({ method: 'count', userPk: peer, params: [{ kinds: [3] }] })
-      assert.equal(f.replies.at(-1).payload, 2)
+      if (flags.isLocked) assert.equal(f.replies.at(-1).payload, 2)
+      else assert.equal(f.replies.at(-1).error.code, code)
     }
     assert.equal(f.vaultCalls.length, 0)
     assert.equal(f.accesses.length, 0)
@@ -219,4 +221,36 @@ it('remove rejects persona revocation during permission authorization and never 
   assert.equal(f.replies.at(-1).error.code, 'PUBKEY_NOT_IN_PERSONA')
   assert.equal(f.vaultCalls.length, 0)
   f.bridge.dispose()
+})
+
+it('blocks all read-only operations before prompts or DB creation, preserving persona precedence and static supports', async () => {
+  const f = fixture()
+  try {
+    f.flags.set(accountKey(peer), { isReadOnly: true })
+    for (const method of ['add', 'addPersonalCopy', 'remove', 'query', 'count', 'subscribe']) {
+      await f.request({ method, userPk: peer, params: [{}], subscriptionId: method })
+      assert.equal(f.replies.at(-1).error.code, 'READ_ONLY_ACCOUNT')
+    }
+    await f.request({ method: 'supports', userPk: peer })
+    assert.ok(f.replies.at(-1).payload.includes('subscribe:initial'))
+    f.state.members = [owner]
+    await f.request({ method: 'query', userPk: peer })
+    assert.equal(f.replies.at(-1).error.code, 'PUBKEY_NOT_IN_PERSONA')
+    assert.deepEqual(f.databases, [])
+    assert.deepEqual(f.permissions, [])
+    assert.deepEqual(f.vaultCalls, [])
+  } finally { f.bridge.dispose() }
+})
+
+it('read-only state invalidates an idle app subscription without a new event', async () => {
+  const f = fixture()
+  try {
+    const running = f.request({ method: 'subscribe', userPk: peer, params: [{}], subscriptionId: 'readonly' })
+    await setImmediate()
+    f.flags.set(accountKey(peer), { isReadOnly: true })
+    notifyNostrDbAccessChanged()
+    await running
+    assert.equal(f.replies.at(-1).error.code, 'READ_ONLY_ACCOUNT')
+    assert.equal(f.streams[0].iterator.closed, true)
+  } finally { f.bridge.dispose() }
 })

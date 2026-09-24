@@ -1,6 +1,7 @@
 import { DEFAULT_PERSONA_ID, isPersonaEligible } from '#services/personas/model.js'
 import { base62ToBase16 } from 'libp2r2p/base62'
 import {
+  NOSTRDB_PENDING_DELETIONS_KEY,
   NOSTRDB_ACCOUNT_COVERAGE_PREFIX,
   NOSTRDB_ACCOUNT_COVERAGE_REGISTRY,
   ACCOUNT_SUFFIXES,
@@ -448,6 +449,19 @@ export function auditPersistedState (localStorageArea, sessionStorageArea, {
     const item = toIssue(code, message, details)
     if (!actionable) item.actionable = false
     issues.push(item)
+  }
+
+  const pendingDeletions = getValue(local, NOSTRDB_PENDING_DELETIONS_KEY)
+  if (isInvalid(local, NOSTRDB_PENDING_DELETIONS_KEY) || (pendingDeletions != null && !toPlainObject(pendingDeletions))) {
+    issue('invalid-nostrdb-deletions', 'NostrDB deletion intents require inspection', undefined, false)
+  } else if (pendingDeletions) {
+    const normalized = Object.fromEntries(Object.entries(pendingDeletions)
+      .filter(([owner]) => /^[0-9a-f]{64}$/.test(owner))
+      .map(([owner, token]) => [owner, typeof token === 'string' && token ? token : 'pending']))
+    if (JSON.stringify(normalized) !== JSON.stringify(pendingDeletions)) {
+      setLocal(NOSTRDB_PENDING_DELETIONS_KEY, normalized)
+      issue('invalid-nostrdb-deletions', 'Normalize deletion intents without dropping valid owners')
+    }
   }
 
   const workspaceKeysRaw = getValue(local, 'session_workspaceKeys')

@@ -28,8 +28,8 @@ const bundle = await build({
       const pubkey = getPublicKey(secret);
       const metadata = finalizeEvent({kind:10002, created_at:baseline-2000,tags:[['r',relay]],content:''},secret);
       for(let n=0;n<(index===1?240:3);n++) events.push(finalizeEvent({kind:1,created_at:baseline-1000,tags:[],content:String(n)},secret));
-      const db = getNostrDb(pubkey,{maintenance:false});
-      const coverage = createAccountEventCoverage(pubkey);
+      const db = index===6 ? null : getNostrDb(pubkey,{maintenance:false});
+      const coverage = index===6 ? null : createAccountEventCoverage(pubkey);
       accounts.push({pubkey,db,coverage,isReadOnly:index===6,getStoredEvent:kind=>kind===10002?metadata:null,sendToVault:()=>{}});
     }
     const transport = accountRelayFixture({events});
@@ -40,15 +40,15 @@ const bundle = await build({
       start:()=>tracker.setAccounts(accounts),
       stop:async()=>{controller.abort();await tracker.settled();await transport.pool.disconnectAll()},
       complete:async()=>{
-        for(const account of accounts) {
+        for(const account of accounts.filter(account=>!account.isReadOnly)) {
           const rows=await account.coverage.read(relay,accountKinds);
           if(!rows.every(row=>row.intervals[0]?.[0]===0&&row.intervals[0]?.[1]>=baseline))return false;
         }
         return true;
       },
-      counts:()=>Promise.all(accounts.map(account=>account.db.count([{kinds:[1],authors:[account.pubkey]}]))),
+      counts:()=>Promise.all(accounts.map(account=>account.db ? account.db.count([{kinds:[1],authors:[account.pubkey]}]) : 0)),
       isolated:async()=>{
-        for(const account of accounts) {
+        for(const account of accounts.filter(account=>!account.isReadOnly)) {
           const {results}=await account.db.query({kinds:[1]});
           if(results.some(event=>event.pubkey!==account.pubkey))return false;
         }
@@ -85,10 +85,16 @@ try {
   await evaluate('fixture.start()')
   await browser.until(() => evaluate('fixture.complete()'), 'durable account history')
   assert.deepEqual(await evaluate('fixture.errors'), [])
-  assert.deepEqual(await evaluate('fixture.counts()'), [200, 3, 3, 3, 3, 3])
+  assert.deepEqual(await evaluate('fixture.counts()'), [200, 3, 3, 3, 3, 0])
   assert.equal(await evaluate('fixture.isolated()'), true)
-  assert.equal(await evaluate('fixture.transport.subscriptions.filter(sub=>!sub.closed&&sub.filter.limit===0).length'), 4)
+  assert.equal(await evaluate('fixture.transport.subscriptions.filter(sub=>!sub.closed&&sub.filter.limit===0).length'), 6)
   assert.equal(await evaluate('fixture.warnings.length'), 1)
+  assert.equal(await evaluate('indexedDB.databases().then(dbs=>dbs.some(db=>db.name==="44billion_nostrdb:"+fixture.accounts[5].pubkey))'), false)
+  const reads = await evaluate('fixture.transport.calls.length')
+  // Exercise the published automatic timer with real Web Locks/IndexedDB.
+  for (let step = 0; step < 4; step++) await evaluate('new Promise(resolve=>setTimeout(resolve,16000))')
+  assert.equal(await evaluate('fixture.transport.calls.length'), reads)
+  assert.equal(await evaluate('fixture.accounts[0].coverage.read("wss://relay.example",[1]).then(rows=>rows[0].intervals.at(-1)[1]>=fixture.baseline+55)'), true)
   await evaluate('fixture.stop()')
   assert.equal(await evaluate('fixture.transport.subscriptions.filter(sub=>!sub.closed).length'), 0)
 
@@ -100,8 +106,8 @@ try {
   await browser.until(() => evaluate('fixture.complete()'), 'reloaded coverage')
   // Let startup scheduling settle; any accidental full-history query is visible.
   await evaluate('new Promise(resolve=>setTimeout(resolve,200))')
-  assert.equal(await evaluate('fixture.transport.calls.every(call=>call.filter.since>=fixture.baseline-620)'), true)
-  assert.deepEqual(await evaluate('fixture.counts()'), [200, 3, 3, 3, 3, 3])
+  assert.equal(await evaluate('fixture.transport.calls.every(call=>call.filter.authors.includes(fixture.accounts[5].pubkey) ? call.filter.since===0 : call.filter.since>=fixture.baseline-620)'), true)
+  assert.deepEqual(await evaluate('fixture.counts()'), [200, 3, 3, 3, 3, 0])
   assert.deepEqual(await evaluate('fixture.errors'), [])
   await evaluate('fixture.tracker.setAccounts([fixture.accounts[0]])')
   await browser.until(() => evaluate('fixture.transport.subscriptions.filter(sub=>!sub.closed).length===4 && fixture.transport.subscriptions.filter(sub=>!sub.closed).every(sub=>sub.filter.authors.length===1)'), 'regrouped account feeds')

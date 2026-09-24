@@ -101,6 +101,8 @@ export async function applyStorageRepairPlan (plan, {
     if (item.ownerPubkey) ownersToDelete.add(item.ownerPubkey)
   }
 
+  // Pending read-only deletions are retained here; the account lifecycle retries
+  // DB + shared-chunk cleanup before allowing the owner to open storage again.
   await withSubdomainLock(() => {
     const storage = subdomainStorage(localStorageArea)
     const unchanged = key => !plan.subdomainSnapshot ||

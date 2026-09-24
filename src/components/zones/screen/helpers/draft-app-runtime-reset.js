@@ -3,8 +3,8 @@ import { base62ToBase16 } from 'libp2r2p/base62'
 function defaultGetNostrDb (ownerPubkey) {
   return {
     async deleteEventsByApp (appId) {
-      const { getNostrDb } = await import('#services/idb/nostrdb/index.js')
-      return getNostrDb(ownerPubkey).deleteEventsByApp(appId)
+      const { deleteNostrDbAppData } = await import('#services/idb/nostrdb/index.js')
+      return deleteNostrDbAppData(ownerPubkey, appId)
     }
   }
 }

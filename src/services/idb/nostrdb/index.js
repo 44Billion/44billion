@@ -1,3 +1,5 @@
+import { assertNostrDbAccess, isNostrDbAccessError, watchNostrDbAccess } from './access.js'
+import { NOSTRDB_CAPABILITIES } from './capabilities.js'
 import { normalizeLocalRemovalTargets, localRemovalResult } from './local-removal.js'
 import { withInitialResults } from './initial-subscription.js'
 import { sha256 } from '@noble/hashes/sha2.js'
@@ -301,6 +303,7 @@ export function getNostrDb (ownerPubkey, {
   personalCopyEncrypt,
   personalCopyObfuscate
 } = {}) {
+  assertNostrDbAccess(ownerPubkey)
   if (!storeCache.has(ownerPubkey)) {
     storeCache.set(ownerPubkey, new NostrDb(ownerPubkey))
   }
@@ -334,7 +337,21 @@ Filters follow NIP-01 shape plus local extensions: search, ids_only, !ids,
 */
 export class NostrDb {
   constructor (ownerPubkey) {
+    assertNostrDbAccess(ownerPubkey)
     this.ownerPubkey = ownerPubkey
+    this.accessError = null
+    this.assertAccess = () => {
+      assertNostrDbAccess(ownerPubkey)
+      if (this.accessError) throw this.accessError
+    }
+    // Retained references must not deliver late results or reopen a deleted DB.
+    for (const method of ['add', 'addEvent', 'query', 'count', 'remove']) {
+      const run = this[method].bind(this)
+      this[method] = async (...args) => {
+        this.assertAccess()
+        try { return await run(...args) } finally { this.assertAccess() }
+      }
+    }
     this.sender = `${Date.now()}:${Math.random()}`
     this.subscriptions = new Set()
     this.appClaimQueues = new Map()
@@ -347,6 +364,9 @@ export class NostrDb {
     this.personalCopyEncrypt = null
     this.personalCopyObfuscate = null
     this.bc = null
+    this.stopAccessWatch = watchNostrDbAccess(() => {
+      try { this.assertAccess() } catch (error) { this.invalidate(error) }
+    })
 
     if (typeof BroadcastChannel === 'function') {
       this.bc = new BroadcastChannel(channelName(ownerPubkey))
@@ -461,6 +481,7 @@ export class NostrDb {
     const crdtMergeSource = normalizeCrdtMergeSource(mergeSource)
 
     if (personalCopy && typeof this.personalCopyObfuscate === 'function') {
+      this.assertAccess()
       const db = await openNostrDb(this.ownerPubkey)
       if (db) {
         const pending = await this.pendingInnerMirrors(db)
@@ -576,6 +597,7 @@ export class NostrDb {
     if (coordinate === null) return null
 
     const expectedAddress = addressKey(event.kind, event.pubkey, coordinate)
+    this.assertAccess()
     const db = await openNostrDb(this.ownerPubkey)
     if (!db) return null
 
@@ -594,6 +616,7 @@ export class NostrDb {
       if (!template) return null
 
       const signed = await signCrdtTemplate(signEvent, template)
+      this.assertAccess()
       if (!isValidCrdtSignedEvent(signed, template, expectedAddress, this.ownerPubkey)) return null
 
       const latest = await getStoredRecordByAddress(db, expectedAddress)
@@ -614,6 +637,7 @@ export class NostrDb {
       '#c': [personalCopy.context],
       '#o': [personalCopy.sourceMirror]
     }
+    this.assertAccess()
     const db = await openNostrDb(this.ownerPubkey)
     if (!db) {
       return {
@@ -799,6 +823,7 @@ export class NostrDb {
     ])
     if (!allowedContexts.includes(context)) return null
 
+    this.assertAccess()
     const db = await openNostrDb(this.ownerPubkey)
     if (!db) return null
     const address = addressKey(PERSONAL_COPY_KIND, this.ownerPubkey, getCoordinate(event))
@@ -949,6 +974,7 @@ export class NostrDb {
       })
     }
 
+    this.assertAccess()
     const db = await openNostrDb(this.ownerPubkey)
     if (!db) return this.reportAddResult('addEvent', event, addResult('unavailable'), { log })
 
@@ -1076,7 +1102,7 @@ export class NostrDb {
 
         await putQuotaEvent(db, tx, record, { personalCopy, personalCopyRefs })
         return addResult(replaced ? 'replaced' : 'stored', { stored: true, storedRecord: record })
-      }, { admission: true })
+      }, { admission: true, beforeMutation: this.assertAccess })
     } catch (error) {
       await abortChunkPayloadStage(chunkStage).catch(() => {})
       const code = error instanceof NostrDbQuotaError ? 'quota' : error.code === 'unavailable' ? 'unavailable' : 'error'
@@ -1092,6 +1118,7 @@ export class NostrDb {
     }
 
     if (['stored', 'replaced', 'duplicate'].includes(result.code)) {
+      this.assertAccess()
       await finishChunkStage(chunkStage, {
         owner: this.ownerPubkey,
         event,
@@ -1129,7 +1156,8 @@ export class NostrDb {
 
     throwIfAborted(signal)
 
-    const db = await openNostrDb(this.ownerPubkey)
+    this.assertAccess()
+    const db = await openNostrDb(this.ownerPubkey, { create: false })
     if (!db) return compactResult()
 
     const maxRefs = Number.isInteger(maxTargetRefs) && maxTargetRefs > 0 ? maxTargetRefs : DELETION_COMPACTION_MAX_TAGS
@@ -1486,7 +1514,8 @@ export class NostrDb {
 
     throwIfAborted(signal)
 
-    const db = await openNostrDb(this.ownerPubkey)
+    this.assertAccess()
+    const db = await openNostrDb(this.ownerPubkey, { create: false })
     if (!db) return deletionPruneResult()
 
     const maxRequests = normalizeNonNegativeInteger(maxDeletionRequests, DELETION_REQUEST_MAINTENANCE_MAX_REQUESTS)
@@ -1548,7 +1577,8 @@ export class NostrDb {
 
   async purgeExpired ({ now } = {}) {
     const cutoff = normalizeTimestamp(now, currentUnixTime())
-    const db = await openNostrDb(this.ownerPubkey)
+    this.assertAccess()
+    const db = await openNostrDb(this.ownerPubkey, { create: false })
     if (!db) return 0
 
     try {
@@ -1583,7 +1613,8 @@ export class NostrDb {
     graceMs = HEARSAY_PRUNE_GRACE_MS,
     batchSize = HEARSAY_PRUNE_BATCH_SIZE
   } = {}) {
-    const db = await openNostrDb(this.ownerPubkey)
+    this.assertAccess()
+    const db = await openNostrDb(this.ownerPubkey, { create: false })
     if (!db) return 0
 
     const cutoff = now * 1000 - normalizeDurationMs(graceMs, HEARSAY_PRUNE_GRACE_MS)
@@ -1679,7 +1710,8 @@ export class NostrDb {
 
   async purgeChunkRoot (root, { force = false, now = Date.now() } = {}) {
     if (!/^[0-9a-f]{64}$/.test(root || '')) return 0
-    const db = await openNostrDb(this.ownerPubkey)
+    this.assertAccess()
+    const db = await openNostrDb(this.ownerPubkey, { create: false })
     if (!db) return 0
 
     const references = await countBlobReferences(db, root)
@@ -1869,6 +1901,7 @@ export class NostrDb {
       throw error
     }
 
+    this.assertAccess()
     const db = await openNostrDb(this.ownerPubkey)
     if (!db) throw new Error('IndexedDB is unavailable')
 
@@ -1889,6 +1922,7 @@ export class NostrDb {
   }
 
   async count (filterOrFilters, options = {}) {
+    this.assertAccess()
     const db = await openNostrDb(this.ownerPubkey)
     if (!db) return 0
 
@@ -1906,24 +1940,7 @@ export class NostrDb {
   }
 
   async supports () {
-    return [
-      'search',
-      'search:sort:asc',
-      'search:sort:desc',
-      // Note: it could instead be an `algo: "sync"` filter field
-      // but we decided to use search extensions for any custom
-      // behavior we come up with
-      'search:algo:sync',
-      'search:autocomplete:true',
-      'ids_only',
-      '!ids',
-      '&tags',
-      'multi_filters',
-      'subscribe:scheduled',
-      'subscribe:initial',
-      'app_export',
-      'remove'
-    ]
+    return [...NOSTRDB_CAPABILITIES]
   }
 
   async remove (targets, { assertAccess } = {}) {
@@ -1935,6 +1952,7 @@ export class NostrDb {
     }
     try {
       checkAccess()
+      this.assertAccess()
       const db = await openNostrDb(this.ownerPubkey)
       if (!db) return localRemovalResult('unavailable')
       const removed = await withQuotaMutation(db, async tx => {
@@ -1973,6 +1991,22 @@ export class NostrDb {
     stopNostrDbMaintenance(this)
   }
 
+  invalidate (error = Object.assign(new Error('NOSTRDB_RESET'), { code: 'NOSTRDB_RESET' })) {
+    this.accessError ??= error
+    this.stopMaintenance()
+    this.stopAccessWatch?.()
+    clearTimeout(this.appClaimTimer)
+    this.appClaimQueues.clear()
+    this.bc?.close()
+    this.bc = null
+    for (const subscription of [...this.subscriptions]) subscription.cancel(this.accessError)
+    if (storeCache.get(this.ownerPubkey) === this) storeCache.delete(this.ownerPubkey)
+    const name = NOSTRDB_PREFIX + this.ownerPubkey
+    const cached = dbCache.get(name)
+    dbCache.delete(name)
+    Promise.resolve(cached).then(db => db?.close()).catch(() => {})
+  }
+
   // App reinstall backfill flow: a device that still has app-scoped rows can
   // stream them to another device, which re-imports each event with add(event, { appId }).
   // Resume interrupted transfers with either skip: receivedCount or after: lastReceivedEventId
@@ -1980,6 +2014,7 @@ export class NostrDb {
     const appRef = normalizeOptionalAppRef(appId)
     if (!appRef) return
 
+    this.assertAccess()
     const db = await openNostrDb(this.ownerPubkey)
     if (!db) return
 
@@ -2006,11 +2041,12 @@ export class NostrDb {
           .map(stored => stored.event)
 
         await hydrateChunkResults(this.ownerPubkey, events)
-
+        this.assertAccess()
         if (events.length > 0) yield events
         if (idKeys.length < size) return
       }
     } catch (error) {
+      this.assertAccess()
       logNostrDbIssue('exportEventsByApp', { ownerPubkey: this.ownerPubkey }, error)
     }
   }
@@ -2021,7 +2057,7 @@ export class NostrDb {
     const appRef = normalizeOptionalAppRef(appId)
     if (!appRef) return 0
 
-    const db = await openNostrDb(this.ownerPubkey)
+    const db = await openNostrDb(this.ownerPubkey, { create: false })
     if (!db) return 0
 
     try {
@@ -2044,6 +2080,7 @@ export class NostrDb {
   // { scheduled: true }, durable future events wait until created_at <= now + 2;
   // regular and honorary ephemeral events are still streamed immediately.
   subscribe (filterOrFilters, options = {}) {
+    this.assertAccess()
     const filters = parseFilterInput(filterOrFilters, options)
     const idsOnly = filters[0]?.idsOnly === true
     const appRef = idsOnly ? undefined : normalizeReadAppRef(options)
@@ -2062,7 +2099,14 @@ export class NostrDb {
     const stream = options.initial === true
       ? withInitialResults(iterator, () => this.query(filterOrFilters, { ...options, [SNAPSHOT_READ]: true }), () => subscription.pendingCount())
       : iterator
-    const delivery = hydrateChunkSubscription(this.ownerPubkey, stream)
+    const hydrated = hydrateChunkSubscription(this.ownerPubkey, stream)
+    const assertAccess = this.assertAccess
+    const delivery = {
+      [Symbol.asyncIterator] () { return this },
+      async next () { assertAccess(); const value = await hydrated.next(); assertAccess(); return value },
+      return: value => hydrated.return?.(value),
+      throw: error => hydrated.throw?.(error)
+    }
     if (!appRef || options.deferCacheAccess || filters[0]?.algorithm === 'sync') return delivery
     const owner = this.ownerPubkey
     return {
@@ -2154,6 +2198,7 @@ export class NostrDb {
   }
 
   publish (event, shouldBroadcast, storedRecord) {
+    this.assertAccess()
     for (const subscription of this.subscriptions) {
       subscription.push(event, storedRecord)
     }
@@ -2232,7 +2277,17 @@ async function stageChunkPayloadWithPressure (nostrDb, db, chunkData) {
 async function purgeOneChunkRootForCapacity () {
   const candidates = await listChunkRootPurgeCandidates({ limit: CHUNK_PURGE_BATCH_SIZE })
   for (const candidate of candidates) {
-    const db = getNostrDb(candidate.owner, { maintenance: false })
+    let db
+    try {
+      if (!await openNostrDb(candidate.owner, { create: false })) {
+        await removeOwnerRootCopies(candidate.owner, candidate.root)
+        return true
+      }
+      db = getNostrDb(candidate.owner, { maintenance: false })
+    } catch (error) {
+      if (isNostrDbAccessError(error)) continue
+      throw error
+    }
     const removed = await db.purgeChunkRoot(candidate.root, { force: true })
     if (removed > 0) return true
     if (!await getOwnerChunkRoot(candidate.owner, candidate.root)) return true
@@ -2311,7 +2366,7 @@ async function deleteInvalidChunkRecord (db, stored) {
 }
 
 async function reconcileOwnerChunks (nostrDb) {
-  const db = await openNostrDb(nostrDb.ownerPubkey)
+  const db = await openNostrDb(nostrDb.ownerPubkey, { create: false })
   if (!db) return
 
   let centralAfter
@@ -2442,7 +2497,7 @@ export async function maintainAllChunkCaches ({ fullPayloadSweep = false } = {})
   }
 
   for (const owner of [...owners].sort()) {
-    await getNostrDb(owner, { maintenance: false }).maintainChunks().catch(() => {})
+    try { await getNostrDb(owner, { maintenance: false }).maintainChunks() } catch {}
   }
   if (fullPayloadSweep) {
     let restart = true
@@ -2529,18 +2584,34 @@ function stopNostrDbMaintenance (db) {
   db.deletionRequestMaintenanceSignEvent = null
 }
 
-export async function openNostrDb (ownerPubkey, { quotaLockHeld = false } = {}) {
+export async function openNostrDb (ownerPubkey, { quotaLockHeld = false, create = true } = {}) {
+  assertNostrDbAccess(ownerPubkey)
   if (typeof indexedDB === 'undefined') return null
 
   const dbName = `${NOSTRDB_PREFIX}${ownerPubkey}`
-  const open = () => {
+  const open = async () => {
+    assertNostrDbAccess(ownerPubkey)
+    if (!create && !dbCache.has(dbName)) {
+      if (typeof indexedDB.databases !== 'function' || !(await indexedDB.databases()).some(({ name }) => name === dbName)) return null
+      assertNostrDbAccess(ownerPubkey)
+    }
     if (!dbCache.has(dbName)) dbCache.set(dbName, initNostrDb(dbName).catch(() => null))
-    return dbCache.get(dbName)
+    const db = await dbCache.get(dbName)
+    assertNostrDbAccess(ownerPubkey)
+    return db
   }
   if (dbCache.has(dbName) || quotaLockHeld) return open()
   // Empty databases remain readable without Web Locks; admission fails closed.
   if (!globalThis.navigator?.locks?.request) return open()
   return withNostrDbQuotaLock(open)
+}
+
+// Cleanup is not permission to create an empty owner database.
+export async function deleteNostrDbAppData (ownerPubkey, appId) {
+  try {
+    if (!await openNostrDb(ownerPubkey, { create: false })) return 0
+    return await getNostrDb(ownerPubkey, { maintenance: false }).deleteEventsByApp(appId)
+  } catch (error) { if (isNostrDbAccessError(error)) return 0; throw error }
 }
 
 export async function deleteNostrDb (ownerPubkey) {
@@ -2550,7 +2621,7 @@ export async function deleteNostrDb (ownerPubkey) {
     deleted = await withNostrDbQuotaLock(async () => {
       const dbName = `${NOSTRDB_PREFIX}${ownerPubkey}`
       const store = storeCache.get(ownerPubkey)
-      store?.stopMaintenance?.()
+      store?.invalidate()
       store?.bc?.close()
       if (store) store.bc = null
       storeCache.delete(ownerPubkey)
@@ -2567,7 +2638,7 @@ export async function deleteNostrDb (ownerPubkey) {
       })
     })
   } catch { return false }
-  if (deleted) await clearOwnerChunkCache(ownerPubkey).catch(() => {})
+  if (deleted) await clearOwnerChunkCache(ownerPubkey)
   return deleted
 }
 
@@ -2586,6 +2657,7 @@ function initNostrDb (dbName) {
   req.onsuccess = () => {
     const db = req.result
     db.onversionchange = () => {
+      storeCache.get(dbName.slice(NOSTRDB_PREFIX.length))?.invalidate()
       db.close()
       dbCache.delete(dbName)
     }
@@ -2738,7 +2810,7 @@ function appClaimQueueSize (queues) {
 }
 
 async function writeAppClaimQueues (ownerPubkey, queues) {
-  const db = await openNostrDb(ownerPubkey)
+  const db = await openNostrDb(ownerPubkey, { create: false })
   if (!db || queues.size === 0) return 0
 
   const tx = db.transaction([EVENTS_STORE], 'readwrite')
@@ -2781,8 +2853,8 @@ async function purgeUnclaimedAppDataPage (ownerPubkey, {
   intervalMs = 0,
   now
 } = {}) {
-  const db = await openNostrDb(ownerPubkey)
-  if (!db) throw new Error('IndexedDB is unavailable')
+  const db = await openNostrDb(ownerPubkey, { create: false })
+  if (!db) return { deleted: 0, hasMore: false, nextRunAt: Date.now() + intervalMs }
   const scanLimit = normalizePositiveInteger(maxScanned, UNCLAIMED_APP_DATA_MAX_SCANNED)
   const deleteLimit = normalizePositiveInteger(batchSize, UNCLAIMED_APP_DATA_BATCH_SIZE)
   return withQuotaMutation(db, async tx => {
@@ -3863,6 +3935,7 @@ function createSubscription (filters, {
   let closed = false
   let yielded = 0
   let onClose
+  let accessError
 
   const close = () => {
     if (closed) return
@@ -3915,6 +3988,12 @@ function createSubscription (filters, {
     : null
 
   const subscription = {
+    cancel (error) {
+      accessError = error
+      queue.length = 0
+      while (waiters.length) waiters.shift().reject(error)
+      close()
+    },
     pendingCount: () => queue.length,
     push (event, storedRecord) {
       if (closed) return
@@ -3937,6 +4016,7 @@ function createSubscription (filters, {
           return this
         },
         next () {
+          if (accessError) return Promise.reject(accessError)
           if (queue.length > 0) {
             return Promise.resolve({ value: queue.shift(), done: false })
           }

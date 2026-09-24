@@ -35,6 +35,7 @@ export const GLOBAL_LOCAL_KEYS = [
   '44billion:nostrdb-quotas:v1',
   'local_embeddedOnlyRetentionAdmissions',
   'local_pendingStorageRepairPlan',
+  'local_nostrDbPendingDeletions', // Owner -> deletion token; blocks reopening until cleanup commits.
   'local_storageRepairInProgress',
   'local_storageRepairAttempts',
   // Development-only marker for the launcher's full environment reset.
@@ -131,3 +132,5 @@ export const NOSTRDB_QUOTA_SETTINGS_KEY = '44billion:nostrdb-quotas:v1'
 // { key, version: 1, generation, relay, kind, intervals: [[since, until]] }.
 export const NOSTRDB_ACCOUNT_COVERAGE_PREFIX = 'accountEventCoverage:'
 export const NOSTRDB_ACCOUNT_COVERAGE_REGISTRY = 'accountEventCoverage:registry'
+
+export const NOSTRDB_PENDING_DELETIONS_KEY = 'local_nostrDbPendingDeletions'

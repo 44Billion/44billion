@@ -108,9 +108,9 @@ export async function clearLocalAppData ({ appId, userPk, appSubdomain }) {
         const errors = []
         try { await askAppToClearData(appSubdomain, { strict: true, localDevelopment: true }) } catch (error) { errors.push(error) }
         try {
-          const { getNostrDb } = await import('#services/idb/nostrdb/index.js')
+          const { deleteNostrDbAppData } = await import('#services/idb/nostrdb/index.js')
           const owner = base62ToBase16(userPk, { mode: 'integer', byteLength: 32 }).toLowerCase()
-          await getNostrDb(owner).deleteEventsByApp(appId)
+          await deleteNostrDbAppData(owner, appId)
         } catch (error) { errors.push(error) }
         if (errors.length) throw new AggregateError(errors, 'Some local app data could not be cleared')
       })

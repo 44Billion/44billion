@@ -1,3 +1,4 @@
+import { assertNostrDbAccess, isNostrDbAccessError } from './access.js'
 import {
   NOSTRDB_CACHE_ACCESS_STORE as CACHE,
   NOSTRDB_MAINTENANCE_STORE as MAINTENANCE,
@@ -242,7 +243,11 @@ async function allDatabases () {
     .filter(name => name?.startsWith(NOSTRDB_PREFIX)).sort()
   const dbs = []
   for (const name of names) {
-    const db = await openNostrDb(name.slice(NOSTRDB_PREFIX.length), { quotaLockHeld: true })
+    let db
+    try { db = await openNostrDb(name.slice(NOSTRDB_PREFIX.length), { quotaLockHeld: true, create: false }) } catch (error) {
+      if (isNostrDbAccessError(error)) continue
+      throw error
+    }
     if (!db) throw unavailable()
     await initializeUsage(db)
     dbs.push(db)
@@ -441,6 +446,7 @@ async function evict (dbs, limits, { extra = {}, excludeDb, excluded = new Set()
 
 export function withQuotaMutation (db, callback, { admission = false, beforeMutation } = {}) {
   return withNostrDbQuotaLock(async () => {
+    assertNostrDbAccess(db.name.slice(NOSTRDB_PREFIX.length))
     beforeMutation?.()
     if (!admission) {
       await initializeUsage(db)
@@ -498,7 +504,11 @@ export async function flushCacheAccess () {
         // Do not reopen deleted databases to deliver pending statistics.
         if (typeof globalThis.indexedDB?.databases !== 'function') return
         if (!(await indexedDB.databases()).some(({ name }) => name === `${NOSTRDB_PREFIX}${owner}`)) return
-        const db = await openNostrDb(owner, { quotaLockHeld: true })
+        let db
+        try { db = await openNostrDb(owner, { quotaLockHeld: true, create: false }) } catch (error) {
+          if (isNostrDbAccessError(error)) return
+          throw error
+        }
         if (!db) return
         const tx = db.transaction(CACHE, 'readwrite')
         const done = transactionDone(tx)

@@ -19,13 +19,13 @@ async function until (predicate) {
     await tick()
   }
 }
-async function fixture (t, { count = 1, events = [], beforeRead, add, refreshMs, errorsAllowed = false } = {}) {
+async function fixture (t, { count = 1, events = [], beforeRead, add, readOnly = [], errorsAllowed = false } = {}) {
   const transport = accountRelayFixture({ events, beforeRead })
   const controller = new AbortController()
   const errors = []
   const vault = []
   const stored = []
-  const tracker = createAccountEventTracker({ pool: transport.pool, seeds: [relay], signal: controller.signal, refreshMs, random: () => 0, reportError: (error, context) => errors.push({ error, context }) })
+  const tracker = createAccountEventTracker({ pool: transport.pool, seeds: [relay], signal: controller.signal, random: () => 0, reportError: (error, context) => errors.push({ error, context }) })
   t.after(async () => {
     controller.abort()
     await tracker.settled()
@@ -37,7 +37,7 @@ async function fixture (t, { count = 1, events = [], beforeRead, add, refreshMs,
     const { coverage } = await coverageFixture(t)
     const pubkey = pk(i)
     configs.push({
-      pubkey, coverage, isReadOnly: i === count,
+      pubkey, coverage, isReadOnly: readOnly.includes(i),
       getStoredEvent: kind => kind === 10002 ? event(kind, 1, pubkey, [['r', relay]]) : null,
       db: { async add (value) { const result = await add?.(value); if (result?.ok === false) return result; stored.push({ owner: pubkey, event: value }); return { ok: true } } },
       sendToVault: value => vault.push(value)
@@ -50,17 +50,21 @@ async function fixture (t, { count = 1, events = [], beforeRead, add, refreshMs,
   }
 }
 
-test('six accounts including readonly share four feeds, preserving owner isolation and kind selection', async t => {
+test('readonly metadata uses separate feeds without persistence or coverage', async t => {
   const events = Array.from({ length: 6 }, (_, i) => event(1, NOW - 1000, pk(i + 1)))
-  const f = await fixture(t, { count: 6, events })
+  const f = await fixture(t, { count: 6, events, readOnly: [6] })
+  f.configs[5].coverage = new Proxy({}, { get () { throw new Error('Readonly coverage must not be touched') } })
+  f.configs[5].db = { add () { throw new Error('Readonly storage must not be touched') } }
   f.start()
-  await until(() => f.stored.filter(item => item.event.kind === 1).length === 6)
+  await until(() => f.stored.filter(item => item.event.kind === 1).length === 5)
   await until(() => f.covered())
   const live = f.subscriptions.filter(sub => !sub.closed && sub.filter.limit === 0)
-  assert.equal(live.length, 4)
-  assert.ok(live.every(sub => sub.filter.authors.length === 6 && sub.filter.kinds.length <= 30))
+  assert.equal(live.length, 6)
+  assert.ok(live.every(sub => sub.filter.kinds.length <= 30))
+  assert.ok(live.filter(sub => sub.filter.authors.includes(pk(6))).every(sub => sub.filter.kinds.every(kind => [0, 10002].includes(kind))))
   assert.ok(f.stored.every(item => item.owner === item.event.pubkey))
-  assert.ok(f.stored.some(item => item.owner === pk(6) && item.event.kind === 1))
+  assert.ok(!f.stored.some(item => item.owner === pk(6)))
+  assert.ok(!f.calls.some(call => call.filter.authors.includes(pk(6)) && call.filter.kinds.some(kind => ![0, 10002].includes(kind))))
   assert.ok(f.calls.every(call => call.filter.limit === 200 && call.filter.until !== undefined))
 })
 
@@ -145,14 +149,16 @@ test('backfill failure leaves initialized live running and confirmed recent cove
   assert.ok((await f.configs[0].coverage.read(relay, [1]))[0].intervals.some(([since]) => since >= NOW - 600))
 })
 
-test('periodic refresh retains grouped live and catches clock-skew arrivals', async t => {
-  const f = await fixture(t, { refreshMs: 30 })
+test('live catches clock-skew arrivals without periodic historical refresh', async t => {
+  const f = await fixture(t, {})
   f.start()
   await until(() => f.covered())
   const incoming = event(1, NOW - 300)
-  f.emit(incoming) // older than live since, available to the next recent read
+  const reads = f.calls.length
+  f.emit(incoming) // matches the overlapping live filter
   await until(() => f.stored.some(item => item.event.id === incoming.id))
   assert.equal(f.subscriptions.filter(sub => sub.filter.limit === 0).length, 4)
+  assert.equal(f.calls.length, reads)
 })
 
 test('transient initial read failure retries without duplicated stored messages', async t => {
@@ -228,4 +234,90 @@ test('initial subscription preserves live arrivals during the snapshot and close
   await waiting.return()
   finish({ results: ['late'] })
   assert.deepEqual(await next, { done: true })
+})
+
+async function progressFixture (t, { add = async () => ({ ok: true }) } = {}) {
+  const { coverage } = await coverageFixture(t)
+  const queue = []
+  let waiting
+  let closed = false
+  const stream = {
+    push (value) { if (waiting) { const resolve = waiting; waiting = null; resolve({ value, done: false }) } else queue.push(value) },
+    next () { return closed ? Promise.resolve({ done: true }) : queue.length ? Promise.resolve({ value: queue.shift(), done: false }) : new Promise(resolve => { waiting = resolve }) },
+    return () { closed = true; queue.length = 0; waiting?.({ done: true }); return Promise.resolve({ done: true }) },
+    stopAndDrain () { return this.return() }
+  }
+  const report = { type: 'eose', relays: [{ relay, status: 'eose' }], snapshot: { since: NOW - 600, until: NOW } }
+  const controller = new AbortController()
+  const errors = []
+  let reads = 0
+  const pool = {
+    getEventsFeedGenerator () { reads++; stream.push(report); return stream },
+    async * getEventsGenerator () { reads++; yield report }
+  }
+  const tracker = createAccountEventTracker({ pool, seeds: [relay], signal: controller.signal, now: () => NOW, reportError: error => errors.push(error) })
+  tracker.setAccounts([{ pubkey: pk(1), coverage, db: { add }, getStoredEvent: () => null, sendToVault: () => {} }])
+  t.after(async () => { controller.abort(); await tracker.settled() })
+  const rows = () => coverage.read(relay, [10002])
+  await until(async () => (await rows())[0].intervals[0]?.[0] === 0)
+  return { stream, rows, errors, reads: () => reads, controller, tracker }
+}
+const progress = (since = NOW, until = NOW + 60, epoch = 1) => ({ type: 'live-progress', relay, epoch, since, until })
+
+test('live progress advances empty intervals without history reads and ignores unknown controls', async t => {
+  const f = await progressFixture(t)
+  const reads = f.reads()
+  f.stream.push({ type: 'future-control', event: event() })
+  f.stream.push(progress())
+  await until(async () => (await f.rows())[0].intervals.at(-1)[1] === NOW + 60)
+  f.stream.push(progress(NOW + 120, NOW + 180))
+  await until(async () => (await f.rows())[0].intervals.length === 2)
+  assert.deepEqual((await f.rows())[0].intervals, [[0, NOW + 60], [NOW + 120, NOW + 180]])
+  assert.equal(f.reads(), reads)
+  assert.deepEqual(f.errors, [])
+})
+
+test('live checkpoint waits for preceding storage and is discarded on storage failure', async t => {
+  const pending = Promise.withResolvers()
+  let writing = false
+  const f = await progressFixture(t, { add: async () => { writing = true; return pending.promise } })
+  f.stream.push({ type: 'event', event: event(10002, NOW + 5) })
+  f.stream.push(progress())
+  await until(() => writing)
+  assert.equal((await f.rows())[0].intervals.at(-1)[1], NOW)
+  pending.resolve({ ok: false, code: 'quota' })
+  await until(() => f.errors.length === 1)
+  assert.equal((await f.rows())[0].intervals.at(-1)[1], NOW)
+  assert.equal(f.errors[0].code, 'quota')
+})
+
+test('live checkpoint commits after a slow successful write and rejects changed epochs', async t => {
+  const pending = Promise.withResolvers()
+  let writing = false
+  const f = await progressFixture(t, { add: async () => { writing = true; return pending.promise } })
+  f.stream.push({ type: 'event', event: event(10002, NOW + 5) })
+  f.stream.push(progress())
+  await until(() => writing)
+  assert.equal((await f.rows())[0].intervals.at(-1)[1], NOW)
+  pending.resolve({ ok: true })
+  await until(async () => (await f.rows())[0].intervals.at(-1)[1] === NOW + 60)
+  f.stream.push(progress(NOW, NOW + 120, 2))
+  await until(() => f.errors.length === 1)
+  assert.equal((await f.rows())[0].intervals.at(-1)[1], NOW + 60)
+})
+
+test('read-only profiles use unrestricted snapshots and state changes retire full ingestion', async t => {
+  const profile = event(0, 100)
+  const f = await fixture(t, { events: [profile] })
+  f.start()
+  await until(() => f.covered())
+  const previous = f.subscriptions.filter(sub => !sub.closed)
+  const stored = f.stored.length
+  f.tracker.setAccounts([{ ...f.configs[0], isReadOnly: true }])
+  await until(() => previous.every(sub => sub.closed))
+  await until(() => f.calls.some(call => call.filter.kinds.includes(0) && call.filter.since === 0))
+  await until(() => f.subscriptions.filter(sub => !sub.closed).length === 2)
+  assert.equal(f.stored.length, stored)
+  assert.ok(f.vault.some(value => value.id === profile.id))
+  assert.ok(f.subscriptions.filter(sub => !sub.closed).every(sub => sub.filter.kinds.every(kind => [0, 10002].includes(kind))))
 })

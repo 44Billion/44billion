@@ -579,3 +579,12 @@ it('accepts pending origins without requesting their premature reuse', () => {
   assert.equal(plan.local.session_subdomainFreeIds, undefined)
   assert.deepEqual(plan.releaseSubdomains, [])
 })
+
+it('preserves pending NostrDB deletion owners while normalizing invalid tokens', () => {
+  const owner = 'a'.repeat(64)
+  const state = validState({ local: { local_nostrDbPendingDeletions: { [owner]: null, invalid: 'token' } } })
+  const result = auditPersistedState(state.local, state.session)
+  assert.deepEqual(result.plan.local.local_nostrDbPendingDeletions, { [owner]: 'pending' })
+  const valid = validState({ local: { local_nostrDbPendingDeletions: { [owner]: 'retry-token' } } })
+  assert.equal(Object.hasOwn(auditPersistedState(valid.local, valid.session).plan.local, 'local_nostrDbPendingDeletions'), false)
+})

@@ -88,21 +88,35 @@ its classification. Local development does not validate remote upload/discovery;
 use the publishing workflow to check those paths.
 
 
-Account event tracking groups available accounts (including read-only accounts)
-by relay and kind selection. One launcher coordinator owns the feeds; seeds read
+Account event tracking groups writable accounts by relay and kind selection.
+Read-only accounts use separate metadata-only groups (see below). One launcher coordinator owns the feeds; seeds read
 only kind 10002, and current write relays import eligible public kinds into each
 author's own NostrDB. Filters contain at most 30 distinct kinds and 500 authors.
 A newer relay list reconciles membership, retaining unchanged groups and draining
 accepted events from retired groups. Removing an account or unmounting the root
 cancels its pending delivery. Only kinds 0/10002 also update vault metadata.
 
-The published `libp2r2p@^0.10.21` pool coordinates subscription capacity. Grouped
+The published `libp2r2p@^0.10.22` pool coordinates subscription capacity. Grouped
 feeds start with a bounded recent snapshot, with **ten minutes of overlap**.
 Before releasing buffered live events, the tracker completes any truncated recent
 pages and catches up gaps from each identity/kind's previous confirmed edge.
 New accounts fill older history in the background. Queries group only compatible
-bounds; live membership is independent of previous coverage. Recent windows are
-refreshed every five minutes without restarting initialized live subscriptions.
+bounds; live membership is independent of previous coverage. There is no periodic historical refresh. The pool emits ordered `live-progress`
+controls every 60 seconds of healthy live observation, including quiet periods.
+The tracker commits those intervals only after earlier event writes finish.
+Interrupted live attempts are cancelled, dropping buffered events and retrying
+with ten minutes of overlap from confirmed coverage. Progress describes observed
+continuity, not proof that a relay supplied every event.
+
+Read-only accounts follow kind 10002 on seeds and kinds 0/10002 on discovered
+write relays, forwarding newer versions to the vault. Their initial snapshot has
+no recent-time restriction; saturated batches split by author and kind. They do
+not open NostrDB or store coverage. Changing to read-only deletes the owner's DB
+and its chunk-cache references, preserving shared payloads used by other owners.
+A durable deletion intent blocks access until interrupted cleanup completes,
+even if the account becomes writable again. Locked accounts with private keys
+can still store already-signed public events. Profiles, relay lists, workspaces
+and app installations remain available outside NostrDB.
 
 Inclusive coverage is persisted per owner, normalized relay and kind, after
 all corresponding event writes commit. Reloads resume missing history instead of
