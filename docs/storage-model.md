@@ -182,12 +182,42 @@ event permissions. This creates no new storage keys or stores and does not merge
 owners' databases. Document subscriptions are in memory, are cancelled on unload,
 and lose access when their target leaves the active persona.
 
-Account tracking imports the owner's public events from current write relays
-into this existing store, excluding NIP-78 app data and ephemeral events. Seeds
-provide only relay lists (10002). Removed write feeds drain already accepted
-events, then end; their pending delivery is cancelled on account removal or root
-unmount. Only kinds 0/10002 also update vault account metadata. Relay membership
-and draining feeds are in memory; no additional cursor or storage schema is used.
+Account tracking imports eligible owner-authored public events from current write
+relays; seeds provide only relay lists (10002). Multiple accounts share relay
+feeds but never event stores or progress. Retired groups drain accepted events;
+account removal/root unmount cancels pending delivery. Only kinds 0/10002 also
+update vault metadata. Subscription membership is in memory; coverage is durable.
+
+`maintenance` now also contains internal account-ingestion records (no DB-version
+change and no injected API):
+
+- `accountEventCoverage:registry`: `{ key, version: 1, generation, kinds }`.
+  The generation is a random per-database fence, regenerated after database reset.
+  Startup updates selected kinds and removes coverage for retired kinds.
+- `accountEventCoverage:<JSON [normalizedRelay, kind]>`:
+  `{ key, version: 1, generation, relay, kind, intervals: [[since, until]] }`.
+  Seconds are inclusive, sorted, merged, disjoint and nonadjacent. The owner is
+  implicit in the database. New kinds/relays have empty coverage; per-relay records
+  are created when read. Removing a relay retains its rows for a later return.
+
+Coverage records commit only after the events in the completed window have
+committed. They share one IDB readwrite transaction for each read-modify-write,
+so tabs merge checkpoints without overwriting each other. An interruption between
+event/checkpoint commits repeats the window. Checkpoint generation prevents work
+from an erased DB advancing coverage in its replacement. No separate localStorage
+cursor survives owner cleanup or full reset. App cleanup preserves account coverage.
+
+The pure storage-audit helper validates these records during ingestion startup
+and reads; invalid/obsolete rows are deleted in that maintenance transaction and
+subsequently queried again. Unrelated maintenance keys remain untouched. The
+launcher-wide audit does not scan internal IDB rows or trigger a repair reload for
+invalid coverage; owner removal uses the existing whole-database repair path.
+
+Recent sync overlaps ten minutes and refreshes every five minutes. Completed old
+ranges are not revisited. Saturated pages subdivide before coverage confirmation;
+a saturated single author/kind/second is deliberately accepted with a warning,
+possibly missing events beyond the relay's 200-event page. Coverage is best effort
+relative to each relay's responses, not proof of remote completeness.
 
 - `events` — Nostr events with app references. Schema 3 adds `eventBytes`
   (UTF-8 JSON bytes of `event`) and `ownerRefs` (normalized outer owner tag

@@ -164,6 +164,7 @@ maintenance, keyPath "key"
   after       last examined event id index key, or null after a full sweep
   completedAt last full sweep completion in milliseconds, or null
   quotaUsage  separate record: initialization phase/after + local public/private/cache totals
+  accountEventCoverage:* internal account-import registry/generation and per-relay/kind intervals
 
 cacheAccess, keyPath "i"
   i            event id key, only for current cache events

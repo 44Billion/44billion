@@ -125,3 +125,9 @@ export const NOSTRDB_UNCLAIMED_APP_DATA_KEY = 'unclaimedAppData'
 export const NOSTRDB_CACHE_ACCESS_STORE = 'cacheAccess'
 export const NOSTRDB_QUOTA_USAGE_KEY = 'quotaUsage'
 export const NOSTRDB_QUOTA_SETTINGS_KEY = '44billion:nostrdb-quotas:v1'
+
+// Per-owner NostrDB maintenance records; no injected eventStore API.
+// Registry: { key, version: 1, generation, kinds }; coverage records:
+// { key, version: 1, generation, relay, kind, intervals: [[since, until]] }.
+export const NOSTRDB_ACCOUNT_COVERAGE_PREFIX = 'accountEventCoverage:'
+export const NOSTRDB_ACCOUNT_COVERAGE_REGISTRY = 'accountEventCoverage:registry'

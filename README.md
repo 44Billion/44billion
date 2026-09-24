@@ -88,17 +88,43 @@ its classification. Local development does not validate remote upload/discovery;
 use the publishing workflow to check those paths.
 
 
-Account event tracking continuously imports selected known public kinds authored by available
-accounts from their current write relays into each owner's event store. Seed
-relays are queried only for relay lists (10002). A newer relay list starts feeds
-on added write relays and stops removed ones, draining events already accepted
-before removal. A removed relay that is also a seed keeps only its relay-list
-discovery feed. Account removal or root unmount cancels pending delivery.
-Write feeds explicitly select kinds from libp2r2p's `eventKinds`, deduplicated
-and split into groups of at most 30 (currently 85 kinds in three feeds per relay).
-Each group retries independently; removing a relay stops and drains all its groups.
-This avoids broad filters and 44b-relay's truncation of longer kind lists. Seeds
-retain their separate kind-10002 discovery feed. Unknown kinds are not imported;
+Account event tracking groups available accounts (including read-only accounts)
+by relay and kind selection. One launcher coordinator owns the feeds; seeds read
+only kind 10002, and current write relays import eligible public kinds into each
+author's own NostrDB. Filters contain at most 30 distinct kinds and 500 authors.
+A newer relay list reconciles membership, retaining unchanged groups and draining
+accepted events from retired groups. Removing an account or unmounting the root
+cancels its pending delivery. Only kinds 0/10002 also update vault metadata.
+
+The published `libp2r2p@^0.10.21` pool coordinates subscription capacity. Grouped
+feeds start with a bounded recent snapshot, with **ten minutes of overlap**.
+Before releasing buffered live events, the tracker completes any truncated recent
+pages and catches up gaps from each identity/kind's previous confirmed edge.
+New accounts fill older history in the background. Queries group only compatible
+bounds; live membership is independent of previous coverage. Recent windows are
+refreshed every five minutes without restarting initialized live subscriptions.
+
+Inclusive coverage is persisted per owner, normalized relay and kind, after
+all corresponding event writes commit. Reloads resume missing history instead of
+re-reading completed intervals. Startup drops records for no-longer-selected
+kinds and registers new kinds without coverage; new relays also start empty.
+Removing a relay retains its coverage, while deleting the owner database removes
+it. Ordinary event deletion does not reset sync progress or resurrect that event.
+
+Historical reads request at most 200 events. EOSE alone is not proof of complete
+coverage: saturated responses are subdivided by timestamp, then author/kind at a
+single second. For the exceptional case of 200 events from one author/kind/second,
+the received events are saved and that second is considered covered with a
+warning; excess events may be missed because standard NIP-01 has no ID cursor.
+Coverage describes the relay's returned data, not a guarantee of remote retention
+or completeness. Confirmed old history is not revisited; events arriving later
+outside the recent overlap may therefore be missed.
+
+Failed initial history/storage attempts discard buffered live and retry with
+capped backoff and jitter; completed subwindows remain confirmed. Backfill and
+periodic-refresh failures preserve an initialized live stream. Explicit permission
+or invalid-filter refusals are not retried automatically. Error diagnostics include
+relay, phase and selection without event content. Unknown kinds are not imported;
 new known kinds enter through updates to the library's list, subject to exclusions.
 
 Automatic import excludes ephemeral kinds and tag-defined ephemeral events, plus:

@@ -48,3 +48,15 @@ pass.
 Run `node tests/browser/menu-focus.js` to verify that reopening the shared menu
 for another app keeps initial focus on its container, while Tab still gives
 actions visible keyboard focus. It uses real pointer and keyboard input in Chrome.
+
+Account-ingestion regression:
+
+```sh
+node bin/run-browser-tests.js -- node tests/browser/account-events.js
+```
+
+This uses the published RelayPool with controlled transport, signed events and
+real NostrDB/IndexedDB in a disposable Chrome origin. It covers six accounts
+(including read-only), grouped feeds, ownership isolation, dense timestamp
+saturation, persisted coverage across reload, regrouping and cancellation.
+External relay traffic remains disabled.

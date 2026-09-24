@@ -24,6 +24,8 @@ function removeKeysWithPrefix (storage, prefix) {
   }
 }
 
+// Removing the owner database also removes account-event coverage. Never retain
+// coverage separately from the events it describes (including full local reset).
 async function deleteNostrDbOwner (ownerPubkey) {
   if (!ownerPubkey) return false
   const { deleteNostrDb } = await import('#services/idb/nostrdb/index.js')

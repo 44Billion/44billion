@@ -92,7 +92,7 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   monitor owns connectivity probes, capped retry delays, and browser wake-up
   listeners. `ConnectivityRetryCoordinator` owns waiters, cancellation, and
   concurrency of resumed app work; do not restore its duplicate probe timer.
-- Use the published `libp2r2p@^0.10.19` range in package.json;
+- Use the published `libp2r2p@^0.10.21` range in package.json;
   package-lock.json records the resolved release. Validate against the installed package rather than sibling
   source imports; it includes the shared connectivity monitor.
 
@@ -179,23 +179,29 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
 
 ## Account event ingestion
 
-- `useTrackAccountEvents` owns the account feeds and aborts them on account
-  removal or root unmount. Seeds track only kind 10002. Current write relays track
-  history and live events with explicit known-kind filters, deduplicated and split
-  into groups of at most 30 to avoid relay truncation. Each group retries
-  independently. Reconcile write membership on newer relay lists, retaining
-  unchanged feeds and using `stopAndDrain()` for every group on removed relays
-  so accepted events finish processing. A relay that is also a
-  seed retains its independent discovery feed. Account abort discards pending
-  delivery, including draining feeds. This requires the companion libp2r2p API.
-- Store eligible known account kinds in the owner's existing NostrDB. Keep the
-  automatic-import exclusions documented in README.md for app data, personal
-  copies, private messaging, private-oriented lists/drafts and binary chunks.
-  Reject unknown kinds and ephemeral events, including the library's tag-defined
-  ephemeral classification. This policy does not restrict explicit app ingestion.
-  Only kinds 0 and 10002 are
-  forwarded to the vault account-metadata channel. The event store owns version
-  selection. No new persisted cursor, key or database is introduced.
+- `useTrackAccountEvents` owns one coordinator, groups account authors (including
+  read-only accounts) by relay/eligible kind set, and cancels on removal/unmount.
+  Seeds independently discover kind 10002; write groups use at most 30 kinds and
+  500 authors. Retiring groups stop and drain accepted events; account removal
+  discards that account's pending delivery. Preserve unchanged groups.
+- Account ingestion persists inclusive owner/normalized-relay/kind coverage in
+  NostrDB's maintenance store. Reconcile eligible kinds at startup, retain retired
+  relay coverage, and fence checkpoints against database resets. Event commits
+  precede checkpoint commits. Maintenance readwrite transactions serialize tabs;
+  invalid coverage resets safely without touching unrelated maintenance records.
+- Grouped recent snapshots and periodic refresh use ten minutes of overlap;
+  historical queries combine only matching bounds. Saturated pages subdivide
+  time, then authors/kinds. The explicit single-author/kind/second saturation
+  tradeoff warns and marks coverage (possible excess loss); do not silently add
+  a nonstandard ID cursor. Never revisit confirmed old ranges automatically.
+- Backfill failure must not stop initialized live input. Initial failure must
+  discard buffered live, preserve committed subwindows and retry with capped
+  jittered backoff. Respect explicit permanent refusals and root cancellation.
+- Store only eligible known public account events in the owner's NostrDB. Keep
+  the README import exclusions and library/tag-defined ephemeral checks. Only
+  kinds 0/10002 update the vault metadata channel; account import adds no public
+  eventStore API. Test the published pool with controlled transport, and use the
+  protected `tests/browser/account-events.js` check for real-IDB reload coverage.
 - Event-store subscriptions support opt-in initial replay, with live delivery
   registered before the snapshot. Preserve cancellation and deduplication by ID.
 

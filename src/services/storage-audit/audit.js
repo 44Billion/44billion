@@ -1,6 +1,8 @@
 import { DEFAULT_PERSONA_ID, isPersonaEligible } from '#services/personas/model.js'
 import { base62ToBase16 } from 'libp2r2p/base62'
 import {
+  NOSTRDB_ACCOUNT_COVERAGE_PREFIX,
+  NOSTRDB_ACCOUNT_COVERAGE_REGISTRY,
   ACCOUNT_SUFFIXES,
   APP_INSTANCE_LOCAL_SUFFIXES,
   APP_INSTANCE_SESSION_SUFFIXES,
@@ -918,4 +920,24 @@ function hasAnySubdomainForApp (local, appId) {
     if (separator > 0 && rest.slice(separator + 1) === appId && entry?.value) return true
   }
   return false
+}
+
+// Pure maintenance-record audit, called by account ingestion inside its owner
+// transaction. Unrelated maintenance keys are preserved. Invalid coverage is
+// disposable: deleting it causes another read, never skipped history.
+export function invalidAccountCoverageKeys (records, { generation, kinds }) {
+  return records.filter(record => {
+    if (!record.key?.startsWith(NOSTRDB_ACCOUNT_COVERAGE_PREFIX) || record.key === NOSTRDB_ACCOUNT_COVERAGE_REGISTRY) return false
+    if (record.version !== 1 || record.generation !== generation || !kinds.includes(record.kind)) return true
+    if (typeof record.relay !== 'string' || record.key !== NOSTRDB_ACCOUNT_COVERAGE_PREFIX + JSON.stringify([record.relay, record.kind])) return true
+    if (!Array.isArray(record.intervals)) return true
+    let previous = -2
+    return record.intervals.some(range => {
+      if (!Array.isArray(range) || range.length !== 2) return true
+      const [since, until] = range
+      if (!Number.isSafeInteger(since) || !Number.isSafeInteger(until) || since < 0 || until < since || since <= previous + 1) return true
+      previous = until
+      return false
+    })
+  }).map(record => record.key)
 }
