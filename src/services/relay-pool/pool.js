@@ -54,6 +54,7 @@ export class UnifiedRelayPool {
   #quarantined = new Map()
   #consolidating = new Set()
   #anonymousConsolidationAt = new Map()
+  #relayFailures = new Map()
   #serial = 0
   #counters = {
     physicalOpened: 0,
@@ -67,6 +68,8 @@ export class UnifiedRelayPool {
     quarantines: 0,
     droppedFrames: 0,
     droppedByOp: {},
+    closedConfirmations: 0,
+    connectionFailures: 0,
     capacityRejections: 0,
     consolidations: 0,
     authSwaps: 0,
@@ -104,6 +107,24 @@ export class UnifiedRelayPool {
     return true
   }
 
+  recordFailure (url, { code = 1006, reason = '', phase = 'connection' } = {}) {
+    const key = this.#normalize(url) ?? String(url)
+    const previous = this.#relayFailures.get(key)
+    this.#relayFailures.set(key, {
+      count: (previous?.count ?? 0) + 1,
+      lastCode: code,
+      lastReason: reason,
+      lastPhase: phase,
+      lastAt: Date.now()
+    })
+    if (this.#relayFailures.size > 32) {
+      const oldest = [...this.#relayFailures.entries()].sort((a, b) => a[1].lastAt - b[1].lastAt)[0]
+      if (oldest) this.#relayFailures.delete(oldest[0])
+    }
+    this.#counters.connectionFailures++
+    this.#log('[relay-pool] connection failed', key, code, reason, phase)
+  }
+
   quarantine (url, reason) {
     const key = this.#normalize(url)
     if (!key) return
@@ -112,7 +133,7 @@ export class UnifiedRelayPool {
     this.#log('[relay-pool] quarantined', key, reason ?? '')
   }
 
-  attach (url, handlers = {}) {
+  attach (url, handlers = {}, { owner = 'unknown' } = {}) {
     const key = this.#normalize(url)
     if (!key) throw new Error('INVALID_RELAY_URL')
     const member = {
@@ -120,6 +141,7 @@ export class UnifiedRelayPool {
       url: key,
       nsPrefix: `rp${this.#serial}:`,
       handlers,
+      owner,
       bucket: null,
       subscriptions: new Map(), // nsId -> { rawId, message }
       rawSubscriptions: new Map(), // rawId -> nsId
@@ -159,17 +181,27 @@ export class UnifiedRelayPool {
 
   snapshot () {
     const bucketsByHost = {}
+    const membersByOwner = {}
+    const subscriptionsByOwner = {}
     let subscriptions = 0
     for (const bucket of this.#buckets.values()) {
       const host = this.#hostFor(bucket.url)
       bucketsByHost[host] = (bucketsByHost[host] ?? 0) + 1
       subscriptions += bucket.subscriptions.size
     }
+    for (const member of this.#members.values()) {
+      const owner = member.owner ?? 'unknown'
+      membersByOwner[owner] = (membersByOwner[owner] ?? 0) + 1
+      subscriptionsByOwner[owner] = (subscriptionsByOwner[owner] ?? 0) + member.subscriptions.size
+    }
     return {
       ...this.#counters,
       droppedByOp: { ...this.#counters.droppedByOp },
+      relayFailures: Object.fromEntries([...this.#relayFailures].map(([url, entry]) => [url, { ...entry }])),
       buckets: this.#buckets.size,
       bucketsByHost,
+      membersByOwner,
+      subscriptionsByOwner,
       subscriptions,
       members: this.#members.size,
       pendingMembers: this.#pendingMembers.length,
@@ -239,6 +271,7 @@ export class UnifiedRelayPool {
       counts: new Map(),
       negs: new Map(),
       publishes: new Map(), // eventId -> Set<member>
+      closedNsIds: new Map(), // nsId -> expiresAt for client-initiated CLOSE confirmations
       pendingAuths: new Map(), // auth eventId -> { member, pubkey, timer }
       queues: new Map(), // memberId -> [{ raw, bytes }]
       roundRobin: [],
@@ -320,6 +353,7 @@ export class UnifiedRelayPool {
       socket = this.#createSocket(bucket.url)
     } catch (error) {
       this.#log('[relay-pool] socket creation failed', bucket.url, error?.message ?? error)
+      this.recordFailure(bucket.url, { code: 1006, reason: error?.message ?? 'socket creation failed', phase: 'create' })
       this.#failBucket(bucket, 1006, 'socket creation failed')
       return
     }
@@ -337,6 +371,7 @@ export class UnifiedRelayPool {
     socket.onclose = event => {
       if (bucket.closed) return
       this.#counters.physicalClosed++
+      this.recordFailure(bucket.url, { code: event?.code ?? 1006, reason: event?.reason ?? '', phase: 'pool' })
       this.#failBucket(bucket, event?.code ?? 1006, event?.reason ?? '')
     }
   }
@@ -403,6 +438,7 @@ export class UnifiedRelayPool {
     for (const [nsId, subscription] of member.subscriptions) {
       bucket.subscriptions.delete(nsId)
       this.#removeQueued(bucket, member, subscription.message)
+      this.#rememberClosedSubscription(bucket, nsId)
       this.#sendControl(bucket, ['CLOSE', nsId])
     }
     for (const [nsId] of member.counts) {
@@ -517,6 +553,7 @@ export class UnifiedRelayPool {
     member.subscriptions.delete(nsId)
     member.rawSubscriptions.delete(message[1])
     bucket.subscriptions.delete(nsId)
+    this.#rememberClosedSubscription(bucket, nsId)
     this.#enqueue(bucket, member, ['CLOSE', nsId])
     this.#drainPendingMembers()
     this.#consolidateBuckets(bucket.url, bucket.identity)
@@ -921,6 +958,22 @@ export class UnifiedRelayPool {
     this.#counters.droppedByOp[key] = (this.#counters.droppedByOp[key] ?? 0) + 1
   }
 
+  #rememberClosedSubscription (bucket, nsId) {
+    const now = Date.now()
+    bucket.closedNsIds.set(nsId, now + this.#limits.closedSubscriptionTtlMs)
+    if (bucket.closedNsIds.size <= 256) return
+    for (const [key, expiresAt] of bucket.closedNsIds) {
+      if (expiresAt <= now || bucket.closedNsIds.size > 256) bucket.closedNsIds.delete(key)
+    }
+  }
+
+  #isClosedSubscriptionConfirmation (bucket, nsId) {
+    const expiresAt = bucket.closedNsIds.get(nsId)
+    if (expiresAt === undefined) return false
+    bucket.closedNsIds.delete(nsId)
+    return expiresAt > Date.now()
+  }
+
   #sendControl (bucket, message) {
     if (!bucket || bucket.closed || bucket.state !== 'open') return
     let queue = bucket.queues.get('__control__')
@@ -982,6 +1035,7 @@ export class UnifiedRelayPool {
         this.#counters.framesOut++
       } catch (error) {
         this.#log('[relay-pool] send failed', bucket.url, error?.message ?? error)
+        this.recordFailure(bucket.url, { code: 1006, reason: error?.message ?? 'send failed', phase: 'send' })
         this.#failBucket(bucket, 1006, 'send failed')
         return false
       }
@@ -995,6 +1049,7 @@ export class UnifiedRelayPool {
     const message = parseNostrFrame(data)
     if (!message) {
       this.#dropFrame('invalid-server-frame')
+      this.recordFailure(bucket.url, { code: 1002, reason: 'invalid server frame', phase: 'protocol' })
       this.quarantine(bucket.url, 'invalid server frame')
       const members = [...bucket.members]
       this.#destroyBucket(bucket, 1006, 'invalid server frame', false)
@@ -1043,7 +1098,8 @@ export class UnifiedRelayPool {
     const nsId = message[1]
     const member = bucket.subscriptions.get(nsId) ?? bucket.counts.get(nsId) ?? bucket.negs.get(nsId)
     if (!member) {
-      this.#dropFrame('CLOSED')
+      if (this.#isClosedSubscriptionConfirmation(bucket, nsId)) this.#counters.closedConfirmations++
+      else this.#dropFrame('CLOSED')
       return
     }
     const subscription = member.subscriptions.get(nsId)

@@ -37,6 +37,12 @@ export function setRelayPoolEnabled (enabled) {
   localStorage.setItem('config_relayPoolEnabled', enabled ? 'true' : 'false')
 }
 
+let launcherRelayPoolWebSocket = null
+
+export function getLauncherRelayPoolWebSocket () {
+  return launcherRelayPoolWebSocket
+}
+
 // Installs the pooled WebSocket in the launcher realm and, when the installed
 // libp2r2p version supports it, configures the shared RelayPool explicitly.
 export function installLauncherRelayPool () {
@@ -48,9 +54,9 @@ export function installLauncherRelayPool () {
     baseUrl: () => document.baseURI,
     securePage: location.protocol === 'https:',
     log,
-    createPoolTransport: ({ url, callbacks }) => {
+    createPoolTransport: ({ url, callbacks, socket }) => {
       if (unifiedRelayPool.isQuarantined(url)) return null
-      const member = unifiedRelayPool.attach(url, callbacks)
+      const member = unifiedRelayPool.attach(url, callbacks, { owner: socket?.relayPoolOwner ?? 'launcher' })
       return {
         send: data => member.send(data),
         close: (code, reason) => member.close(code, reason),
@@ -62,6 +68,7 @@ export function installLauncherRelayPool () {
   })
   libRelayPool.setWebSocket?.(RelayPoolWebSocket)
   globalThis.WebSocket = RelayPoolWebSocket
+  launcherRelayPoolWebSocket = RelayPoolWebSocket
   return { RelayPoolWebSocket, pool: unifiedRelayPool, registry: relayRegistry }
 }
 

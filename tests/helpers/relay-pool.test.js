@@ -202,6 +202,39 @@ describe('unified relay pool', () => {
     assert.equal(snapshot.droppedByOp.EVENT, 1)
   })
 
+  it('attributes members and subscriptions by owner', async () => {
+    const { pool, sockets } = createPool()
+    const vaultMember = pool.attach('wss://relay.example', {}, { owner: 'vault' })
+    const appMember = pool.attach('wss://relay.example', {}, { owner: 'app' })
+    await tick()
+    sockets[0].open()
+    await tick()
+    vaultMember.send(JSON.stringify(['REQ', 'v', { kinds: [1] }]))
+    appMember.send(JSON.stringify(['REQ', 'a', { kinds: [1] }]))
+    await tick()
+    const snapshot = pool.snapshot()
+    assert.deepEqual(snapshot.membersByOwner, { vault: 1, app: 1 })
+    assert.deepEqual(snapshot.subscriptionsByOwner, { vault: 1, app: 1 })
+  })
+
+  it('counts late CLOSED confirmations instead of drops', async () => {
+    const { pool, sockets } = createPool()
+    const member = pool.attach('wss://relay.example', {})
+    await tick()
+    sockets[0].open()
+    await tick()
+    member.send(JSON.stringify(['REQ', 'a', { kinds: [1] }]))
+    await tick()
+    const nsId = sockets[0].sent.find(message => message[0] === 'REQ')[1]
+    member.send(JSON.stringify(['CLOSE', 'a']))
+    await tick()
+    sockets[0].message(['CLOSED', nsId, 'closed by client'])
+    await tick()
+    const snapshot = pool.snapshot()
+    assert.equal(snapshot.closedConfirmations, 1)
+    assert.equal(snapshot.droppedByOp.CLOSED, undefined)
+  })
+
   it('sends CLOSE for the relay when a virtual socket closes and keeps the other member alive', async () => {
     const { pool, sockets } = createPool()
     const memberA = pool.attach('wss://relay.example', {})

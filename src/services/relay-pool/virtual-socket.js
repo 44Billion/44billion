@@ -227,6 +227,7 @@ export function createRelayPoolWebSocketClass ({
       try {
         handle = createPoolTransport({
           url: this.url,
+          socket: this,
           callbacks: {
             onOpen: info => this.#onPoolOpen(info),
             onMessage: data => this.#deliver(data),

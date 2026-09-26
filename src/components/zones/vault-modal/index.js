@@ -3,6 +3,8 @@ import { watchSignerConnection } from '#services/signer-connection.js'
 import { f, useGlobalStore, useGlobalSignal, useClosestStore, useStore, useTask, useCallback, useComputed, useSignal } from '#f'
 import { useWebStorage } from '#f'
 import { tell, ask, reply } from '#helpers/window-message/index.js'
+import { createRelayBridgeEndpoint } from '#services/relay-pool/bridge-endpoint.js'
+import { getLauncherRelayPoolWebSocket, isRelayPoolEnabled, unifiedRelayPool } from '#services/relay-pool/launcher.js'
 import { signerStates } from '#services/signer-state.js'
 import { setAccountsState } from '#zones/screen/use-init-or-reset-screen.js'
 import {
@@ -733,6 +735,7 @@ function initMessageListener ({
   connectedVaultUrl
 }) {
   let currentVaultPort = null
+  let currentRelayEndpoint = null
   const vaultNostrDbSubscriptions = new Map()
   const unsubscribeLocale = subscribeLocaleChanged(() => {
     if (currentVaultPort) translateVault(currentVaultPort)
@@ -740,6 +743,10 @@ function initMessageListener ({
   // Setup cleanup
   componentSignal?.addEventListener('abort', () => {
     unsubscribeLocale()
+    if (currentRelayEndpoint) {
+      currentRelayEndpoint.dispose()
+      currentRelayEndpoint = null
+    }
     if (currentVaultPort) {
       currentVaultPort.close()
       currentVaultPort = null
@@ -769,13 +776,34 @@ function initMessageListener ({
     if (currentVaultPort) currentVaultPort.close()
     currentVaultPort = e.ports[0]
     _activeVaultPort = currentVaultPort
+    currentRelayEndpoint?.dispose()
+    currentRelayEndpoint = null
+    const RelayPoolWebSocket = getLauncherRelayPoolWebSocket()
+    if (e.ports[1] && RelayPoolWebSocket && isRelayPoolEnabled()) {
+      currentRelayEndpoint = createRelayBridgeEndpoint({
+        port: e.ports[1],
+        pool: unifiedRelayPool,
+        delegate: true,
+        owner: 'vault',
+        createVirtualSocket: url => new RelayPoolWebSocket(url)
+      })
+    } else {
+      e.ports[1]?.close()
+    }
     listenToVaultMessages({ vaultPort: currentVaultPort, signal: AbortSignal.any([componentSignal, ac.signal]) })
     // before setting vaultPort$, which could trigger other messages to vault
     stopRenderHandshake?.()
     // BROWSER_READY must be the first message the vault receives
     tellVaultImReady(currentVaultPort)
     // Make it work with ez-vault's simplified messenger
-    if (e.data.reqId) reply(e, { payload: true })
+    if (e.data.reqId) {
+      reply(e, {
+        payload: {
+          relayPoolSupported: true,
+          relayPoolEnabled: !!currentRelayEndpoint
+        }
+      })
+    }
     translateVault(currentVaultPort)
     _pendingVaultMessages.splice(0).forEach(msg => tell(_activeVaultPort, msg))
     flushQueuedVaultAcceptedMessages({ vaultPort: currentVaultPort })

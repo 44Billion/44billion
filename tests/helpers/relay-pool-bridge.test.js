@@ -8,6 +8,34 @@ import { RelayRegistry } from '#services/relay-pool/registry.js'
 
 const tick = () => new Promise(resolve => setImmediate(resolve))
 
+async function waitFor (predicate, attempts = 50) {
+  for (let i = 0; i < attempts; i++) {
+    if (predicate()) return
+    await tick()
+  }
+  throw new Error('condition not met')
+}
+
+class FakeVirtualSocket {
+  static instances = []
+
+  constructor (url) {
+    this.url = url
+    this.extensions = ''
+    this.sent = []
+    this.readyState = 0
+    FakeVirtualSocket.instances.push(this)
+  }
+
+  open () { this.readyState = 1; this.onopen?.() }
+  send (data) { this.sent.push(data) }
+  message (data) { this.onmessage?.({ data }) }
+  close (code = 1000, reason = '') {
+    this.readyState = 3
+    this.onclose?.({ code, reason, wasClean: true })
+  }
+}
+
 function createFakePool () {
   const attached = []
   return {
@@ -16,10 +44,11 @@ function createFakePool () {
     isQuarantined (url) {
       return this.quarantined.has(url)
     },
-    attach (url, handlers) {
+    attach (url, handlers, options = {}) {
       const member = {
         url,
         handlers,
+        owner: options.owner,
         sent: [],
         send (data) {
           member.sent.push(data)
@@ -35,9 +64,9 @@ function createFakePool () {
   }
 }
 
-function createBridge (pool, url = 'wss://relay.example') {
+function createBridge (pool, url = 'wss://relay.example', { limits = RELAY_POOL_LIMITS, ...endpointOptions } = {}) {
   const { port1: appPort, port2: launcherPort } = new MessageChannel()
-  const endpoint = createRelayBridgeEndpoint({ port: launcherPort, pool, limits: RELAY_POOL_LIMITS })
+  const endpoint = createRelayBridgeEndpoint({ port: launcherPort, pool, limits, ...endpointOptions })
   const events = []
   const transport = createBridgeTransport({
     url,
@@ -48,7 +77,7 @@ function createBridge (pool, url = 'wss://relay.example') {
       onDetach: reason => events.push(['detach', reason])
     },
     getPort: async () => appPort,
-    limits: RELAY_POOL_LIMITS,
+    limits,
     log: () => {}
   })
   return {
@@ -99,6 +128,69 @@ describe('relay pool bridge', () => {
     assert.deepEqual(events, [['detach', 'quarantined']])
     assert.equal(pool.attached.length, 0)
     transport.close(1000, '')
+  })
+
+  it('delegates the virtual socket to the launcher in vault mode', async t => {
+    FakeVirtualSocket.instances = []
+    const pool = createFakePool()
+    const { events, transport, cleanup } = createBridge(pool, 'wss://relay.example', {
+      delegate: true,
+      owner: 'vault',
+      createVirtualSocket: url => new FakeVirtualSocket(url)
+    })
+    t.after(cleanup)
+    await tick()
+    assert.equal(pool.attached.length, 0)
+    assert.equal(FakeVirtualSocket.instances.length, 1)
+    const socket = FakeVirtualSocket.instances[0]
+    socket.open()
+    await tick()
+    assert.deepEqual(events, [['open', { extensions: '' }]])
+
+    transport.send('["REQ","sub1",{}]')
+    await tick()
+    assert.deepEqual(socket.sent, ['["REQ","sub1",{}]'])
+
+    socket.message('["EOSE","sub1"]')
+    await tick()
+    assert.deepEqual(events.at(-1), ['message', '["EOSE","sub1"]'])
+
+    transport.close(1000, '')
+    await tick()
+    assert.deepEqual(events.at(-1), ['close', { code: 1000, reason: '', wasClean: true }])
+  })
+
+  it('detaches the vault socket when the launcher pool is unavailable', async t => {
+    const pool = createFakePool()
+    const { events, cleanup } = createBridge(pool, 'wss://relay.example', {
+      delegate: true,
+      owner: 'vault',
+      createVirtualSocket: () => null
+    })
+    t.after(cleanup)
+    await tick()
+    await tick()
+    assert.deepEqual(events, [['detach', 'relay-pool-unavailable']])
+  })
+
+  it('replenishes app-to-launcher credit so long send bursts keep flowing', async t => {
+    const pool = createFakePool()
+    const limits = { ...RELAY_POOL_LIMITS, bridgeCreditFrames: 2, bridgeCreditBytes: 1024 }
+    const { transport, cleanup } = createBridge(pool, 'wss://relay.example', { limits })
+    t.after(cleanup)
+    await tick()
+    pool.attached[0].handlers.onOpen({ extensions: '' })
+    await tick()
+    for (let i = 0; i < 6; i++) transport.send(JSON.stringify(['REQ', `sub${i}`, { kinds: [1] }]))
+    await waitFor(() => pool.attached[0].sent.length === 6)
+  })
+
+  it('marks app attachments with the endpoint owner', async t => {
+    const pool = createFakePool()
+    const { cleanup } = createBridge(pool, 'wss://relay.example', { owner: 'vault' })
+    t.after(cleanup)
+    await tick()
+    assert.equal(pool.attached[0].owner, 'vault')
   })
 
   it('adds a relay to the shared registry on attach', async t => {

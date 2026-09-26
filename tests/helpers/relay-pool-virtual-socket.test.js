@@ -60,10 +60,11 @@ function createFixture (relays = [], options = {}) {
     registry,
     baseUrl: 'https://app.example/window/',
     ...options,
-    createPoolTransport: ({ url, callbacks }) => {
+    createPoolTransport: ({ url, callbacks, socket }) => {
       const attachment = {
         url,
         callbacks,
+        socket,
         handle: {
           sent: [],
           bufferedAmount: 0,
@@ -143,6 +144,7 @@ describe('relay pool virtual WebSocket', () => {
     await tick()
     assert.equal(attachments.length, 1)
     assert.equal(FakeOriginalWebSocket.instances.length, 0)
+    assert.equal(attachments[0].socket, socket)
     attachments[0].callbacks.onOpen({ extensions: 'permessage-deflate' })
     await tick()
     assert.equal(socket.readyState, socket.OPEN)

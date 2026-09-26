@@ -25,6 +25,7 @@ export const RELAY_POOL_LIMITS = Object.freeze({
   consolidationThrottleMs: 5000,
   negSessionIdleMs: 60000,
   negTombstoneMs: 60000,
+  closedSubscriptionTtlMs: 60000,
   authPendingTimeoutMs: 30000,
   nip11TimeoutMs: 3000,
   bridgeCreditFrames: 64,
@@ -42,5 +43,6 @@ export const RELAY_BRIDGE = Object.freeze({
   CLOSED: 'RELAY_CLOSED',
   DETACH: 'RELAY_DETACH',
   REGISTRY: 'RELAY_REGISTRY',
+  FAILURE: 'RELAY_FAILURE',
   REGISTRY_ADD: 'RELAY_REGISTRY_ADD'
 })

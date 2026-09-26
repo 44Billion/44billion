@@ -13,8 +13,9 @@ API.
   `window.WebSocket` shim installed before app scripts run.
 - Only Nostr relay traffic is pooled. A socket that does not prove itself
   Nostr stays a plain 1:1 connection.
-- The vault (ez-vault) is a follow-up. When it is added, bunker traffic stays
-  out of the launcher pool.
+- The vault (ez-vault) uses the same pool through a delegated bridge: the
+  launcher owns its virtual sockets and the vault only pipes frames. Bunker
+  (NIP-46) traffic is pooled too.
 
 ## Relay identification
 
@@ -166,6 +167,22 @@ dedicated to relay frames. Internal messages:
 Credits bound how much either side buffers. `dispose()` on the launcher
 endpoint closes every virtual socket owned by that app instance.
 
+## Vault delegation
+
+The vault sends a second `MessageChannel` port in `VAULT_READY`. After the
+launcher validates the iframe source/origin and the vault validates the
+reply origin, the launcher creates a delegated relay endpoint and the vault
+installs a thin `window.WebSocket` shim (hard-coded
+`ENABLE_LAUNCHER_RELAY_POOL` flag). The launcher owns the real virtual
+socket, so registry, speculative connect, pool adoption, detach and
+fallback logic stay only here; the vault pipes frames, credits and close
+events. Activation requires a completed handshake advertising
+`relayPoolSupported && relayPoolEnabled`; standalone vaults, old launchers
+and disabled pools keep native sockets. The physical sockets originate from
+the launcher origin, which Nostr relays normally ignore. Delegated sockets
+are tagged with `owner: 'vault'`, so the snapshot distinguishes vault,
+launcher and app members even when they share a bucket.
+
 ## launcher/libp2r2p integration
 
 The launcher captures the original `WebSocket` constructor, installs the shim
@@ -177,9 +194,11 @@ global patch also covers older versions, because `RelayConnection` reads
 ## Metrics and tests
 
 `relayPoolSnapshot()` reports physical sockets, buckets (also grouped by
-host), subscriptions, members, pending members, frames, drops by op,
-capacity rejections, migrations, consolidations, detaches, quarantines,
-auth swaps, auth merges, forced auth reconnects and rejected AUTHs; the launcher logs a
+host), subscriptions, members and pending members (both also grouped by
+owner: `launcher`, `app` or `vault`), frames, drops by op, late `CLOSED`
+confirmations, capacity rejections, migrations, consolidations, detaches,
+quarantines, auth swaps, auth merges, forced auth reconnects and rejected
+AUTHs; the launcher logs a
 summary at debug level while the pool is active. Members that cannot get a
 bucket immediately are logged and retried when a subscription slot frees.
 The development-only
@@ -201,5 +220,8 @@ step for a real browser.
 - 44b-relay tracks a single authenticated pubkey per connection; the AUTH swap
   avoids its subscription reset. Making the relay NIP-42 multi-pubkey
   compliant is a separate follow-up.
-- ez-vault is not pooled yet; bunker traffic must stay outside the launcher
-  pool when it is added.
+- The vault shares buckets with apps; a misbehaving app can consume bucket
+  capacity used by vault sockets. Per-socket quotas bound the impact;
+  partitioning buckets by owner is the next mitigation if needed.
+- Bunker/NIP-46 traffic is pooled and adds one postMessage hop. Keeping
+  bunker relays direct remains the future latency escape hatch.
