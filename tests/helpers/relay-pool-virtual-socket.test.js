@@ -13,17 +13,24 @@ class FakeOriginalWebSocket extends EventTarget {
 
   constructor (url) {
     super()
-    this.url = url
-    this.readyState = 0
+    this._url = url
+    this._readyState = 0
+    this._extensions = ''
+    this._bufferedAmount = 0
     this.sent = []
-    this.bufferedAmount = 0
-    this.extensions = ''
     this.closed = null
     FakeOriginalWebSocket.instances.push(this)
   }
 
+  // Native WebSocket exposes these as getter-only accessors.
+  get url () { return this._url }
+  get readyState () { return this._readyState }
+  get protocol () { return '' }
+  get extensions () { return this._extensions }
+  get bufferedAmount () { return this._bufferedAmount }
+
   open () {
-    this.readyState = 1
+    this._readyState = 1
     this.onopen?.()
   }
 
@@ -32,7 +39,7 @@ class FakeOriginalWebSocket extends EventTarget {
   }
 
   close (code = 1000, reason = '') {
-    this.readyState = 3
+    this._readyState = 3
     this.closed = { code, reason }
     queueMicrotask(() => this.onclose?.({ code, reason, wasClean: true }))
   }

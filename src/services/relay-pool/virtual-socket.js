@@ -52,6 +52,14 @@ function isValidCloseCode (code) {
   return code === 1000 || (code >= 3000 && code <= 4999)
 }
 
+// Native WebSocket.prototype exposes url/readyState/protocol/extensions as
+// getter-only accessors. Plain assignment in a class constructor would throw
+// in strict mode, so define own data properties instead of walking the
+// prototype chain.
+function defineOwnValue (target, key, value) {
+  Object.defineProperty(target, key, { value, writable: true, configurable: true, enumerable: true })
+}
+
 // Creates a WebSocket-compatible facade backed by the launcher relay pool.
 // The class is intentionally created per realm so `instanceof WebSocket` keeps
 // working against that realm's original constructor.
@@ -115,10 +123,10 @@ export function createRelayPoolWebSocketClass ({
       if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') {
         throw domException(`Failed to construct 'WebSocket': The URL's scheme must be either 'ws' or 'wss'. '${parsed.protocol}' is not allowed.`, 'SyntaxError')
       }
-      this.url = parsed.href
-      this.readyState = CONNECTING
-      this.protocol = ''
-      this.extensions = ''
+      defineOwnValue(this, 'url', parsed.href)
+      defineOwnValue(this, 'readyState', CONNECTING)
+      defineOwnValue(this, 'protocol', '')
+      defineOwnValue(this, 'extensions', '')
       queueMicrotask(() => this.#select())
     }
 
