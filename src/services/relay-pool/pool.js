@@ -1,3 +1,4 @@
+import { isValidEvent } from 'libp2r2p/event'
 import { normalizeRelayUrl } from 'libp2r2p/url'
 
 import { parseNostrFrame } from './classify.js'
@@ -63,7 +64,10 @@ export class UnifiedRelayPool {
     detaches: 0,
     quarantines: 0,
     droppedFrames: 0,
-    authSwaps: 0
+    authSwaps: 0,
+    authMerges: 0,
+    authReconnects: 0,
+    authRejected: 0
   }
 
   constructor ({
@@ -116,6 +120,7 @@ export class UnifiedRelayPool {
       rawSubscriptions: new Map(), // rawId -> nsId
       counts: new Map(), // nsId -> { rawId, message }
       negs: new Map(), // nsId -> { rawId, message }
+      negExchanged: new Set(), // NEG sessions that already exchanged NEG-MSG/NEG-ERR
       pendingPublishes: new Map(), // eventId -> raw message
       seenEvents: new LruSet(this.#limits.dedupeEntries, this.#limits.dedupeTtlMs),
       seenOks: new LruSet(this.#limits.dedupeEntries, this.#limits.dedupeTtlMs),
@@ -198,6 +203,7 @@ export class UnifiedRelayPool {
       counts: new Map(),
       negs: new Map(),
       publishes: new Map(), // eventId -> Set<member>
+      pendingAuths: new Map(), // auth eventId -> { member, pubkey, previousIdentity }
       queues: new Map(), // memberId -> [{ raw, bytes }]
       roundRobin: [],
       roundRobinIndex: 0,
@@ -403,7 +409,7 @@ export class UnifiedRelayPool {
     if (bucket.subscriptions.size >= this.#limits.maxSubscriptionsPerBucket) {
       const target = this.#selectBucket(bucket.url, bucket.identity, true)
       if (!target) return this.#closeMember(member, 1013, 'relay pool capacity', false)
-      this.#moveMember(member, target)
+      if (!this.#moveMember(member, target)) return
       bucket = member.bucket
     }
     const rawId = message[1]
@@ -446,8 +452,10 @@ export class UnifiedRelayPool {
     const nsId = this.#findNamespaced(member.negs, message[1])
     if (nsId === undefined) return
     const outgoing = [message[0], nsId, ...message.slice(2)]
+    if (message[0] === 'NEG-MSG') member.negExchanged.add(nsId)
     if (message[0] === 'NEG-CLOSE') {
       member.negs.delete(nsId)
+      member.negExchanged.delete(nsId)
       bucket.negs.delete(nsId)
     }
     this.#enqueue(bucket, member, outgoing)
@@ -475,43 +483,106 @@ export class UnifiedRelayPool {
   }
 
   #handleClientAuth (member, bucket, raw, message) {
-    const identity = message[1]?.pubkey
-    if (typeof identity !== 'string') return this.#evictMember(member, 'invalid-auth')
+    const event = message[1]
+    const authEventId = event?.id
+    if (typeof authEventId !== 'string') {
+      this.#counters.droppedFrames++
+      return
+    }
+    if (bucket.pendingAuths.has(authEventId)) return
+    const validation = this.#validateAuthEvent(bucket, event)
+    if (!validation.ok) {
+      this.#counters.authRejected++
+      this.#deliverMember(member, JSON.stringify(['OK', authEventId, false, validation.reason]))
+      return
+    }
+    const identity = event.pubkey
+    if (bucket.identity !== identity) {
+      const confirmedBucket = this.#findConfirmedBucket(bucket.url, identity)
+      if (confirmedBucket) {
+        const hasRoom = member.negExchanged.size === 0 &&
+          confirmedBucket.subscriptions.size + member.subscriptions.size <= this.#limits.maxSubscriptionsPerBucket
+        if (!hasRoom) {
+          this.#reconnectMember(member, 'relay pool rehome')
+          return
+        }
+        if (!this.#moveMember(member, confirmedBucket)) return
+        this.#deliverMember(member, JSON.stringify(['OK', authEventId, true, 'relay pool: connection already authenticated']))
+        this.#counters.authMerges++
+        return
+      }
+    }
     const needsSwap = (bucket.identity !== null && bucket.identity !== identity) ||
       (bucket.identity === null && bucket.members.size > 1)
-    if (!needsSwap) {
-      bucket.identity = identity
-    } else {
+    if (needsSwap) {
       const previousIdentity = bucket.identity
       const target = this.#selectBucket(bucket.url, previousIdentity, true, { exclude: bucket })
-      if (!target) return this.#evictMember(member, 'auth-bucket-unavailable')
+      if (!target) return this.#reconnectMember(member, 'relay pool rehome')
       for (const other of [...bucket.members]) {
         if (other !== member) this.#moveMember(other, target)
       }
-      bucket.identity = identity
       this.#counters.authSwaps++
     }
+    bucket.pendingAuths.set(authEventId, { member, pubkey: identity, previousIdentity: bucket.identity })
     this.#enqueue(bucket, member, message)
+  }
+
+  #validateAuthEvent (bucket, event) {
+    if (!event || typeof event !== 'object' || Array.isArray(event)) return { ok: false, reason: 'invalid: malformed auth event' }
+    if (event.kind !== 22242) return { ok: false, reason: 'invalid: not an AUTH event' }
+    if (typeof bucket.challenge !== 'string' || bucket.challenge.length === 0) return { ok: false, reason: 'invalid: missing AUTH challenge' }
+    if (!Number.isSafeInteger(event.created_at) || Math.abs(Math.floor(Date.now() / 1000) - event.created_at) > 600) {
+      return { ok: false, reason: 'invalid: AUTH timestamp' }
+    }
+    if (typeof event.pubkey !== 'string' || !isValidEvent(event)) return { ok: false, reason: 'invalid: AUTH signature' }
+    const tags = new Map()
+    for (const tag of Array.isArray(event.tags) ? event.tags : []) {
+      if (Array.isArray(tag) && tag.length >= 2 && typeof tag[0] === 'string') tags.set(tag[0], tag[1])
+    }
+    if (tags.get('challenge') !== bucket.challenge) return { ok: false, reason: 'invalid: AUTH challenge' }
+    const relayTag = tags.get('relay')
+    if (typeof relayTag !== 'string' || this.#normalize(relayTag) !== bucket.url) return { ok: false, reason: 'invalid: AUTH relay' }
+    return { ok: true }
+  }
+
+  #findConfirmedBucket (url, identity) {
+    for (const candidate of this.#membersForUrl(url)) {
+      if (candidate.state !== 'closed' && candidate.identity === identity) return candidate
+    }
+    return null
+  }
+
+  #reconnectMember (member, reason) {
+    this.#counters.authReconnects++
+    this.#closeMember(member, 1006, reason, false)
+  }
+
+  #replayMemberOperations (member, bucket) {
+    for (const [nsId, subscription] of member.subscriptions) {
+      bucket.subscriptions.set(nsId, member)
+      this.#enqueue(bucket, member, subscription.message)
+    }
+    for (const [nsId, count] of member.counts) {
+      bucket.counts.set(nsId, member)
+      this.#enqueue(bucket, member, count.message)
+    }
+    for (const [nsId, neg] of member.negs) {
+      bucket.negs.set(nsId, member)
+      this.#enqueue(bucket, member, neg.message)
+    }
   }
 
   #moveMember (member, target) {
     const source = member.bucket
-    if (!source || source === target) return
+    if (!source || source === target) return false
+    if (member.negExchanged.size > 0) {
+      this.#reconnectMember(member, 'relay pool rehome')
+      return false
+    }
     this.#removeMemberFromBucket(member)
     this.#addMember(member, target)
     if (target.challenge) this.#deliverMember(member, JSON.stringify(['AUTH', target.challenge]))
-    for (const [nsId, subscription] of member.subscriptions) {
-      target.subscriptions.set(nsId, member)
-      this.#enqueue(target, member, subscription.message)
-    }
-    for (const [nsId, count] of member.counts) {
-      target.counts.set(nsId, member)
-      this.#enqueue(target, member, count.message)
-    }
-    for (const [nsId, neg] of member.negs) {
-      target.negs.set(nsId, member)
-      this.#enqueue(target, member, neg.message)
-    }
+    this.#replayMemberOperations(member, target)
     for (const [eventId, raw] of member.pendingPublishes) {
       let publishers = target.publishes.get(eventId)
       if (!publishers) {
@@ -522,6 +593,7 @@ export class UnifiedRelayPool {
       this.#enqueue(target, member, parseNostrFrame(raw))
     }
     this.#counters.migrations++
+    return true
   }
 
   #enqueue (bucket, member, message) {
@@ -695,6 +767,7 @@ export class UnifiedRelayPool {
       ? member.subscriptions.get(message[1])?.rawId
       : kind === 'count' ? member.counts.get(message[1])?.rawId : member.negs.get(message[1])?.rawId
     if (rawId === undefined) return
+    if (kind === 'neg') member.negExchanged.add(message[1])
     if (kind === 'count') {
       member.counts.delete(message[1])
       bucket.counts.delete(message[1])
@@ -703,6 +776,20 @@ export class UnifiedRelayPool {
   }
 
   #routeOk (bucket, message) {
+    const pendingAuth = bucket.pendingAuths.get(message[1])
+    if (pendingAuth) {
+      bucket.pendingAuths.delete(message[1])
+      if (message[2] === true) {
+        if (pendingAuth.previousIdentity !== null && pendingAuth.previousIdentity !== pendingAuth.pubkey) {
+          this.#replayMemberOperations(pendingAuth.member, bucket)
+        }
+        bucket.identity = pendingAuth.pubkey
+      } else {
+        bucket.identity = null
+      }
+      this.#deliverMember(pendingAuth.member, JSON.stringify(message))
+      return
+    }
     const publishers = bucket.publishes.get(message[1])
     if (!publishers) {
       this.#counters.droppedFrames++

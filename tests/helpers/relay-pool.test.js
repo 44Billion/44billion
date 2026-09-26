@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
+import { finalizeEvent } from 'libp2r2p/event'
+import { generateSecretKey } from 'libp2r2p/key'
+
 import { RELAY_POOL_LIMITS } from '#services/relay-pool/constants.js'
 import { UnifiedRelayPool } from '#services/relay-pool/pool.js'
 import { RelayRegistry } from '#services/relay-pool/registry.js'
@@ -34,6 +37,15 @@ class FakeSocket {
 }
 
 const tick = () => new Promise(resolve => setImmediate(resolve))
+
+function authEvent (secretKey, { challenge, relay = 'wss://relay.example' }) {
+  return finalizeEvent({
+    kind: 22242,
+    created_at: Math.floor(Date.now() / 1000),
+    tags: [['relay', relay], ['challenge', challenge]],
+    content: ''
+  }, secretKey)
+}
 
 function createPool (overrides = {}) {
   const sockets = []
@@ -134,6 +146,24 @@ describe('unified relay pool', () => {
     assert.deepEqual(b, [])
   })
 
+  it('delivers the relay OK for AUTH and confirms the identity only after OK true', async () => {
+    const { pool, sockets } = createPool()
+    const received = []
+    const member = pool.attach('wss://relay.example', { onMessage: raw => received.push(JSON.parse(raw)) })
+    await tick()
+    sockets[0].open()
+    await tick()
+    sockets[0].message(['AUTH', 'challenge-normal'])
+    const event = authEvent(generateSecretKey(), { challenge: 'challenge-normal' })
+    member.send(JSON.stringify(['AUTH', event]))
+    await tick()
+    assert.equal(sockets[0].sent.some(message => message[0] === 'AUTH' && message[1].id === event.id), true)
+    sockets[0].message(['OK', event.id, true, ''])
+    await tick()
+    assert.deepEqual(received.at(-1), ['OK', event.id, true, ''])
+    assert.equal(pool.snapshot().pendingAuths, undefined)
+  })
+
   it('swaps the authenticating member to its own bucket and migrates the others', async () => {
     const { pool, sockets } = createPool()
     const memberA = pool.attach('wss://relay.example', {})
@@ -144,16 +174,98 @@ describe('unified relay pool', () => {
     memberA.send(JSON.stringify(['REQ', 'a', { kinds: [1] }]))
     memberB.send(JSON.stringify(['REQ', 'b', { kinds: [1] }]))
     await tick()
-    const pubkey = 'q'.repeat(64)
-    memberA.send(JSON.stringify(['AUTH', { ...signedEvent(pubkey), kind: 22242 }]))
+    sockets[0].message(['AUTH', 'challenge-swap'])
+    const event = authEvent(generateSecretKey(), { challenge: 'challenge-swap' })
+    memberA.send(JSON.stringify(['AUTH', event]))
     await tick()
     assert.equal(sockets.length, 2)
-    assert.equal(sockets[0].sent.some(message => message[0] === 'AUTH' && message[1].pubkey === pubkey), true)
+    assert.equal(sockets[0].sent.some(message => message[0] === 'AUTH' && message[1].id === event.id), true)
     sockets[1].open()
     await tick()
     assert.equal(sockets[1].sent.some(message => message[0] === 'REQ' && message[1].includes(':b')), true)
     assert.equal(pool.snapshot().authSwaps, 1)
     assert.equal(pool.snapshot().migrations, 1)
+  })
+
+  it('merges a second socket into the confirmed bucket with a synthetic OK', async () => {
+    const { pool, sockets } = createPool()
+    const alice = generateSecretKey()
+    const memberA = pool.attach('wss://relay.example', {})
+    await tick()
+    sockets[0].open()
+    await tick()
+    sockets[0].message(['AUTH', 'c0'])
+    const firstAuth = authEvent(alice, { challenge: 'c0' })
+    memberA.send(JSON.stringify(['AUTH', firstAuth]))
+    await tick()
+    sockets[0].message(['OK', firstAuth.id, true, ''])
+    await tick()
+
+    const received = []
+    const memberB = pool.attach('wss://relay.example', { onMessage: raw => received.push(JSON.parse(raw)) })
+    await tick()
+    assert.equal(sockets.length, 2)
+    sockets[1].open()
+    await tick()
+    sockets[1].message(['AUTH', 'c1'])
+    memberB.send(JSON.stringify(['REQ', 'sub-b', { kinds: [1] }]))
+    await tick()
+    const secondAuth = authEvent(alice, { challenge: 'c1' })
+    memberB.send(JSON.stringify(['AUTH', secondAuth]))
+    await tick()
+    assert.equal(sockets[1].sent.some(message => message[0] === 'AUTH'), false)
+    assert.equal(received.some(message => message[0] === 'OK' && message[1] === secondAuth.id && message[2] === true), true)
+    assert.equal(pool.snapshot().authMerges, 1)
+    assert.equal(sockets[0].sent.some(message => message[0] === 'REQ' && message[1].includes('sub-b')), true)
+  })
+
+  it('rejects an invalid AUTH locally with OK false and never forwards it', async () => {
+    const { pool, sockets } = createPool()
+    const received = []
+    const member = pool.attach('wss://relay.example', { onMessage: raw => received.push(JSON.parse(raw)) })
+    await tick()
+    sockets[0].open()
+    await tick()
+    sockets[0].message(['AUTH', 'right-challenge'])
+    const event = authEvent(generateSecretKey(), { challenge: 'wrong-challenge' })
+    member.send(JSON.stringify(['AUTH', event]))
+    await tick()
+    assert.equal(sockets[0].sent.some(message => message[0] === 'AUTH'), false)
+    assert.deepEqual(received.at(-1), ['OK', event.id, false, 'invalid: AUTH challenge'])
+    assert.equal(pool.snapshot().authRejected, 1)
+  })
+
+  it('forces a reconnect when a confirmed bucket exists but cannot receive the socket', async () => {
+    const { pool, sockets } = createPool()
+    const alice = generateSecretKey()
+    const memberA = pool.attach('wss://relay.example', {})
+    await tick()
+    sockets[0].open()
+    await tick()
+    sockets[0].message(['AUTH', 'c0'])
+    const firstAuth = authEvent(alice, { challenge: 'c0' })
+    memberA.send(JSON.stringify(['AUTH', firstAuth]))
+    await tick()
+    sockets[0].message(['OK', firstAuth.id, true, ''])
+    await tick()
+
+    const closed = []
+    const memberB = pool.attach('wss://relay.example', { onClose: info => closed.push(info) })
+    await tick()
+    sockets[1].open()
+    await tick()
+    sockets[1].message(['AUTH', 'c1'])
+    memberB.send(JSON.stringify(['NEG-OPEN', 'neg1', { kinds: [1] }, 'aa']))
+    await tick()
+    const nsNeg = sockets[1].sent.find(message => message[0] === 'NEG-OPEN')[1]
+    sockets[1].message(['NEG-MSG', nsNeg, 'payload'])
+    await tick()
+    const secondAuth = authEvent(alice, { challenge: 'c1' })
+    memberB.send(JSON.stringify(['AUTH', secondAuth]))
+    await tick()
+    assert.equal(closed.at(-1).code, 1006)
+    assert.equal(sockets[1].sent.some(message => message[0] === 'AUTH'), false)
+    assert.equal(pool.snapshot().authReconnects, 1)
   })
 
   it('spills a member into a new bucket when the current one is full', async () => {

@@ -65,26 +65,41 @@ and rewritten back before delivery. `EVENT`, `EOSE`, `CLOSED`, `COUNT` and
 `NOTICE` is broadcast in the bucket; `AUTH` is stored and broadcast, and a
 newcomer receives the stored challenge so it can sign on demand.
 
-## AUTH swap and migration
+## AUTH: confirmation, merge and reconnect
 
 A relay `AUTH` challenge never triggers a migration: most relays send it
-proactively and most clients ignore it. The trigger is the client's `AUTH`
-response.
+proactively and most clients ignore it. The client's `AUTH` response is the
+trigger.
 
-Because the signed AUTH event is bound to the challenge of the connection it
-was received on, the authenticating virtual socket keeps that connection and
-the bucket becomes the bucket for its pubkey. Every other virtual socket is
-migrated to a new bucket (anonymous or for the previous identity) before the
-AUTH is forwarded. During migration the pool:
+Every client AUTH is validated locally before the pool routes it: signature
+and id via `isValidEvent`, kind 22242, `created_at` window, `relay` tag
+matching the relay URL and `challenge` tag matching the current bucket
+challenge. Invalid AUTHs are answered with a synthetic
+`["OK", id, false, "invalid: ..."]` and are never forwarded.
 
-- replays each subscription's last `REQ` on the destination bucket;
-- replays pending `EVENT` publishes (relays deduplicate by event id);
-- delivers the destination bucket's stored challenge;
-- deduplicates recently delivered event ids (LRU, 256 entries / 5 minutes) and
-  repeated `OK` replies.
+Valid AUTHs take one of two paths:
 
-Clients migrated to an authenticated bucket that need auth later sign again
-when the relay asks; the stored challenge is already available to them.
+- a confirmed bucket for that pubkey already exists and the virtual socket
+  has no connection-bound state: the AUTH is discarded, the socket moves to
+  that bucket, its subscriptions/counts/pending publishes are replayed and
+  the client receives a synthetic `["OK", id, true, ...]`; the relay sees no
+  second AUTH because the connection is already authenticated as that pubkey;
+- otherwise the AUTH is forwarded on the current connection. The bucket
+  identity stays pending until the relay answers `OK true`; `OK false`
+  reverts it to anonymous. Switching away from another authenticated pubkey
+  migrates the other virtual sockets first and replays the authenticator's
+  subscriptions after confirmation (the relay may have reset them).
+
+During a merge the pool replays each subscription's last `REQ`, pending
+`EVENT` publishes (relays deduplicate by event id), pending `COUNT`s and
+delivers the destination bucket's stored challenge, deduplicating recently
+delivered event ids (LRU, 256 entries / 5 minutes) and repeated `OK` replies.
+
+If a confirmed bucket exists but cannot receive the socket (bucket full) or
+the socket has state that cannot be transplanted — a NIP-77 session after any
+`NEG-MSG`/`NEG-ERR`, because negentropy state is connection-bound — the pool
+presents the switch as a reconnect (`close 1006`). The app reconnects and its
+next AUTH follows the merge path; no per-app identity hint is needed.
 
 ## Failure handling
 
@@ -120,8 +135,9 @@ global patch also covers older versions, because `RelayConnection` reads
 ## Metrics and tests
 
 `relayPoolSnapshot()` reports physical sockets, buckets, members, frames,
-migrations, detaches, quarantines and auth swaps; the launcher logs a summary
-at debug level while the pool is active. The development-only
+migrations, detaches, quarantines, auth swaps, auth merges, forced auth
+reconnects and rejected AUTHs; the launcher logs a summary at debug level
+while the pool is active. The development-only
 `window.__44bSetRelayPoolEnabled(false)` flips the kill switch; a reload is
 required.
 
