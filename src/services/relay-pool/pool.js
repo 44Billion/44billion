@@ -124,8 +124,9 @@ export class UnifiedRelayPool {
       subscriptions: new Map(), // nsId -> { rawId, message }
       rawSubscriptions: new Map(), // rawId -> nsId
       counts: new Map(), // nsId -> { rawId, message }
-      negs: new Map(), // nsId -> { rawId, message }
-      negExchanged: new Set(), // NEG sessions that already exchanged NEG-MSG/NEG-ERR
+      negs: new Map(), // nsId -> { rawId, message, timer }
+      negExchanged: new Set(), // NEG sessions that already exchanged NEG-MSG
+      negTombstones: new Map(), // rawId -> timer after a session was closed by the pool
       pendingPublishes: new Map(), // eventId -> raw message
       seenEvents: new LruSet(this.#limits.dedupeEntries, this.#limits.dedupeTtlMs),
       seenOks: new LruSet(this.#limits.dedupeEntries, this.#limits.dedupeTtlMs),
@@ -194,7 +195,7 @@ export class UnifiedRelayPool {
   }
 
   #bucketCanAcceptAnonymous (bucket) {
-    return bucket.identity === null && bucket.pendingAuths.size === 0 && this.#hasBucketRoom(bucket)
+    return bucket.identity === null && !bucket.unverified && bucket.pendingAuths.size === 0 && this.#hasBucketRoom(bucket)
   }
 
   #memberHasPendingAuth (member) {
@@ -209,7 +210,7 @@ export class UnifiedRelayPool {
   #selectBucket (url, identity, create, { exclude = null } = {}) {
     const buckets = [...this.#membersForUrl(url)].filter(bucket => bucket.state !== 'closed' && bucket !== exclude)
     const exact = buckets.find(bucket => bucket.identity === identity && this.#hasBucketRoom(bucket) &&
-      (identity !== null || bucket.pendingAuths.size === 0))
+      (identity !== null || (bucket.pendingAuths.size === 0 && !bucket.unverified)))
     if (exact) return exact
     if (identity === null) {
       const anonymous = buckets.find(bucket => this.#bucketCanAcceptAnonymous(bucket))
@@ -229,6 +230,7 @@ export class UnifiedRelayPool {
       key: bucketKey(url, identity),
       url,
       identity,
+      unverified: false,
       state: 'queued',
       socket: null,
       challenge: null,
@@ -237,7 +239,7 @@ export class UnifiedRelayPool {
       counts: new Map(),
       negs: new Map(),
       publishes: new Map(), // eventId -> Set<member>
-      pendingAuths: new Map(), // auth eventId -> { member, pubkey, previousIdentity }
+      pendingAuths: new Map(), // auth eventId -> { member, pubkey, timer }
       queues: new Map(), // memberId -> [{ raw, bytes }]
       roundRobin: [],
       roundRobinIndex: 0,
@@ -359,6 +361,10 @@ export class UnifiedRelayPool {
     bucket.closed = true
     bucket.state = 'closed'
     if (bucket.idleTimer) clearTimeout(bucket.idleTimer)
+    for (const entry of bucket.pendingAuths.values()) {
+      if (entry.timer) clearTimeout(entry.timer)
+    }
+    bucket.pendingAuths.clear()
     this.#buckets.delete(bucket.id)
     this.#membersForUrl(bucket.url).delete(bucket)
     const socket = bucket.socket
@@ -403,10 +409,13 @@ export class UnifiedRelayPool {
       bucket.counts.delete(nsId)
       this.#sendControl(bucket, ['CLOSE', nsId])
     }
-    for (const [nsId] of member.negs) {
+    for (const [nsId, entry] of member.negs) {
+      if (entry?.timer) clearTimeout(entry.timer)
       bucket.negs.delete(nsId)
       this.#sendControl(bucket, ['NEG-CLOSE', nsId])
     }
+    for (const timer of member.negTombstones.values()) clearTimeout(timer)
+    member.negTombstones.clear()
     for (const [eventId, publishers] of bucket.publishes) {
       publishers.delete(member)
       if (publishers.size === 0) bucket.publishes.delete(eventId)
@@ -524,25 +533,79 @@ export class UnifiedRelayPool {
 
   #handleClientNegOpen (member, bucket, message) {
     const rawId = message[1]
-    const nsId = this.#nextNamespacedId(member, rawId, 'neg')
+    const existingNsId = this.#findNamespaced(member.negs, rawId)
+    const nsId = existingNsId ?? this.#nextNamespacedId(member, rawId, 'neg')
     const outgoing = [message[0], nsId, ...message.slice(2)]
-    member.negs.set(nsId, { rawId, message: outgoing })
+    // A new NEG-OPEN for an open subscription id closes the previous
+    // session first (NIP-77), so the new session starts unpinned.
+    member.negExchanged.delete(nsId)
+    member.negs.set(nsId, { rawId, message: outgoing, timer: null })
     bucket.negs.set(nsId, member)
+    this.#clearNegTombstone(member, rawId)
+    this.#touchNegSession(member, nsId)
     this.#enqueue(bucket, member, outgoing)
+    if (existingNsId !== undefined) this.#consolidateBuckets(bucket.url, bucket.identity)
   }
 
   #handleClientNeg (member, bucket, message) {
-    const nsId = this.#findNamespaced(member.negs, message[1])
+    const rawId = message[1]
+    if (member.negTombstones.has(rawId)) {
+      if (message[0] === 'NEG-CLOSE') this.#clearNegTombstone(member, rawId)
+      else this.#deliverMember(member, JSON.stringify(['NEG-ERR', rawId, 'closed: NEG session closed']))
+      return
+    }
+    const nsId = this.#findNamespaced(member.negs, rawId)
     if (nsId === undefined) return
     const outgoing = [message[0], nsId, ...message.slice(2)]
-    if (message[0] === 'NEG-MSG') member.negExchanged.add(nsId)
+    if (message[0] === 'NEG-MSG') {
+      member.negExchanged.add(nsId)
+      this.#touchNegSession(member, nsId)
+    }
     if (message[0] === 'NEG-CLOSE') {
-      member.negs.delete(nsId)
-      member.negExchanged.delete(nsId)
-      bucket.negs.delete(nsId)
+      this.#clearNegSession(member, nsId)
       this.#consolidateBuckets(bucket.url, bucket.identity)
     }
     this.#enqueue(bucket, member, outgoing)
+  }
+
+  #clearNegSession (member, nsId) {
+    const entry = member.negs.get(nsId)
+    if (entry?.timer) clearTimeout(entry.timer)
+    member.negs.delete(nsId)
+    member.negExchanged.delete(nsId)
+    member.bucket?.negs.delete(nsId)
+  }
+
+  #clearNegTombstone (member, rawId) {
+    const timer = member.negTombstones.get(rawId)
+    if (timer) clearTimeout(timer)
+    member.negTombstones.delete(rawId)
+  }
+
+  #addNegTombstone (member, rawId) {
+    this.#clearNegTombstone(member, rawId)
+    const timer = setTimeout(() => member.negTombstones.delete(rawId), this.#limits.negTombstoneMs)
+    timer.unref?.()
+    member.negTombstones.set(rawId, timer)
+  }
+
+  #touchNegSession (member, nsId) {
+    const entry = member.negs.get(nsId)
+    if (!entry) return
+    if (entry.timer) clearTimeout(entry.timer)
+    entry.timer = setTimeout(() => this.#failNegSession(member, nsId), this.#limits.negSessionIdleMs)
+    entry.timer.unref?.()
+  }
+
+  #failNegSession (member, nsId) {
+    const entry = member.negs.get(nsId)
+    if (!entry) return
+    const bucket = member.bucket
+    const rawId = entry.rawId
+    this.#clearNegSession(member, nsId)
+    this.#addNegTombstone(member, rawId)
+    this.#deliverMember(member, JSON.stringify(['NEG-ERR', rawId, 'closed: NEG session idle']))
+    if (bucket) this.#consolidateBuckets(bucket.url, bucket.identity)
   }
 
   #findNamespaced (map, rawId) {
@@ -582,7 +645,7 @@ export class UnifiedRelayPool {
     }
     const identity = event.pubkey
     if (bucket.identity === identity) {
-      bucket.pendingAuths.set(authEventId, { member, pubkey: identity })
+      this.#setPendingAuth(bucket, authEventId, member, identity)
       this.#enqueue(bucket, member, message)
       return
     }
@@ -611,8 +674,27 @@ export class UnifiedRelayPool {
       }
       this.#counters.authSwaps++
     }
-    bucket.pendingAuths.set(authEventId, { member, pubkey: identity })
+    this.#setPendingAuth(bucket, authEventId, member, identity)
     this.#enqueue(bucket, member, message)
+  }
+
+  #setPendingAuth (bucket, authEventId, member, pubkey) {
+    const entry = { member, pubkey, timer: null }
+    entry.timer = setTimeout(() => this.#failPendingAuth(bucket, authEventId), this.#limits.authPendingTimeoutMs)
+    entry.timer.unref?.()
+    bucket.pendingAuths.set(authEventId, entry)
+  }
+
+  #failPendingAuth (bucket, authEventId) {
+    const entry = bucket.pendingAuths.get(authEventId)
+    if (!entry) return
+    bucket.pendingAuths.delete(authEventId)
+    // The relay never answered. Whether it processed the AUTH is unknown,
+    // so keep the bucket out of anonymous placement/consolidation targets.
+    bucket.unverified = true
+    this.#deliverMember(entry.member, JSON.stringify(['OK', authEventId, false, 'error: AUTH timeout']))
+    this.#consolidateBuckets(bucket.url, bucket.identity)
+    this.#drainPendingMembers()
   }
 
   #canMergeIntoBucket (bucket, member) {
@@ -640,7 +722,7 @@ export class UnifiedRelayPool {
         return a.id.localeCompare(b.id)
       })
       for (const target of ordered) {
-        if (target.closed || target.members.size === 0) continue
+        if (target.closed || target.unverified || target.members.size === 0) continue
         for (const source of ordered) {
           if (source === target || source.closed) continue
           for (const member of [...source.members]) {
@@ -672,7 +754,7 @@ export class UnifiedRelayPool {
     let moved = 0
     try {
       const targets = [...buckets]
-        .filter(bucket => bucket.pendingAuths.size === 0)
+        .filter(bucket => !bucket.unverified && bucket.pendingAuths.size === 0)
         .sort((a, b) => {
           const aOpen = a.state === 'open' ? 1 : 0
           const bOpen = b.state === 'open' ? 1 : 0
@@ -748,7 +830,7 @@ export class UnifiedRelayPool {
 
   #findConfirmedBucket (url, identity) {
     for (const candidate of this.#membersForUrl(url)) {
-      if (candidate.state !== 'closed' && candidate.identity === identity) return candidate
+      if (candidate.state !== 'closed' && !candidate.unverified && candidate.identity === identity) return candidate
     }
     return null
   }
@@ -826,7 +908,7 @@ export class UnifiedRelayPool {
         candidate.subscriptions.size + needed <= this.#limits.maxSubscriptionsPerBucket) ?? null
     }
     const anonymous = candidates.find(candidate => candidate.identity === null &&
-      candidate.pendingAuths.size === 0 &&
+      !candidate.unverified && candidate.pendingAuths.size === 0 &&
       candidate.subscriptions.size + needed <= this.#limits.maxSubscriptionsPerBucket)
     if (anonymous) return anonymous
     if (candidates.length + 1 < this.#limits.maxBucketsPerRelay) return this.#createBucket(bucket.url, null)
@@ -991,7 +1073,16 @@ export class UnifiedRelayPool {
       ? member.subscriptions.get(message[1])?.rawId
       : kind === 'count' ? member.counts.get(message[1])?.rawId : member.negs.get(message[1])?.rawId
     if (rawId === undefined) return
-    if (kind === 'neg') member.negExchanged.add(message[1])
+    if (kind === 'neg') {
+      if (message[0] === 'NEG-ERR') {
+        this.#clearNegSession(member, message[1])
+        this.#deliverMember(member, JSON.stringify(['NEG-ERR', rawId, message[2]]))
+        this.#consolidateBuckets(bucket.url, bucket.identity)
+        return
+      }
+      member.negExchanged.add(message[1])
+      this.#touchNegSession(member, message[1])
+    }
     if (kind === 'count') {
       member.counts.delete(message[1])
       bucket.counts.delete(message[1])
@@ -1002,6 +1093,7 @@ export class UnifiedRelayPool {
   #routeOk (bucket, message) {
     const pendingAuth = bucket.pendingAuths.get(message[1])
     if (pendingAuth) {
+      if (pendingAuth.timer) clearTimeout(pendingAuth.timer)
       bucket.pendingAuths.delete(message[1])
       const confirmed = message[2] === true
       this.#setBucketIdentity(bucket, confirmed ? pendingAuth.pubkey : null)

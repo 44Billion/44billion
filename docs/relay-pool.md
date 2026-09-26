@@ -100,14 +100,21 @@ Valid AUTHs follow these rules:
   subscriptions). Present a reconnect (`close 1006`); the next AUTH runs from
   a fresh anonymous bucket.
 
+If the relay never answers a forwarded AUTH within `authPendingTimeoutMs`
+(30s), the pool synthesizes `["OK", id, false, "error: AUTH timeout"]` to
+the client and marks the bucket `unverified`. The bucket keeps serving its
+current members, but is excluded from anonymous placement, AUTH merges and
+consolidation targets until it closes, because it is unknown whether the
+relay actually authenticated the connection.
+
 The pool always prefers merging on the next AUTH and exposes `authMerges`,
 `authSwaps` and `authReconnects` in the snapshot. Multiple authenticated
 buckets for the same `(relay, pubkey)` are consolidated proactively:
-whenever a subscription slot frees (`CLOSE`/`CLOSED`), a `NEG-CLOSE` makes
-a member merge-safe, a member leaves an authenticated bucket, or a new
-identity is confirmed, the pool moves merge-safe members from smaller
-buckets into the largest open bucket with room (`consolidations` counter).
-Members with an exchanged NEG session are skipped until `NEG-CLOSE`;
+whenever a subscription slot frees (`CLOSE`/`CLOSED`), a NEG session closes,
+a member leaves an authenticated bucket, or a new identity is confirmed, the
+pool moves merge-safe members from smaller buckets into the largest open
+bucket with room (`consolidations` counter). Members with an exchanged NEG
+session are skipped until the session closes (see below);
 pending publishes/COUNTs move with the normal replay/dedupe. Emptied
 buckets still close after the usual 30s idle.
 
@@ -124,6 +131,17 @@ During a merge the pool replays each subscription's last `REQ`, pending
 `EVENT` publishes (relays deduplicate by event id), pending `COUNT`s and
 delivers the destination bucket's stored challenge, deduplicating recently
 delivered event ids (LRU, 256 entries / 5 minutes) and repeated `OK` replies.
+
+NEG sessions are pinned to their physical connection only while they are
+really in progress. Per NIP-77 a session ends on `NEG-CLOSE` from the
+client, on `NEG-ERR` from the relay (after which the subscription is
+considered closed), or when a new `NEG-OPEN` reuses the subscription id
+(the previous session is closed first). The pool implements all three and
+also closes inactive sessions after `negSessionIdleMs` (60s) with a
+synthetic `["NEG-ERR", id, "closed: ..."]`; a `negTombstoneMs` tombstone
+answers a late `NEG-MSG` for that id with another `NEG-ERR` instead of
+dropping it. Once the session is closed the member becomes merge-safe for
+consolidation.
 
 ## Failure handling
 

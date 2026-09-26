@@ -23,6 +23,9 @@ export const RELAY_POOL_LIMITS = Object.freeze({
   dedupeTtlMs: 5 * 60 * 1000,
   quarantineMs: 15 * 60 * 1000,
   consolidationThrottleMs: 5000,
+  negSessionIdleMs: 60000,
+  negTombstoneMs: 60000,
+  authPendingTimeoutMs: 30000,
   nip11TimeoutMs: 3000,
   bridgeCreditFrames: 64,
   bridgeCreditBytes: 256 * 1024

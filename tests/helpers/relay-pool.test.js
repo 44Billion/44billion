@@ -68,6 +68,40 @@ function createPool (overrides = {}) {
   return { pool, sockets }
 }
 
+async function setupTwoAuthBucketsWithNeg ({ pool, sockets, alice, handlersA = {}, handlersB = {} }) {
+  const memberA = pool.attach('wss://relay.example', handlersA)
+  await tick()
+  sockets[0].open()
+  await tick()
+  sockets[0].message(['AUTH', 'c0'])
+  const authA = authEvent(alice, { challenge: 'c0' })
+  memberA.send(JSON.stringify(['AUTH', authA]))
+  await tick()
+  sockets[0].message(['OK', authA.id, true, ''])
+  await tick()
+  memberA.send(JSON.stringify(['REQ', 'a', { kinds: [1] }]))
+  await tick()
+
+  const memberB = pool.attach('wss://relay.example', handlersB)
+  await tick()
+  sockets[1].open()
+  await tick()
+  sockets[1].message(['AUTH', 'c1'])
+  memberB.send(JSON.stringify(['NEG-OPEN', 'negB', { kinds: [1] }, 'bb']))
+  await tick()
+  const nsNegB = sockets[1].sent.find(message => message[0] === 'NEG-OPEN')[1]
+  sockets[1].message(['NEG-MSG', nsNegB, 'payload'])
+  await tick()
+  memberB.send(JSON.stringify(['REQ', 'b', { kinds: [1] }]))
+  await tick()
+  const authB = authEvent(alice, { challenge: 'c1' })
+  memberB.send(JSON.stringify(['AUTH', authB]))
+  await tick()
+  sockets[1].message(['OK', authB.id, true, ''])
+  await tick()
+  return { memberA, memberB, nsNegB }
+}
+
 function signedEvent (pubkey = 'p'.repeat(64)) {
   return {
     id: `${pubkey.slice(0, 8)}${Date.now()}`.padEnd(64, '0'),
@@ -611,6 +645,77 @@ describe('unified relay pool', () => {
     assert.equal(pool.snapshot().consolidations, 1)
     assert.equal(sockets[0].sent.some(message => message[0] === 'REQ' && message[1].includes('d1')), true)
     assert.equal(sockets[0].sent.some(message => message[0] === 'REQ' && message[1].includes('b1')), false)
+  })
+
+  it('closes a NEG session on relay NEG-ERR and consolidates the freed member', async () => {
+    const { pool, sockets } = createPool()
+    const alice = generateSecretKey()
+    const received = []
+    const { nsNegB } = await setupTwoAuthBucketsWithNeg({
+      pool,
+      sockets,
+      alice,
+      handlersB: { onMessage: raw => received.push(JSON.parse(raw)) }
+    })
+    sockets[1].message(['NEG-ERR', nsNegB, 'closed: too slow'])
+    await tick()
+    assert.equal(received.some(message => message[0] === 'NEG-ERR' && message[1] === 'negB'), true)
+    assert.equal(pool.snapshot().consolidations, 1)
+    assert.equal(sockets[0].sent.some(message => message[0] === 'REQ' && message[1].includes('b')), true)
+  })
+
+  it('replaces an open NEG session when the client reuses the raw id and unpins it', async () => {
+    const { pool, sockets } = createPool()
+    const alice = generateSecretKey()
+    const { memberB, nsNegB } = await setupTwoAuthBucketsWithNeg({ pool, sockets, alice })
+    memberB.send(JSON.stringify(['NEG-OPEN', 'negB', { kinds: [2] }, 'cc']))
+    await tick()
+    const opens = sockets[1].sent.filter(message => message[0] === 'NEG-OPEN')
+    assert.equal(opens.length, 2)
+    assert.equal(opens[0][1], nsNegB)
+    assert.equal(opens[1][1], nsNegB)
+    assert.equal(pool.snapshot().consolidations, 1)
+    assert.equal(sockets[0].sent.some(message => message[0] === 'REQ' && message[1].includes('b')), true)
+  })
+
+  it('closes an idle NEG session with a synthetic NEG-ERR and keeps a tombstone', async () => {
+    const { pool, sockets } = createPool({ negSessionIdleMs: 50, negTombstoneMs: 500 })
+    const alice = generateSecretKey()
+    const received = []
+    const { memberB } = await setupTwoAuthBucketsWithNeg({
+      pool,
+      sockets,
+      alice,
+      handlersB: { onMessage: raw => received.push(JSON.parse(raw)) }
+    })
+    await new Promise(resolve => setTimeout(resolve, 70))
+    assert.equal(received.some(message => message[0] === 'NEG-ERR' && message[1] === 'negB' && String(message[2]).startsWith('closed:')), true)
+    assert.equal(pool.snapshot().consolidations, 1)
+    received.length = 0
+    memberB.send(JSON.stringify(['NEG-MSG', 'negB', 'late']))
+    await tick()
+    assert.equal(received.some(message => message[0] === 'NEG-ERR' && message[1] === 'negB'), true)
+    memberB.send(JSON.stringify(['NEG-CLOSE', 'negB']))
+    await tick()
+  })
+
+  it('times out a pending AUTH and keeps the bucket out of anonymous placement', async () => {
+    const { pool, sockets } = createPool({ authPendingTimeoutMs: 20 })
+    const alice = generateSecretKey()
+    const received = []
+    const memberA = pool.attach('wss://relay.example', { onMessage: raw => received.push(JSON.parse(raw)) })
+    await tick()
+    sockets[0].open()
+    await tick()
+    sockets[0].message(['AUTH', 'c0'])
+    const authA = authEvent(alice, { challenge: 'c0' })
+    memberA.send(JSON.stringify(['AUTH', authA]))
+    await tick()
+    await new Promise(resolve => setTimeout(resolve, 40))
+    assert.equal(received.some(message => message[0] === 'OK' && message[1] === authA.id && message[2] === false && message[3] === 'error: AUTH timeout'), true)
+    pool.attach('wss://relay.example', {})
+    await tick()
+    assert.equal(sockets.length, 2)
   })
 
   it('spills a member into a new bucket when the current one is full', async () => {
