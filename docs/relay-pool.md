@@ -52,15 +52,19 @@ Identity is `null` until a client sends `AUTH`; anonymous clients share the
 anonymous bucket. Defaults live in `src/services/relay-pool/constants.js`:
 
 - 24 subscriptions per bucket (the relay allows 30 per connection);
-- 4 buckets per relay per tab, with spill and a connection limiter that
-  respects the relay's 3 new connections/second and 10 per 5 seconds;
+- 4 buckets per relay per tab, with spill and a **per-host** connection
+  limiter that respects the relay's 3 new connections/second and 10 per 5
+  seconds without making unrelated relays wait for each other;
 - 60 messages per 2 seconds per bucket, drained round-robin per virtual socket;
 - 256 queued frames / 1 MiB per virtual socket, then only that socket is
   closed with 1013;
 - buckets with no members close after 30 seconds.
 
 Subscription ids are namespaced per virtual socket before going to the relay
-and rewritten back before delivery. `EVENT`, `EOSE`, `CLOSED`, `COUNT` and
+and rewritten back before delivery. A `REQ` that reuses a raw subscription id
+replaces the existing subscription on the same namespaced id, matching NIP-01
+instead of leaking a second relay-side subscription. `EVENT`, `EOSE`,
+`CLOSED`, `COUNT` and
 `NEG-*` route by namespaced id; `OK` routes by event id to the publishers;
 `NOTICE` is broadcast in the bucket; `AUTH` is stored and broadcast, and a
 newcomer receives the stored challenge so it can sign on demand.
@@ -134,10 +138,13 @@ global patch also covers older versions, because `RelayConnection` reads
 
 ## Metrics and tests
 
-`relayPoolSnapshot()` reports physical sockets, buckets, members, frames,
-migrations, detaches, quarantines, auth swaps, auth merges, forced auth
-reconnects and rejected AUTHs; the launcher logs a summary at debug level
-while the pool is active. The development-only
+`relayPoolSnapshot()` reports physical sockets, buckets (also grouped by
+host), subscriptions, members, pending members, frames, drops by op,
+capacity rejections, migrations, detaches, quarantines, auth swaps, auth
+merges, forced auth reconnects and rejected AUTHs; the launcher logs a
+summary at debug level while the pool is active. Members that cannot get a
+bucket immediately are logged and retried when a subscription slot frees.
+The development-only
 `window.__44bSetRelayPoolEnabled(false)` flips the kill switch; a reload is
 required.
 

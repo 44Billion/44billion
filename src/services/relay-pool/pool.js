@@ -49,7 +49,7 @@ export class UnifiedRelayPool {
   #bucketsByUrl = new Map()
   #pendingMembers = []
   #connectionQueue = []
-  #connectionTimes = []
+  #connectionTimesByHost = new Map()
   #connectionTimer = null
   #quarantined = new Map()
   #serial = 0
@@ -64,6 +64,8 @@ export class UnifiedRelayPool {
     detaches: 0,
     quarantines: 0,
     droppedFrames: 0,
+    droppedByOp: {},
+    capacityRejections: 0,
     authSwaps: 0,
     authMerges: 0,
     authReconnects: 0,
@@ -132,7 +134,10 @@ export class UnifiedRelayPool {
     this.#counters.membersAttached++
     const bucket = this.#selectBucket(key, null, true)
     if (bucket) this.#addMember(member, bucket)
-    else this.#pendingMembers.push(member)
+    else {
+      this.#pendingMembers.push(member)
+      this.#log('[relay-pool] member pending (no bucket capacity)', key)
+    }
     return {
       id: member.id,
       send: data => this.#handleClientData(member, data),
@@ -149,10 +154,21 @@ export class UnifiedRelayPool {
   }
 
   snapshot () {
+    const bucketsByHost = {}
+    let subscriptions = 0
+    for (const bucket of this.#buckets.values()) {
+      const host = this.#hostFor(bucket.url)
+      bucketsByHost[host] = (bucketsByHost[host] ?? 0) + 1
+      subscriptions += bucket.subscriptions.size
+    }
     return {
       ...this.#counters,
+      droppedByOp: { ...this.#counters.droppedByOp },
       buckets: this.#buckets.size,
+      bucketsByHost,
+      subscriptions,
       members: this.#members.size,
+      pendingMembers: this.#pendingMembers.length,
       quarantined: this.#quarantined.size
     }
   }
@@ -225,32 +241,55 @@ export class UnifiedRelayPool {
     this.#pumpConnections()
   }
 
+  #hostFor (url) {
+    try {
+      return new URL(url).host
+    } catch {
+      return url
+    }
+  }
+
+  // Connection budgets are per host: the 44b-relay limits are per IP, and
+  // unrelated relays must never wait behind each other's budget.
   #pumpConnections () {
     if (this.#connectionTimer !== null || this.#connectionQueue.length === 0) return
     const now = Date.now()
-    this.#connectionTimes = this.#connectionTimes.filter(at => now - at < this.#limits.connectionWindowMs)
-    const lastSecond = this.#connectionTimes.filter(at => now - at < this.#limits.connectionBurstWindowMs).length
-    let delay = null
-    if (lastSecond >= this.#limits.maxNewConnectionsPerSecond) {
-      const oldest = this.#connectionTimes.filter(at => now - at < this.#limits.connectionBurstWindowMs).sort((a, b) => a - b)[0]
-      delay = Math.max(20, oldest + this.#limits.connectionBurstWindowMs - now)
-    } else if (this.#connectionTimes.length >= this.#limits.maxNewConnectionsPerWindow) {
-      const oldest = this.#connectionTimes[0]
-      delay = Math.max(20, oldest + this.#limits.connectionWindowMs - now)
+    let selected = -1
+    let retryDelay = null
+    for (let index = 0; index < this.#connectionQueue.length; index++) {
+      const bucket = this.#connectionQueue[index]
+      if (bucket.closed) {
+        this.#connectionQueue.splice(index, 1)
+        index--
+        continue
+      }
+      const host = this.#hostFor(bucket.url)
+      const times = (this.#connectionTimesByHost.get(host) ?? []).filter(at => now - at < this.#limits.connectionWindowMs)
+      this.#connectionTimesByHost.set(host, times)
+      const inBurst = times.filter(at => now - at < this.#limits.connectionBurstWindowMs)
+      if (inBurst.length < this.#limits.maxNewConnectionsPerSecond && times.length < this.#limits.maxNewConnectionsPerWindow) {
+        selected = index
+        break
+      }
+      const delay = inBurst.length >= this.#limits.maxNewConnectionsPerSecond
+        ? Math.max(20, inBurst[0] + this.#limits.connectionBurstWindowMs - now)
+        : Math.max(20, times[0] + this.#limits.connectionWindowMs - now)
+      if (retryDelay === null || delay < retryDelay) retryDelay = delay
     }
-    if (delay !== null) {
-      this.#connectionTimer = setTimeout(() => {
-        this.#connectionTimer = null
-        this.#pumpConnections()
-      }, delay)
+    if (selected < 0) {
+      if (retryDelay !== null) {
+        this.#connectionTimer = setTimeout(() => {
+          this.#connectionTimer = null
+          this.#pumpConnections()
+        }, retryDelay)
+      }
       return
     }
-    const bucket = this.#connectionQueue.shift()
-    if (!bucket || bucket.closed) {
-      this.#pumpConnections()
-      return
-    }
-    this.#connectionTimes.push(now)
+    const [bucket] = this.#connectionQueue.splice(selected, 1)
+    const host = this.#hostFor(bucket.url)
+    const times = this.#connectionTimesByHost.get(host) ?? []
+    times.push(now)
+    this.#connectionTimesByHost.set(host, times)
     this.#openBucket(bucket)
     if (this.#connectionQueue.length > 0) queueMicrotask(() => this.#pumpConnections())
   }
@@ -298,6 +337,7 @@ export class UnifiedRelayPool {
     const socket = bucket.socket
     bucket.socket = null
     if (socket) {
+      if (socket.readyState < 2) this.#counters.physicalClosed++
       socket.onclose = null
       socket.onerror = null
       socket.onmessage = null
@@ -406,13 +446,27 @@ export class UnifiedRelayPool {
   }
 
   #handleClientRequest (member, bucket, message) {
+    const rawId = message[1]
+    const existingNsId = member.rawSubscriptions.get(rawId)
+    if (existingNsId !== undefined) {
+      const replacement = [message[0], existingNsId, ...message.slice(2)]
+      member.subscriptions.set(existingNsId, { rawId, message: replacement })
+      bucket.subscriptions.set(existingNsId, member)
+      this.#enqueue(bucket, member, replacement)
+      return
+    }
     if (bucket.subscriptions.size >= this.#limits.maxSubscriptionsPerBucket) {
-      const target = this.#selectBucket(bucket.url, bucket.identity, true)
-      if (!target) return this.#closeMember(member, 1013, 'relay pool capacity', false)
+      const target = this.#selectSpillBucket(bucket, member)
+      if (!target) {
+        this.#counters.capacityRejections++
+        this.#log('[relay-pool] bucket capacity exhausted', bucket.url, bucket.identity ?? 'anonymous')
+        return bucket.identity === null
+          ? this.#closeMember(member, 1013, 'relay pool capacity', false)
+          : this.#reconnectMember(member, 'relay pool rehome')
+      }
       if (!this.#moveMember(member, target)) return
       bucket = member.bucket
     }
-    const rawId = message[1]
     const nsId = this.#nextNamespacedId(member, rawId, 'sub')
     const outgoing = [message[0], nsId, ...message.slice(2)]
     member.subscriptions.set(nsId, { rawId, message: outgoing })
@@ -428,6 +482,7 @@ export class UnifiedRelayPool {
     member.rawSubscriptions.delete(message[1])
     bucket.subscriptions.delete(nsId)
     this.#enqueue(bucket, member, ['CLOSE', nsId])
+    this.#drainPendingMembers()
   }
 
   #handleClientCount (member, bucket, message) {
@@ -486,7 +541,7 @@ export class UnifiedRelayPool {
     const event = message[1]
     const authEventId = event?.id
     if (typeof authEventId !== 'string') {
-      this.#counters.droppedFrames++
+      this.#dropFrame('AUTH')
       return
     }
     if (bucket.pendingAuths.has(authEventId)) return
@@ -617,6 +672,26 @@ export class UnifiedRelayPool {
     this.#drainBucket(bucket)
   }
 
+  #selectSpillBucket (bucket, member) {
+    const needed = 1 + member.subscriptions.size
+    const candidates = [...this.#membersForUrl(bucket.url)].filter(candidate => candidate.state !== 'closed' && candidate !== bucket)
+    if (bucket.identity !== null) {
+      return candidates.find(candidate => candidate.identity === bucket.identity &&
+        candidate.subscriptions.size + needed <= this.#limits.maxSubscriptionsPerBucket) ?? null
+    }
+    const anonymous = candidates.find(candidate => candidate.identity === null &&
+      candidate.subscriptions.size + needed <= this.#limits.maxSubscriptionsPerBucket)
+    if (anonymous) return anonymous
+    if (candidates.length + 1 < this.#limits.maxBucketsPerRelay) return this.#createBucket(bucket.url, null)
+    return null
+  }
+
+  #dropFrame (op) {
+    this.#counters.droppedFrames++
+    const key = typeof op === 'string' ? op : 'invalid'
+    this.#counters.droppedByOp[key] = (this.#counters.droppedByOp[key] ?? 0) + 1
+  }
+
   #sendControl (bucket, message) {
     if (!bucket || bucket.closed || bucket.state !== 'open') return
     let queue = bucket.queues.get('__control__')
@@ -690,7 +765,7 @@ export class UnifiedRelayPool {
     if (bucket.closed) return
     const message = parseNostrFrame(data)
     if (!message) {
-      this.#counters.droppedFrames++
+      this.#dropFrame('invalid-server-frame')
       this.quarantine(bucket.url, 'invalid server frame')
       const members = [...bucket.members]
       this.#destroyBucket(bucket, 1006, 'invalid server frame', false)
@@ -718,13 +793,13 @@ export class UnifiedRelayPool {
       const routed = bucket.subscriptions.get(message[1]) ?? bucket.counts.get(message[1]) ?? bucket.negs.get(message[1])
       if (routed) return this.#deliverMember(routed, this.#rewriteId(message, routed))
     }
-    this.#counters.droppedFrames++
+    this.#dropFrame(message[0])
   }
 
   #routeEvent (bucket, message) {
     const member = bucket.subscriptions.get(message[1])
     if (!member) {
-      this.#counters.droppedFrames++
+      this.#dropFrame('EVENT')
       return
     }
     const eventId = message[2]?.id
@@ -739,7 +814,7 @@ export class UnifiedRelayPool {
     const nsId = message[1]
     const member = bucket.subscriptions.get(nsId) ?? bucket.counts.get(nsId) ?? bucket.negs.get(nsId)
     if (!member) {
-      this.#counters.droppedFrames++
+      this.#dropFrame('CLOSED')
       return
     }
     const subscription = member.subscriptions.get(nsId)
@@ -747,6 +822,7 @@ export class UnifiedRelayPool {
       member.subscriptions.delete(nsId)
       member.rawSubscriptions.delete(subscription.rawId)
       bucket.subscriptions.delete(nsId)
+      this.#drainPendingMembers()
     }
     const countEntry = member.counts.get(nsId)
     if (countEntry !== undefined) {
@@ -760,7 +836,7 @@ export class UnifiedRelayPool {
     const map = kind === 'sub' ? bucket.subscriptions : kind === 'count' ? bucket.counts : bucket.negs
     const member = map.get(message[1])
     if (!member) {
-      this.#counters.droppedFrames++
+      this.#dropFrame(message[0])
       return
     }
     const rawId = kind === 'sub'
@@ -792,7 +868,7 @@ export class UnifiedRelayPool {
     }
     const publishers = bucket.publishes.get(message[1])
     if (!publishers) {
-      this.#counters.droppedFrames++
+      this.#dropFrame('OK')
       return
     }
     bucket.publishes.delete(message[1])
