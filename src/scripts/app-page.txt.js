@@ -8,6 +8,7 @@ import { createWidgetDragClient } from '#helpers/window-message/widget-drag-clie
 import { createNip07Method } from '#helpers/window-message/nip07-client.js'
 import { naddrDecode } from 'libp2r2p/nip19'
 import { fileDownloadUrl } from '#helpers/nfile-download-url.js'
+import { installInsecureWebSocketGuard } from '#helpers/insecure-websocket-guard.js'
 import {
   DRAFT_SITE_MANIFEST,
   MAIN_SITE_MANIFEST,
@@ -35,6 +36,15 @@ console.error = (...args) => appConsoleDebug(...args)
 const widgetDragLog = (...args) => {
   if (IS_DEVELOPMENT) originalConsole.log(...args)
 }
+
+// Napps may hard-code cleartext relay URLs. Upgrading ws:// (and http://)
+// before the browser classifies the request as mixed content keeps the tab
+// secure, so WebAuthn inside the vault iframe stays available.
+installInsecureWebSocketGuard({
+  window,
+  document,
+  log: (url, upgradedUrl) => appConsoleDebug('[app-page] Upgraded insecure WebSocket URL', url, '->', upgradedUrl)
+})
 
 const SITE_MANIFEST_KINDS = new Set([
   MAIN_SITE_MANIFEST,

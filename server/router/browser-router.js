@@ -28,7 +28,11 @@ if (isProduction) {
   // relies on these same guarantees: network-first for the no-cache entries
   // (fresh deploy on next reload, cached copy when offline) and cache-first
   // for the immutable chunks.
-  const serveIndex = getServeBuilt('index.html', 'text/html', 'no-cache')
+  // Upgrade insecure requests before the browser's mixed-content check so the
+  // launcher document never taints WebAuthn inside the vault iframe.
+  const serveIndex = getServeBuilt('index.html', 'text/html', 'no-cache', {
+    'content-security-policy': 'upgrade-insecure-requests'
+  })
   domainRouter
     .get('/sw.js', getServeBuilt('launcher-sw.js', 'text/javascript', 'no-cache'))
     .get('/app.js', getServeBuilt('app.js', 'text/javascript', 'no-cache'))
@@ -44,10 +48,11 @@ if (isProduction) {
     .get('/icon-512.png', getServeBuilt('icon-512.png', 'image/png', 'public, max-age=86400'))
     .get('/site.webmanifest', getServeBuilt('site.webmanifest', 'application/manifest+json', 'no-cache'))
 
-  function getServeBuilt (filename, contentType, cacheControl) {
+  function getServeBuilt (filename, contentType, cacheControl, extraHeaders = {}) {
     return async (req, res) => {
       res.setHeader('content-type', contentType)
       if (cacheControl) res.setHeader('cache-control', cacheControl)
+      for (const [name, value] of Object.entries(extraHeaders)) res.setHeader(name, value)
       res.writeHead(200)
       await pipeline(
         (await getBuiltFileRstream(filename)).result,

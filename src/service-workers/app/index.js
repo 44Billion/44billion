@@ -21,6 +21,16 @@ const appPageLoader = injectIntoTheHeadTag(
 )
 const trustedAppPage = injectIntoTheHeadTag(_trustedAppPage, `<script>${trustedAppPageScriptContent}</script>`)
 
+// Napp HTML is third-party code and may reference cleartext URLs. A blocked
+// mixed-content request marks the whole tab "not secure", which makes Chrome
+// refuse WebAuthn inside the vault iframe. Upgrading insecure requests before
+// the browser's mixed-content check (http -> https, ws -> wss) keeps the tab
+// secure. Development on *.localhost has no mixed content to fix.
+const upgradeInsecureRequestsHeaders = IS_PRODUCTION
+  ? { 'content-security-policy': 'upgrade-insecure-requests' }
+  : {}
+const htmlHeaders = headers => ({ ...headers, ...upgradeInsecureRequestsHeaders })
+
 const getErrorHtml = (e, err) => /* html */`
 <!doctype html>
 <html>
@@ -116,7 +126,7 @@ self.addEventListener('fetch', e => {
     const basePath = url.pathname + url.search
     e.respondWith(new Response(
       `<!doctype html><script>location.replace("${self.location.protocol}//${mainHost}/?subdomain=${subdomain}&path="+encodeURIComponent(${JSON.stringify(basePath)}+location.hash))</script>`,
-      { headers: { 'content-type': 'text/html', 'cache-control': 'no-cache' } }
+      { headers: htmlHeaders({ 'content-type': 'text/html', 'cache-control': 'no-cache' }) }
     ))
     return
   }
@@ -125,7 +135,7 @@ self.addEventListener('fetch', e => {
     if (e.request.pathname === '/~~napp') {
       return new Response(
         trustedAppPage,
-        { headers: { 'content-type': 'text/html', 'cache-control': 'no-cache' } }
+        { headers: htmlHeaders({ 'content-type': 'text/html', 'cache-control': 'no-cache' }) }
       )
     }
 
@@ -134,7 +144,7 @@ self.addEventListener('fetch', e => {
       .catch(err => new Response(getErrorHtml(e, err), {
         status: 404,
         statusText: 'Not Found',
-        headers: { 'content-type': 'text/html', 'cache-control': 'no-cache' }
+        headers: htmlHeaders({ 'content-type': 'text/html', 'cache-control': 'no-cache' })
       }))
   })())
 })
@@ -297,7 +307,7 @@ async function tryHandleRequest (request) {
     switch (firstReplyMsg.error.message) {
       case 'HTML_FILE_NOT_CACHED':
         // this html waits for complete file chunk caching then reloads itself
-        return new Response(appPageLoader, { headers: { 'content-type': 'text/html', 'cache-control': 'no-cache' } })
+        return new Response(appPageLoader, { headers: htmlHeaders({ 'content-type': 'text/html', 'cache-control': 'no-cache' }) })
       case 'FILE_NOT_CACHED':
         console.log(`[Service Worker] Asset not found for path: ${pathname}:\n${firstReplyMsg.error?.stack ?? firstReplyMsg.error ?? 'Unknown Error'}`)
         return new Response(null, {
@@ -337,7 +347,7 @@ async function tryHandleRequest (request) {
         appPageScriptContent // inject window.(nostr|napp)
       }</script>`
     )
-    return new Response(appPage, { headers: { 'content-type': 'text/html', 'cache-control': 'no-cache' } })
+    return new Response(appPage, { headers: htmlHeaders({ 'content-type': 'text/html', 'cache-control': 'no-cache' }) })
   }
 }
 
