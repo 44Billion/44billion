@@ -25,6 +25,9 @@ ephemeral and intentionally not persisted; they do not belong here or in
 - `config_vaultUrl` — configured vault URL.
 - `config_stickySessions` — boolean; when true, open/minimized windows are
   remembered per tab and restored on later visits.
+- `config_relayPoolEnabled` — boolean; when `false`, the launcher and app
+  pages skip the unified relay pool and open plain WebSockets (ws:// is
+  still upgraded to wss:// on HTTPS pages). Absent means enabled.
 - `session_defaultUserPk` — base62 pubkey of the default user, or absent.
 - `session_accountUserPks` — ordered base62 pubkeys of connected accounts.
 - `session_workspaceKeys` — ordered workspace keys.

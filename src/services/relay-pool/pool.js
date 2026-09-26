@@ -1,0 +1,755 @@
+import { normalizeRelayUrl } from 'libp2r2p/url'
+
+import { parseNostrFrame } from './classify.js'
+import { RELAY_POOL_LIMITS } from './constants.js'
+import { RelayRegistry } from './registry.js'
+
+class LruSet {
+  #limit
+  #ttlMs
+  #entries = new Map()
+
+  constructor (limit, ttlMs) {
+    this.#limit = limit
+    this.#ttlMs = ttlMs
+  }
+
+  has (key) {
+    const seenAt = this.#entries.get(key)
+    if (seenAt === undefined) return false
+    if (Date.now() - seenAt > this.#ttlMs) {
+      this.#entries.delete(key)
+      return false
+    }
+    return true
+  }
+
+  add (key) {
+    this.#entries.delete(key)
+    this.#entries.set(key, Date.now())
+    while (this.#entries.size > this.#limit) this.#entries.delete(this.#entries.keys().next().value)
+  }
+}
+
+function bucketKey (url, identity) {
+  return `${url}\u0000${identity ?? ''}`
+}
+
+// Launcher-owned relay multiplexer. One physical WebSocket per bucket is
+// shared by many virtual sockets; subscription ids are namespaced per virtual
+// socket and rewritten on the way back.
+export class UnifiedRelayPool {
+  #createSocket
+  #registry
+  #limits
+  #log
+  #members = new Map()
+  #buckets = new Map()
+  #bucketsByUrl = new Map()
+  #pendingMembers = []
+  #connectionQueue = []
+  #connectionTimes = []
+  #connectionTimer = null
+  #quarantined = new Map()
+  #serial = 0
+  #counters = {
+    physicalOpened: 0,
+    physicalClosed: 0,
+    bucketsCreated: 0,
+    membersAttached: 0,
+    framesIn: 0,
+    framesOut: 0,
+    migrations: 0,
+    detaches: 0,
+    quarantines: 0,
+    droppedFrames: 0,
+    authSwaps: 0
+  }
+
+  constructor ({
+    createSocket,
+    registry = new RelayRegistry(),
+    limits = RELAY_POOL_LIMITS,
+    log = () => {}
+  } = {}) {
+    if (typeof createSocket !== 'function') throw new Error('RELAY_POOL_SOCKET_FACTORY_REQUIRED')
+    this.#createSocket = createSocket
+    this.#registry = registry
+    this.#limits = limits
+    this.#log = log
+  }
+
+  get registry () {
+    return this.#registry
+  }
+
+  isQuarantined (url) {
+    const key = this.#normalize(url)
+    if (!key) return false
+    const until = this.#quarantined.get(key)
+    if (until === undefined) return false
+    if (until <= Date.now()) {
+      this.#quarantined.delete(key)
+      return false
+    }
+    return true
+  }
+
+  quarantine (url, reason) {
+    const key = this.#normalize(url)
+    if (!key) return
+    if (!this.#quarantined.has(key)) this.#counters.quarantines++
+    this.#quarantined.set(key, Date.now() + this.#limits.quarantineMs)
+    this.#log('[relay-pool] quarantined', key, reason ?? '')
+  }
+
+  attach (url, handlers = {}) {
+    const key = this.#normalize(url)
+    if (!key) throw new Error('INVALID_RELAY_URL')
+    const member = {
+      id: `m${++this.#serial}`,
+      url: key,
+      nsPrefix: `rp${this.#serial}:`,
+      handlers,
+      bucket: null,
+      subscriptions: new Map(), // nsId -> { rawId, message }
+      rawSubscriptions: new Map(), // rawId -> nsId
+      counts: new Map(), // nsId -> { rawId, message }
+      negs: new Map(), // nsId -> { rawId, message }
+      pendingPublishes: new Map(), // eventId -> raw message
+      seenEvents: new LruSet(this.#limits.dedupeEntries, this.#limits.dedupeTtlMs),
+      seenOks: new LruSet(this.#limits.dedupeEntries, this.#limits.dedupeTtlMs),
+      queuedFrames: 0,
+      queuedBytes: 0,
+      closed: false
+    }
+    this.#members.set(member.id, member)
+    this.#counters.membersAttached++
+    const bucket = this.#selectBucket(key, null, true)
+    if (bucket) this.#addMember(member, bucket)
+    else this.#pendingMembers.push(member)
+    return {
+      id: member.id,
+      send: data => this.#handleClientData(member, data),
+      close: (code, reason) => this.#closeMember(member, code ?? 1000, reason ?? '', true),
+      get bufferedAmount () {
+        return member.queuedBytes
+      }
+    }
+  }
+
+  closeAll () {
+    for (const member of [...this.#members.values()]) this.#closeMember(member, 1000, '', true)
+    for (const bucket of [...this.#buckets.values()]) this.#destroyBucket(bucket, 1000, '', true)
+  }
+
+  snapshot () {
+    return {
+      ...this.#counters,
+      buckets: this.#buckets.size,
+      members: this.#members.size,
+      quarantined: this.#quarantined.size
+    }
+  }
+
+  #normalize (url) {
+    try {
+      return normalizeRelayUrl(url)
+    } catch {
+      return null
+    }
+  }
+
+  #membersForUrl (url) {
+    let set = this.#bucketsByUrl.get(url)
+    if (!set) {
+      set = new Set()
+      this.#bucketsByUrl.set(url, set)
+    }
+    return set
+  }
+
+  #selectBucket (url, identity, create, { exclude = null } = {}) {
+    const buckets = [...this.#membersForUrl(url)].filter(bucket => bucket.state !== 'closed' && bucket !== exclude)
+    const exact = buckets.find(bucket => bucket.identity === identity && this.#hasBucketRoom(bucket))
+    if (exact) return exact
+    if (identity === null) {
+      const anonymous = buckets.find(bucket => bucket.identity === null && this.#hasBucketRoom(bucket))
+      if (anonymous) return anonymous
+    }
+    if (!create || buckets.length >= this.#limits.maxBucketsPerRelay) return null
+    return this.#createBucket(url, identity)
+  }
+
+  #hasBucketRoom (bucket) {
+    return bucket.subscriptions.size < this.#limits.maxSubscriptionsPerBucket
+  }
+
+  #createBucket (url, identity) {
+    const bucket = {
+      key: bucketKey(url, identity),
+      url,
+      identity,
+      state: 'queued',
+      socket: null,
+      challenge: null,
+      members: new Set(),
+      subscriptions: new Map(), // nsId -> member
+      counts: new Map(),
+      negs: new Map(),
+      publishes: new Map(), // eventId -> Set<member>
+      queues: new Map(), // memberId -> [{ raw, bytes }]
+      roundRobin: [],
+      roundRobinIndex: 0,
+      tokens: this.#limits.messageBudgetPerBucket,
+      lastRefill: Date.now(),
+      idleTimer: null,
+      drainScheduled: false,
+      closed: false
+    }
+    this.#buckets.set(bucket.key, bucket)
+    this.#membersForUrl(url).add(bucket)
+    this.#counters.bucketsCreated++
+    this.#scheduleBucketConnection(bucket)
+    return bucket
+  }
+
+  #scheduleBucketConnection (bucket) {
+    this.#connectionQueue.push(bucket)
+    this.#pumpConnections()
+  }
+
+  #pumpConnections () {
+    if (this.#connectionTimer !== null || this.#connectionQueue.length === 0) return
+    const now = Date.now()
+    this.#connectionTimes = this.#connectionTimes.filter(at => now - at < this.#limits.connectionWindowMs)
+    const lastSecond = this.#connectionTimes.filter(at => now - at < this.#limits.connectionBurstWindowMs).length
+    let delay = null
+    if (lastSecond >= this.#limits.maxNewConnectionsPerSecond) {
+      const oldest = this.#connectionTimes.filter(at => now - at < this.#limits.connectionBurstWindowMs).sort((a, b) => a - b)[0]
+      delay = Math.max(20, oldest + this.#limits.connectionBurstWindowMs - now)
+    } else if (this.#connectionTimes.length >= this.#limits.maxNewConnectionsPerWindow) {
+      const oldest = this.#connectionTimes[0]
+      delay = Math.max(20, oldest + this.#limits.connectionWindowMs - now)
+    }
+    if (delay !== null) {
+      this.#connectionTimer = setTimeout(() => {
+        this.#connectionTimer = null
+        this.#pumpConnections()
+      }, delay)
+      return
+    }
+    const bucket = this.#connectionQueue.shift()
+    if (!bucket || bucket.closed) {
+      this.#pumpConnections()
+      return
+    }
+    this.#connectionTimes.push(now)
+    this.#openBucket(bucket)
+    if (this.#connectionQueue.length > 0) queueMicrotask(() => this.#pumpConnections())
+  }
+
+  #openBucket (bucket) {
+    let socket
+    try {
+      socket = this.#createSocket(bucket.url)
+    } catch (error) {
+      this.#log('[relay-pool] socket creation failed', bucket.url, error?.message ?? error)
+      this.#failBucket(bucket, 1006, 'socket creation failed')
+      return
+    }
+    bucket.socket = socket
+    bucket.state = 'connecting'
+    socket.onopen = () => {
+      if (bucket.closed) return
+      bucket.state = 'open'
+      this.#counters.physicalOpened++
+      for (const member of bucket.members) this.#memberOpened(member)
+      this.#drainBucket(bucket)
+    }
+    socket.onmessage = event => this.#handleServerData(bucket, event.data)
+    socket.onerror = () => {}
+    socket.onclose = event => {
+      if (bucket.closed) return
+      this.#counters.physicalClosed++
+      this.#failBucket(bucket, event?.code ?? 1006, event?.reason ?? '')
+    }
+  }
+
+  #failBucket (bucket, code, reason) {
+    const members = [...bucket.members]
+    this.#destroyBucket(bucket, code, reason, code === 1000)
+    for (const member of members) this.#closeMember(member, code, reason, code === 1000)
+  }
+
+  #destroyBucket (bucket, code = 1000, reason = '') {
+    if (bucket.closed) return
+    bucket.closed = true
+    bucket.state = 'closed'
+    if (bucket.idleTimer) clearTimeout(bucket.idleTimer)
+    this.#buckets.delete(bucket.key)
+    this.#membersForUrl(bucket.url).delete(bucket)
+    const socket = bucket.socket
+    bucket.socket = null
+    if (socket) {
+      socket.onclose = null
+      socket.onerror = null
+      socket.onmessage = null
+      try { socket.close(code, reason) } catch {}
+    }
+    bucket.members.clear()
+    this.#drainPendingMembers()
+  }
+
+  #addMember (member, bucket) {
+    member.bucket = bucket
+    bucket.members.add(member)
+    if (bucket.idleTimer) {
+      clearTimeout(bucket.idleTimer)
+      bucket.idleTimer = null
+    }
+    if (bucket.state === 'open') queueMicrotask(() => this.#memberOpened(member))
+  }
+
+  #memberOpened (member) {
+    if (member.closed || member.bucket?.state !== 'open') return
+    member.handlers.onOpen?.({ extensions: member.bucket.socket?.extensions ?? '' })
+    if (member.bucket.challenge) this.#deliverMember(member, JSON.stringify(['AUTH', member.bucket.challenge]))
+  }
+
+  #removeMemberFromBucket (member) {
+    const bucket = member.bucket
+    if (!bucket) return
+    bucket.members.delete(member)
+    for (const [nsId, subscription] of member.subscriptions) {
+      bucket.subscriptions.delete(nsId)
+      this.#removeQueued(bucket, member, subscription.message)
+      this.#sendControl(bucket, ['CLOSE', nsId])
+    }
+    for (const [nsId] of member.counts) {
+      bucket.counts.delete(nsId)
+      this.#sendControl(bucket, ['CLOSE', nsId])
+    }
+    for (const [nsId] of member.negs) {
+      bucket.negs.delete(nsId)
+      this.#sendControl(bucket, ['NEG-CLOSE', nsId])
+    }
+    for (const [eventId, publishers] of bucket.publishes) {
+      publishers.delete(member)
+      if (publishers.size === 0) bucket.publishes.delete(eventId)
+    }
+    bucket.queues.delete(member.id)
+    member.queuedFrames = 0
+    member.queuedBytes = 0
+    member.bucket = null
+    if (bucket.members.size === 0 && !bucket.closed) {
+      bucket.idleTimer = setTimeout(() => {
+        if (bucket.members.size === 0) this.#destroyBucket(bucket, 1000, 'idle', true)
+      }, this.#limits.bucketIdleMs)
+    }
+  }
+
+  #removeQueued (bucket, member, message) {
+    const queue = bucket.queues.get(member.id)
+    if (!queue || !message) return
+    const raw = JSON.stringify(message)
+    const index = queue.findIndex(item => item.raw === raw)
+    if (index < 0) return
+    const [removed] = queue.splice(index, 1)
+    member.queuedFrames = Math.max(0, member.queuedFrames - 1)
+    member.queuedBytes = Math.max(0, member.queuedBytes - removed.bytes)
+  }
+
+  #drainPendingMembers () {
+    if (this.#pendingMembers.length === 0) return
+    const pending = this.#pendingMembers
+    this.#pendingMembers = []
+    for (const member of pending) {
+      if (member.closed) continue
+      const bucket = this.#selectBucket(member.url, null, true)
+      if (bucket) this.#addMember(member, bucket)
+      else this.#pendingMembers.push(member)
+    }
+  }
+
+  #handleClientData (member, data) {
+    if (member.closed) return
+    const bucket = member.bucket
+    if (!bucket || bucket.state === 'closed') return
+    if (typeof data !== 'string') return this.#evictMember(member, 'binary-frame')
+    const message = parseNostrFrame(data)
+    if (!message) return this.#evictMember(member, 'invalid-frame')
+    const op = message[0]
+    if (op === 'AUTH') return this.#handleClientAuth(member, bucket, data, message)
+    if (op === 'EVENT') return this.#handleClientEvent(member, bucket, data, message)
+    if (op === 'REQ') return this.#handleClientRequest(member, bucket, message)
+    if (op === 'CLOSE') return this.#handleClientClose(member, bucket, message)
+    if (op === 'COUNT') return this.#handleClientCount(member, bucket, message)
+    if (op === 'NEG-OPEN') return this.#handleClientNegOpen(member, bucket, message)
+    if (op === 'NEG-MSG' || op === 'NEG-CLOSE') return this.#handleClientNeg(member, bucket, message)
+    this.#enqueue(bucket, member, message)
+  }
+
+  #nextNamespacedId (member, rawId, kind) {
+    let nsId = `${member.nsPrefix}${kind}:${rawId}`
+    let suffix = 0
+    while (member.bucket?.subscriptions.has(nsId) || member.bucket?.counts.has(nsId) || member.bucket?.negs.has(nsId)) {
+      nsId = `${member.nsPrefix}${kind}:${rawId}:${++suffix}`
+    }
+    return nsId
+  }
+
+  #handleClientRequest (member, bucket, message) {
+    if (bucket.subscriptions.size >= this.#limits.maxSubscriptionsPerBucket) {
+      const target = this.#selectBucket(bucket.url, bucket.identity, true)
+      if (!target) return this.#closeMember(member, 1013, 'relay pool capacity', false)
+      this.#moveMember(member, target)
+      bucket = member.bucket
+    }
+    const rawId = message[1]
+    const nsId = this.#nextNamespacedId(member, rawId, 'sub')
+    const outgoing = [message[0], nsId, ...message.slice(2)]
+    member.subscriptions.set(nsId, { rawId, message: outgoing })
+    member.rawSubscriptions.set(rawId, nsId)
+    bucket.subscriptions.set(nsId, member)
+    this.#enqueue(bucket, member, outgoing)
+  }
+
+  #handleClientClose (member, bucket, message) {
+    const nsId = member.rawSubscriptions.get(message[1])
+    if (nsId === undefined) return
+    member.subscriptions.delete(nsId)
+    member.rawSubscriptions.delete(message[1])
+    bucket.subscriptions.delete(nsId)
+    this.#enqueue(bucket, member, ['CLOSE', nsId])
+  }
+
+  #handleClientCount (member, bucket, message) {
+    const rawId = message[1]
+    const nsId = this.#nextNamespacedId(member, rawId, 'count')
+    const outgoing = [message[0], nsId, ...message.slice(2)]
+    member.counts.set(nsId, { rawId, message: outgoing })
+    bucket.counts.set(nsId, member)
+    this.#enqueue(bucket, member, outgoing)
+  }
+
+  #handleClientNegOpen (member, bucket, message) {
+    const rawId = message[1]
+    const nsId = this.#nextNamespacedId(member, rawId, 'neg')
+    const outgoing = [message[0], nsId, ...message.slice(2)]
+    member.negs.set(nsId, { rawId, message: outgoing })
+    bucket.negs.set(nsId, member)
+    this.#enqueue(bucket, member, outgoing)
+  }
+
+  #handleClientNeg (member, bucket, message) {
+    const nsId = this.#findNamespaced(member.negs, message[1])
+    if (nsId === undefined) return
+    const outgoing = [message[0], nsId, ...message.slice(2)]
+    if (message[0] === 'NEG-CLOSE') {
+      member.negs.delete(nsId)
+      bucket.negs.delete(nsId)
+    }
+    this.#enqueue(bucket, member, outgoing)
+  }
+
+  #findNamespaced (map, rawId) {
+    for (const [nsId, value] of map) {
+      if ((value?.rawId ?? value) === rawId) return nsId
+    }
+    return undefined
+  }
+
+  #handleClientEvent (member, bucket, raw, message) {
+    const event = message[1]
+    if (event?.id) {
+      member.pendingPublishes.set(event.id, raw)
+      let publishers = bucket.publishes.get(event.id)
+      if (!publishers) {
+        publishers = new Set()
+        bucket.publishes.set(event.id, publishers)
+      }
+      publishers.add(member)
+    }
+    this.#enqueue(bucket, member, message)
+  }
+
+  #handleClientAuth (member, bucket, raw, message) {
+    const identity = message[1]?.pubkey
+    if (typeof identity !== 'string') return this.#evictMember(member, 'invalid-auth')
+    const needsSwap = (bucket.identity !== null && bucket.identity !== identity) ||
+      (bucket.identity === null && bucket.members.size > 1)
+    if (!needsSwap) {
+      bucket.identity = identity
+    } else {
+      const previousIdentity = bucket.identity
+      const target = this.#selectBucket(bucket.url, previousIdentity, true, { exclude: bucket })
+      if (!target) return this.#evictMember(member, 'auth-bucket-unavailable')
+      for (const other of [...bucket.members]) {
+        if (other !== member) this.#moveMember(other, target)
+      }
+      bucket.identity = identity
+      this.#counters.authSwaps++
+    }
+    this.#enqueue(bucket, member, message)
+  }
+
+  #moveMember (member, target) {
+    const source = member.bucket
+    if (!source || source === target) return
+    this.#removeMemberFromBucket(member)
+    this.#addMember(member, target)
+    if (target.challenge) this.#deliverMember(member, JSON.stringify(['AUTH', target.challenge]))
+    for (const [nsId, subscription] of member.subscriptions) {
+      target.subscriptions.set(nsId, member)
+      this.#enqueue(target, member, subscription.message)
+    }
+    for (const [nsId, count] of member.counts) {
+      target.counts.set(nsId, member)
+      this.#enqueue(target, member, count.message)
+    }
+    for (const [nsId, neg] of member.negs) {
+      target.negs.set(nsId, member)
+      this.#enqueue(target, member, neg.message)
+    }
+    for (const [eventId, raw] of member.pendingPublishes) {
+      let publishers = target.publishes.get(eventId)
+      if (!publishers) {
+        publishers = new Set()
+        target.publishes.set(eventId, publishers)
+      }
+      publishers.add(member)
+      this.#enqueue(target, member, parseNostrFrame(raw))
+    }
+    this.#counters.migrations++
+  }
+
+  #enqueue (bucket, member, message) {
+    if (!bucket || bucket.closed || member.closed) return
+    const raw = JSON.stringify(message)
+    const bytes = raw.length
+    if (member.queuedFrames + 1 > this.#limits.maxQueuedFramesPerMember ||
+        member.queuedBytes + bytes > this.#limits.maxQueuedBytesPerMember) {
+      this.#closeMember(member, 1013, 'relay pool queue overflow', false)
+      return
+    }
+    member.queuedFrames++
+    member.queuedBytes += bytes
+    let queue = bucket.queues.get(member.id)
+    if (!queue) {
+      queue = []
+      bucket.queues.set(member.id, queue)
+      bucket.roundRobin.push(member.id)
+    }
+    queue.push({ raw, bytes })
+    this.#drainBucket(bucket)
+  }
+
+  #sendControl (bucket, message) {
+    if (!bucket || bucket.closed || bucket.state !== 'open') return
+    let queue = bucket.queues.get('__control__')
+    if (!queue) {
+      queue = []
+      bucket.queues.set('__control__', queue)
+      bucket.roundRobin.push('__control__')
+    }
+    if (queue.length >= 1024) return
+    queue.push({ raw: JSON.stringify(message), bytes: 0 })
+    this.#drainBucket(bucket)
+  }
+
+  #drainBucket (bucket) {
+    if (bucket.closed || bucket.drainScheduled) return
+    bucket.drainScheduled = true
+    queueMicrotask(() => {
+      bucket.drainScheduled = false
+      if (bucket.closed || bucket.state !== 'open') return
+      const now = Date.now()
+      const elapsed = now - bucket.lastRefill
+      if (elapsed > 0) {
+        bucket.tokens = Math.min(
+          this.#limits.messageBudgetPerBucket,
+          bucket.tokens + (elapsed / this.#limits.messageWindowMs) * this.#limits.messageBudgetPerBucket
+        )
+        bucket.lastRefill = now
+      }
+      while (bucket.tokens >= 1 && this.#sendNext(bucket)) bucket.tokens--
+      if (this.#hasQueuedMessages(bucket) && bucket.tokens < 1) {
+        const wait = Math.max(20, (1 - bucket.tokens) * this.#limits.messageWindowMs / this.#limits.messageBudgetPerBucket)
+        const bucketRef = bucket
+        setTimeout(() => this.#drainBucket(bucketRef), wait)
+      }
+    })
+  }
+
+  #hasQueuedMessages (bucket) {
+    for (const queue of bucket.queues.values()) if (queue.length > 0) return true
+    return false
+  }
+
+  #sendNext (bucket) {
+    if (bucket.roundRobin.length === 0) return false
+    for (let attempt = 0; attempt < bucket.roundRobin.length; attempt++) {
+      const index = (bucket.roundRobinIndex + attempt) % bucket.roundRobin.length
+      const memberId = bucket.roundRobin[index]
+      const queue = bucket.queues.get(memberId)
+      if (!queue?.length) continue
+      const item = queue.shift()
+      bucket.roundRobinIndex = (index + 1) % bucket.roundRobin.length
+      const member = this.#members.get(memberId)
+      if (member) {
+        member.queuedFrames = Math.max(0, member.queuedFrames - 1)
+        member.queuedBytes = Math.max(0, member.queuedBytes - item.bytes)
+      }
+      try {
+        bucket.socket?.send(item.raw)
+        this.#counters.framesOut++
+      } catch (error) {
+        this.#log('[relay-pool] send failed', bucket.url, error?.message ?? error)
+        this.#failBucket(bucket, 1006, 'send failed')
+        return false
+      }
+      return true
+    }
+    return false
+  }
+
+  #handleServerData (bucket, data) {
+    if (bucket.closed) return
+    const message = parseNostrFrame(data)
+    if (!message) {
+      this.#counters.droppedFrames++
+      this.quarantine(bucket.url, 'invalid server frame')
+      const members = [...bucket.members]
+      this.#destroyBucket(bucket, 1006, 'invalid server frame', false)
+      for (const member of members) this.#evictMember(member, 'invalid-server-frame', { alreadyRemoved: true })
+      return
+    }
+    this.#counters.framesIn++
+    const op = message[0]
+    if (op === 'EVENT') return this.#routeEvent(bucket, message)
+    if (op === 'EOSE') return this.#routeSimple(bucket, message, 'sub')
+    if (op === 'CLOSED') return this.#routeClosed(bucket, message)
+    if (op === 'OK') return this.#routeOk(bucket, message)
+    if (op === 'COUNT') return this.#routeSimple(bucket, message, 'count')
+    if (op === 'NEG-MSG' || op === 'NEG-ERR') return this.#routeSimple(bucket, message, 'neg')
+    if (op === 'AUTH') {
+      bucket.challenge = message[1]
+      this.#broadcast(bucket, data)
+      return
+    }
+    if (op === 'NOTICE') {
+      this.#broadcast(bucket, data)
+      return
+    }
+    if (typeof message[1] === 'string') {
+      const routed = bucket.subscriptions.get(message[1]) ?? bucket.counts.get(message[1]) ?? bucket.negs.get(message[1])
+      if (routed) return this.#deliverMember(routed, this.#rewriteId(message, routed))
+    }
+    this.#counters.droppedFrames++
+  }
+
+  #routeEvent (bucket, message) {
+    const member = bucket.subscriptions.get(message[1])
+    if (!member) {
+      this.#counters.droppedFrames++
+      return
+    }
+    const eventId = message[2]?.id
+    if (eventId && member.seenEvents.has(eventId)) return
+    if (eventId) member.seenEvents.add(eventId)
+    const subscription = member.subscriptions.get(message[1])
+    if (!subscription) return
+    this.#deliverMember(member, JSON.stringify(['EVENT', subscription.rawId, message[2]]))
+  }
+
+  #routeClosed (bucket, message) {
+    const nsId = message[1]
+    const member = bucket.subscriptions.get(nsId) ?? bucket.counts.get(nsId) ?? bucket.negs.get(nsId)
+    if (!member) {
+      this.#counters.droppedFrames++
+      return
+    }
+    const subscription = member.subscriptions.get(nsId)
+    if (subscription) {
+      member.subscriptions.delete(nsId)
+      member.rawSubscriptions.delete(subscription.rawId)
+      bucket.subscriptions.delete(nsId)
+    }
+    const countEntry = member.counts.get(nsId)
+    if (countEntry !== undefined) {
+      member.counts.delete(nsId)
+      bucket.counts.delete(nsId)
+    }
+    this.#deliverMember(member, JSON.stringify(['CLOSED', subscription?.rawId ?? countEntry?.rawId ?? message[1], message[2]]))
+  }
+
+  #routeSimple (bucket, message, kind) {
+    const map = kind === 'sub' ? bucket.subscriptions : kind === 'count' ? bucket.counts : bucket.negs
+    const member = map.get(message[1])
+    if (!member) {
+      this.#counters.droppedFrames++
+      return
+    }
+    const rawId = kind === 'sub'
+      ? member.subscriptions.get(message[1])?.rawId
+      : kind === 'count' ? member.counts.get(message[1])?.rawId : member.negs.get(message[1])?.rawId
+    if (rawId === undefined) return
+    if (kind === 'count') {
+      member.counts.delete(message[1])
+      bucket.counts.delete(message[1])
+    }
+    this.#deliverMember(member, JSON.stringify([message[0], rawId, ...message.slice(2)]))
+  }
+
+  #routeOk (bucket, message) {
+    const publishers = bucket.publishes.get(message[1])
+    if (!publishers) {
+      this.#counters.droppedFrames++
+      return
+    }
+    bucket.publishes.delete(message[1])
+    const raw = JSON.stringify(message)
+    for (const member of publishers) {
+      member.pendingPublishes.delete(message[1])
+      if (member.seenOks.has(message[1])) continue
+      member.seenOks.add(message[1])
+      this.#deliverMember(member, raw)
+    }
+  }
+
+  #rewriteId (message, member) {
+    const nsId = message[1]
+    const rawId = member.subscriptions.get(nsId)?.rawId ?? member.counts.get(nsId)?.rawId ?? member.negs.get(nsId)?.rawId
+    const outgoing = rawId === undefined ? message : [message[0], rawId, ...message.slice(2)]
+    return JSON.stringify(outgoing)
+  }
+
+  #broadcast (bucket, raw) {
+    for (const member of bucket.members) this.#deliverMember(member, raw)
+  }
+
+  #deliverMember (member, raw) {
+    if (member.closed || !member.bucket || member.bucket.state !== 'open') return
+    member.handlers.onMessage?.(raw)
+  }
+
+  #evictMember (member, reason, { alreadyRemoved = false } = {}) {
+    if (member.closed) return
+    this.#counters.detaches++
+    this.#removeMemberFromBucket(member)
+    member.closed = true
+    this.#members.delete(member.id)
+    member.handlers.onDetach?.(reason)
+    if (!alreadyRemoved) this.#drainPendingMembers()
+  }
+
+  #closeMember (member, code, reason, wasClean) {
+    if (member.closed) return
+    this.#removeMemberFromBucket(member)
+    member.closed = true
+    this.#members.delete(member.id)
+    member.handlers.onClose?.({ code, reason, wasClean })
+    this.#drainPendingMembers()
+  }
+}

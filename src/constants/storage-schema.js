@@ -22,6 +22,7 @@ export const GLOBAL_LOCAL_KEYS = [
   'config_appUpdateMode',
   'config_vaultUrl',
   'config_stickySessions',
+  'config_relayPoolEnabled',
   'session_defaultUserPk',
   'session_accountUserPks',
   'session_workspaceKeys',

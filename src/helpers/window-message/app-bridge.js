@@ -38,6 +38,8 @@ import {
 import { APP_FILE_CHUNK_BYTES } from '#constants/app-file.js'
 import { PROGRESS_VISIBLE_AFTER_COMPLETE_MS, stampProgressEntry } from '#helpers/caching-progress.js'
 import NFileDownloader from '#services/nfile-downloader/index.js'
+import { createRelayBridgeEndpoint } from '#services/relay-pool/bridge-endpoint.js'
+import { isRelayPoolEnabled, relayRegistry, unifiedRelayPool } from '#services/relay-pool/launcher.js'
 import { getEffectiveLocale, subscribeLocaleChanged } from '#i18n/index.js'
 import { askNip07 } from './browser/nip07.js'
 import {
@@ -1041,7 +1043,9 @@ function createAppPageMessageListener ({
         bridgeId: state.bridgeId,
         isWidget: instanceKind === 'widget',
         instanceMetadata: metadata,
-        personaPublicKeys: initialPublicKeys
+        personaPublicKeys: initialPublicKeys,
+        relayUrls: relayRegistry.urls(),
+        relayPoolEnabled: isRelayPoolEnabled()
       }
     })
     const unsubscribeLocale = subscribeLocaleChanged(locale => {
@@ -1091,6 +1095,7 @@ export function initAppWindow (state, {
   const defaultUserPk = JSON.parse(localStorage.getItem('session_defaultUserPk'))
   const appOrigin = `${location.protocol}//${state.appSubdomain}.${location.host}`
   let currentAppPagePort = null
+  let relayEndpoint = null
   let ac = null
 
   const listen = createAppPageMessageListener({
@@ -1125,14 +1130,20 @@ export function initAppWindow (state, {
     ac?.abort()
     ac = new AbortController()
     currentAppPagePort?.close()
+    relayEndpoint?.dispose()
     currentAppPagePort = e.ports[0]
     listen(currentAppPagePort, ac.signal)
+    relayEndpoint = e.ports[1]
+      ? createRelayBridgeEndpoint({ port: e.ports[1], pool: unifiedRelayPool })
+      : null
     onAppReady?.()
   }
   const abortDocument = () => {
     ac?.abort()
     currentAppPagePort?.close()
     currentAppPagePort = null
+    relayEndpoint?.dispose()
+    relayEndpoint = null
   }
   signal.addEventListener('abort', abortDocument, { once: true })
   window.addEventListener('message', onAppReadyMessage, { signal })

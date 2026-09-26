@@ -4,6 +4,7 @@ import { installLocalBuild } from './install.js'
 import { notifyLocalInstances } from './instances.js'
 import './reset-button.js'
 import './full-reset-button.js'
+import './relay-pool-button.js'
 
 const queues = new Map()
 

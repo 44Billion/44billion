@@ -2103,6 +2103,7 @@ f('appLaunchersMenu', function () {
         ${IS_DEVELOPMENT
           ? this.h`
             <local-dev-full-reset-button props=${{ app$ }} />
+            <local-dev-relay-pool-button />
             <local-dev-reset-button props=${{ app$ }} />`
           : ''}
         <div class=${{ invisible: visibility === 'open' }}>

@@ -8,7 +8,7 @@ import { createWidgetDragClient } from '#helpers/window-message/widget-drag-clie
 import { createNip07Method } from '#helpers/window-message/nip07-client.js'
 import { naddrDecode } from 'libp2r2p/nip19'
 import { fileDownloadUrl } from '#helpers/nfile-download-url.js'
-import { installInsecureWebSocketGuard } from '#helpers/insecure-websocket-guard.js'
+import { installRelayPoolWebSocketShim } from '#services/relay-pool/app-shim.js'
 import {
   DRAFT_SITE_MANIFEST,
   MAIN_SITE_MANIFEST,
@@ -37,13 +37,12 @@ const widgetDragLog = (...args) => {
   if (IS_DEVELOPMENT) originalConsole.log(...args)
 }
 
-// Napps may hard-code cleartext relay URLs. Upgrading ws:// (and http://)
-// before the browser classifies the request as mixed content keeps the tab
-// secure, so WebAuthn inside the vault iframe stays available.
-installInsecureWebSocketGuard({
-  window,
-  document,
-  log: (url, upgradedUrl) => appConsoleDebug('[app-page] Upgraded insecure WebSocket URL', url, '->', upgradedUrl)
+// Napps talk to relays through the launcher-owned pool when the URL is a
+// known relay or the first frame proves it is one. ws:// is upgraded before
+// the browser's mixed-content check so WebAuthn in the vault keeps working.
+const relayPoolShim = installRelayPoolWebSocketShim({
+  baseUrl: () => document.baseURI,
+  log: (...args) => appConsoleDebug('[app-page]', ...args)
 })
 
 const SITE_MANIFEST_KINDS = new Set([
@@ -160,6 +159,9 @@ async function preventSwUsage () {
 
 function tellParentImReady (p) {
   const { port1: browserPort, port2: appPagePortForBrowser } = new MessageChannel()
+  const { port1: relayPort, port2: relayPortForBrowser } = new MessageChannel()
+  relayPort.start()
+  relayPoolShim?.setRelayPort(relayPort)
   const readyMsg = {
     code: 'APP_IFRAME_READY',
     payload: null
@@ -177,6 +179,8 @@ function tellParentImReady (p) {
     localeClient.setLocale(e.data.payload?.locale)
     instanceMetadataClient.setMetadata(e.data.payload?.instanceMetadata)
     personaPublicKeysClient.setPublicKeys(e.data.payload?.personaPublicKeys)
+    relayPoolShim?.setRegistry(e.data.payload?.relayUrls ?? [])
+    if (e.data.payload?.relayPoolEnabled === false) relayPoolShim?.setEnabled(false)
     const bridgeId = e.data.payload?.bridgeId
     appBridgeId = bridgeId || ''
     if (bridgeId) {
@@ -196,6 +200,8 @@ function tellParentImReady (p) {
     else if (e.data.code === 'INSTANCE_METADATA_CHANGED') instanceMetadataClient.setMetadata(e.data.payload)
     else if (e.data.code === 'WIDGET_SELECT_MODE') {
       widgetDragClient.setSelectMode(e.data.payload?.enabled === true)
+    } else if (e.data.code === 'RELAY_REGISTRY') {
+      relayPoolShim?.setRegistry(e.data.payload?.urls ?? [])
     }
   })
   window.addEventListener('pagehide', event => {
@@ -205,7 +211,7 @@ function tellParentImReady (p) {
     }
   })
   browserPort.start()
-  tell(window.parent, readyMsg, { targetOrigin: '*', transfer: [appPagePortForBrowser] })
+  tell(window.parent, readyMsg, { targetOrigin: '*', transfer: [appPagePortForBrowser, relayPortForBrowser] })
 }
 
 // Auto-fit: measure horizontal overflow at 100% zoom and apply CSS `zoom` so

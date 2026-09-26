@@ -1,5 +1,6 @@
 import '#config/polyfills.js'
 import { installStorageEventGuard } from '#helpers/storage-event-guard.js'
+import { installLauncherRelayPool } from '#services/relay-pool/launcher.js'
 import resetCssString from '#assets/styles/reset.css'
 import globalCssString from '#assets/styles/global.css'
 import { cssClasses, cssStrings } from '#assets/styles/theme.js'
@@ -36,6 +37,9 @@ if (!localStorage.getItem('storage_version')) {
   sessionStorage.clear()
   localStorage.setItem('storage_version', '2')
 }
+
+// Unified relay pool: install before any component imports a relay client.
+installLauncherRelayPool()
 
 // Numeric subdomain redirect: ?subdomain=N -> open the napp in existing tab or this one
 const _subdomainParam = new URLSearchParams(location.search).get('subdomain')
