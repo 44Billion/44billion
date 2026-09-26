@@ -81,29 +81,40 @@ matching the relay URL and `challenge` tag matching the current bucket
 challenge. Invalid AUTHs are answered with a synthetic
 `["OK", id, false, "invalid: ..."]` and are never forwarded.
 
-Valid AUTHs take one of two paths:
+Valid AUTHs follow these rules:
 
-- a confirmed bucket for that pubkey already exists and the virtual socket
-  has no connection-bound state: the AUTH is discarded, the socket moves to
-  that bucket, its subscriptions/counts/pending publishes are replayed and
-  the client receives a synthetic `["OK", id, true, ...]`; the relay sees no
-  second AUTH because the connection is already authenticated as that pubkey;
-- otherwise the AUTH is forwarded on the current connection. The bucket
-  identity stays pending until the relay answers `OK true`; `OK false`
-  reverts it to anonymous. Switching away from another authenticated pubkey
-  migrates the other virtual sockets first and replays the authenticator's
-  subscriptions after confirmation (the relay may have reset them).
+- already on the bucket for that pubkey: forward the AUTH; identity stays
+  pending until the relay answers `OK true` (`OK false` reverts the bucket to
+  anonymous);
+- a confirmed bucket for that pubkey can receive the socket (room and no
+  connection-bound state): discard the AUTH, move the socket there, replay its
+  subscriptions/counts/pending publishes and answer a synthetic
+  `["OK", id, true, ...]`; the relay sees no second AUTH because the
+  connection is already authenticated as that pubkey;
+- on an anonymous bucket: migrate other members off if it is shared, then let
+  this connection authenticate in place. A second authenticated bucket for
+  the same pubkey is allowed and stays a future unification candidate; a full
+  or connection-bound confirmed bucket no longer forces a reconnect loop;
+- on an authenticated bucket for a different pubkey: never switch that
+  connection's identity (the relay would drop the previous identity and its
+  subscriptions). Present a reconnect (`close 1006`); the next AUTH runs from
+  a fresh anonymous bucket.
+
+The pool always prefers merging on the next AUTH and exposes `authMerges`,
+`authSwaps` and `authReconnects` in the snapshot. Multiple authenticated
+buckets for the same `(relay, pubkey)` are consolidated proactively:
+whenever a subscription slot frees (`CLOSE`/`CLOSED`), a `NEG-CLOSE` makes
+a member merge-safe, a member leaves an authenticated bucket, or a new
+identity is confirmed, the pool moves merge-safe members from smaller
+buckets into the largest open bucket with room (`consolidations` counter).
+Members with an exchanged NEG session are skipped until `NEG-CLOSE`;
+pending publishes/COUNTs move with the normal replay/dedupe. Emptied
+buckets still close after the usual 30s idle.
 
 During a merge the pool replays each subscription's last `REQ`, pending
 `EVENT` publishes (relays deduplicate by event id), pending `COUNT`s and
 delivers the destination bucket's stored challenge, deduplicating recently
 delivered event ids (LRU, 256 entries / 5 minutes) and repeated `OK` replies.
-
-If a confirmed bucket exists but cannot receive the socket (bucket full) or
-the socket has state that cannot be transplanted — a NIP-77 session after any
-`NEG-MSG`/`NEG-ERR`, because negentropy state is connection-bound — the pool
-presents the switch as a reconnect (`close 1006`). The app reconnects and its
-next AUTH follows the merge path; no per-app identity hint is needed.
 
 ## Failure handling
 
@@ -140,8 +151,8 @@ global patch also covers older versions, because `RelayConnection` reads
 
 `relayPoolSnapshot()` reports physical sockets, buckets (also grouped by
 host), subscriptions, members, pending members, frames, drops by op,
-capacity rejections, migrations, detaches, quarantines, auth swaps, auth
-merges, forced auth reconnects and rejected AUTHs; the launcher logs a
+capacity rejections, migrations, consolidations, detaches, quarantines,
+auth swaps, auth merges, forced auth reconnects and rejected AUTHs; the launcher logs a
 summary at debug level while the pool is active. Members that cannot get a
 bucket immediately are logged and retried when a subscription slot frees.
 The development-only

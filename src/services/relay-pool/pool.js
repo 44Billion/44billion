@@ -52,6 +52,7 @@ export class UnifiedRelayPool {
   #connectionTimesByHost = new Map()
   #connectionTimer = null
   #quarantined = new Map()
+  #consolidating = new Set()
   #serial = 0
   #counters = {
     physicalOpened: 0,
@@ -66,6 +67,7 @@ export class UnifiedRelayPool {
     droppedFrames: 0,
     droppedByOp: {},
     capacityRejections: 0,
+    consolidations: 0,
     authSwaps: 0,
     authMerges: 0,
     authReconnects: 0,
@@ -208,6 +210,7 @@ export class UnifiedRelayPool {
 
   #createBucket (url, identity) {
     const bucket = {
+      id: `b${++this.#serial}`,
       key: bucketKey(url, identity),
       url,
       identity,
@@ -229,7 +232,7 @@ export class UnifiedRelayPool {
       drainScheduled: false,
       closed: false
     }
-    this.#buckets.set(bucket.key, bucket)
+    this.#buckets.set(bucket.id, bucket)
     this.#membersForUrl(url).add(bucket)
     this.#counters.bucketsCreated++
     this.#scheduleBucketConnection(bucket)
@@ -327,12 +330,21 @@ export class UnifiedRelayPool {
     for (const member of members) this.#closeMember(member, code, reason, code === 1000)
   }
 
+  // Buckets are indexed by a unique id, never by (url, identity): a relay
+  // can legitimately hold more than one bucket per identity, and a bucket's
+  // identity changes when an anonymous connection authenticates.
+  #setBucketIdentity (bucket, identity) {
+    if (bucket.identity === identity) return
+    bucket.identity = identity
+    bucket.key = bucketKey(bucket.url, identity)
+  }
+
   #destroyBucket (bucket, code = 1000, reason = '') {
     if (bucket.closed) return
     bucket.closed = true
     bucket.state = 'closed'
     if (bucket.idleTimer) clearTimeout(bucket.idleTimer)
-    this.#buckets.delete(bucket.key)
+    this.#buckets.delete(bucket.id)
     this.#membersForUrl(bucket.url).delete(bucket)
     const socket = bucket.socket
     bucket.socket = null
@@ -483,6 +495,7 @@ export class UnifiedRelayPool {
     bucket.subscriptions.delete(nsId)
     this.#enqueue(bucket, member, ['CLOSE', nsId])
     this.#drainPendingMembers()
+    this.#consolidateAuthenticatedBuckets(bucket.url, bucket.identity)
   }
 
   #handleClientCount (member, bucket, message) {
@@ -512,6 +525,7 @@ export class UnifiedRelayPool {
       member.negs.delete(nsId)
       member.negExchanged.delete(nsId)
       bucket.negs.delete(nsId)
+      this.#consolidateAuthenticatedBuckets(bucket.url, bucket.identity)
     }
     this.#enqueue(bucket, member, outgoing)
   }
@@ -552,34 +566,82 @@ export class UnifiedRelayPool {
       return
     }
     const identity = event.pubkey
-    if (bucket.identity !== identity) {
-      const confirmedBucket = this.#findConfirmedBucket(bucket.url, identity)
-      if (confirmedBucket) {
-        const hasRoom = member.negExchanged.size === 0 &&
-          confirmedBucket.subscriptions.size + member.subscriptions.size <= this.#limits.maxSubscriptionsPerBucket
-        if (!hasRoom) {
-          this.#reconnectMember(member, 'relay pool rehome')
-          return
-        }
-        if (!this.#moveMember(member, confirmedBucket)) return
-        this.#deliverMember(member, JSON.stringify(['OK', authEventId, true, 'relay pool: connection already authenticated']))
-        this.#counters.authMerges++
-        return
-      }
+    if (bucket.identity === identity) {
+      bucket.pendingAuths.set(authEventId, { member, pubkey: identity })
+      this.#enqueue(bucket, member, message)
+      return
     }
-    const needsSwap = (bucket.identity !== null && bucket.identity !== identity) ||
-      (bucket.identity === null && bucket.members.size > 1)
-    if (needsSwap) {
-      const previousIdentity = bucket.identity
-      const target = this.#selectBucket(bucket.url, previousIdentity, true, { exclude: bucket })
+    const confirmedBucket = this.#findConfirmedBucket(bucket.url, identity)
+    if (confirmedBucket && this.#canMergeIntoBucket(confirmedBucket, member)) {
+      if (!this.#moveMember(member, confirmedBucket)) return
+      this.#deliverMember(member, JSON.stringify(['OK', authEventId, true, 'relay pool: connection already authenticated']))
+      this.#counters.authMerges++
+      return
+    }
+    if (bucket.identity !== null) {
+      // Never switch an authenticated connection to another pubkey: the
+      // relay would drop the previous identity and its subscriptions.
+      // Reconnect and let the next AUTH create or join a fresh bucket.
+      this.#reconnectMember(member, 'relay pool rehome')
+      return
+    }
+    // Anonymous bucket: migrate other members off if it is shared, then let
+    // this connection authenticate in place. A second authenticated bucket
+    // for the same pubkey is allowed and stays a future merge candidate.
+    if (bucket.members.size > 1) {
+      const target = this.#selectBucket(bucket.url, null, true, { exclude: bucket })
       if (!target) return this.#reconnectMember(member, 'relay pool rehome')
       for (const other of [...bucket.members]) {
         if (other !== member) this.#moveMember(other, target)
       }
       this.#counters.authSwaps++
     }
-    bucket.pendingAuths.set(authEventId, { member, pubkey: identity, previousIdentity: bucket.identity })
+    bucket.pendingAuths.set(authEventId, { member, pubkey: identity })
     this.#enqueue(bucket, member, message)
+  }
+
+  #canMergeIntoBucket (bucket, member) {
+    return member.negExchanged.size === 0 &&
+      bucket.subscriptions.size + member.subscriptions.size <= this.#limits.maxSubscriptionsPerBucket
+  }
+
+  // Opportunistic consolidation: multiple confirmed buckets for the same
+  // (relay, pubkey) are temporary. Move merge-safe members into the largest
+  // open bucket with room whenever a slot frees or a NEG session closes.
+  #consolidateAuthenticatedBuckets (url, identity) {
+    if (identity === null || identity === undefined) return
+    const key = `${url}\u0000${identity}`
+    if (this.#consolidating.has(key)) return
+    const buckets = [...this.#membersForUrl(url)].filter(bucket => !bucket.closed && bucket.identity === identity)
+    if (buckets.length < 2) return
+    this.#consolidating.add(key)
+    let moved = 0
+    try {
+      const ordered = [...buckets].sort((a, b) => {
+        const aOpen = a.state === 'open' ? 1 : 0
+        const bOpen = b.state === 'open' ? 1 : 0
+        if (aOpen !== bOpen) return bOpen - aOpen
+        if (a.members.size !== b.members.size) return b.members.size - a.members.size
+        return a.id.localeCompare(b.id)
+      })
+      for (const target of ordered) {
+        if (target.closed || target.members.size === 0) continue
+        for (const source of ordered) {
+          if (source === target || source.closed) continue
+          for (const member of [...source.members]) {
+            if (member.closed || member.bucket !== source) continue
+            if (!this.#canMergeIntoBucket(target, member)) continue
+            if (this.#moveMember(member, target)) moved++
+          }
+        }
+      }
+    } finally {
+      this.#consolidating.delete(key)
+    }
+    if (moved > 0) {
+      this.#counters.consolidations += moved
+      this.#log('[relay-pool] consolidated', moved, 'member(s) on', url, identity)
+    }
   }
 
   #validateAuthEvent (bucket, event) {
@@ -823,6 +885,7 @@ export class UnifiedRelayPool {
       member.rawSubscriptions.delete(subscription.rawId)
       bucket.subscriptions.delete(nsId)
       this.#drainPendingMembers()
+      this.#consolidateAuthenticatedBuckets(bucket.url, bucket.identity)
     }
     const countEntry = member.counts.get(nsId)
     if (countEntry !== undefined) {
@@ -855,15 +918,10 @@ export class UnifiedRelayPool {
     const pendingAuth = bucket.pendingAuths.get(message[1])
     if (pendingAuth) {
       bucket.pendingAuths.delete(message[1])
-      if (message[2] === true) {
-        if (pendingAuth.previousIdentity !== null && pendingAuth.previousIdentity !== pendingAuth.pubkey) {
-          this.#replayMemberOperations(pendingAuth.member, bucket)
-        }
-        bucket.identity = pendingAuth.pubkey
-      } else {
-        bucket.identity = null
-      }
+      const confirmed = message[2] === true
+      this.#setBucketIdentity(bucket, confirmed ? pendingAuth.pubkey : null)
       this.#deliverMember(pendingAuth.member, JSON.stringify(message))
+      if (confirmed) this.#consolidateAuthenticatedBuckets(bucket.url, pendingAuth.pubkey)
       return
     }
     const publishers = bucket.publishes.get(message[1])
@@ -899,20 +957,24 @@ export class UnifiedRelayPool {
 
   #evictMember (member, reason, { alreadyRemoved = false } = {}) {
     if (member.closed) return
+    const bucket = member.bucket
     this.#counters.detaches++
     this.#removeMemberFromBucket(member)
     member.closed = true
     this.#members.delete(member.id)
     member.handlers.onDetach?.(reason)
     if (!alreadyRemoved) this.#drainPendingMembers()
+    if (bucket && !bucket.closed) this.#consolidateAuthenticatedBuckets(bucket.url, bucket.identity)
   }
 
   #closeMember (member, code, reason, wasClean) {
     if (member.closed) return
+    const bucket = member.bucket
     this.#removeMemberFromBucket(member)
     member.closed = true
     this.#members.delete(member.id)
     member.handlers.onClose?.({ code, reason, wasClean })
     this.#drainPendingMembers()
+    if (bucket && !bucket.closed) this.#consolidateAuthenticatedBuckets(bucket.url, bucket.identity)
   }
 }
