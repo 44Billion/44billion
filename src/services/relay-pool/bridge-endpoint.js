@@ -103,7 +103,19 @@ export function createRelayBridgeEndpoint ({
     }
     attachment.socket = socket
     try { socket.relayPoolOwner = owner } catch {}
-    attachment.timer = setTimeout(() => dropAttachment(virtualId, 1006, 'relay attach timeout', false), limits.speculativeDecisionTimeoutMs)
+    attachment.timer = setTimeout(() => {
+      if (attachment.url) {
+        pool.recordFailure(attachment.url, {
+          code: 1006,
+          reason: 'relay attach timeout',
+          phase: 'attach',
+          wasClean: false,
+          openedAt: null,
+          lifetimeMs: null
+        })
+      }
+      dropAttachment(virtualId, 1006, 'relay attach timeout', false)
+    }, limits.speculativeDecisionTimeoutMs)
     socket.onopen = () => {
       clearTimeout(attachment.timer)
       send(RELAY_BRIDGE.ATTACHED, {
@@ -133,7 +145,19 @@ export function createRelayBridgeEndpoint ({
       return
     }
     pool.registry.addRelay(url)
-    attachment.timer = setTimeout(() => dropAttachment(virtualId, 1006, 'relay attach timeout', false), limits.speculativeDecisionTimeoutMs)
+    attachment.timer = setTimeout(() => {
+      if (attachment.url) {
+        pool.recordFailure(attachment.url, {
+          code: 1006,
+          reason: 'relay attach timeout',
+          phase: 'attach',
+          wasClean: false,
+          openedAt: null,
+          lifetimeMs: null
+        })
+      }
+      dropAttachment(virtualId, 1006, 'relay attach timeout', false)
+    }, limits.speculativeDecisionTimeoutMs)
     attachment.member = pool.attach(url, {
       onOpen: info => {
         clearTimeout(attachment.timer)
@@ -157,13 +181,28 @@ export function createRelayBridgeEndpoint ({
   const onMessage = event => {
     const message = event.data
     const payload = message?.payload
-    if (!payload?.virtualId) return
+    if (!payload) return
+    if (message.code === RELAY_BRIDGE.FAILURE) {
+      if (payload.url) {
+        pool.recordFailure(payload.url, {
+          code: payload.code,
+          reason: payload.reason,
+          phase: payload.phase,
+          wasClean: payload.wasClean,
+          openedAt: payload.openedAt,
+          lifetimeMs: payload.lifetimeMs
+        })
+      }
+      return
+    }
+    if (!payload.virtualId) return
     const { virtualId } = payload
     switch (message.code) {
       case RELAY_BRIDGE.ATTACH: {
         if (attachments.has(virtualId)) return
         const attachment = {
           virtualId,
+          url: payload.url,
           owner,
           credit: new CreditWindow({ frames: limits.bridgeCreditFrames, bytes: limits.bridgeCreditBytes }),
           queue: [],

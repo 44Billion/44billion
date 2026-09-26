@@ -174,6 +174,12 @@ export function installRelayPoolWebSocketShim ({
   let appliedRegistry = registryUrls
   let bridgePort = null
   const probed = new Set()
+  const pendingFailures = []
+  const sendFailure = (url, info) => {
+    const payload = { url, ...info }
+    if (bridgePort) bridgePort.postMessage({ code: RELAY_BRIDGE.FAILURE, payload })
+    else if (pendingFailures.length < 32) pendingFailures.push(payload)
+  }
 
   const RelayPoolWebSocket = createRelayPoolWebSocketClass({
     OriginalWebSocket,
@@ -183,6 +189,7 @@ export function installRelayPoolWebSocketShim ({
     limits,
     log,
     onClassified: () => {},
+    onConnectionFailure: sendFailure,
     createPoolTransport: ({ url, callbacks }) => {
       if (!enabledRef) return null
       if (!probed.has(url)) {
@@ -207,6 +214,9 @@ export function installRelayPoolWebSocketShim ({
     setRelayPort (port) {
       if (!port) return
       bridgePort = port
+      for (const payload of pendingFailures.splice(0)) {
+        bridgePort.postMessage({ code: RELAY_BRIDGE.FAILURE, payload })
+      }
       resolvePort(port)
     },
     setRegistry (urls = []) {

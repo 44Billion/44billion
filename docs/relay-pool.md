@@ -197,10 +197,19 @@ global patch also covers older versions, because `RelayConnection` reads
 host), subscriptions, members and pending members (both also grouped by
 owner: `launcher`, `app` or `vault`), frames, drops by op, late `CLOSED`
 confirmations, capacity rejections, migrations, consolidations, detaches,
-quarantines, auth swaps, auth merges, forced auth reconnects and rejected
-AUTHs; the launcher logs a
+quarantines, per-relay failure records (`relayFailures` with the last close
+code/reason/phase and `connectionFailures`), auth swaps, auth merges, forced
+auth reconnects and rejected AUTHs; the launcher logs a
 summary at debug level while the pool is active. Members that cannot get a
 bucket immediately are logged and retried when a subscription slot frees.
+Each `relayFailures` entry carries `lastCode` plus a human label
+(`lastCodeLabel`), `lastReason`, `lastPhase`, `lastWasClean`,
+`lastOpenedAt` and `lastLifetimeMs`. Browsers usually report `1006`
+("abnormal closure, no close frame") with an empty reason; a null
+`lastLifetimeMs` means the socket never opened (DNS/TCP/TLS/attach
+failure), while a long lifetime points to a drop after the connection was
+established.
+
 The development-only
 `window.__44bSetRelayPoolEnabled(false)` flips the kill switch; a reload is
 required.

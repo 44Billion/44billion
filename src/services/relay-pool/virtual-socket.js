@@ -68,6 +68,7 @@ export function createRelayPoolWebSocketClass ({
   registry,
   createPoolTransport,
   onClassified = () => {},
+  onConnectionFailure = () => {},
   log = () => {},
   baseUrl,
   securePage = typeof location !== 'undefined' && location.protocol === 'https:',
@@ -97,6 +98,7 @@ export function createRelayPoolWebSocketClass ({
     #recentOutbound = []
     #recentBytes = 0
     #ignoreSpeculativeClose = false
+    #openedAt = null
     #binaryType = 'blob'
 
     constructor (url, protocols) {
@@ -259,6 +261,7 @@ export function createRelayPoolWebSocketClass ({
       socket.binaryType = this.#binaryType
       this.#speculative = socket
       socket.onopen = () => {
+        this.#openedAt = Date.now()
         this.extensions = socket.extensions ?? ''
         if (this.readyState === CONNECTING) {
           this.readyState = OPEN
@@ -272,7 +275,17 @@ export function createRelayPoolWebSocketClass ({
       }
       socket.onclose = event => {
         if (this.#ignoreSpeculativeClose) return
-        if (this.#phase === 'speculative' || this.#phase === 'direct') this.#onTransportClose(event)
+        if (this.#phase === 'speculative' || this.#phase === 'direct') {
+          onConnectionFailure(this.url, {
+            code: event?.code ?? 1006,
+            reason: event?.reason ?? '',
+            phase: this.#phase,
+            wasClean: event?.wasClean === true,
+            openedAt: this.#openedAt,
+            lifetimeMs: this.#openedAt ? Date.now() - this.#openedAt : null
+          })
+          this.#onTransportClose(event)
+        }
       }
     }
 
@@ -289,6 +302,7 @@ export function createRelayPoolWebSocketClass ({
       this.#direct = socket
       socket.onopen = () => {
         this.#phase = 'direct'
+        this.#openedAt = Date.now()
         this.extensions = socket.extensions ?? ''
         const replay = this.#recentOutbound.filter(item => !item.startsWith('["AUTH"'))
         for (const item of replay) socket.send(item)
@@ -303,7 +317,17 @@ export function createRelayPoolWebSocketClass ({
       }
       socket.onmessage = event => this.#deliver(event.data)
       socket.onerror = () => this.#fire('error', errorEvent())
-      socket.onclose = event => this.#onTransportClose(event)
+      socket.onclose = event => {
+        onConnectionFailure(this.url, {
+          code: event?.code ?? 1006,
+          reason: event?.reason ?? '',
+          phase: 'direct',
+          wasClean: event?.wasClean === true,
+          openedAt: this.#openedAt,
+          lifetimeMs: this.#openedAt ? Date.now() - this.#openedAt : null
+        })
+        this.#onTransportClose(event)
+      }
     }
 
     #onSpeculativeFrame (data) {
@@ -463,6 +487,14 @@ export function createRelayPoolWebSocketClass ({
 
     #fail (error) {
       log('[relay-pool] virtual socket failed', this.url, error?.message ?? error)
+      onConnectionFailure(this.url, {
+        code: 0,
+        reason: error?.message ?? 'socket failed',
+        phase: 'construct',
+        wasClean: false,
+        openedAt: this.#openedAt,
+        lifetimeMs: this.#openedAt ? Date.now() - this.#openedAt : null
+      })
       this.#fire('error', errorEvent())
       this.#finalizeClose(1006, '', false)
     }

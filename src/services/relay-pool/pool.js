@@ -2,6 +2,7 @@ import { isValidEvent } from 'libp2r2p/event'
 import { normalizeRelayUrl } from 'libp2r2p/url'
 
 import { parseNostrFrame } from './classify.js'
+import { closeCodeLabel } from './close-code-label.js'
 import { RELAY_POOL_LIMITS } from './constants.js'
 import { RelayRegistry } from './registry.js'
 
@@ -107,14 +108,25 @@ export class UnifiedRelayPool {
     return true
   }
 
-  recordFailure (url, { code = 1006, reason = '', phase = 'connection' } = {}) {
+  recordFailure (url, {
+    code = 1006,
+    reason = '',
+    phase = 'connection',
+    wasClean = false,
+    openedAt = null,
+    lifetimeMs = null
+  } = {}) {
     const key = this.#normalize(url) ?? String(url)
     const previous = this.#relayFailures.get(key)
     this.#relayFailures.set(key, {
       count: (previous?.count ?? 0) + 1,
       lastCode: code,
+      lastCodeLabel: closeCodeLabel(code),
       lastReason: reason,
       lastPhase: phase,
+      lastWasClean: wasClean === true,
+      lastOpenedAt: openedAt,
+      lastLifetimeMs: lifetimeMs,
       lastAt: Date.now()
     })
     if (this.#relayFailures.size > 32) {
@@ -265,6 +277,7 @@ export class UnifiedRelayPool {
       unverified: false,
       state: 'queued',
       socket: null,
+      openedAt: null,
       challenge: null,
       members: new Set(),
       subscriptions: new Map(), // nsId -> member
@@ -362,6 +375,7 @@ export class UnifiedRelayPool {
     socket.onopen = () => {
       if (bucket.closed) return
       bucket.state = 'open'
+      bucket.openedAt = Date.now()
       this.#counters.physicalOpened++
       for (const member of bucket.members) this.#memberOpened(member)
       this.#drainBucket(bucket)
@@ -371,7 +385,14 @@ export class UnifiedRelayPool {
     socket.onclose = event => {
       if (bucket.closed) return
       this.#counters.physicalClosed++
-      this.recordFailure(bucket.url, { code: event?.code ?? 1006, reason: event?.reason ?? '', phase: 'pool' })
+      this.recordFailure(bucket.url, {
+        code: event?.code ?? 1006,
+        reason: event?.reason ?? '',
+        phase: 'pool',
+        wasClean: event?.wasClean === true,
+        openedAt: bucket.openedAt,
+        lifetimeMs: bucket.openedAt ? Date.now() - bucket.openedAt : null
+      })
       this.#failBucket(bucket, event?.code ?? 1006, event?.reason ?? '')
     }
   }
@@ -1035,7 +1056,13 @@ export class UnifiedRelayPool {
         this.#counters.framesOut++
       } catch (error) {
         this.#log('[relay-pool] send failed', bucket.url, error?.message ?? error)
-        this.recordFailure(bucket.url, { code: 1006, reason: error?.message ?? 'send failed', phase: 'send' })
+        this.recordFailure(bucket.url, {
+          code: 1006,
+          reason: error?.message ?? 'send failed',
+          phase: 'send',
+          openedAt: bucket.openedAt,
+          lifetimeMs: bucket.openedAt ? Date.now() - bucket.openedAt : null
+        })
         this.#failBucket(bucket, 1006, 'send failed')
         return false
       }
@@ -1049,7 +1076,13 @@ export class UnifiedRelayPool {
     const message = parseNostrFrame(data)
     if (!message) {
       this.#dropFrame('invalid-server-frame')
-      this.recordFailure(bucket.url, { code: 1002, reason: 'invalid server frame', phase: 'protocol' })
+      this.recordFailure(bucket.url, {
+        code: 1002,
+        reason: 'invalid server frame',
+        phase: 'protocol',
+        openedAt: bucket.openedAt,
+        lifetimeMs: bucket.openedAt ? Date.now() - bucket.openedAt : null
+      })
       this.quarantine(bucket.url, 'invalid server frame')
       const members = [...bucket.members]
       this.#destroyBucket(bucket, 1006, 'invalid server frame', false)

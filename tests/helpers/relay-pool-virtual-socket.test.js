@@ -55,10 +55,12 @@ function createFixture (relays = [], options = {}) {
   const registry = new RelayRegistry(relays)
   const attachments = []
   const sent = []
+  const failures = []
   const RelayPoolWebSocket = createRelayPoolWebSocketClass({
     OriginalWebSocket: FakeOriginalWebSocket,
     registry,
     baseUrl: 'https://app.example/window/',
+    onConnectionFailure: (url, info) => failures.push({ url, ...info }),
     ...options,
     createPoolTransport: ({ url, callbacks, socket }) => {
       const attachment = {
@@ -76,7 +78,7 @@ function createFixture (relays = [], options = {}) {
       return attachment.handle
     }
   })
-  return { registry, attachments, sent, RelayPoolWebSocket }
+  return { registry, attachments, sent, failures, RelayPoolWebSocket }
 }
 
 function rawSocket () {
@@ -106,6 +108,24 @@ describe('relay pool virtual WebSocket', () => {
     raw.message('world')
     assert.deepEqual(received, ['world'])
     assert.equal(attachments.length, 0)
+  })
+
+  it('reports speculative connection failures to the pool recorder', async () => {
+    const { RelayPoolWebSocket, failures } = createFixture()
+    const socket = new RelayPoolWebSocket('wss://relay.example')
+    await tick()
+    const raw = rawSocket()
+    raw.open()
+    await tick()
+    raw.onclose?.({ code: 1006, reason: 'boom' })
+    assert.equal(failures.length, 1)
+    assert.equal(failures[0].url, 'wss://relay.example/')
+    assert.equal(failures[0].code, 1006)
+    assert.equal(failures[0].phase, 'speculative')
+    assert.equal(failures[0].wasClean, false)
+    assert.ok(failures[0].openedAt > 0)
+    assert.ok(failures[0].lifetimeMs >= 0)
+    assert.equal(socket.readyState, socket.CLOSED)
   })
 
   it('adopts the same connection into the pool on the first strict Nostr frame', async () => {

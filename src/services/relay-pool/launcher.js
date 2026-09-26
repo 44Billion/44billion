@@ -52,6 +52,7 @@ export function installLauncherRelayPool () {
     registry: relayRegistry,
     limits: RELAY_POOL_LIMITS,
     baseUrl: () => document.baseURI,
+    onConnectionFailure: (url, info) => unifiedRelayPool.recordFailure(url, info),
     securePage: location.protocol === 'https:',
     log,
     createPoolTransport: ({ url, callbacks, socket }) => {

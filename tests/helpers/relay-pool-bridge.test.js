@@ -44,6 +44,10 @@ function createFakePool () {
     isQuarantined (url) {
       return this.quarantined.has(url)
     },
+    failures: [],
+    recordFailure (url, info) {
+      this.failures.push({ url, ...info })
+    },
     attach (url, handlers, options = {}) {
       const member = {
         url,
@@ -85,6 +89,7 @@ function createBridge (pool, url = 'wss://relay.example', { limits = RELAY_POOL_
     transport,
     events,
     pool,
+    appPort,
     cleanup () {
       transport.close(1000, '')
       endpoint.dispose()
@@ -158,6 +163,46 @@ describe('relay pool bridge', () => {
     transport.close(1000, '')
     await tick()
     assert.deepEqual(events.at(-1), ['close', { code: 1000, reason: '', wasClean: true }])
+  })
+
+  it('records relay failures reported by the app side', async t => {
+    const pool = createFakePool()
+    const { appPort, cleanup } = createBridge(pool)
+    t.after(cleanup)
+    appPort.postMessage({
+      code: 'RELAY_FAILURE',
+      payload: {
+        url: 'wss://relay.example',
+        code: 1006,
+        reason: 'boom',
+        phase: 'speculative',
+        wasClean: false,
+        openedAt: 123,
+        lifetimeMs: 45
+      }
+    })
+    await tick()
+    assert.deepEqual(pool.failures, [{
+      url: 'wss://relay.example',
+      code: 1006,
+      reason: 'boom',
+      phase: 'speculative',
+      wasClean: false,
+      openedAt: 123,
+      lifetimeMs: 45
+    }])
+  })
+
+  it('records an attach timeout as a relay failure', async t => {
+    const pool = createFakePool()
+    const { cleanup } = createBridge(pool, 'wss://relay.example', {
+      limits: { ...RELAY_POOL_LIMITS, speculativeDecisionTimeoutMs: 10 }
+    })
+    t.after(cleanup)
+    await new Promise(resolve => setTimeout(resolve, 30))
+    assert.equal(pool.failures[0]?.code, 1006)
+    assert.equal(pool.failures[0]?.phase, 'attach')
+    assert.equal(pool.failures[0]?.lifetimeMs, null)
   })
 
   it('detaches the vault socket when the launcher pool is unavailable', async t => {

@@ -4,6 +4,7 @@ import { describe, it } from 'node:test'
 import { finalizeEvent } from 'libp2r2p/event'
 import { generateSecretKey } from 'libp2r2p/key'
 
+import { closeCodeLabel } from '#services/relay-pool/close-code-label.js'
 import { RELAY_POOL_LIMITS } from '#services/relay-pool/constants.js'
 import { UnifiedRelayPool } from '#services/relay-pool/pool.js'
 import { RelayRegistry } from '#services/relay-pool/registry.js'
@@ -115,6 +116,14 @@ function signedEvent (pubkey = 'p'.repeat(64)) {
 }
 
 describe('unified relay pool', () => {
+  it('labels WebSocket close codes', () => {
+    assert.equal(closeCodeLabel(1000), 'normal closure')
+    assert.equal(closeCodeLabel(1006), 'abnormal closure (no close frame)')
+    assert.equal(closeCodeLabel(1013), 'try again later')
+    assert.equal(closeCodeLabel(4321), 'code 4321')
+    assert.equal(closeCodeLabel(undefined), 'unknown')
+  })
+
   it('shares one physical socket and namespaces subscription ids', async () => {
     const { pool, sockets } = createPool()
     const a = []
@@ -233,6 +242,26 @@ describe('unified relay pool', () => {
     const snapshot = pool.snapshot()
     assert.equal(snapshot.closedConfirmations, 1)
     assert.equal(snapshot.droppedByOp.CLOSED, undefined)
+  })
+
+  it('records relay connection failures in the snapshot', async () => {
+    const { pool, sockets } = createPool()
+    pool.attach('wss://relay.example', {})
+    await tick()
+    sockets[0].open()
+    await tick()
+    sockets[0].onclose?.({ code: 1006, reason: 'boom' })
+    await tick()
+    const snapshot = pool.snapshot()
+    assert.equal(snapshot.connectionFailures, 1)
+    const failure = snapshot.relayFailures['wss://relay.example']
+    assert.equal(failure.lastCode, 1006)
+    assert.equal(failure.lastCodeLabel, 'abnormal closure (no close frame)')
+    assert.equal(failure.lastReason, 'boom')
+    assert.equal(failure.lastPhase, 'pool')
+    assert.equal(failure.lastWasClean, false)
+    assert.ok(failure.lastOpenedAt > 0)
+    assert.ok(failure.lastLifetimeMs >= 0)
   })
 
   it('sends CLOSE for the relay when a virtual socket closes and keeps the other member alive', async () => {
