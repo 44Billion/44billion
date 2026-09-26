@@ -53,6 +53,7 @@ export class UnifiedRelayPool {
   #connectionTimer = null
   #quarantined = new Map()
   #consolidating = new Set()
+  #anonymousConsolidationAt = new Map()
   #serial = 0
   #counters = {
     physicalOpened: 0,
@@ -192,12 +193,26 @@ export class UnifiedRelayPool {
     return set
   }
 
+  #bucketCanAcceptAnonymous (bucket) {
+    return bucket.identity === null && bucket.pendingAuths.size === 0 && this.#hasBucketRoom(bucket)
+  }
+
+  #memberHasPendingAuth (member) {
+    const bucket = member.bucket
+    if (!bucket || bucket.pendingAuths.size === 0) return false
+    for (const entry of bucket.pendingAuths.values()) {
+      if (entry.member === member) return true
+    }
+    return false
+  }
+
   #selectBucket (url, identity, create, { exclude = null } = {}) {
     const buckets = [...this.#membersForUrl(url)].filter(bucket => bucket.state !== 'closed' && bucket !== exclude)
-    const exact = buckets.find(bucket => bucket.identity === identity && this.#hasBucketRoom(bucket))
+    const exact = buckets.find(bucket => bucket.identity === identity && this.#hasBucketRoom(bucket) &&
+      (identity !== null || bucket.pendingAuths.size === 0))
     if (exact) return exact
     if (identity === null) {
-      const anonymous = buckets.find(bucket => bucket.identity === null && this.#hasBucketRoom(bucket))
+      const anonymous = buckets.find(bucket => this.#bucketCanAcceptAnonymous(bucket))
       if (anonymous) return anonymous
     }
     if (!create || buckets.length >= this.#limits.maxBucketsPerRelay) return null
@@ -495,7 +510,7 @@ export class UnifiedRelayPool {
     bucket.subscriptions.delete(nsId)
     this.#enqueue(bucket, member, ['CLOSE', nsId])
     this.#drainPendingMembers()
-    this.#consolidateAuthenticatedBuckets(bucket.url, bucket.identity)
+    this.#consolidateBuckets(bucket.url, bucket.identity)
   }
 
   #handleClientCount (member, bucket, message) {
@@ -525,7 +540,7 @@ export class UnifiedRelayPool {
       member.negs.delete(nsId)
       member.negExchanged.delete(nsId)
       bucket.negs.delete(nsId)
-      this.#consolidateAuthenticatedBuckets(bucket.url, bucket.identity)
+      this.#consolidateBuckets(bucket.url, bucket.identity)
     }
     this.#enqueue(bucket, member, outgoing)
   }
@@ -630,6 +645,7 @@ export class UnifiedRelayPool {
           if (source === target || source.closed) continue
           for (const member of [...source.members]) {
             if (member.closed || member.bucket !== source) continue
+            if (this.#memberHasPendingAuth(member)) continue
             if (!this.#canMergeIntoBucket(target, member)) continue
             if (this.#moveMember(member, target)) moved++
           }
@@ -642,6 +658,74 @@ export class UnifiedRelayPool {
       this.#counters.consolidations += moved
       this.#log('[relay-pool] consolidated', moved, 'member(s) on', url, identity)
     }
+  }
+
+  // Anonymous buckets are the overflow mechanism for subscription capacity;
+  // consolidate whole small buckets when possible and fall back to throttled
+  // partial moves when a source cannot be emptied at once.
+  #consolidateAnonymousBuckets (url) {
+    const key = `${url}\u0000`
+    if (this.#consolidating.has(key)) return
+    const buckets = [...this.#membersForUrl(url)].filter(bucket => !bucket.closed && bucket.identity === null)
+    if (buckets.length < 2) return
+    this.#consolidating.add(key)
+    let moved = 0
+    try {
+      const targets = [...buckets]
+        .filter(bucket => bucket.pendingAuths.size === 0)
+        .sort((a, b) => {
+          const aOpen = a.state === 'open' ? 1 : 0
+          const bOpen = b.state === 'open' ? 1 : 0
+          if (aOpen !== bOpen) return bOpen - aOpen
+          if (a.members.size !== b.members.size) return b.members.size - a.members.size
+          return a.id.localeCompare(b.id)
+        })
+      for (const target of targets) {
+        if (target.closed || target.members.size === 0) continue
+        for (const source of buckets) {
+          if (source === target || source.closed || source.members.size === 0) continue
+          if (source.pendingAuths.size > 0) continue
+          const members = [...source.members]
+          if (members.some(member => member.closed || member.negExchanged.size > 0 || this.#memberHasPendingAuth(member))) continue
+          const needed = members.reduce((total, member) => total + member.subscriptions.size, 0)
+          if (target.subscriptions.size + needed > this.#limits.maxSubscriptionsPerBucket) continue
+          for (const member of members) {
+            if (this.#moveMember(member, target)) moved++
+          }
+        }
+      }
+      if (moved === 0) {
+        const now = Date.now()
+        const last = this.#anonymousConsolidationAt.get(url) ?? 0
+        if (now - last >= this.#limits.consolidationThrottleMs) {
+          this.#anonymousConsolidationAt.set(url, now)
+          for (const target of targets) {
+            if (target.closed || target.members.size === 0) continue
+            for (const source of buckets) {
+              if (source === target || source.closed) continue
+              for (const member of [...source.members]) {
+                if (member.closed || member.bucket !== source) continue
+                if (member.negExchanged.size > 0 || this.#memberHasPendingAuth(member)) continue
+                if (!this.#canMergeIntoBucket(target, member)) continue
+                if (this.#moveMember(member, target)) moved++
+              }
+            }
+          }
+        }
+      }
+    } finally {
+      this.#consolidating.delete(key)
+    }
+    if (moved > 0) {
+      this.#counters.consolidations += moved
+      this.#log('[relay-pool] consolidated', moved, 'anonymous member(s) on', url)
+    }
+  }
+
+  #consolidateBuckets (url, identity) {
+    if (identity === null || identity === undefined) this.#consolidateAnonymousBuckets(url)
+    else this.#consolidateAuthenticatedBuckets(url, identity)
+    this.#drainPendingMembers()
   }
 
   #validateAuthEvent (bucket, event) {
@@ -742,6 +826,7 @@ export class UnifiedRelayPool {
         candidate.subscriptions.size + needed <= this.#limits.maxSubscriptionsPerBucket) ?? null
     }
     const anonymous = candidates.find(candidate => candidate.identity === null &&
+      candidate.pendingAuths.size === 0 &&
       candidate.subscriptions.size + needed <= this.#limits.maxSubscriptionsPerBucket)
     if (anonymous) return anonymous
     if (candidates.length + 1 < this.#limits.maxBucketsPerRelay) return this.#createBucket(bucket.url, null)
@@ -885,7 +970,7 @@ export class UnifiedRelayPool {
       member.rawSubscriptions.delete(subscription.rawId)
       bucket.subscriptions.delete(nsId)
       this.#drainPendingMembers()
-      this.#consolidateAuthenticatedBuckets(bucket.url, bucket.identity)
+      this.#consolidateBuckets(bucket.url, bucket.identity)
     }
     const countEntry = member.counts.get(nsId)
     if (countEntry !== undefined) {
@@ -921,7 +1006,7 @@ export class UnifiedRelayPool {
       const confirmed = message[2] === true
       this.#setBucketIdentity(bucket, confirmed ? pendingAuth.pubkey : null)
       this.#deliverMember(pendingAuth.member, JSON.stringify(message))
-      if (confirmed) this.#consolidateAuthenticatedBuckets(bucket.url, pendingAuth.pubkey)
+      if (confirmed) this.#consolidateBuckets(bucket.url, pendingAuth.pubkey)
       return
     }
     const publishers = bucket.publishes.get(message[1])
@@ -964,7 +1049,7 @@ export class UnifiedRelayPool {
     this.#members.delete(member.id)
     member.handlers.onDetach?.(reason)
     if (!alreadyRemoved) this.#drainPendingMembers()
-    if (bucket && !bucket.closed) this.#consolidateAuthenticatedBuckets(bucket.url, bucket.identity)
+    if (bucket && !bucket.closed) this.#consolidateBuckets(bucket.url, bucket.identity)
   }
 
   #closeMember (member, code, reason, wasClean) {
@@ -975,6 +1060,6 @@ export class UnifiedRelayPool {
     this.#members.delete(member.id)
     member.handlers.onClose?.({ code, reason, wasClean })
     this.#drainPendingMembers()
-    if (bucket && !bucket.closed) this.#consolidateAuthenticatedBuckets(bucket.url, bucket.identity)
+    if (bucket && !bucket.closed) this.#consolidateBuckets(bucket.url, bucket.identity)
   }
 }

@@ -111,6 +111,15 @@ Members with an exchanged NEG session are skipped until `NEG-CLOSE`;
 pending publishes/COUNTs move with the normal replay/dedupe. Emptied
 buckets still close after the usual 30s idle.
 
+Anonymous buckets are consolidated the same way with two extra guards:
+buckets with a pending AUTH are never targets, and new anonymous members are
+not placed in them while the AUTH is in flight (a member waiting for its own
+AUTH OK is never moved). The anonymous pass first tries all-or-nothing —
+moving every member of a smaller bucket into a larger open bucket — and only
+falls back to a throttled partial move (5s per relay) when no source can be
+emptied at once. It runs before pending members are retried, so the freed
+capacity serves sockets that were waiting for a bucket.
+
 During a merge the pool replays each subscription's last `REQ`, pending
 `EVENT` publishes (relays deduplicate by event id), pending `COUNT`s and
 delivers the destination bucket's stored challenge, deduplicating recently
