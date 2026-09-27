@@ -134,7 +134,7 @@ export class UnifiedRelayPool {
       if (oldest) this.#relayFailures.delete(oldest[0])
     }
     this.#counters.connectionFailures++
-    this.#log('[relay-pool] connection failed', key, code, reason, phase)
+    this.#log('connection failed', key, code, reason || '<none>', phase)
   }
 
   quarantine (url, reason) {
@@ -142,7 +142,7 @@ export class UnifiedRelayPool {
     if (!key) return
     if (!this.#quarantined.has(key)) this.#counters.quarantines++
     this.#quarantined.set(key, Date.now() + this.#limits.quarantineMs)
-    this.#log('[relay-pool] quarantined', key, reason ?? '')
+    this.#log('quarantined', key, reason || '<none>')
   }
 
   attach (url, handlers = {}, { owner = 'unknown' } = {}) {
@@ -174,7 +174,7 @@ export class UnifiedRelayPool {
     if (bucket) this.#addMember(member, bucket)
     else {
       this.#pendingMembers.push(member)
-      this.#log('[relay-pool] member pending (no bucket capacity)', key)
+      this.#log('member pending (no bucket capacity)', key)
     }
     return {
       id: member.id,
@@ -365,7 +365,7 @@ export class UnifiedRelayPool {
     try {
       socket = this.#createSocket(bucket.url)
     } catch (error) {
-      this.#log('[relay-pool] socket creation failed', bucket.url, error?.message ?? error)
+      this.#log('socket creation failed', bucket.url, error?.message ?? error)
       this.recordFailure(bucket.url, { code: 1006, reason: error?.message ?? 'socket creation failed', phase: 'create' })
       this.#failBucket(bucket, 1006, 'socket creation failed')
       return
@@ -552,7 +552,7 @@ export class UnifiedRelayPool {
       const target = this.#selectSpillBucket(bucket, member)
       if (!target) {
         this.#counters.capacityRejections++
-        this.#log('[relay-pool] bucket capacity exhausted', bucket.url, bucket.identity ?? 'anonymous')
+        this.#log('bucket capacity exhausted', bucket.url, bucket.identity ?? 'anonymous')
         return bucket.identity === null
           ? this.#closeMember(member, 1013, 'relay pool capacity', false)
           : this.#reconnectMember(member, 'relay pool rehome')
@@ -796,7 +796,7 @@ export class UnifiedRelayPool {
     }
     if (moved > 0) {
       this.#counters.consolidations += moved
-      this.#log('[relay-pool] consolidated', moved, 'member(s) on', url, identity)
+      this.#log('consolidated', moved, 'member(s) on', url, identity)
     }
   }
 
@@ -858,7 +858,7 @@ export class UnifiedRelayPool {
     }
     if (moved > 0) {
       this.#counters.consolidations += moved
-      this.#log('[relay-pool] consolidated', moved, 'anonymous member(s) on', url)
+      this.#log('consolidated', moved, 'anonymous member(s) on', url)
     }
   }
 
@@ -1055,7 +1055,7 @@ export class UnifiedRelayPool {
         bucket.socket?.send(item.raw)
         this.#counters.framesOut++
       } catch (error) {
-        this.#log('[relay-pool] send failed', bucket.url, error?.message ?? error)
+        this.#log('send failed', bucket.url, error?.message ?? error)
         this.recordFailure(bucket.url, {
           code: 1006,
           reason: error?.message ?? 'send failed',

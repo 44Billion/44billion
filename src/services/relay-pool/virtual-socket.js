@@ -239,7 +239,7 @@ export function createRelayPoolWebSocketClass ({
           }
         })
       } catch (error) {
-        log('[relay-pool] pool attach failed', this.url, error?.message ?? error)
+        log('pool attach failed', this.url, error?.message ?? error)
       }
       if (!handle) {
         if (this.#speculative) this.#decideDirect()
@@ -394,7 +394,7 @@ export function createRelayPoolWebSocketClass ({
 
     #detachToDirect (reason) {
       if (this.#phase !== 'pool' && this.#phase !== 'attaching') return
-      log('[relay-pool] detaching virtual socket to direct', this.url, reason ?? '')
+      log('detaching virtual socket to direct', this.url, reason || '<none>')
       this.#pool = null
       const socket = this.#speculative
       this.#speculative = null
@@ -486,7 +486,7 @@ export function createRelayPoolWebSocketClass ({
     }
 
     #fail (error) {
-      log('[relay-pool] virtual socket failed', this.url, error?.message ?? error)
+      log('virtual socket failed', this.url, error?.message ?? error)
       onConnectionFailure(this.url, {
         code: 0,
         reason: error?.message ?? 'socket failed',

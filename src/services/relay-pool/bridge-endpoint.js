@@ -95,7 +95,7 @@ export function createRelayBridgeEndpoint ({
     try {
       socket = createVirtualSocket?.(url)
     } catch (error) {
-      log('[relay-pool] delegated socket creation failed', url, error?.message ?? error)
+      log('delegated socket creation failed', url, error?.message ?? error)
     }
     if (!socket) {
       send(RELAY_BRIDGE.DETACH, { virtualId, reason: 'relay-pool-unavailable' })
@@ -271,7 +271,7 @@ export function createRelayBridgeEndpoint ({
       }
       attachments.clear()
       endpoints.delete(endpoint)
-      log('[relay-pool] endpoint disposed', owner)
+      log('endpoint disposed', owner)
     }
   }
   endpoints.add(endpoint)

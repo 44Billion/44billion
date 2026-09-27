@@ -48,7 +48,7 @@ function authEvent (secretKey, { challenge, relay = 'wss://relay.example' }) {
   }, secretKey)
 }
 
-function createPool (overrides = {}) {
+function createPool (overrides = {}, { log = () => {} } = {}) {
   const sockets = []
   const pool = new UnifiedRelayPool({
     createSocket: url => {
@@ -64,7 +64,7 @@ function createPool (overrides = {}) {
       bucketIdleMs: 20,
       ...overrides
     },
-    log: () => {}
+    log
   })
   return { pool, sockets }
 }
@@ -262,6 +262,19 @@ describe('unified relay pool', () => {
     assert.equal(failure.lastWasClean, false)
     assert.ok(failure.lastOpenedAt > 0)
     assert.ok(failure.lastLifetimeMs >= 0)
+  })
+
+  it('logs failures without an embedded prefix and with a reason placeholder', async () => {
+    const logs = []
+    const { pool, sockets } = createPool({}, { log: (...args) => logs.push(args) })
+    pool.attach('wss://relay.example', {})
+    await tick()
+    sockets[0].open()
+    await tick()
+    sockets[0].onclose?.({ code: 1006, reason: '' })
+    await tick()
+    const failureLog = logs.find(args => args[0] === 'connection failed')
+    assert.deepEqual(failureLog, ['connection failed', 'wss://relay.example', 1006, '<none>', 'pool'])
   })
 
   it('sends CLOSE for the relay when a virtual socket closes and keeps the other member alive', async () => {
