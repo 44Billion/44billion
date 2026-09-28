@@ -255,3 +255,11 @@ step for a real browser.
   partitioning buckets by owner is the next mitigation if needed.
 - Bunker/NIP-46 traffic is pooled and adds one postMessage hop. Keeping
   bunker relays direct remains the future latency escape hatch.
+
+
+The installed libp2r2p 0.10.26 publication default waits up to 30 seconds for an
+acknowledgement and returns immediately on the first accepting relay. The 3s
+slow-response diagnostic is informational and does not change that deadline.
+Consumers may still explicitly request a shorter deadline. nmmr 2.0.1 isolates
+Node temporary leaf directories and browser record ownership; it removes the
+startup sweeps that could delete another active builder's data.
