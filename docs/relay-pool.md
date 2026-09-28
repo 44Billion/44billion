@@ -131,7 +131,12 @@ capacity serves sockets that were waiting for a bucket.
 During a merge the pool replays each subscription's last `REQ`, pending
 `EVENT` publishes (relays deduplicate by event id), pending `COUNT`s and
 delivers the destination bucket's stored challenge, deduplicating recently
-delivered event ids (LRU, 256 entries / 5 minutes) and repeated `OK` replies.
+delivered event ids (LRU, 256 entries / 5 minutes). `OK` replies route only to
+currently pending publishers; removing that pending set suppresses unsolicited
+repeats. Never cache acknowledged event IDs across publication attempts: a new
+`EVENT` with the same ID needs a new `OK`, including after an `auth-required`
+rejection and authentication. Otherwise a healthy relay's acceptance is silently
+lost and the caller times out.
 
 NEG sessions are pinned to their physical connection only while they are
 really in progress. Per NIP-77 a session ends on `NEG-CLOSE` from the
@@ -209,6 +214,22 @@ Each `relayFailures` entry carries `lastCode` plus a human label
 `lastLifetimeMs` means the socket never opened (DNS/TCP/TLS/attach
 failure), while a long lifetime points to a drop after the connection was
 established.
+
+`pendingPublicationsByRelay` counts member publication attempts still in the
+local queue (`queued`) versus handed to the physical WebSocket (`awaitingOk`),
+with `oldestMs` since the oldest pending attempt entered the pool. It does not
+prove network transmission or remote receipt. Close removes those attempts;
+migration requeues them while preserving the original age.
+
+A relay `OK` arriving at least `slowPublicationMs` (3s) after pool admission logs
+`slow publication response` with the outer event ID, relay, owner, accepted flag,
+relay reason, total `elapsedMs`, last local `queueMs`, and `responseMs` since
+that physical send. `slowPublicationResponses` counts these per member. This is
+observability only: it changes neither consumer deadlines nor send status, and
+cannot measure delays before pool admission or after forwarding the response to
+the bridge. No event content, signatures or keys are logged. An app publication
+timeout does not prove non-delivery: the event can reach another subscriber
+before, or without, a timely `OK` reaching the publisher.
 
 The development-only
 `window.__44bSetRelayPoolEnabled(false)` flips the kill switch; a reload is

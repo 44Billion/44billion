@@ -76,7 +76,8 @@ export class UnifiedRelayPool {
     authSwaps: 0,
     authMerges: 0,
     authReconnects: 0,
-    authRejected: 0
+    authRejected: 0,
+    slowPublicationResponses: 0
   }
 
   constructor ({
@@ -161,9 +162,8 @@ export class UnifiedRelayPool {
       negs: new Map(), // nsId -> { rawId, message, timer }
       negExchanged: new Set(), // NEG sessions that already exchanged NEG-MSG
       negTombstones: new Map(), // rawId -> timer after a session was closed by the pool
-      pendingPublishes: new Map(), // eventId -> raw message
+      pendingPublishes: new Map(), // eventId -> { raw, startedAt, queuedAt, sentAt }
       seenEvents: new LruSet(this.#limits.dedupeEntries, this.#limits.dedupeTtlMs),
-      seenOks: new LruSet(this.#limits.dedupeEntries, this.#limits.dedupeTtlMs),
       queuedFrames: 0,
       queuedBytes: 0,
       closed: false
@@ -195,6 +195,8 @@ export class UnifiedRelayPool {
     const bucketsByHost = {}
     const membersByOwner = {}
     const subscriptionsByOwner = {}
+    const pendingPublicationsByRelay = {}
+    const now = Date.now()
     let subscriptions = 0
     for (const bucket of this.#buckets.values()) {
       const host = this.#hostFor(bucket.url)
@@ -205,9 +207,16 @@ export class UnifiedRelayPool {
       const owner = member.owner ?? 'unknown'
       membersByOwner[owner] = (membersByOwner[owner] ?? 0) + 1
       subscriptionsByOwner[owner] = (subscriptionsByOwner[owner] ?? 0) + member.subscriptions.size
+      for (const pending of member.pendingPublishes.values()) {
+        const summary = pendingPublicationsByRelay[member.url] ??= { queued: 0, awaitingOk: 0, oldestMs: 0 }
+        if (pending.sentAt === null) summary.queued++
+        else summary.awaitingOk++
+        summary.oldestMs = Math.max(summary.oldestMs, now - pending.startedAt)
+      }
     }
     return {
       ...this.#counters,
+      pendingPublicationsByRelay,
       droppedByOp: { ...this.#counters.droppedByOp },
       relayFailures: Object.fromEntries([...this.#relayFailures].map(([url, entry]) => [url, { ...entry }])),
       buckets: this.#buckets.size,
@@ -676,7 +685,10 @@ export class UnifiedRelayPool {
   #handleClientEvent (member, bucket, raw, message) {
     const event = message[1]
     if (event?.id) {
-      member.pendingPublishes.set(event.id, raw)
+      if (!member.pendingPublishes.has(event.id)) {
+        const now = Date.now()
+        member.pendingPublishes.set(event.id, { raw, startedAt: now, queuedAt: now, sentAt: null })
+      }
       let publishers = bucket.publishes.get(event.id)
       if (!publishers) {
         publishers = new Set()
@@ -924,14 +936,16 @@ export class UnifiedRelayPool {
     this.#addMember(member, target)
     if (target.challenge) this.#deliverMember(member, JSON.stringify(['AUTH', target.challenge]))
     this.#replayMemberOperations(member, target)
-    for (const [eventId, raw] of member.pendingPublishes) {
+    for (const [eventId, pending] of member.pendingPublishes) {
       let publishers = target.publishes.get(eventId)
       if (!publishers) {
         publishers = new Set()
         target.publishes.set(eventId, publishers)
       }
       publishers.add(member)
-      this.#enqueue(target, member, parseNostrFrame(raw))
+      pending.queuedAt = Date.now()
+      pending.sentAt = null
+      this.#enqueue(target, member, parseNostrFrame(pending.raw))
     }
     this.#counters.migrations++
     return true
@@ -954,7 +968,7 @@ export class UnifiedRelayPool {
       bucket.queues.set(member.id, queue)
       bucket.roundRobin.push(member.id)
     }
-    queue.push({ raw, bytes })
+    queue.push({ raw, bytes, eventId: message[0] === 'EVENT' ? message[1]?.id : null })
     this.#drainBucket(bucket)
   }
 
@@ -1051,6 +1065,8 @@ export class UnifiedRelayPool {
         member.queuedFrames = Math.max(0, member.queuedFrames - 1)
         member.queuedBytes = Math.max(0, member.queuedBytes - item.bytes)
       }
+      const pending = member?.pendingPublishes.get(item.eventId)
+      if (pending && pending.sentAt === null) pending.sentAt = Date.now()
       try {
         bucket.socket?.send(item.raw)
         this.#counters.framesOut++
@@ -1195,12 +1211,27 @@ export class UnifiedRelayPool {
       this.#dropFrame('OK')
       return
     }
+    // Pending publishers scope deduplication to this attempt. A later EVENT
+    // with the same ID must receive a fresh OK, including after auth-required.
     bucket.publishes.delete(message[1])
     const raw = JSON.stringify(message)
     for (const member of publishers) {
+      const pending = member.pendingPublishes.get(message[1])
+      const now = Date.now()
+      if (pending && now - pending.startedAt >= this.#limits.slowPublicationMs) {
+        this.#counters.slowPublicationResponses++
+        this.#log('slow publication response', {
+          relay: bucket.url,
+          eventId: message[1],
+          owner: member.owner,
+          accepted: message[2] === true,
+          reason: message[3],
+          elapsedMs: now - pending.startedAt,
+          queueMs: pending.sentAt === null ? null : pending.sentAt - pending.queuedAt,
+          responseMs: pending.sentAt === null ? null : now - pending.sentAt
+        })
+      }
       member.pendingPublishes.delete(message[1])
-      if (member.seenOks.has(message[1])) continue
-      member.seenOks.add(message[1])
       this.#deliverMember(member, raw)
     }
   }

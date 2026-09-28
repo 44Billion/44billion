@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
+import { RelayPool } from 'libp2r2p/relay'
+import { finalizeEvent } from 'libp2r2p/event'
+import { generateSecretKey } from 'libp2r2p/key'
 
 import { createBridgeTransport } from '#services/relay-pool/app-shim.js'
 import { createRelayBridgeEndpoint } from '#services/relay-pool/bridge-endpoint.js'
@@ -120,4 +123,72 @@ describe('relay pool end to end', () => {
     assert.equal(receivedA[0][1], 'sub1')
     assert.deepEqual(receivedB, [])
   })
+})
+
+// Exercises the installed library and real MessagePorts. Only upstream socket
+// I/O is controlled; publication validation, timeout reports and routing are real.
+function publicationFixture (t, onEvent) {
+  const urls = ['wss://one.example', 'wss://two.example']
+  const logs = []
+  const registry = new RelayRegistry(urls)
+  const limits = { ...RELAY_POOL_LIMITS, slowPublicationMs: 0, bucketIdleMs: 20 }
+  const pool = new UnifiedRelayPool({
+    registry, limits, log: (...args) => logs.push(args),
+    createSocket: url => {
+      const socket = new PhysicalSocket(url)
+      socket.send = raw => {
+        const frame = JSON.parse(raw)
+        socket.sent.push(frame)
+        if (frame[0] === 'EVENT') onEvent(socket, frame[1])
+      }
+      queueMicrotask(() => socket.open())
+      return socket
+    }
+  })
+  const { port1, port2 } = new MessageChannel()
+  const endpoint = createRelayBridgeEndpoint({ port: port2, pool, limits })
+  const WebSocket = createRelayPoolWebSocketClass({
+    OriginalWebSocket: AppRealmWebSocket, registry, limits,
+    baseUrl: 'https://app.example/',
+    createPoolTransport: ({ url, callbacks }) => createBridgeTransport({ url, callbacks, getPort: async () => port1, limits })
+  })
+  const publisher = new RelayPool({ WebSocket })
+  t.after(async () => {
+    await publisher.disconnectAll()
+    endpoint.dispose()
+    pool.closeAll()
+    port1.close()
+    port2.close()
+  })
+  const event = finalizeEvent({ kind: 3560, created_at: 1, tags: [], content: 'test ciphertext' }, generateSecretKey())
+  return { publisher, urls, logs, event }
+}
+
+it('the installed publisher receives both relay acknowledgements on repeated publication through the app bridge', async t => {
+  const fixture = publicationFixture(t, (socket, event) => socket.message(['OK', event.id, true, 'saved']))
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const result = await fixture.publisher.sendEvent(fixture.event, fixture.urls, { timeoutUntilFirstFulfillment: 1000, timeout: 2000 })
+    const report = await result.promise
+    assert.equal(result.success, true, 'a repeated publication must not time out on two accepting relays')
+    assert.equal(report.fulfilled, 2)
+    assert.deepEqual(report.errors, [])
+  }
+})
+
+it('delivery before a late OK can coexist with a final timeout report', async t => {
+  const delivered = []
+  const acknowledgements = []
+  const fixture = publicationFixture(t, (socket, event) => {
+    delivered.push(event.id)
+    acknowledgements.push(() => socket.message(['OK', event.id, true, 'saved']))
+  })
+  const result = await fixture.publisher.sendEvent(fixture.event, fixture.urls, { timeoutUntilFirstFulfillment: 200, timeout: 2000 })
+  const report = await result.promise
+  assert.deepEqual(delivered, [fixture.event.id, fixture.event.id], 'both relays received the event before the deadline')
+  assert.equal(result.success, false)
+  assert.ok(report.errors.every(({ reason }) => reason.message === 'PUBLISH_TIMEOUT'))
+  for (const acknowledge of acknowledgements) acknowledge()
+  await waitFor(() => fixture.logs.filter(([label]) => label === 'slow publication response').length === 2)
+  assert.ok(fixture.logs.filter(([label]) => label === 'slow publication response').every(([, response]) => response.accepted))
+  assert.equal((await result.promise).success, false, 'a late OK does not revise the already finalized library report')
 })

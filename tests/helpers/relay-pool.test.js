@@ -314,6 +314,94 @@ describe('unified relay pool', () => {
     assert.deepEqual(b, [])
   })
 
+  it('delivers a fresh OK when the same event is published again after acceptance or rejection', async t => {
+    for (const firstAccepted of [true, false]) {
+      const { pool, sockets } = createPool()
+      t.after(() => pool.closeAll())
+      const received = []
+      const member = pool.attach('wss://relay.example', { onMessage: raw => received.push(JSON.parse(raw)) })
+      await tick()
+      sockets[0].open()
+      await tick()
+      const event = signedEvent()
+      member.send(JSON.stringify(['EVENT', event]))
+      await tick()
+      sockets[0].message(['OK', event.id, firstAccepted, firstAccepted ? 'saved' : 'auth-required: authenticate'])
+      await tick()
+      member.send(JSON.stringify(['EVENT', event]))
+      await tick()
+      sockets[0].message(['OK', event.id, true, 'saved on retry'])
+      sockets[0].message(['OK', event.id, true, 'duplicate response'])
+      await tick()
+      assert.deepEqual(received, [
+        ['OK', event.id, firstAccepted, firstAccepted ? 'saved' : 'auth-required: authenticate'],
+        ['OK', event.id, true, 'saved on retry']
+      ], 'each publication attempt receives its acknowledgement; unsolicited repeats stay suppressed')
+    }
+  })
+
+  it('distinguishes queued publications from sent frames awaiting OK and logs slow responses without content', async t => {
+    const logs = []
+    const { pool, sockets } = createPool({ slowPublicationMs: 0 }, { log: (...args) => logs.push(args) })
+    t.after(() => pool.closeAll())
+    const member = pool.attach('wss://relay.example', {}, { owner: 'app' })
+    await tick()
+    sockets[0].open()
+    await tick()
+    const event = { ...signedEvent(), content: 'private ciphertext' }
+    member.send(JSON.stringify(['EVENT', event]))
+    const queued = pool.snapshot().pendingPublicationsByRelay['wss://relay.example']
+    assert.equal(queued.queued, 1)
+    assert.equal(queued.awaitingOk, 0)
+    await tick()
+    const sent = pool.snapshot().pendingPublicationsByRelay['wss://relay.example']
+    assert.equal(sent.queued, 0)
+    assert.equal(sent.awaitingOk, 1)
+    assert.ok(sent.oldestMs >= 0)
+    sockets[0].message(['OK', event.id, true, 'saved'])
+    assert.deepEqual(pool.snapshot().pendingPublicationsByRelay, {})
+    assert.equal(pool.snapshot().slowPublicationResponses, 1)
+    const [label, response] = logs.at(-1)
+    assert.equal(label, 'slow publication response')
+    assert.equal(response.relay, 'wss://relay.example')
+    assert.equal(response.eventId, event.id)
+    assert.equal(response.owner, 'app')
+    assert.equal(response.accepted, true)
+    assert.equal(response.reason, 'saved')
+    assert.ok(response.queueMs >= 0)
+    assert.ok(response.responseMs >= 0)
+    assert.equal(response.elapsedMs, response.queueMs + response.responseMs)
+    assert.equal(JSON.stringify(logs).includes(event.content), false)
+  })
+
+  it('replays pending publication records after a bucket move and removes them on close', async t => {
+    const { pool, sockets } = createPool({ maxSubscriptionsPerBucket: 1 })
+    t.after(() => pool.closeAll())
+    const received = []
+    const a = pool.attach('wss://relay.example', {})
+    const b = pool.attach('wss://relay.example', { onMessage: raw => received.push(JSON.parse(raw)) })
+    await tick()
+    sockets[0].open()
+    await tick()
+    a.send(JSON.stringify(['REQ', 'a', { kinds: [1] }]))
+    const event = signedEvent()
+    b.send(JSON.stringify(['EVENT', event]))
+    await tick()
+    b.send(JSON.stringify(['REQ', 'b', { kinds: [1] }]))
+    await tick()
+    assert.equal(sockets.length, 2)
+    assert.equal(pool.snapshot().pendingPublicationsByRelay['wss://relay.example'].queued, 1)
+    sockets[1].open()
+    await tick()
+    assert.deepEqual(sockets[1].sent.find(frame => frame[0] === 'EVENT'), ['EVENT', event])
+    sockets[1].message(['OK', event.id, true, 'saved'])
+    assert.deepEqual(received.filter(frame => frame[0] === 'OK'), [['OK', event.id, true, 'saved']])
+    assert.deepEqual(pool.snapshot().pendingPublicationsByRelay, {})
+    b.send(JSON.stringify(['EVENT', event]))
+    b.close(1000, '')
+    assert.deepEqual(pool.snapshot().pendingPublicationsByRelay, {})
+  })
+
   it('delivers the relay OK for AUTH and confirms the identity only after OK true', async () => {
     const { pool, sockets } = createPool()
     const received = []
