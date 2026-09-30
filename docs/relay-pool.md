@@ -263,3 +263,45 @@ slow-response diagnostic is informational and does not change that deadline.
 Consumers may still explicitly request a shorter deadline. nmmr 2.0.1 isolates
 Node temporary leaf directories and browser record ownership; it removes the
 startup sweeps that could delete another active builder's data.
+
+## Live publication latency diagnostic
+
+Run this explicitly against a real relay (it is excluded from `npm test`):
+
+```sh
+node bin/diagnose-relay-publication.js --publish \
+  --relay wss://relay.44billion.net --samples 4 \
+  --output /tmp/relay-publication-diagnostic.json
+```
+
+Without `--publish`, the command prints usage and makes no connections. Each
+sample publishes four small synthetic events: kinds 3560 (persistent private
+channel envelope kind) and 20000 (ephemeral control), via a native WebSocket
+and via the actual virtual socket, MessagePort bridge and unified pool. All
+events use a disposable key and a ten-minute expiration tag; their content is
+diagnostic text, not real private messages. Expiration cleanup depends on the
+relay. No account keys or application manifests are used.
+
+Two virtual clients share one pooled physical connection. Connections open
+before timing publications; path/kind order alternates between rounds. Every
+event has a distinct ID to avoid duplicate-event shortcuts. Publications are
+sequential, spaced by 500 ms, with a 30-second timeout (`--timeout` in ms).
+`--samples` accepts 1–20 and counts rounds, not individual events.
+
+The JSON report includes event IDs, UTC timestamps, acceptance/rejection,
+connection setup times, pool statistics, and these per-publication timings:
+
+- `totalMs`: client send through client receipt of `OK` (or timeout/close).
+- `queueMs`: client send through invocation of the physical socket's `send`.
+- `responseMs`: physical send through physical reception of `OK`, including
+  transport and relay processing; this is not a server-only measurement.
+- `dispatchMs`: physical reception through receipt by the virtual client.
+
+The diagnostic rejects direct fallback for the pooled path and checks that
+both members share one physical connection. It runs the production pool code
+in Node with real MessagePorts, not a complete browser/launcher session under
+load. A slow direct response establishes that pooling is not required for the
+delay. Fast ephemeral controls alongside slow persistent events suggest
+investigating persistence, but identifying the exact server stage requires
+server-side timings. Small samples and changing relay load do not establish
+comparative throughput or percentile latency.

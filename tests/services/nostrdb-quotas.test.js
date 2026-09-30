@@ -1070,3 +1070,44 @@ it('rolls back a private deletion when the envelope admission fails', async () =
   const tombstone = await request(a.raw.transaction('deletions').objectStore('deletions').get(deletionEventRef(target.id, a.pubkey)))
   assert.equal(Number.isInteger(tombstone?.ca), true)
 })
+
+it('recovery event-store adapters round-trip encrypted immutable snapshots and private revocations', async () => {
+  const { createPersonalCopyRecoveryStorage, encodeRecoveryRecord } = await import('libp2r2p/private-messenger/event-store')
+  const a = await owner(); const fixture = localCopyFixture(a)
+  a.db.personalCopyEncrypt = fixture.encrypt
+  const adapterSigner = {
+    getPublicKey: async () => a.pubkey,
+    obfuscate: fixture.obfuscate,
+    nip44v3: { decrypt: async (pubkey, kind, scope, ciphertext) => decryptBytes(a.secret, pubkey, kind, new Uint8Array(), ciphertext).slice().buffer }
+  }
+  const eventStore = {
+    query: (...args) => a.db.query(...args),
+    remove: (...args) => a.db.remove(...args),
+    addPersonalCopy: (inner, options) => runNostrDbMethod({
+      db: a.db, method: 'addPersonalCopy', params: [inner, options], appId: APP,
+      signEvent: fixture.signEvent, personalCopyEncrypt: fixture.encrypt,
+      personalCopyObfuscate: fixture.obfuscate, requestPermission: async () => {}
+    })
+  }
+  const one = createPersonalCopyRecoveryStorage({ eventStore, signer: adapterSigner })
+  const two = createPersonalCopyRecoveryStorage({ eventStore, signer: adapterSigner })
+  const at = Math.floor(Date.now() / 1000)
+  const grant = { controlChannelPubkey: 'a'.repeat(64), fileChannelPubkey: 'b'.repeat(64), peerPubkey: 'c'.repeat(64), receiverPubkey: 'c'.repeat(64), root: 'd'.repeat(64), size: 51000, sharedAt: at - 20, expiresAt: at + 604800 }
+  await one.authorizations.put(grant)
+  await two.authorizations.put(grant)
+  assert.equal((await a.db.query({ kinds: [1006], '#k': ['30078'] })).results.length, 1)
+  const imported = await two.authorizations.find(grant)
+  assert.equal(imported.sharedAt, grant.sharedAt)
+  const seed = { channelPubkey: grant.controlChannelPubkey, receiverPubkey: grant.receiverPubkey, recordType: 'routerEnvelopeRow_v1', router: { kind: 26300, pubkey: a.pubkey, created_at: at - 10, tags: [['f', a.pubkey], ['extra', '~u=12', '%7E']] }, payloadRow: '["ciphertext"]', row: JSON.stringify([grant.receiverPubkey, 'encrypted-key']), firstSeenAt: at - 10, lastSeenAt: at - 10, expiresAt: at + 604800 }
+  await one.seeds.put(seed)
+  const records = []; for await (const row of two.seeds.iterate({ channelPubkey: seed.channelPubkey, receiverPubkey: seed.receiverPubkey, since: at - 15, until: at })) records.push(row)
+  assert.equal(records.length, 1)
+  assert.deepEqual(records[0].router.tags, seed.router.tags)
+  await two.authorizations.revoke([imported])
+  assert.equal(await one.authorizations.find(grant), undefined)
+  // A late independently encrypted copy must meet the same coordinate tombstone.
+  const replay = await eventStore.addPersonalCopy(encodeRecoveryRecord('grant', grant), { context: '' })
+  assert.equal(replay.result.code, 'blocked')
+  assert.equal((await a.db.query({ kinds: [1006], '#k': ['5'] })).results.length, 1)
+  one.close(); two.close()
+})

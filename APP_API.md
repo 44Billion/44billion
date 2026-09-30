@@ -520,3 +520,8 @@ These URLs are instance-bound and are not portable share URLs. Closing the app
 instance can interrupt an active download. A service-worker restart recovers the
 same bridge; an identified instance never falls back to another tab's bridge.
 Confirmed files remain subject to the launcher's existing storage retention.
+
+The optional `libp2r2p/private-messenger/event-store` adapters consume this public
+contract and a signer for the same identity. They add no injected API. Recovery
+records are encrypted personal copies and use normal read/write permissions,
+quotas, obfuscated tag filters and private deletion requests.

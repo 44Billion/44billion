@@ -341,3 +341,14 @@ See [APP_API.md](../APP_API.md) for shapes and cancellation/authorization detail
 `remove` resolves every normalized target before deleting any record and returns
 `removed: [{ id, targets }]` only after transaction commit; errors/noops return
 an empty report. No storage schema changes are required by these contracts.
+
+## Consumer recovery records
+
+libp2r2p/private-messenger/event-store uses the public eventStore API to store
+immutable kind-30078 recovery seeds and grants inside owner personal copies in
+context ''. These remain outer kind 1006, count against the private quota, and
+use existing sync and expiration rules. No new launcher schema or merge policy
+is required. Their root fields deliberately are not r references: authorizations
+do not retain chunks. Private kind-5 copies revoke inner coordinates; local
+removal only evicts this device's copy. The synchronization transport must keep
+its own recovery storage local to prevent recursive synchronization.

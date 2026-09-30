@@ -96,7 +96,7 @@ A newer relay list reconciles membership, retaining unchanged groups and drainin
 accepted events from retired groups. Removing an account or unmounting the root
 cancels its pending delivery. Only kinds 0/10002 also update vault metadata.
 
-The published `libp2r2p@^0.10.22` pool coordinates subscription capacity. Grouped
+The coordinated `libp2r2p@^0.11.0` pool coordinates subscription capacity. Grouped
 feeds start with a bounded recent snapshot, with **ten minutes of overlap**.
 Before releasing buffered live events, the tracker completes any truncated recent
 pages and catches up gaps from each identity/kind's previous confirmed edge.
@@ -206,3 +206,8 @@ Validation: `npm test`, `npm run build`, and
 production build and with the development runtime stopped). The Chrome check
 uses the production router and bundles on temporary local ports; external traffic
 is blocked and the existing 3 GiB runner limit applies.
+
+The 0.11.0 library update coordinates the encrypted private-router recipient
+tag (`p`) with other consumers. Publish the prepared library release before
+deploying this dependency. File chunks keep the existing 34601 storage and
+root-reference retention contracts; no injected API or storage schema changes.
