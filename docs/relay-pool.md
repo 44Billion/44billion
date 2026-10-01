@@ -131,7 +131,10 @@ capacity serves sockets that were waiting for a bucket.
 During a merge the pool replays each subscription's last `REQ`, pending
 `EVENT` publishes (relays deduplicate by event id), pending `COUNT`s and
 delivers the destination bucket's stored challenge, deduplicating recently
-delivered event ids (LRU, 256 entries / 5 minutes). `OK` replies route only to
+delivered event ids per subscription (LRU, 256 entries / 5 minutes). Each
+client `REQ`, including reuse of its ID, starts a new cache. Internal migrations
+preserve the existing subscription cache; `CLOSE`/`CLOSED` release it. Overlapping
+queries therefore receive their own events, including recovery retries. `OK` replies route only to
 currently pending publishers; removing that pending set suppresses unsolicited
 repeats. Never cache acknowledged event IDs across publication attempts: a new
 `EVENT` with the same ID needs a new `OK`, including after an `auth-required`
@@ -177,18 +180,42 @@ partial batch, so the next large frame cannot stall waiting for unreturned
 credits. Credits acknowledge delivery across the port, not completion of the
 consumer's asynchronous event processing.
 
-The bridge window remains 64 frames / 256 KiB, with a separate pending queue
-of 256 frames / 1 MiB per virtual socket. Overflow still closes only that
-virtual socket with 1013; it does not close a shared physical connection. An
-outgoing app/vault overflow also tells the launcher to release the attachment.
-Close, detach and disposal release queued payloads and suppress pending credit
-refunds. `dispose()` on the launcher endpoint closes every virtual socket owned
-by that app instance. This is bounded buffering, not upstream relay flow control:
-a large burst before the consumer returns credits can still overflow.
+Launcher-to-app/vault receive budgets are separate from publication limits:
 
-Volume fields use the existing bridge accounting: string length (UTF-16 code
-units) for text, byte length for binary frames. They are not measurements of
-UTF-8 wire bytes or total heap usage; no protocol limit changed.
+| Scope | Frames | Accounted volume |
+| --- | ---: | ---: |
+| Credit window per virtual connection | 128 | 1 MiB |
+| Pending queue per virtual connection | 1,024 | 4 MiB |
+| Endpoint total (one app/vault port) | 4,096 | 16 MiB |
+| All bridge endpoints in the tab | 16,384 | 64 MiB |
+
+Aggregate totals include queued frames **and sent frames awaiting credit**.
+A frame larger than the 1 MiB window, up to 4 MiB, travels alone when all
+outstanding credits have returned. It cannot overtake a queued frame. A frame
+above 4 MiB immediately closes its virtual connection with 1013 and
+`relay bridge frame too large`, instead of waiting for impossible credit.
+Individual backlog overflow closes that connection. Endpoint/tab overflow evicts
+the largest occupant in that scope (by volume when exceeded, otherwise frames),
+repeating only if needed. Shared physical sockets survive and no overflow
+triggers direct-socket fallback.
+
+Outgoing publication limits remain 64 frames / 256 KiB of credit and 256 frames /
+1 MiB queued, with the existing connection, subscription and rate limits.
+An outgoing app/vault overflow tells the launcher to release its attachment.
+Close, detach and disposal release payloads and credit ledgers and suppress
+pending refunds. This is bounded buffering, not upstream relay flow control.
+
+Volume fields retain string length (UTF-16 code units) for text and byte length
+for binary. They do not measure UTF-8 wire size or total browser memory: parsed
+objects, copies in transit and other browser allocations are outside this budget.
+
+Receive `RELAY_FRAME` messages carry a monotonically increasing `sequence` per
+virtual connection. New consumers echo the last `through` sequence in each credit
+batch. The launcher validates the acknowledged FIFO prefix, frame count, exact
+volume and optional sequence before releasing credit; invalid credits close only
+the offending virtual connection. Legacy consumers omit the sequence/timestamps
+and retain count/volume validation; indistinguishable equal-size replayed legacy
+acknowledgments cannot be identified without a sequence.
 
 ## Vault delegation
 
@@ -238,11 +265,28 @@ from physical pool routing. It includes endpoint/attachment counts, current
 queued frames/volume, oldest queue age, and `queues` with owner (`app`/`vault`),
 relay, opaque endpoint/virtual IDs, head frame size, per-attachment peaks and
 remaining frame/volume credits. Only backlogged attachments appear in `queues`.
+`connections` includes every active attachment, with `pendingFrames`,
+`pendingBytes` and `oldestPendingMs` for sent frames awaiting acknowledgment.
+The bridge also sums pending frames/volume across connections. Outstanding
+ledgers contain only size, sequence and timestamps, never another payload copy.
+
+Each connection's `latency` has `roundTrip`, `delivery`, `consumer` and `return`
+metrics, each with `lastMs`, `maxMs` and `count` (one sample per credit batch).
+Round trip uses the launcher's monotonic clock, from the first acknowledged frame.
+Optional `receivedAt`/`returnedAt` from app/vault use
+[`performance.timeOrigin + performance.now()`](https://developer.mozilla.org/en-US/docs/Web/API/Performance/timeOrigin)
+to estimate launcher-to-consumer delivery, synchronous consumer handling up to
+credit return, and return to the launcher. These are cross-context estimates,
+not time spent in downstream asynchronous decryption or persistence. Inconsistent
+or sleep-skewed timestamps are ignored. Older consumers still report round trip,
+while stage metrics remain unpopulated. No unlimited timing history is retained.
 
 `bridge.queueOverflows` counts incoming bridge overflows for the launcher
 session. `bridge.recentOverflows` retains the last 16 records even after the
 attachment or endpoint closes. Each includes the queue snapshot at overflow,
-timestamp, direction, configured limits and which limits were exceeded. The
+timestamp, direction, configured limits, which limits were exceeded and the
+responsible `scope` (`frame`, `connection`, `endpoint` or `tab`). Aggregate
+overflows include the affected total before eviction. The
 same record is logged immediately as `relay endpoint queue overflow`. These
 records contain no frames, event contents, filters, account identities or keys,
 and are not persisted. `oldestQueuedMs` measures local queue residence, not
@@ -281,9 +325,11 @@ behavior, the app bridge and an end-to-end two-app/two-virtual-socket sharing
 scenario. Regression tests cover mixed-size frame FIFO in both directions,
 trailing credit returns, overflow teardown and bounded diagnostics; the installed
 libp2r2p reader must receive all queued history before `EOSE` completes its query.
-A CDP browser scenario (one app opening dozens of sockets to the
-same relay and asserting the physical socket count) is the next validation
-step for a real browser.
+Run `node bin/run-browser-tests.js -- node tests/browser/relay-bridge.js` for
+real launcher/app/vault port coverage with controlled upstream transport, a busy
+consumer, burst delivery, REQ renewal, large isolated frames and oversized-frame
+closure while another virtual connection remains usable. The runner includes
+builds, launcher, vault and Chrome under the required 3 GiB limit.
 
 ## Known limitations
 

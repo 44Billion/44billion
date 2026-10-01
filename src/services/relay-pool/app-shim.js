@@ -34,13 +34,17 @@ export function createBridgeTransport ({ url, callbacks, getPort, limits, log })
   let grantedFrames = 0
   let grantedBytes = 0
   let creditScheduled = false
+  let receivedAt = null
+  let through
   let portTimer = null
 
   const flushCredit = () => {
     if (closed || !port || (grantedFrames === 0 && grantedBytes === 0)) return
-    port.postMessage({ code: RELAY_BRIDGE.CREDIT, payload: { virtualId, frames: grantedFrames, bytes: grantedBytes } })
+    port.postMessage({ code: RELAY_BRIDGE.CREDIT, payload: { virtualId, frames: grantedFrames, bytes: grantedBytes, through, receivedAt, returnedAt: performance.timeOrigin + performance.now() } })
     grantedFrames = 0
     grantedBytes = 0
+    receivedAt = null
+    through = undefined
   }
 
   const flushQueue = () => {
@@ -75,6 +79,8 @@ export function createBridgeTransport ({ url, callbacks, getPort, limits, log })
         break
       case RELAY_BRIDGE.FRAME: {
         const data = message.payload.data
+        receivedAt ??= performance.timeOrigin + performance.now()
+        through = message.payload.sequence
         grantedFrames++
         grantedBytes += frameSize(data)
         if (!creditScheduled) {

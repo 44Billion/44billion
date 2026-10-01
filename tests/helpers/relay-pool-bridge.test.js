@@ -257,6 +257,7 @@ for (const owner of ['app', 'vault']) {
     const bridge = createBridge(pool, 'wss://relay.example', {
       owner,
       now: () => clock,
+      limits: { ...RELAY_POOL_LIMITS, bridgeReceiveCreditFrames: 64, bridgeReceiveCreditBytes: 256 * 1024 },
       delegate: owner === 'vault',
       createVirtualSocket: url => (socket = new FakeVirtualSocket(url))
     })
@@ -287,7 +288,7 @@ for (const owner of ['app', 'vault']) {
 
 it('returns trailing receive credit so a large next frame cannot stall', async t => {
   const pool = createFakePool()
-  const bridge = createBridge(pool)
+  const bridge = createBridge(pool, 'wss://relay.example', { limits: { ...RELAY_POOL_LIMITS, bridgeReceiveCreditBytes: 256 * 1024 } })
   t.after(bridge.cleanup)
   await tick()
   pool.attached[0].handlers.onOpen({})
@@ -339,7 +340,7 @@ for (const exceeded of ['frames', 'bytes']) {
     const baseline = relayBridgeSnapshot().queueOverflows
     const bridge = createBridge(pool, 'wss://relay.example', {
       owner: 'vault', now: () => clock, log: (...args) => logs.push(args),
-      limits: { ...RELAY_POOL_LIMITS, bridgeCreditFrames: 1, bridgeCreditBytes: 16, maxQueuedFramesPerMember: exceeded === 'frames' ? 2 : 10, maxQueuedBytesPerMember: exceeded === 'bytes' ? 20 : 1024 }
+      limits: { ...RELAY_POOL_LIMITS, bridgeReceiveCreditFrames: 1, bridgeReceiveCreditBytes: 16, bridgeReceiveQueueFrames: exceeded === 'frames' ? 2 : 10, bridgeReceiveQueueBytes: exceeded === 'bytes' ? 20 : 1024 }
     })
     t.after(bridge.cleanup)
     await tick()
@@ -381,7 +382,7 @@ it('bounds overflow history across retired endpoints', async () => {
   for (let index = 0; index < 20; index++) {
     const pool = createFakePool()
     const bridge = createBridge(pool, 'wss://relay.example', {
-      limits: { ...RELAY_POOL_LIMITS, bridgeCreditFrames: 1, maxQueuedFramesPerMember: 1 }
+      limits: { ...RELAY_POOL_LIMITS, bridgeReceiveCreditFrames: 1, bridgeReceiveQueueFrames: 1 }
     })
     try {
       await tick()

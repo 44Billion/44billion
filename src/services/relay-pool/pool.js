@@ -163,7 +163,6 @@ export class UnifiedRelayPool {
       negExchanged: new Set(), // NEG sessions that already exchanged NEG-MSG
       negTombstones: new Map(), // rawId -> timer after a session was closed by the pool
       pendingPublishes: new Map(), // eventId -> { raw, startedAt, queuedAt, sentAt }
-      seenEvents: new LruSet(this.#limits.dedupeEntries, this.#limits.dedupeTtlMs),
       queuedFrames: 0,
       queuedBytes: 0,
       closed: false
@@ -552,7 +551,7 @@ export class UnifiedRelayPool {
     const existingNsId = member.rawSubscriptions.get(rawId)
     if (existingNsId !== undefined) {
       const replacement = [message[0], existingNsId, ...message.slice(2)]
-      member.subscriptions.set(existingNsId, { rawId, message: replacement })
+      member.subscriptions.set(existingNsId, { rawId, message: replacement, seenEvents: new LruSet(this.#limits.dedupeEntries, this.#limits.dedupeTtlMs) })
       bucket.subscriptions.set(existingNsId, member)
       this.#enqueue(bucket, member, replacement)
       return
@@ -571,7 +570,7 @@ export class UnifiedRelayPool {
     }
     const nsId = this.#nextNamespacedId(member, rawId, 'sub')
     const outgoing = [message[0], nsId, ...message.slice(2)]
-    member.subscriptions.set(nsId, { rawId, message: outgoing })
+    member.subscriptions.set(nsId, { rawId, message: outgoing, seenEvents: new LruSet(this.#limits.dedupeEntries, this.#limits.dedupeTtlMs) })
     member.rawSubscriptions.set(rawId, nsId)
     bucket.subscriptions.set(nsId, member)
     this.#enqueue(bucket, member, outgoing)
@@ -1135,11 +1134,11 @@ export class UnifiedRelayPool {
       this.#dropFrame('EVENT')
       return
     }
-    const eventId = message[2]?.id
-    if (eventId && member.seenEvents.has(eventId)) return
-    if (eventId) member.seenEvents.add(eventId)
     const subscription = member.subscriptions.get(message[1])
     if (!subscription) return
+    const eventId = message[2]?.id
+    if (eventId && subscription.seenEvents.has(eventId)) return
+    if (eventId) subscription.seenEvents.add(eventId)
     this.#deliverMember(member, JSON.stringify(['EVENT', subscription.rawId, message[2]]))
   }
 

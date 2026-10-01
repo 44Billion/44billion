@@ -131,7 +131,7 @@ function publicationFixture (t, onEvent, onRequest = () => {}) {
   const urls = ['wss://one.example', 'wss://two.example']
   const logs = []
   const registry = new RelayRegistry(urls)
-  const limits = { ...RELAY_POOL_LIMITS, slowPublicationMs: 0, bucketIdleMs: 20 }
+  const limits = { ...RELAY_POOL_LIMITS, slowPublicationMs: 0, bucketIdleMs: 20, bridgeReceiveCreditBytes: 256 * 1024 }
   const pool = new UnifiedRelayPool({
     registry, limits, log: (...args) => logs.push(args),
     createSocket: url => {

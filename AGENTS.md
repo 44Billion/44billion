@@ -92,7 +92,7 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   monitor owns connectivity probes, capped retry delays, and browser wake-up
   listeners. `ConnectivityRetryCoordinator` owns waiters, cancellation, and
   concurrency of resumed app work; do not restore its duplicate probe timer.
-- Use the coordinated `libp2r2p@^0.11.0` range in package.json;
+- Use the coordinated `libp2r2p@^0.11.6` range in package.json;
   package-lock.json records the resolved release. Validate against the installed package rather than sibling
   source imports; it includes the shared connectivity monitor.
 
@@ -278,8 +278,12 @@ access without echoing those cached events back to the vault.
 - Preserve FIFO in both bridge directions even when a newer smaller frame fits
   the remaining credit. `EOSE` must never overtake queued history events.
 - Return trailing receive credits in a microtask; they acknowledge port delivery,
-  not downstream asynchronous processing. Keep the 64-frame/256-KiB window and
-  256-frame/1-MiB queue limits unless a separate measured change justifies them.
+  not downstream asynchronous processing. Outgoing publication limits remain
+  64 frames/256 KiB of credit and 256 frames/1 MiB queued. Incoming defaults are
+  128 frames/1 MiB of credit, 1,024 frames/4 MiB queued, 4,096 frames/16 MiB per
+  endpoint and 16,384 frames/64 MiB per tab, including outstanding credit.
+  Large frames up to 4 MiB travel alone; larger frames fail explicitly. Aggregate
+  overflow releases the largest occupant in its scope, never a shared socket.
 - Close/detach/dispose release payload queues; outgoing overflow tells the
   launcher to release the member. Ignore stale frames and credit work after close.
 - `relayPoolSnapshot().bridge` aggregates launcher-to-consumer queues and the
@@ -288,3 +292,11 @@ access without echoing those cached events back to the vault.
   for text and byte length for binary; do not silently change protocol units.
 - See `docs/relay-pool.md` and the bridge/e2e Node regressions. A bridge overflow
   may leave shared physical sockets healthy; `droppedByOp` is a separate metric.
+
+- Deduplicate incoming events per subscription and client REQ generation (256
+  IDs/5 minutes), preserving the cache across internal migration only. New REQ
+  and CLOSE release the previous cache; overlapping history queries are independent.
+- Credit ledgers retain bounded sizes/sequences/times only. Validate FIFO refunds;
+  new consumers echo sequence and optional performance-epoch timestamps. Legacy
+  consumers retain count/volume validation and RTT metrics. Cross-context stage
+  estimates must not be presented as downstream processing time or heap usage.

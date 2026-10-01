@@ -423,12 +423,17 @@ describe('unified relay pool', () => {
   it('swaps the authenticating member to its own bucket and migrates the others', async () => {
     const { pool, sockets } = createPool()
     const memberA = pool.attach('wss://relay.example', {})
-    const memberB = pool.attach('wss://relay.example', {})
+    const received = []
+    const memberB = pool.attach('wss://relay.example', { onMessage: raw => received.push(JSON.parse(raw)) })
     await tick()
     sockets[0].open()
     await tick()
     memberA.send(JSON.stringify(['REQ', 'a', { kinds: [1] }]))
     memberB.send(JSON.stringify(['REQ', 'b', { kinds: [1] }]))
+    await tick()
+    const beforeId = sockets[0].sent.find(frame => frame[0] === 'REQ' && frame[1].includes(':b'))[1]
+    const message = signedEvent()
+    sockets[0].message(['EVENT', beforeId, message])
     await tick()
     sockets[0].message(['AUTH', 'challenge-swap'])
     const event = authEvent(generateSecretKey(), { challenge: 'challenge-swap' })
@@ -441,6 +446,12 @@ describe('unified relay pool', () => {
     assert.equal(sockets[1].sent.some(message => message[0] === 'REQ' && message[1].includes(':b')), true)
     assert.equal(pool.snapshot().authSwaps, 1)
     assert.equal(pool.snapshot().migrations, 1)
+    const afterId = sockets[1].sent.find(frame => frame[0] === 'REQ' && frame[1].includes(':b'))[1]
+    sockets[1].message(['EVENT', afterId, message])
+    await tick()
+    assert.equal(received.filter(frame => frame[0] === 'EVENT').length, 1, 'migration preserves the subscription cache')
+    memberA.close()
+    memberB.close()
   })
 
   it('merges a second socket into the confirmed bucket with a synthetic OK', async () => {
@@ -934,4 +945,32 @@ describe('unified relay pool', () => {
     assert.deepEqual(sockets[0].closed, { code: 1000, reason: 'idle' })
     assert.equal(pool.snapshot().buckets, 0)
   })
+})
+
+it('deduplicates within a subscription generation, never across independent or renewed REQs', async t => {
+  const { pool, sockets } = createPool()
+  t.after(() => pool.closeAll())
+  const received = []
+  const member = pool.attach('wss://relay.example', { onMessage: raw => received.push(JSON.parse(raw)) })
+  await tick()
+  sockets[0].open()
+  for (const id of ['live', 'history']) member.send(JSON.stringify(['REQ', id, { kinds: [1] }]))
+  await tick()
+  const event = { id: 'a'.repeat(64), pubkey: 'b'.repeat(64), sig: 'c'.repeat(128), kind: 1, created_at: 1, tags: [], content: '' }
+  const requests = sockets[0].sent.filter(frame => frame[0] === 'REQ')
+  for (const request of requests) {
+    sockets[0].message(['EVENT', request[1], event])
+    sockets[0].message(['EVENT', request[1], event])
+  }
+  assert.deepEqual(received.map(frame => frame[1]), ['live', 'history'])
+  member.send(JSON.stringify(['REQ', 'history', { kinds: [1], until: 1 }]))
+  await tick()
+  sockets[0].message(['EVENT', requests[1][1], event])
+  assert.deepEqual(received.map(frame => frame[1]), ['live', 'history', 'history'])
+  member.send('["CLOSE","history"]')
+  member.send('["REQ","history",{"kinds":[1]}]')
+  await tick()
+  const renewed = sockets[0].sent.filter(frame => frame[0] === 'REQ').at(-1)
+  sockets[0].message(['EVENT', renewed[1], event])
+  assert.equal(received.length, 4)
 })

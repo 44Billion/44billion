@@ -60,3 +60,11 @@ real NostrDB/IndexedDB in a disposable Chrome origin. It covers six accounts
 (including read-only), grouped feeds, ownership isolation, dense timestamp
 saturation, persisted coverage across reload, regrouping and cancellation.
 External relay traffic remains disabled.
+
+### Relay bridge bursts
+
+`node bin/run-browser-tests.js -- node tests/browser/relay-bridge.js` starts the
+real launcher/vault and a normally installed app in a disposable profile. Only
+physical relay WebSockets are controlled. It checks receive bursts with a briefly
+busy consumer, FIFO, renewed REQ delivery, timing/sequence credits, 2 MiB frames
+and virtual-only rejection above 4 MiB. External traffic remains denied.

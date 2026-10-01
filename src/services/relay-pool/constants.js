@@ -29,6 +29,15 @@ export const RELAY_POOL_LIMITS = Object.freeze({
   authPendingTimeoutMs: 30000,
   slowPublicationMs: 3000,
   nip11TimeoutMs: 3000,
+  // Receive budgets are independent of publication queues and rate limits.
+  bridgeReceiveCreditFrames: 128,
+  bridgeReceiveCreditBytes: 1024 * 1024,
+  bridgeReceiveQueueFrames: 1024,
+  bridgeReceiveQueueBytes: 4 * 1024 * 1024,
+  bridgeEndpointFrames: 4096,
+  bridgeEndpointBytes: 16 * 1024 * 1024,
+  bridgeTotalFrames: 16384,
+  bridgeTotalBytes: 64 * 1024 * 1024,
   bridgeCreditFrames: 64,
   bridgeCreditBytes: 256 * 1024
 })
