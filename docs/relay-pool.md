@@ -56,7 +56,8 @@ anonymous bucket. Defaults live in `src/services/relay-pool/constants.js`:
 - 4 buckets per relay per tab, with spill and a **per-host** connection
   limiter that respects the relay's 3 new connections/second and 10 per 5
   seconds without making unrelated relays wait for each other;
-- 60 messages per 2 seconds per bucket, drained round-robin per virtual socket;
+- a 60-message token bucket per relay host, refilling 30 messages/second and
+  shared by physical sockets (round-robin within each socket);
 - 256 queued frames / 1 MiB per virtual socket, then only that socket is
   closed with 1013;
 - buckets with no members close after 30 seconds.
@@ -394,3 +395,24 @@ delay. Fast ephemeral controls alongside slow persistent events suggest
 investigating persistence, but identifying the exact server stage requires
 server-side timings. Small samples and changing relay load do not establish
 comparative throughput or percentile latency.
+
+
+### Work budgets and cancellation
+
+The message budget is shared by host, including authenticated/spill buckets,
+so opening extra sockets does not multiply an anonymous IP's outgoing burst.
+The 44b-relay global token bucket allows 120 messages and refills 60/second;
+its publication/auth/subscription-specific restrictions remain separate.
+
+CLOSE bypasses work tokens and remote cooldowns. Before sending it, the pool
+removes every queued REQ generation for that subscription. Thus cancellation
+cannot be followed by a stale request, and still releases only that member's
+subscription on the shared socket. Internal detach/migration cleanup uses the
+same immediate control path.
+
+CLOSED accepts/preserves an optional fourth metadata object. Numeric positive
+`retry_after` seconds on rate-limited CLOSED/rejected OK delay subsequent work
+across sockets to that host, bounded to five minutes. Invalid metadata is
+ignored; errors still reach consumers, and no automatic direct-socket fallback
+or event republication is introduced. Per-bucket drain timers and idle budget
+state are released on close/expiry.

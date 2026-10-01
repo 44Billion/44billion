@@ -92,7 +92,7 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   monitor owns connectivity probes, capped retry delays, and browser wake-up
   listeners. `ConnectivityRetryCoordinator` owns waiters, cancellation, and
   concurrency of resumed app work; do not restore its duplicate probe timer.
-- Use the coordinated `libp2r2p@^0.11.6` range in package.json;
+- Use the coordinated `libp2r2p@^0.11.7` range in package.json;
   package-lock.json records the resolved release. Validate against the installed package rather than sibling
   source imports; it includes the shared connectivity monitor.
 
@@ -300,3 +300,9 @@ access without echoing those cached events back to the vault.
   new consumers echo sequence and optional performance-epoch timestamps. Legacy
   consumers retain count/volume validation and RTT metrics. Cross-context stage
   estimates must not be presented as downstream processing time or heap usage.
+
+- Outgoing work tokens are shared per relay host (60 burst, 30/s), including
+  spill/auth buckets. CLOSE bypasses tokens and retry_after cooldowns, after
+  removing all queued REQ generations for that subscription. Preserve CLOSED
+  extension metadata; accept its object shape in transport classification.
+  Keep cooldowns bounded to five minutes and clear timers on shutdown.

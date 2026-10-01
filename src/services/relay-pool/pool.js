@@ -48,6 +48,7 @@ export class UnifiedRelayPool {
   #members = new Map()
   #buckets = new Map()
   #bucketsByUrl = new Map()
+  #messageBudgets = new Map()
   #pendingMembers = []
   #connectionQueue = []
   #connectionTimesByHost = new Map()
@@ -188,6 +189,8 @@ export class UnifiedRelayPool {
   closeAll () {
     for (const member of [...this.#members.values()]) this.#closeMember(member, 1000, '', true)
     for (const bucket of [...this.#buckets.values()]) this.#destroyBucket(bucket, 1000, '', true)
+    for (const budget of this.#messageBudgets.values()) clearTimeout(budget.cleanupTimer)
+    this.#messageBudgets.clear()
   }
 
   snapshot () {
@@ -277,7 +280,15 @@ export class UnifiedRelayPool {
   }
 
   #createBucket (url, identity) {
+    const host = this.#hostFor(url)
+    let budget = this.#messageBudgets.get(host)
+    if (!budget) {
+      budget = { tokens: this.#limits.messageBudgetPerRelay, lastRefill: Date.now(), retryAt: 0, cleanupTimer: null }
+      this.#messageBudgets.set(host, budget)
+    }
+    clearTimeout(budget.cleanupTimer)
     const bucket = {
+      budget,
       id: `b${++this.#serial}`,
       key: bucketKey(url, identity),
       url,
@@ -297,8 +308,7 @@ export class UnifiedRelayPool {
       queues: new Map(), // memberId -> [{ raw, bytes }]
       roundRobin: [],
       roundRobinIndex: 0,
-      tokens: this.#limits.messageBudgetPerBucket,
-      lastRefill: Date.now(),
+      drainTimer: null,
       idleTimer: null,
       drainScheduled: false,
       closed: false
@@ -424,6 +434,13 @@ export class UnifiedRelayPool {
     if (bucket.closed) return
     bucket.closed = true
     bucket.state = 'closed'
+    clearTimeout(bucket.drainTimer)
+    const host = this.#hostFor(bucket.url)
+    if (![...this.#buckets.values()].some(other => !other.closed && this.#hostFor(other.url) === host)) {
+      const budget = bucket.budget
+      budget.cleanupTimer = setTimeout(() => this.#messageBudgets.delete(host), Math.max(this.#limits.messageWindowMs, budget.retryAt - Date.now()))
+      budget.cleanupTimer.unref?.()
+    }
     if (bucket.idleTimer) clearTimeout(bucket.idleTimer)
     for (const entry of bucket.pendingAuths.values()) {
       if (entry.timer) clearTimeout(entry.timer)
@@ -499,12 +516,14 @@ export class UnifiedRelayPool {
   #removeQueued (bucket, member, message) {
     const queue = bucket.queues.get(member.id)
     if (!queue || !message) return
-    const raw = JSON.stringify(message)
-    const index = queue.findIndex(item => item.raw === raw)
-    if (index < 0) return
-    const [removed] = queue.splice(index, 1)
-    member.queuedFrames = Math.max(0, member.queuedFrames - 1)
-    member.queuedBytes = Math.max(0, member.queuedBytes - removed.bytes)
+    // Remove all generations of this operation, including renewed REQs.
+    for (let index = queue.length - 1; index >= 0; index--) {
+      const item = queue[index]
+      if (item.op !== message[0] || item.operationId !== message[1]) continue
+      queue.splice(index, 1)
+      member.queuedFrames = Math.max(0, member.queuedFrames - 1)
+      member.queuedBytes = Math.max(0, member.queuedBytes - item.bytes)
+    }
   }
 
   #drainPendingMembers () {
@@ -579,11 +598,12 @@ export class UnifiedRelayPool {
   #handleClientClose (member, bucket, message) {
     const nsId = member.rawSubscriptions.get(message[1])
     if (nsId === undefined) return
+    this.#removeQueued(bucket, member, ['REQ', nsId])
     member.subscriptions.delete(nsId)
     member.rawSubscriptions.delete(message[1])
     bucket.subscriptions.delete(nsId)
     this.#rememberClosedSubscription(bucket, nsId)
-    this.#enqueue(bucket, member, ['CLOSE', nsId])
+    this.#sendControl(bucket, ['CLOSE', nsId])
     this.#drainPendingMembers()
     this.#consolidateBuckets(bucket.url, bucket.identity)
   }
@@ -967,7 +987,7 @@ export class UnifiedRelayPool {
       bucket.queues.set(member.id, queue)
       bucket.roundRobin.push(member.id)
     }
-    queue.push({ raw, bytes, eventId: message[0] === 'EVENT' ? message[1]?.id : null })
+    queue.push({ raw, bytes, op: message[0], operationId: message[1], eventId: message[0] === 'EVENT' ? message[1]?.id : null })
     this.#drainBucket(bucket)
   }
 
@@ -1010,15 +1030,15 @@ export class UnifiedRelayPool {
 
   #sendControl (bucket, message) {
     if (!bucket || bucket.closed || bucket.state !== 'open') return
-    let queue = bucket.queues.get('__control__')
-    if (!queue) {
-      queue = []
-      bucket.queues.set('__control__', queue)
-      bucket.roundRobin.push('__control__')
+    // Cleanup must not wait for tokens or a remote cooldown. Callers remove
+    // queued REQs first, so CLOSE can never be followed by a stale open.
+    try {
+      bucket.socket.send(JSON.stringify(message))
+      this.#counters.framesOut++
+    } catch (error) {
+      this.#log('control send failed', bucket.url, error?.message ?? error)
+      this.#failBucket(bucket, 1006, 'send failed')
     }
-    if (queue.length >= 1024) return
-    queue.push({ raw: JSON.stringify(message), bytes: 0 })
-    this.#drainBucket(bucket)
   }
 
   #drainBucket (bucket) {
@@ -1027,20 +1047,20 @@ export class UnifiedRelayPool {
     queueMicrotask(() => {
       bucket.drainScheduled = false
       if (bucket.closed || bucket.state !== 'open') return
+      clearTimeout(bucket.drainTimer)
       const now = Date.now()
-      const elapsed = now - bucket.lastRefill
-      if (elapsed > 0) {
-        bucket.tokens = Math.min(
-          this.#limits.messageBudgetPerBucket,
-          bucket.tokens + (elapsed / this.#limits.messageWindowMs) * this.#limits.messageBudgetPerBucket
-        )
-        bucket.lastRefill = now
+      const budget = bucket.budget
+      const elapsed = Math.max(0, now - budget.lastRefill)
+      budget.tokens = Math.min(this.#limits.messageBudgetPerRelay,
+        budget.tokens + elapsed * this.#limits.messageBudgetPerRelay / this.#limits.messageWindowMs)
+      budget.lastRefill = now
+      if (now >= budget.retryAt) {
+        while (budget.tokens >= 1 && this.#sendNext(bucket)) budget.tokens--
       }
-      while (bucket.tokens >= 1 && this.#sendNext(bucket)) bucket.tokens--
-      if (this.#hasQueuedMessages(bucket) && bucket.tokens < 1) {
-        const wait = Math.max(20, (1 - bucket.tokens) * this.#limits.messageWindowMs / this.#limits.messageBudgetPerBucket)
-        const bucketRef = bucket
-        setTimeout(() => this.#drainBucket(bucketRef), wait)
+      if (this.#hasQueuedMessages(bucket)) {
+        const wait = Math.max(20, budget.retryAt - now,
+          (1 - budget.tokens) * this.#limits.messageWindowMs / this.#limits.messageBudgetPerRelay)
+        bucket.drainTimer = setTimeout(() => this.#drainBucket(bucket), wait)
       }
     })
   }
@@ -1143,6 +1163,7 @@ export class UnifiedRelayPool {
   }
 
   #routeClosed (bucket, message) {
+    this.#rememberRetryAfter(bucket, message[2], message[3])
     const nsId = message[1]
     const member = bucket.subscriptions.get(nsId) ?? bucket.counts.get(nsId) ?? bucket.negs.get(nsId)
     if (!member) {
@@ -1163,7 +1184,7 @@ export class UnifiedRelayPool {
       member.counts.delete(nsId)
       bucket.counts.delete(nsId)
     }
-    this.#deliverMember(member, JSON.stringify(['CLOSED', subscription?.rawId ?? countEntry?.rawId ?? message[1], message[2]]))
+    this.#deliverMember(member, JSON.stringify(['CLOSED', subscription?.rawId ?? countEntry?.rawId ?? message[1], ...message.slice(2)]))
   }
 
   #routeSimple (bucket, message, kind) {
@@ -1194,7 +1215,15 @@ export class UnifiedRelayPool {
     this.#deliverMember(member, JSON.stringify([message[0], rawId, ...message.slice(2)]))
   }
 
+  #rememberRetryAfter (bucket, reason, extra) {
+    const seconds = extra?.retry_after
+    if (typeof reason !== 'string' || !reason.startsWith('rate-limited:') ||
+        typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) return
+    bucket.budget.retryAt = Math.max(bucket.budget.retryAt, Date.now() + Math.min(seconds, 300) * 1000)
+  }
+
   #routeOk (bucket, message) {
+    if (message[2] === false) this.#rememberRetryAfter(bucket, message[3], message[4])
     const pendingAuth = bucket.pendingAuths.get(message[1])
     if (pendingAuth) {
       if (pendingAuth.timer) clearTimeout(pendingAuth.timer)

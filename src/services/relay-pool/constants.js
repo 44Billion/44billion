@@ -10,7 +10,7 @@ export const RELAY_POOL_LIMITS = Object.freeze({
   connectionWindowMs: 5000,
   connectionBurstWindowMs: 1000,
   bucketIdleMs: 30000,
-  messageBudgetPerBucket: 60,
+  messageBudgetPerRelay: 60,
   messageWindowMs: 2000,
   maxQueuedFramesPerMember: 256,
   maxQueuedBytesPerMember: 1024 * 1024,

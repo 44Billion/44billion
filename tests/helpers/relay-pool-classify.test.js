@@ -68,3 +68,8 @@ describe('Nostr frame classification', () => {
     assert.equal(parseNostrFrame(new ArrayBuffer(1)), null)
   })
 })
+
+it('recognizes CLOSED with optional structured retry metadata', () => {
+  assert.equal(isStrictNostrFrame(JSON.stringify(['CLOSED', 'sub', 'rate-limited: busy', { retry_after: 2 }]), 'server'), true)
+  assert.equal(isStrictNostrFrame(JSON.stringify(['CLOSED', 'sub', 'rate-limited: busy', 'bad']), 'server'), false)
+})

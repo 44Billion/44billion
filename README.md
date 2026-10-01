@@ -99,7 +99,7 @@ A newer relay list reconciles membership, retaining unchanged groups and drainin
 accepted events from retired groups. Removing an account or unmounting the root
 cancels its pending delivery. Only kinds 0/10002 also update vault metadata.
 
-The coordinated `libp2r2p@^0.11.6` pool coordinates subscription capacity. Grouped
+The coordinated `libp2r2p@^0.11.7` pool coordinates subscription capacity. Grouped
 feeds start with a bounded recent snapshot, with **ten minutes of overlap**.
 Before releasing buffered live events, the tracker completes any truncated recent
 pages and catches up gaps from each identity/kind's previous confirmed edge.

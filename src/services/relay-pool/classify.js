@@ -38,7 +38,7 @@ function matchesServerShape (message) {
   const op = message[0]
   if (op === 'EOSE') return message.length === 2 && typeof message[1] === 'string'
   if (op === 'EVENT') return message.length === 3 && typeof message[1] === 'string' && isEvent(message[2])
-  if (op === 'CLOSED') return message.length === 3 && typeof message[1] === 'string' && typeof message[2] === 'string'
+  if (op === 'CLOSED') return (message.length === 3 || (message.length === 4 && isPlainObject(message[3]))) && typeof message[1] === 'string' && typeof message[2] === 'string'
   if (op === 'OK') return message.length >= 3 && typeof message[1] === 'string' && typeof message[2] === 'boolean'
   if (op === 'NOTICE') return message.length >= 2 && typeof message[1] === 'string'
   if (op === 'AUTH') return message.length === 2 && typeof message[1] === 'string'
