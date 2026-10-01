@@ -1,6 +1,6 @@
 import { freeRelays, nappRelays, relayPool as libRelayPool, seedRelays } from 'libp2r2p/relay'
 
-import { broadcastRelayRegistry } from './bridge-endpoint.js'
+import { broadcastRelayRegistry, relayBridgeSnapshot } from './bridge-endpoint.js'
 import { RELAY_POOL_LIMITS } from './constants.js'
 import { UnifiedRelayPool } from './pool.js'
 import { RelayRegistry } from './registry.js'
@@ -20,7 +20,7 @@ export const unifiedRelayPool = new UnifiedRelayPool({
 })
 
 const statsTimer = setInterval(() => {
-  const snapshot = unifiedRelayPool.snapshot()
+  const snapshot = relayPoolSnapshot()
   if (snapshot.members > 0 || snapshot.buckets > 0) log('stats', snapshot)
 }, 60000)
 statsTimer.unref?.()
@@ -74,7 +74,7 @@ export function installLauncherRelayPool () {
 }
 
 export function relayPoolSnapshot () {
-  return unifiedRelayPool.snapshot()
+  return { ...unifiedRelayPool.snapshot(), bridge: relayBridgeSnapshot() }
 }
 
 if (typeof IS_DEVELOPMENT !== 'undefined' && IS_DEVELOPMENT) {

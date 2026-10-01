@@ -272,3 +272,19 @@ access without echoing those cached events back to the vault.
 - Run the protected `tests/browser/sourcemaps.js` check after a production build
   when changing mapping, serving or worker routing. It exercises actual bundles
   and the shared production router without starting the production server.
+
+## Relay bridge queues
+
+- Preserve FIFO in both bridge directions even when a newer smaller frame fits
+  the remaining credit. `EOSE` must never overtake queued history events.
+- Return trailing receive credits in a microtask; they acknowledge port delivery,
+  not downstream asynchronous processing. Keep the 64-frame/256-KiB window and
+  256-frame/1-MiB queue limits unless a separate measured change justifies them.
+- Close/detach/dispose release payload queues; outgoing overflow tells the
+  launcher to release the member. Ignore stale frames and credit work after close.
+- `relayPoolSnapshot().bridge` aggregates launcher-to-consumer queues and the
+  latest 16 overflow diagnostics. Keep them in memory and free of frame contents,
+  filters and account identities. The legacy volume accounting uses string length
+  for text and byte length for binary; do not silently change protocol units.
+- See `docs/relay-pool.md` and the bridge/e2e Node regressions. A bridge overflow
+  may leave shared physical sockets healthy; `droppedByOp` is a separate metric.

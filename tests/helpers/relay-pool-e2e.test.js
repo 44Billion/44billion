@@ -127,7 +127,7 @@ describe('relay pool end to end', () => {
 
 // Exercises the installed library and real MessagePorts. Only upstream socket
 // I/O is controlled; publication validation, timeout reports and routing are real.
-function publicationFixture (t, onEvent) {
+function publicationFixture (t, onEvent, onRequest = () => {}) {
   const urls = ['wss://one.example', 'wss://two.example']
   const logs = []
   const registry = new RelayRegistry(urls)
@@ -140,6 +140,7 @@ function publicationFixture (t, onEvent) {
         const frame = JSON.parse(raw)
         socket.sent.push(frame)
         if (frame[0] === 'EVENT') onEvent(socket, frame[1])
+        if (frame[0] === 'REQ') onRequest(socket, frame[1])
       }
       queueMicrotask(() => socket.open())
       return socket
@@ -191,4 +192,19 @@ it('delivery before a late OK can coexist with a final timeout report', async t 
   await waitFor(() => fixture.logs.filter(([label]) => label === 'slow publication response').length === 2)
   assert.ok(fixture.logs.filter(([label]) => label === 'slow publication response').every(([, response]) => response.accepted))
   assert.equal((await result.promise).success, false, 'a late OK does not revise the already finalized library report')
+})
+
+it('the installed reader receives all queued history before EOSE completes the query', async t => {
+  const secret = generateSecretKey()
+  const events = Array.from({ length: 5 }, (_, index) => finalizeEvent({
+    kind: 3560, created_at: index + 1, tags: [], content: 'x'.repeat(60 * 1024)
+  }, secret))
+  const fixture = publicationFixture(t, () => {}, (socket, subscription) => {
+    for (const event of events) socket.message(['EVENT', subscription, event])
+    socket.message(['EOSE', subscription])
+  })
+  const report = await fixture.publisher.getEvents({ kinds: [3560] }, fixture.urls.slice(0, 1), { timeout: 2000 })
+  assert.deepEqual(report.result.map(({ event }) => event.id), events.map(event => event.id))
+  assert.deepEqual(report.errors, [])
+  assert.equal(report.relays[0].status, 'eose')
 })

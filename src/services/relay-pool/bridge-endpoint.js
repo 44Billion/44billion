@@ -2,6 +2,26 @@ import { CreditWindow, frameSize } from './bridge-protocol.js'
 import { RELAY_BRIDGE, RELAY_POOL_LIMITS } from './constants.js'
 
 const endpoints = new Set()
+let endpointSerial = 0
+let queueOverflows = 0
+const recentOverflows = []
+const MAX_RECENT_OVERFLOWS = 16
+
+// Bounded, in-memory diagnostics. Never retain frame contents or filters.
+export function relayBridgeSnapshot () {
+  const snapshots = [...endpoints].map(endpoint => endpoint.snapshot())
+  const queues = snapshots.flatMap(snapshot => snapshot.queues)
+  return {
+    endpoints: endpoints.size,
+    attachments: snapshots.reduce((total, snapshot) => total + snapshot.attachments, 0),
+    queuedFrames: queues.reduce((total, queue) => total + queue.queuedFrames, 0),
+    queuedBytes: queues.reduce((total, queue) => total + queue.queuedBytes, 0),
+    oldestQueuedMs: Math.max(0, ...queues.map(queue => queue.oldestQueuedMs)),
+    queues,
+    queueOverflows,
+    recentOverflows: recentOverflows.map(record => ({ ...record, credit: { ...record.credit }, limits: { ...record.limits }, exceeded: [...record.exceeded] }))
+  }
+}
 
 export function broadcastRelayRegistry (urls) {
   for (const endpoint of endpoints) endpoint.sendRegistry(urls)
@@ -18,8 +38,10 @@ export function createRelayBridgeEndpoint ({
   createVirtualSocket = null,
   owner = 'app',
   limits = RELAY_POOL_LIMITS,
-  log = () => {}
+  log = (...args) => console.debug('[relay-pool]', ...args),
+  now = () => performance.now()
 }) {
+  const endpointId = ++endpointSerial
   const attachments = new Map()
   let disposed = false
 
@@ -28,7 +50,33 @@ export function createRelayBridgeEndpoint ({
     port.postMessage({ code, payload })
   }
 
+  const isActive = attachment => !disposed && attachments.get(attachment.virtualId) === attachment
+
+  const releaseAttachment = attachment => {
+    if (attachments.get(attachment.virtualId) === attachment) attachments.delete(attachment.virtualId)
+    clearTimeout(attachment.timer)
+    attachment.queue.length = 0
+    attachment.queuedBytes = 0
+    attachment.grantedFrames = 0
+    attachment.grantedBytes = 0
+  }
+
+  const queueSnapshot = attachment => ({
+    endpointId,
+    virtualId: attachment.virtualId,
+    owner,
+    relay: attachment.url,
+    queuedFrames: attachment.queue.length,
+    queuedBytes: attachment.queuedBytes,
+    oldestQueuedMs: attachment.queue.length ? Math.max(0, now() - attachment.queue[0].queuedAt) : 0,
+    headFrameBytes: attachment.queue[0]?.size ?? 0,
+    peakQueuedFrames: attachment.peakQueuedFrames,
+    peakQueuedBytes: attachment.peakQueuedBytes,
+    credit: attachment.credit.snapshot()
+  })
+
   const flushGrantedCredit = attachment => {
+    if (!isActive(attachment)) return
     if (attachment.grantedFrames === 0 && attachment.grantedBytes === 0) return
     send(RELAY_BRIDGE.CREDIT, {
       virtualId: attachment.virtualId,
@@ -58,8 +106,7 @@ export function createRelayBridgeEndpoint ({
   const dropAttachment = (virtualId, code = 1013, reason = 'relay bridge closed', wasClean = false) => {
     const attachment = attachments.get(virtualId)
     if (!attachment) return
-    attachments.delete(virtualId)
-    clearTimeout(attachment.timer)
+    releaseAttachment(attachment)
     attachment.suppressClose = true
     closeAttachment(attachment, 1000, '')
     send(RELAY_BRIDGE.CLOSED, { virtualId, code, reason, wasClean })
@@ -77,11 +124,28 @@ export function createRelayBridgeEndpoint ({
   }
 
   const deliverFrame = (attachment, data) => {
+    if (!isActive(attachment)) return
     const size = frameSize(data)
-    if (!attachment.credit.canSend(size)) {
-      attachment.queue.push({ data, size })
+    if (attachment.queue.length > 0 || !attachment.credit.canSend(size)) {
+      attachment.queue.push({ data, size, queuedAt: now() })
       attachment.queuedBytes += size
+      attachment.peakQueuedFrames = Math.max(attachment.peakQueuedFrames, attachment.queue.length)
+      attachment.peakQueuedBytes = Math.max(attachment.peakQueuedBytes, attachment.queuedBytes)
       if (attachment.queue.length > limits.maxQueuedFramesPerMember || attachment.queuedBytes > limits.maxQueuedBytesPerMember) {
+        const record = {
+          ...queueSnapshot(attachment),
+          timestamp: Date.now(),
+          direction: 'launcher-to-consumer',
+          limits: { frames: limits.maxQueuedFramesPerMember, bytes: limits.maxQueuedBytesPerMember },
+          exceeded: [
+            ...(attachment.queue.length > limits.maxQueuedFramesPerMember ? ['frames'] : []),
+            ...(attachment.queuedBytes > limits.maxQueuedBytesPerMember ? ['bytes'] : [])
+          ]
+        }
+        queueOverflows++
+        recentOverflows.push(record)
+        if (recentOverflows.length > MAX_RECENT_OVERFLOWS) recentOverflows.shift()
+        log('relay endpoint queue overflow', record)
         dropAttachment(attachment.virtualId, 1013, 'relay endpoint queue overflow', false)
       }
       return
@@ -98,6 +162,7 @@ export function createRelayBridgeEndpoint ({
       log('delegated socket creation failed', url, error?.message ?? error)
     }
     if (!socket) {
+      releaseAttachment(attachment)
       send(RELAY_BRIDGE.DETACH, { virtualId, reason: 'relay-pool-unavailable' })
       return
     }
@@ -117,6 +182,7 @@ export function createRelayBridgeEndpoint ({
       dropAttachment(virtualId, 1006, 'relay attach timeout', false)
     }, limits.speculativeDecisionTimeoutMs)
     socket.onopen = () => {
+      if (!isActive(attachment)) return
       clearTimeout(attachment.timer)
       send(RELAY_BRIDGE.ATTACHED, {
         virtualId,
@@ -126,8 +192,7 @@ export function createRelayBridgeEndpoint ({
     }
     socket.onmessage = event => deliverFrame(attachment, event.data)
     socket.onclose = event => {
-      attachments.delete(virtualId)
-      clearTimeout(attachment.timer)
+      releaseAttachment(attachment)
       if (attachment.suppressClose) return
       send(RELAY_BRIDGE.CLOSED, {
         virtualId,
@@ -141,6 +206,7 @@ export function createRelayBridgeEndpoint ({
 
   const attachPoolMember = (virtualId, url, attachment) => {
     if (pool.isQuarantined(url)) {
+      releaseAttachment(attachment)
       send(RELAY_BRIDGE.DETACH, { virtualId, reason: 'quarantined' })
       return
     }
@@ -160,19 +226,18 @@ export function createRelayBridgeEndpoint ({
     }, limits.speculativeDecisionTimeoutMs)
     attachment.member = pool.attach(url, {
       onOpen: info => {
+        if (!isActive(attachment)) return
         clearTimeout(attachment.timer)
         send(RELAY_BRIDGE.ATTACHED, { virtualId, url, extensions: info?.extensions ?? '' })
       },
       onMessage: data => deliverFrame(attachment, data),
       onClose: info => {
-        attachments.delete(virtualId)
-        clearTimeout(attachment.timer)
+        releaseAttachment(attachment)
         if (attachment.suppressClose) return
         send(RELAY_BRIDGE.CLOSED, { virtualId, code: info.code, reason: info.reason, wasClean: info.wasClean })
       },
       onDetach: reason => {
-        attachments.delete(virtualId)
-        clearTimeout(attachment.timer)
+        releaseAttachment(attachment)
         send(RELAY_BRIDGE.DETACH, { virtualId, reason })
       }
     }, { owner })
@@ -207,6 +272,8 @@ export function createRelayBridgeEndpoint ({
           credit: new CreditWindow({ frames: limits.bridgeCreditFrames, bytes: limits.bridgeCreditBytes }),
           queue: [],
           queuedBytes: 0,
+          peakQueuedFrames: 0,
+          peakQueuedBytes: 0,
           timer: null,
           member: null,
           socket: null,
@@ -242,8 +309,7 @@ export function createRelayBridgeEndpoint ({
       case RELAY_BRIDGE.CLOSE: {
         const attachment = attachments.get(virtualId)
         if (!attachment) return
-        attachments.delete(virtualId)
-        clearTimeout(attachment.timer)
+        releaseAttachment(attachment)
         if (attachment.socket) {
           attachment.suppressClose = true
           attachment.socket.close(payload.code, payload.reason)
@@ -260,18 +326,21 @@ export function createRelayBridgeEndpoint ({
   port.start()
   const endpoint = {
     sendRegistry: urls => send(RELAY_BRIDGE.REGISTRY, { urls }),
+    snapshot: () => ({
+      attachments: attachments.size,
+      queues: [...attachments.values()].filter(attachment => attachment.queue.length > 0).map(queueSnapshot)
+    }),
     dispose () {
       if (disposed) return
       disposed = true
       port.removeEventListener('message', onMessage)
       for (const attachment of attachments.values()) {
-        clearTimeout(attachment.timer)
+        releaseAttachment(attachment)
         attachment.suppressClose = true
         closeAttachment(attachment, 1000, '')
       }
       attachments.clear()
       endpoints.delete(endpoint)
-      log('endpoint disposed', owner)
     }
   }
   endpoints.add(endpoint)

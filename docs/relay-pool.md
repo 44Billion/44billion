@@ -169,8 +169,26 @@ dedicated to relay frames. Internal messages:
 - `RELAY_CLOSE` / `RELAY_CLOSED`;
 - `RELAY_REGISTRY` / `RELAY_REGISTRY_ADD`.
 
-Credits bound how much either side buffers. `dispose()` on the launcher
-endpoint closes every virtual socket owned by that app instance.
+Both directions preserve FIFO, including when a large queued frame does not
+fit the remaining credit but a newer small frame would. In particular, `EOSE`
+cannot overtake queued `EVENT`s and prematurely complete a history read. App and
+vault consumers return receive credits in a microtask, including a trailing
+partial batch, so the next large frame cannot stall waiting for unreturned
+credits. Credits acknowledge delivery across the port, not completion of the
+consumer's asynchronous event processing.
+
+The bridge window remains 64 frames / 256 KiB, with a separate pending queue
+of 256 frames / 1 MiB per virtual socket. Overflow still closes only that
+virtual socket with 1013; it does not close a shared physical connection. An
+outgoing app/vault overflow also tells the launcher to release the attachment.
+Close, detach and disposal release queued payloads and suppress pending credit
+refunds. `dispose()` on the launcher endpoint closes every virtual socket owned
+by that app instance. This is bounded buffering, not upstream relay flow control:
+a large burst before the consumer returns credits can still overflow.
+
+Volume fields use the existing bridge accounting: string length (UTF-16 code
+units) for text, byte length for binary frames. They are not measurements of
+UTF-8 wire bytes or total heap usage; no protocol limit changed.
 
 ## Vault delegation
 
@@ -215,6 +233,28 @@ Each `relayFailures` entry carries `lastCode` plus a human label
 failure), while a long lifetime points to a drop after the connection was
 established.
 
+`relayPoolSnapshot().bridge` reports launcher-to-consumer queues separately
+from physical pool routing. It includes endpoint/attachment counts, current
+queued frames/volume, oldest queue age, and `queues` with owner (`app`/`vault`),
+relay, opaque endpoint/virtual IDs, head frame size, per-attachment peaks and
+remaining frame/volume credits. Only backlogged attachments appear in `queues`.
+
+`bridge.queueOverflows` counts incoming bridge overflows for the launcher
+session. `bridge.recentOverflows` retains the last 16 records even after the
+attachment or endpoint closes. Each includes the queue snapshot at overflow,
+timestamp, direction, configured limits and which limits were exceeded. The
+same record is logged immediately as `relay endpoint queue overflow`. These
+records contain no frames, event contents, filters, account identities or keys,
+and are not persisted. `oldestQueuedMs` measures local queue residence, not
+end-to-end latency or time spent processing events in the app/vault.
+
+The pool's `droppedByOp` counts frames that no longer have a routed consumer;
+it does not count discarded bridge queue contents. For example, an overflow
+can remove a subscription and its pending publication while the shared physical
+socket stays healthy, making subsequent `EVENT`, `EOSE` and `OK` frames count
+as drops. Check the bridge records before interpreting those drops as a relay
+connection failure.
+
 `pendingPublicationsByRelay` counts member publication attempts still in the
 local queue (`queued`) versus handed to the physical WebSocket (`awaitingOk`),
 with `oldestMs` since the oldest pending attempt entered the pool. It does not
@@ -238,7 +278,10 @@ required.
 Unit coverage lives in `tests/helpers/relay-pool-*.test.js`: classifier,
 registry, bucket routing/spill, AUTH swap, migration, virtual-socket API
 behavior, the app bridge and an end-to-end two-app/two-virtual-socket sharing
-scenario. A CDP browser scenario (one app opening dozens of sockets to the
+scenario. Regression tests cover mixed-size frame FIFO in both directions,
+trailing credit returns, overflow teardown and bounded diagnostics; the installed
+libp2r2p reader must receive all queued history before `EOSE` completes its query.
+A CDP browser scenario (one app opening dozens of sockets to the
 same relay and asserting the physical socket count) is the next validation
 step for a real browser.
 

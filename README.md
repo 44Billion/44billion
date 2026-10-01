@@ -6,6 +6,9 @@ the injected contract and [AGENTS.md](AGENTS.md) for contribution rules.
 
 [NostrDB internals and maintenance](docs/nostrdb.md) documents event-store cleanup,
 concurrency, recovery and storage growth limits for developers.
+[Relay pooling](docs/relay-pool.md) describes shared connections and bounded FIFO
+bridges. The debug snapshot includes `bridge` queue occupancy, consumer/relay,
+wait times and a bounded recent-overflow history for diagnosing receive bursts.
 
 ## Development
 

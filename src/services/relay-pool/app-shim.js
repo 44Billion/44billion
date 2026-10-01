@@ -33,10 +33,11 @@ export function createBridgeTransport ({ url, callbacks, getPort, limits, log })
   let closed = false
   let grantedFrames = 0
   let grantedBytes = 0
+  let creditScheduled = false
   let portTimer = null
 
   const flushCredit = () => {
-    if (!port || (grantedFrames === 0 && grantedBytes === 0)) return
+    if (closed || !port || (grantedFrames === 0 && grantedBytes === 0)) return
     port.postMessage({ code: RELAY_BRIDGE.CREDIT, payload: { virtualId, frames: grantedFrames, bytes: grantedBytes } })
     grantedFrames = 0
     grantedBytes = 0
@@ -57,12 +58,14 @@ export function createBridgeTransport ({ url, callbacks, getPort, limits, log })
   const fail = reason => {
     if (closed) return
     closed = true
+    port?.postMessage({ code: RELAY_BRIDGE.CLOSE, payload: { virtualId, code: 1000, reason: '' } })
+    cleanup()
     callbacks.onDetach?.(reason)
   }
 
   const onMessage = event => {
     const message = event.data
-    if (message?.payload?.virtualId !== virtualId) return
+    if (closed || message?.payload?.virtualId !== virtualId) return
     switch (message.code) {
       case RELAY_BRIDGE.ATTACHED:
         clearTimeout(portTimer)
@@ -72,10 +75,16 @@ export function createBridgeTransport ({ url, callbacks, getPort, limits, log })
         break
       case RELAY_BRIDGE.FRAME: {
         const data = message.payload.data
-        callbacks.onMessage?.(data)
         grantedFrames++
         grantedBytes += frameSize(data)
-        if (grantedFrames >= 16 || grantedBytes >= 64 * 1024) flushCredit()
+        if (!creditScheduled) {
+          creditScheduled = true
+          queueMicrotask(() => {
+            creditScheduled = false
+            flushCredit()
+          })
+        }
+        callbacks.onMessage?.(data)
         break
       }
       case RELAY_BRIDGE.CREDIT:
@@ -98,6 +107,10 @@ export function createBridgeTransport ({ url, callbacks, getPort, limits, log })
   const cleanup = () => {
     clearTimeout(portTimer)
     port?.removeEventListener('message', onMessage)
+    queue.length = 0
+    queuedBytes = 0
+    grantedFrames = 0
+    grantedBytes = 0
   }
 
   getPort().then(resolvedPort => {
@@ -119,11 +132,12 @@ export function createBridgeTransport ({ url, callbacks, getPort, limits, log })
     send (data) {
       if (closed) return
       const size = frameSize(data)
-      if (!attached || !sendCredit.canSend(size)) {
+      if (queue.length > 0 || !attached || !sendCredit.canSend(size)) {
         queue.push(data)
         queuedBytes += size
         if (queue.length > limits.maxQueuedFramesPerMember || queuedBytes > limits.maxQueuedBytesPerMember) {
           closed = true
+          port?.postMessage({ code: RELAY_BRIDGE.CLOSE, payload: { virtualId, code: 1000, reason: '' } })
           cleanup()
           callbacks.onClose?.({ code: 1013, reason: 'relay bridge queue overflow', wasClean: false })
         }

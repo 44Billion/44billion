@@ -10,6 +10,10 @@ export class CreditWindow {
     this.#bytes = bytes
   }
 
+  snapshot () {
+    return { frames: this.#frames, bytes: this.#bytes }
+  }
+
   canSend (size) {
     return this.#frames > 0 && this.#bytes >= size
   }
