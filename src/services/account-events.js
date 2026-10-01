@@ -1,6 +1,6 @@
 import { accountEventPages, assertHistoryReport, ACCOUNT_PAGE_SIZE } from './account-event-pages.js'
 import { missingCoverage } from './account-event-coverage.js'
-import { isEphemeralEvent } from 'libp2r2p/event'
+import { isEphemeralEvent, isValidEvent } from 'libp2r2p/event'
 import {
   eventKinds, isEphemeralKind,
   CUSTOM_APP_DATA, REGULAR_CUSTOM_APP_DATA, PERSONAL_COPY,
@@ -360,7 +360,10 @@ export function createAccountEventTracker ({ pool, seeds, signal, reportError = 
         const previous = accounts.get(config.pubkey)
         if (previous && !!previous.isReadOnly === !!config.isReadOnly) continue
         if (previous) previous.active = false
-        const cached = [0, 10002].map(kind => config.getStoredEvent(kind)).filter(event => event?.pubkey === config.pubkey)
+        const cached = [0, 10002].flatMap(kind => {
+          const event = config.getStoredEvent(kind)
+          return event?.kind === kind && event.pubkey === config.pubkey && isValidEvent(event) ? [event] : []
+        })
         const account = { ...config, identity: crypto.randomUUID(), active: true, latest: new Map(cached.map(event => [event.kind, event])) }
         let initialized
         account.initialize = () => {
@@ -373,7 +376,7 @@ export function createAccountEventTracker ({ pool, seeds, signal, reportError = 
               signal.throwIfAborted()
               if (!account.active) return
               const result = await account.db.add(event)
-              if (!result.ok && result.code !== 'blocked') throw new Error(`Cached account metadata storage failed: ${result.code}`)
+              if (!result.ok && !['duplicate', 'superseded', 'ignored', 'blocked'].includes(result.code)) throw new Error(`Cached account metadata storage failed: ${result.code}`)
             }
           })().catch(error => { initialized = null; throw error })
           return initialized

@@ -26,11 +26,12 @@ const bundle = await build({
     for (let index = 1; index <= 6; index++) {
       const secret = new Uint8Array(32).fill(index);
       const pubkey = getPublicKey(secret);
+      const placeholder = { kind:0, pubkey, created_at:0, tags:[], content:JSON.stringify({name:'Paired provisional profile'}) };
       const metadata = finalizeEvent({kind:10002, created_at:baseline-2000,tags:[['r',relay]],content:''},secret);
       for(let n=0;n<(index===1?240:3);n++) events.push(finalizeEvent({kind:1,created_at:baseline-1000,tags:[],content:String(n)},secret));
       const db = index===6 ? null : getNostrDb(pubkey,{maintenance:false});
       const coverage = index===6 ? null : createAccountEventCoverage(pubkey);
-      accounts.push({pubkey,db,coverage,isReadOnly:index===6,getStoredEvent:kind=>kind===10002?metadata:null,sendToVault:()=>{}});
+      accounts.push({pubkey,db,coverage,isReadOnly:index===6,getStoredEvent:kind=>kind===10002?metadata:kind===0?placeholder:null,sendToVault:()=>{}});
     }
     const transport = accountRelayFixture({events});
     const controller = new AbortController();
@@ -112,7 +113,7 @@ try {
   await evaluate('fixture.tracker.setAccounts([fixture.accounts[0]])')
   await browser.until(() => evaluate('fixture.transport.subscriptions.filter(sub=>!sub.closed).length===4 && fixture.transport.subscriptions.filter(sub=>!sub.closed).every(sub=>sub.filter.authors.length===1)'), 'regrouped account feeds')
   await evaluate('fixture.stop()')
-  console.log('Account ingestion: grouped feeds, owner isolation, saturation, real IDB checkpoints, reload and cancellation passed.')
+  console.log('Account ingestion: unsigned cached placeholders, grouped feeds, owner isolation, saturation, real IDB checkpoints, reload and cancellation passed.')
 } catch (error) {
   console.error('Account diagnostics:', await evaluate('({errors:fixture.errors,calls:fixture.transport.calls.slice(-8),warnings:fixture.warnings})').catch(() => null))
   throw error

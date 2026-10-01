@@ -471,3 +471,11 @@ wrapper owner. It preserves that author and never upgrades it to a self template
 Existing provenance precedence, merge exclusion, kind-5 authority checks and
 hearsay reference pruning apply unchanged. Audit/repair use the shared validator;
 there is no legacy rewrite or migration and no new storage classification.
+
+
+Cached vault metadata is an optional signed bootstrap source: validate author,
+expected kind and signature before populating account-event state or NostrDB.
+Provisional/invalid metadata does not block grouped discovery. Duplicate,
+superseded, ignored and locally blocked records are already resolved; real
+storage failures still prevent coverage advancement. Presentation caches and
+the storage schema are unchanged; no destructive cache repair is needed.

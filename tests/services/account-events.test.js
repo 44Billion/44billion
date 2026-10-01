@@ -1,3 +1,5 @@
+import { finalizeEvent } from 'libp2r2p/event'
+import { getPublicKey } from 'libp2r2p/key'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createAccountEventTracker, accountKinds, shouldStoreAccountEvent } from '../../src/services/account-events.js'
@@ -8,7 +10,9 @@ import { coverageFixture } from '../fixtures/account-coverage.js'
 
 const NOW = Math.floor(Date.now() / 1000)
 const relay = 'wss://relay.example'
-const pk = i => i.toString(16).padStart(64, '0')
+const secret = i => new Uint8Array(32).fill(i)
+const keys = new Map()
+const pk = i => { if (!keys.has(i)) keys.set(i, getPublicKey(secret(i))); return keys.get(i) }
 let serial = 0
 const event = (kind = 1, createdAt = Math.floor(Date.now() / 1000) + 5, pubkey = pk(1), tags = []) => ({ id: (++serial).toString(16).padStart(64, '0'), pubkey, kind, created_at: createdAt, tags, content: '' })
 const tick = () => new Promise(resolve => setImmediate(resolve))
@@ -38,7 +42,7 @@ async function fixture (t, { count = 1, events = [], beforeRead, add, readOnly =
     const pubkey = pk(i)
     configs.push({
       pubkey, coverage, isReadOnly: readOnly.includes(i),
-      getStoredEvent: kind => kind === 10002 ? event(kind, 1, pubkey, [['r', relay]]) : null,
+      getStoredEvent: kind => kind === 10002 ? finalizeEvent({ kind, created_at: 1, tags: [['r', relay]], content: '' }, secret(i)) : null,
       db: { async add (value) { const result = await add?.(value); if (result?.ok === false) return result; stored.push({ owner: pubkey, event: value }); return { ok: true } } },
       sendToVault: value => vault.push(value)
     })
@@ -320,4 +324,41 @@ test('read-only profiles use unrestricted snapshots and state changes retire ful
   assert.equal(f.stored.length, stored)
   assert.ok(f.vault.some(value => value.id === profile.id))
   assert.ok(f.subscriptions.filter(sub => !sub.closed).every(sub => sub.filter.kinds.every(kind => [0, 10002].includes(kind))))
+})
+
+test('invalid cached metadata cannot poison latest metadata or block grouped accounts', async t => {
+  const profiles = Array.from({ length: 4 }, (_, i) => finalizeEvent({ kind: 0, created_at: 0, tags: [], content: '{}' }, secret(i + 1)))
+  const f = await fixture(t, { count: 4, events: profiles })
+  const invalid = [
+    { kind: 0, pubkey: pk(1), created_at: 0, tags: [], content: '{}' },
+    { ...profiles[1], created_at: NOW + 100, sig: '0'.repeat(128) },
+    profiles[0],
+    finalizeEvent({ kind: 1, created_at: NOW + 100, tags: [], content: '' }, secret(4))
+  ]
+  f.configs.forEach((config, i) => {
+    const original = config.getStoredEvent
+    config.getStoredEvent = kind => kind === 0 ? invalid[i] : original(kind)
+  })
+  f.start()
+  await until(() => f.vault.filter(value => value.kind === 0).length === 4)
+  assert.ok(f.calls.some(call => call.filter.authors.length === 4))
+  assert.ok(invalid.every((value, i) => !f.stored.some(row => row.owner === pk(i + 1) && row.event === value)))
+  assert.deepEqual(new Set(f.vault.map(value => value.id)), new Set(profiles.map(value => value.id)))
+})
+
+for (const code of ['duplicate', 'superseded', 'ignored', 'blocked']) {
+  test(`cached metadata already resolved as ${code} permits startup`, async t => {
+    const f = await fixture(t, { add: () => ({ ok: false, code }) })
+    f.start()
+    await until(() => f.covered())
+  })
+}
+
+test('cached metadata persistence failure still blocks coverage and reports the failure', async t => {
+  const f = await fixture(t, { errorsAllowed: true, add: () => ({ ok: false, code: 'quota' }) })
+  f.start()
+  await until(() => f.errors.length > 0)
+  assert.equal(f.calls.length, 0)
+  assert.ok(f.errors.some(({ error }) => /Cached account metadata storage failed: quota/.test(error.message)))
+  assert.deepEqual((await f.configs[0].coverage.read(relay, [0]))[0].intervals, [])
 })
