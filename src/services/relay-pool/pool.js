@@ -271,12 +271,37 @@ export class UnifiedRelayPool {
       const anonymous = buckets.find(bucket => this.#bucketCanAcceptAnonymous(bucket))
       if (anonymous) return anonymous
     }
-    if (!create || buckets.length >= this.#limits.maxBucketsPerRelay) return null
+    if (!create) return null
+    if (buckets.length >= this.#limits.maxBucketsPerRelay && !this.#reclaimUnverifiedBucket(url)) return null
     return this.#createBucket(url, identity)
   }
 
   #hasBucketRoom (bucket) {
     return bucket.subscriptions.size < this.#limits.maxSubscriptionsPerBucket
+  }
+
+  // A bucket that timed out its AUTH stays out of anonymous placement. While
+  // empty it only consumes the per-relay bucket budget, so reclaim it before
+  // refusing a new anonymous member with a 1013 close.
+  #reclaimUnverifiedBucket (url) {
+    for (const bucket of [...this.#membersForUrl(url)]) {
+      if (bucket.closed || !bucket.unverified) continue
+      if (bucket.members.size > 0 || bucket.subscriptions.size > 0 || bucket.pendingAuths.size > 0) continue
+      this.#destroyBucket(bucket, 1000, 'unverified-reclaim', true)
+      return true
+    }
+    return false
+  }
+
+  #capacityDiagnostics (url) {
+    const buckets = [...this.#membersForUrl(url)]
+    return {
+      buckets: buckets.length,
+      full: buckets.filter(bucket => bucket.subscriptions.size >= this.#limits.maxSubscriptionsPerBucket).length,
+      unverified: buckets.filter(bucket => bucket.unverified).length,
+      authenticating: buckets.filter(bucket => bucket.pendingAuths.size > 0).length,
+      subscriptions: buckets.reduce((total, bucket) => total + bucket.subscriptions.size, 0)
+    }
   }
 
   #createBucket (url, identity) {
@@ -576,16 +601,23 @@ export class UnifiedRelayPool {
       return
     }
     if (bucket.subscriptions.size >= this.#limits.maxSubscriptionsPerBucket) {
-      const target = this.#selectSpillBucket(bucket, member)
-      if (!target) {
-        this.#counters.capacityRejections++
-        this.#log('bucket capacity exhausted', bucket.url, bucket.identity ?? 'anonymous')
-        return bucket.identity === null
-          ? this.#closeMember(member, 1013, 'relay pool capacity', false)
-          : this.#reconnectMember(member, 'relay pool rehome')
-      }
-      if (!this.#moveMember(member, target)) return
+      // Packing/merging buckets can free this member before refusing the REQ.
+      this.#consolidateBuckets(bucket.url, bucket.identity)
+      if (member.closed) return
       bucket = member.bucket
+      if (!bucket) return
+      if (bucket.subscriptions.size >= this.#limits.maxSubscriptionsPerBucket) {
+        const target = this.#selectSpillBucket(bucket, member)
+        if (!target) {
+          this.#counters.capacityRejections++
+          this.#log('bucket capacity exhausted', bucket.url, bucket.identity ?? 'anonymous', JSON.stringify(this.#capacityDiagnostics(bucket.url)))
+          return bucket.identity === null
+            ? this.#closeMember(member, 1013, 'relay pool capacity', false)
+            : this.#reconnectMember(member, 'relay pool rehome')
+        }
+        if (!this.#moveMember(member, target)) return
+        bucket = member.bucket
+      }
     }
     const nsId = this.#nextNamespacedId(member, rawId, 'sub')
     const outgoing = [message[0], nsId, ...message.slice(2)]
@@ -1003,6 +1035,7 @@ export class UnifiedRelayPool {
       candidate.subscriptions.size + needed <= this.#limits.maxSubscriptionsPerBucket)
     if (anonymous) return anonymous
     if (candidates.length + 1 < this.#limits.maxBucketsPerRelay) return this.#createBucket(bucket.url, null)
+    if (this.#reclaimUnverifiedBucket(bucket.url)) return this.#createBucket(bucket.url, null)
     return null
   }
 

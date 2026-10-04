@@ -892,6 +892,29 @@ describe('unified relay pool', () => {
     assert.equal(sockets.length, 2)
   })
 
+  it('reclaims an empty unverified bucket before refusing a new anonymous member', async () => {
+    const { pool, sockets } = createPool({ authPendingTimeoutMs: 20, maxBucketsPerRelay: 1, bucketIdleMs: 60000 })
+    const alice = generateSecretKey()
+    const opens = []
+    const memberA = pool.attach('wss://relay.example', {})
+    await tick()
+    sockets[0].open()
+    await tick()
+    sockets[0].message(['AUTH', 'c0'])
+    memberA.send(JSON.stringify(['AUTH', authEvent(alice, { challenge: 'c0' })]))
+    await tick()
+    await new Promise(resolve => setTimeout(resolve, 40))
+    memberA.close(1000, '')
+    await tick()
+    assert.equal(pool.snapshot().buckets, 1, 'the empty unverified bucket still occupies the bucket budget')
+    pool.attach('wss://relay.example', { onOpen: () => opens.push('b') })
+    await tick()
+    assert.equal(sockets.length, 2, 'the reclaimed slot opened a fresh anonymous connection')
+    sockets[1].open()
+    await tick()
+    assert.deepEqual(opens, ['b'])
+  })
+
   it('spills a member into a new bucket when the current one is full', async () => {
     const { pool, sockets } = createPool({ maxSubscriptionsPerBucket: 1 })
     const member = pool.attach('wss://relay.example', {})

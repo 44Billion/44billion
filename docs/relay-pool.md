@@ -107,7 +107,16 @@ If the relay never answers a forwarded AUTH within `authPendingTimeoutMs`
 the client and marks the bucket `unverified`. The bucket keeps serving its
 current members, but is excluded from anonymous placement, AUTH merges and
 consolidation targets until it closes, because it is unknown whether the
-relay actually authenticated the connection.
+relay actually authenticated the connection. Once an unverified bucket is
+empty it is reclaimed (`destroyed`) before a new anonymous member is refused,
+so a single AUTH timeout cannot permanently consume the per-relay bucket
+budget.
+
+A `REQ` that cannot fit its bucket first runs anonymous/authenticated
+consolidation and looks for a spill bucket again. Only when no anonymous
+bucket can accept it does the pool close that virtual socket with 1013
+`relay pool capacity`, logging the bucket count, how many are full,
+unverified or authenticating, and the total subscription count for the host.
 
 The pool always prefers merging on the next AUTH and exposes `authMerges`,
 `authSwaps` and `authReconnects` in the snapshot. Multiple authenticated
