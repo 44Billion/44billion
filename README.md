@@ -99,7 +99,7 @@ A newer relay list reconciles membership, retaining unchanged groups and drainin
 accepted events from retired groups. Removing an account or unmounting the root
 cancels its pending delivery. Only kinds 0/10002 also update vault metadata.
 
-The coordinated `libp2r2p@^0.11.13` pool coordinates subscription capacity. Grouped
+The coordinated `libp2r2p@^0.11.15` pool coordinates subscription capacity. Grouped
 feeds start with a bounded recent snapshot, with **ten minutes of overlap**.
 Before releasing buffered live events, the tracker completes any truncated recent
 pages and catches up gaps from each identity/kind's previous confirmed edge.
@@ -110,6 +110,17 @@ The tracker commits those intervals only after earlier event writes finish.
 Interrupted live attempts are cancelled, dropping buffered events and retrying
 with ten minutes of overlap from confirmed coverage. Progress describes observed
 continuity, not proof that a relay supplied every event.
+
+Account ingestion classifies relay failures through the library's public retry
+predicate. Explicit policy refusals, local authentication failures and unknown
+read failures stop that group/operation until it is replaced; unchanged-group
+reconciliation never restarts them. A definitive background-history refusal also
+survives later live reconnection, without stopping initialized live input.
+Transient reads keep the one-second exponential backoff, ±20% jitter and
+30-second cap, respecting a later absolute relay retryAt. Confirmed offline waits
+for the shared connectivity monitor without spending a backoff step. Storage
+failures keep their own recovery and do not receive relay classification; native
+errors remain unchanged, with in-memory source/filter context reported separately.
 
 Read-only accounts follow kind 10002 on seeds and kinds 0/10002 on discovered
 write relays, forwarding newer versions to the vault. Their initial snapshot has

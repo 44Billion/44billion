@@ -40,6 +40,29 @@ const bundle = await build({
       baseline, accounts, transport, tracker, errors, warnings,
       start:()=>tracker.setAccounts(accounts),
       stop:async()=>{controller.abort();await tracker.settled();await transport.pool.disconnectAll()},
+      startRetries:()=>{
+        const state={errors:[],metadata:[],seedAttempts:[],profileAttempts:[],retryAt:null};
+        const secret=new Uint8Array(32).fill(1);
+        const pubkey=getPublicKey(secret);
+        const metadata=finalizeEvent({kind:10002,created_at:baseline,tags:[['r',relay]],content:''},secret);
+        const profile=finalizeEvent({kind:0,created_at:baseline+1,tags:[],content:JSON.stringify({name:'Recovered metadata'})},secret);
+        const controlled=accountRelayFixture({events:[metadata,profile],beforeRead:filter=>{
+          if(filter.kinds.length===1) {
+            state.seedAttempts.push(performance.now());
+            throw Object.assign(new Error('pow: historical proof required'),{category:'relay'});
+          }
+          state.profileAttempts.push(performance.now());
+          if(state.profileAttempts.length===1) {
+            state.retryAt=Date.now()+1500;
+            throw Object.assign(new Error('rate-limited: controlled busy relay'),{category:'relay',retryAt:state.retryAt,retryAfterMs:1500});
+          }
+        }});
+        const lifetime=new AbortController();
+        const retryTracker=createAccountEventTracker({pool:controlled.pool,seeds:[relay],signal:lifetime.signal,random:()=>0.5,reportError:(error,context)=>state.errors.push({message:error.message,...context})});
+        const config={pubkey,isReadOnly:true,getStoredEvent:kind=>kind===10002?metadata:null,sendToVault:event=>state.metadata.push(event)};
+        fixture.retries={state,reconcile:()=>retryTracker.setAccounts([config]),stop:async()=>{lifetime.abort();await retryTracker.settled();await controlled.pool.disconnectAll()}};
+        retryTracker.setAccounts([config]);
+      },
       complete:async()=>{
         for(const account of accounts.filter(account=>!account.isReadOnly)) {
           const rows=await account.coverage.read(relay,accountKinds);
@@ -113,7 +136,18 @@ try {
   await evaluate('fixture.tracker.setAccounts([fixture.accounts[0]])')
   await browser.until(() => evaluate('fixture.transport.subscriptions.filter(sub=>!sub.closed).length===4 && fixture.transport.subscriptions.filter(sub=>!sub.closed).every(sub=>sub.filter.authors.length===1)'), 'regrouped account feeds')
   await evaluate('fixture.stop()')
-  console.log('Account ingestion: unsigned cached placeholders, grouped feeds, owner isolation, saturation, real IDB checkpoints, reload and cancellation passed.')
+  await evaluate('fixture.startRetries()')
+  await browser.until(() => evaluate('fixture.retries.state.errors.length===2'), 'definitive discovery refusal and transient profile failure')
+  await evaluate('fixture.retries.reconcile()')
+  await browser.until(() => evaluate('fixture.retries.state.metadata.some(event=>event.kind===0)'), 'profile metadata recovered after cooldown')
+  const recovery = await evaluate('fixture.retries.state')
+  assert.equal(recovery.seedAttempts.length, 1, 'unchanged refused discovery is not restarted')
+  assert.equal(recovery.profileAttempts.length, 2, 'only the transient operation is repeated')
+  assert.ok(recovery.profileAttempts[1] - recovery.profileAttempts[0] >= 1450, 'retry honors its absolute relay deadline')
+  assert.equal(JSON.parse(recovery.metadata.find(event => event.kind === 0).content).name, 'Recovered metadata')
+  assert.ok(recovery.errors.every(error => error.source === 'relay'))
+  await evaluate('fixture.retries.stop()')
+  console.log('Account ingestion: grouped feeds, real IDB checkpoints, reload, cancellation, definitive refusals and rate-limit recovery passed.')
 } catch (error) {
   console.error('Account diagnostics:', await evaluate('({errors:fixture.errors,calls:fixture.transport.calls.slice(-8),warnings:fixture.warnings})').catch(() => null))
   throw error

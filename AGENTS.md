@@ -92,7 +92,7 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   monitor owns connectivity probes, capped retry delays, and browser wake-up
   listeners. `ConnectivityRetryCoordinator` owns waiters, cancellation, and
   concurrency of resumed app work; do not restore its duplicate probe timer.
-- Use the coordinated `libp2r2p@^0.11.13` range in package.json;
+- Use the coordinated `libp2r2p@^0.11.15` range in package.json;
   package-lock.json records the resolved release. Validate against the installed package rather than sibling
   source imports; it includes the shared connectivity monitor.
 
@@ -197,6 +197,13 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
 - Backfill failure must not stop initialized live input. Initial failure must
   discard buffered live, preserve committed subwindows and retry with capped
   jittered backoff. Respect explicit permanent refusals and root cancellation.
+- Use the public same-relay retry predicate for relay failures. `pow:`, local
+  authentication and unknown reads are terminal; preserve that decision for
+  unchanged groups, including refused backfill after later live reconnection.
+  Keep error source/filter context in a WeakMap, never on shared native errors.
+  Storage has independent recovery. Local admission/buffer errors keep their
+  explicit local policy. Retry at max(jittered backoff deadline, retryAt); offline
+  waits through ConnectivityRetryCoordinator and spends no backoff step.
 - Store only eligible known public account events in the owner's NostrDB. Keep
   the README import exclusions and library/tag-defined ephemeral checks. Only
   kinds 0/10002 update the vault metadata channel; account import adds no public

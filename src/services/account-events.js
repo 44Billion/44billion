@@ -1,5 +1,6 @@
 import { accountEventPages, assertHistoryReport, ACCOUNT_PAGE_SIZE } from './account-event-pages.js'
 import { missingCoverage } from './account-event-coverage.js'
+import { createAccountEventRetry } from './account-event-retry.js'
 import { isEphemeralEvent, isValidEvent } from 'libp2r2p/event'
 import {
   eventKinds, isEphemeralKind,
@@ -53,19 +54,51 @@ function pause (ms, signal) {
     signal.addEventListener('abort', finish, { once: true })
   })
 }
-function permanent (error) {
-  return /^(auth-required:|restricted:|blocked:|invalid:)/.test(error?.message ?? '')
-}
 
 // One coordinator per launcher root. Identity state and durable progress remain
 // owner-scoped even when feeds combine accounts. Read-only feeds are separate.
-export function createAccountEventTracker ({ pool, seeds, signal, reportError = console.error, warn = console.warn, now = () => Math.floor(Date.now() / 1000), random = Math.random }) {
+export function createAccountEventTracker ({ pool, seeds, signal, reportError = console.error, warn = console.warn, now = () => Math.floor(Date.now() / 1000), random = Math.random, _isOnline, _onOnline }) {
   const accounts = new Map()
   const entries = new Map()
   const tasks = new Set()
+  const failures = new WeakMap()
+  const retry = createAccountEventRetry({ signal, random, checkOnline: _isOnline, watchOnline: _onOnline })
   let reconcileQueued = false
   const spawn = promise => { tasks.add(promise); promise.finally(() => tasks.delete(promise)).catch(() => {}) }
-  const report = (error, entry, phase, filter) => reportError(error, { relay: entry.relay, phase, authors: filter?.authors ?? entry.authors, kinds: filter?.kinds ?? entry.kinds, since: filter?.since, until: filter?.until })
+  const report = (error, entry, phase) => {
+    const { filter, source } = failures.get(error) || {}
+    reportError(error, { relay: entry.relay, phase, source, authors: filter?.authors ?? entry.authors, kinds: filter?.kinds ?? entry.kinds, since: filter?.since, until: filter?.until })
+  }
+  const trackFailure = (reason, source, filter) => {
+    const error = reason instanceof Error ? reason : new Error(String(reason), { cause: reason })
+    failures.set(error, { ...failures.get(error), ...(source ? { source } : {}), ...(filter ? { filter } : {}) })
+    return error
+  }
+  const storage = async work => {
+    try { return await work() } catch (error) { throw trackFailure(error, 'storage') }
+  }
+  const readFailure = (error, filter) => trackFailure(error, error?.phase === 'admission' || error?.code === 'RELAY_LIVE_BUFFER_FULL' ? 'local-read' : 'relay', filter)
+  const read = (method, filter, relays, options) => {
+    let stream
+    try { stream = pool[method](filter, relays, options) } catch (error) { throw readFailure(error, filter) }
+    return {
+      [Symbol.asyncIterator] () { return this },
+      async next (...args) {
+        try {
+          const result = await stream.next(...args)
+          if (result.value?.type === 'error') readFailure(result.value.error, filter)
+          return result
+        } catch (error) { throw readFailure(error, filter) }
+      },
+      return: (...args) => stream.return(...args),
+      stopAndDrain: () => stream.stopAndDrain()
+    }
+  }
+  const readPool = { getEventsGenerator: (...args) => read('getEventsGenerator', ...args) }
+  const assertReadReport = report => {
+    try { assertHistoryReport(report) } catch (error) { throw readFailure(error) }
+  }
+  const waitRetry = (error, entry, delay) => retry.wait(error, { source: failures.get(error)?.source, delay, signal: entry.signal })
 
   function retire (entry) {
     entry.retired.abort()
@@ -105,7 +138,7 @@ export function createAccountEventTracker ({ pool, seeds, signal, reportError = 
     }
     for (const [key, selection] of next) {
       if (entries.has(key)) continue
-      const entry = { ...selection, retired: new AbortController(), stream: null }
+      const entry = { ...selection, retired: new AbortController(), stream: null, recovery: { backfillStopped: false } }
       entry.signal = AbortSignal.any([signal, entry.retired.signal])
       entries.set(key, entry)
       spawn(maintain(entry))
@@ -117,16 +150,16 @@ export function createAccountEventTracker ({ pool, seeds, signal, reportError = 
     if (!account?.active || signal.aborted) return
     if (!filter.kinds.includes(event.kind) || !filter.authors.includes(event.pubkey) || !shouldStoreAccountEvent(event)) return
     if ((filter.since !== undefined && event.created_at < filter.since) || (filter.until !== undefined && event.created_at > filter.until)) return
-    const result = account.isReadOnly ? { ok: true } : await account.db.add(event)
+    const result = account.isReadOnly ? { ok: true } : await storage(() => account.db.add(event))
     // Duplicate, older replaceable versions and locally deleted originals are
     // already durably resolved. Other refusals must not advance coverage.
     if (!result.ok && !['duplicate', 'superseded', 'ignored', 'blocked'].includes(result.code)) {
-      throw Object.assign(new Error(`Account event storage failed: ${result.code}`), { code: result.code })
+      throw trackFailure(Object.assign(new Error(`Account event storage failed: ${result.code}`), { code: result.code }), 'storage')
     }
     if (!account.active || signal.aborted || result.code === 'blocked') return
     if ([0, 10002].includes(event.kind) && newer(event, account.latest.get(event.kind))) {
       account.latest.set(event.kind, event)
-      account.sendToVault(event)
+      await storage(() => account.sendToVault(event))
       if (event.kind === 10002) scheduleReconcile()
     }
   }
@@ -134,8 +167,8 @@ export function createAccountEventTracker ({ pool, seeds, signal, reportError = 
     const records = new Map()
     for (const account of entry.members) {
       if (!account.active) continue
-      await account.initialize()
-      records.set(account, await account.coverage.read(entry.relay, kinds, entry.signal))
+      await storage(() => account.initialize())
+      records.set(account, await storage(() => account.coverage.read(entry.relay, kinds, entry.signal)))
     }
     return records
   }
@@ -143,17 +176,16 @@ export function createAccountEventTracker ({ pool, seeds, signal, reportError = 
     entry.signal.throwIfAborted()
     for (const [account, rows] of records) {
       if (!account.active || !filter.authors.includes(account.pubkey)) continue
-      await account.coverage.mark(rows.filter(row => filter.kinds.includes(row.kind)), filter.since, filter.until, entry.signal)
+      await storage(() => account.coverage.mark(rows.filter(row => filter.kinds.includes(row.kind)), filter.since, filter.until, entry.signal))
     }
   }
   async function scan (entry, filter, records, firstPage) {
     try {
-      for await (const complete of accountEventPages({ pool, relay: entry.relay, filter, signal: entry.signal, firstPage, persist: (event, filter) => persist(entry, event, filter), warn })) {
+      for await (const complete of accountEventPages({ pool: readPool, relay: entry.relay, filter, signal: entry.signal, firstPage, persist: (event, filter) => persist(entry, event, filter), assertReport: assertReadReport, warn })) {
         await mark(entry, records, complete)
       }
     } catch (error) {
-      error.accountFilter = filter
-      throw error
+      throw trackFailure(error, undefined, filter)
     }
   }
 
@@ -186,6 +218,7 @@ export function createAccountEventTracker ({ pool, seeds, signal, reportError = 
     return combineJobs(byKind.values())
   }
   async function backfill (entry, until) {
+    if (entry.recovery.backfillStopped) return
     let delay = 1000
     while (!entry.signal.aborted) {
       try {
@@ -199,10 +232,13 @@ export function createAccountEventTracker ({ pool, seeds, signal, reportError = 
         return
       } catch (error) {
         if (entry.signal.aborted) return
-        report(error, entry, 'backfill', error.accountFilter)
-        if (permanent(error)) return
-        await pause(Math.min(30000, delay * (0.8 + random() * 0.4)), entry.signal)
-        delay = Math.min(delay * 2, 30000)
+        report(error, entry, 'backfill')
+        const nextDelay = await waitRetry(error, entry, delay)
+        if (nextDelay === null) {
+          if (!entry.signal.aborted) entry.recovery.backfillStopped = true
+          return
+        }
+        delay = nextDelay
       }
     }
   }
@@ -217,7 +253,7 @@ export function createAccountEventTracker ({ pool, seeds, signal, reportError = 
     // first-time deep history runs separately after initial completion.
     const since = Math.max(0, now() - ACCOUNT_OVERLAP_SECONDS)
     const filter = { authors: entry.authors, kinds: entry.kinds, since, limit: ACCOUNT_PAGE_SIZE }
-    const stream = pool.getEventsFeedGenerator(filter, [entry.relay], {
+    const stream = read('getEventsFeedGenerator', filter, [entry.relay], {
       signal, snapshot: true, timeoutAfterFirstEose: null
     })
     ownerEntry.stream = stream
@@ -251,7 +287,7 @@ export function createAccountEventTracker ({ pool, seeds, signal, reportError = 
           }
         }
         if (item.type === 'eose') {
-          assertHistoryReport(item)
+          assertReadReport(item)
           until = item.snapshot?.until
           if (!Number.isSafeInteger(until)) throw new Error('Missing account history snapshot bounds')
           if (!entry.signal.aborted) {
@@ -298,13 +334,13 @@ export function createAccountEventTracker ({ pool, seeds, signal, reportError = 
       let count = page?.count ?? 0
       let report = page?.report
       if (!page) {
-        for await (const item of pool.getEventsGenerator({ ...filter, limit: ACCOUNT_PAGE_SIZE }, [entry.relay], { signal: entry.signal, timeoutAfterFirstEose: null })) {
+        for await (const item of read('getEventsGenerator', { ...filter, limit: ACCOUNT_PAGE_SIZE }, [entry.relay], { signal: entry.signal, timeoutAfterFirstEose: null })) {
           if (item.type === 'error') throw item.error
           if (item.type === 'event') { count++; await persist(entry, item.event, filter) }
           if (item.type === 'eose') report = item
         }
       }
-      assertHistoryReport(report)
+      assertReadReport(report)
       if (count < ACCOUNT_PAGE_SIZE && report.relays[0].status === 'eose') continue
       const key = filter.authors.length > 1 ? 'authors' : filter.kinds.length > 1 ? 'kinds' : null
       if (!key) { warn('Replaceable metadata response saturated', { relay: entry.relay, ...filter }); continue }
@@ -315,7 +351,7 @@ export function createAccountEventTracker ({ pool, seeds, signal, reportError = 
 
   async function runReadOnly (entry) {
     const filter = { authors: entry.authors, kinds: entry.kinds, limit: ACCOUNT_PAGE_SIZE }
-    const stream = pool.getEventsFeedGenerator(filter, [entry.relay], { signal, snapshot: true, timeoutAfterFirstEose: null })
+    const stream = read('getEventsFeedGenerator', filter, [entry.relay], { signal, snapshot: true, timeoutAfterFirstEose: null })
     entry.stream = stream
     let count = 0
     let complete = false
@@ -324,7 +360,7 @@ export function createAccountEventTracker ({ pool, seeds, signal, reportError = 
         if (item.type === 'error') throw item.error
         if (item.type === 'event') { if (!complete) count++; await persist(entry, item.event, filter) }
         if (item.type === 'eose') {
-          assertHistoryReport(item)
+          assertReadReport(item)
           if (!entry.signal.aborted) await readMetadata(entry, { ...filter, until: item.snapshot.until }, { count, report: item })
           complete = true
         }
@@ -337,12 +373,15 @@ export function createAccountEventTracker ({ pool, seeds, signal, reportError = 
     let delay = 1000
     while (!entry.signal.aborted) {
       try { await (entry.isReadOnly ? runReadOnly(entry) : run(entry)); delay = 1000 } catch (error) {
-        if (!entry.signal.aborted) report(error, entry, 'initial-or-live', error.accountFilter)
-        if (permanent(error)) return
+        if (entry.signal.aborted) return
+        report(error, entry, 'initial-or-live')
+        const nextDelay = await waitRetry(error, entry, delay)
+        if (nextDelay === null) return
+        delay = nextDelay
+        continue
       }
       if (entry.signal.aborted) return
-      await pause(Math.min(30000, delay * (0.8 + random() * 0.4)), entry.signal)
-      delay = Math.min(delay * 2, 30000)
+      return
     }
   }
 
@@ -378,11 +417,11 @@ export function createAccountEventTracker ({ pool, seeds, signal, reportError = 
               const result = await account.db.add(event)
               if (!result.ok && !['duplicate', 'superseded', 'ignored', 'blocked'].includes(result.code)) throw new Error(`Cached account metadata storage failed: ${result.code}`)
             }
-          })().catch(error => { initialized = null; throw error })
+          })().catch(error => { initialized = null; throw trackFailure(error, 'storage') })
           return initialized
         }
         accounts.set(config.pubkey, account)
-        spawn(account.initialize().catch(error => { if (!signal.aborted && account.active) reportError(error, { phase: 'cached', authors: [account.pubkey] }) }))
+        spawn(account.initialize().catch(error => { if (!signal.aborted && account.active) reportError(error, { phase: 'cached', source: 'storage', authors: [account.pubkey] }) }))
       }
       scheduleReconcile()
     },

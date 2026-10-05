@@ -2,14 +2,17 @@ export const ACCOUNT_PAGE_SIZE = 200
 
 export function assertHistoryReport (report) {
   if (!report || report.relays.length !== 1 || !['eose', 'satisfied'].includes(report.relays[0].status)) {
-    throw report?.relays?.[0]?.error ?? new Error('Account history did not complete with EOSE')
+    const status = report?.relays?.[0]?.status
+    const error = report?.relays?.[0]?.error ?? new Error('Account history did not complete with EOSE')
+    if (!report?.relays?.[0]?.error && ['timeout', 'cutoff', 'closed'].includes(status)) error.category = status === 'closed' ? 'transport' : 'timeout'
+    throw error
   }
 }
 
 // Inclusive time windows. Saturated responses are persisted but are not coverage;
 // split time, then authors/kinds at a single timestamp. No until-1 cursor can
 // accidentally skip ties. Yield confirmed rectangles as soon as each completes.
-export async function * accountEventPages ({ pool, relay, filter, signal, persist, firstPage, warn = console.warn }) {
+export async function * accountEventPages ({ pool, relay, filter, signal, persist, firstPage, assertReport = assertHistoryReport, warn = console.warn }) {
   const pending = [{ filter, page: firstPage }]
   while (pending.length) {
     signal.throwIfAborted()
@@ -32,7 +35,7 @@ export async function * accountEventPages ({ pool, relay, filter, signal, persis
         }
       }
     }
-    assertHistoryReport(report)
+    assertReport(report)
     if (count < ACCOUNT_PAGE_SIZE && report.relays[0].status === 'eose') {
       yield filter
       continue

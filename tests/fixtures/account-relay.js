@@ -6,6 +6,7 @@ export function accountRelayFixture ({ events = [], beforeRead = async () => {},
   let peak = 0
   const matches = (event, filter) => filter.authors.includes(event.pubkey) && filter.kinds.includes(event.kind) && event.created_at >= (filter.since ?? 0) && event.created_at <= (filter.until ?? Infinity)
   const pool = new RelayPool({
+    _isOnline: async () => true,
     _createRelay: relay => ({
       ws: { readyState: 1 },
       async connect () {},

@@ -23,13 +23,13 @@ async function until (predicate) {
     await tick()
   }
 }
-async function fixture (t, { count = 1, events = [], beforeRead, add, readOnly = [], errorsAllowed = false } = {}) {
+async function fixture (t, { count = 1, events = [], beforeRead, add, readOnly = [], errorsAllowed = false, checkOnline = async () => true, watchOnline } = {}) {
   const transport = accountRelayFixture({ events, beforeRead })
   const controller = new AbortController()
   const errors = []
   const vault = []
   const stored = []
-  const tracker = createAccountEventTracker({ pool: transport.pool, seeds: [relay], signal: controller.signal, random: () => 0, reportError: (error, context) => errors.push({ error, context }) })
+  const tracker = createAccountEventTracker({ pool: transport.pool, seeds: [relay], signal: controller.signal, random: () => 0, _isOnline: checkOnline, _onOnline: watchOnline, reportError: (error, context) => errors.push({ error, context }) })
   t.after(async () => {
     controller.abort()
     await tracker.settled()
@@ -53,6 +53,64 @@ async function fixture (t, { count = 1, events = [], beforeRead, add, readOnly =
     covered: async (kind = 1) => (await configs[0].coverage.read(relay, [kind]))[0].intervals.some(([start, end]) => start === 0 && end >= NOW - 1)
   }
 }
+
+for (const message of ['pow: 20', 'blocked: denied', 'auth-required: sign in', 'unknown relay error']) {
+  test(`account ${message} stays stopped across unchanged groups and later scheduling`, { timeout: 3000 }, async t => {
+    t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: NOW * 1000 })
+    const error = Object.freeze(Object.assign(new Error(message), { category: 'relay' }))
+    const f = await fixture(t, { errorsAllowed: true, beforeRead: () => { throw error } })
+    f.start()
+    await until(() => f.errors.length === 4)
+    assert.ok(f.errors.every(item => item.error === error && item.context.source === 'relay'))
+    const calls = f.calls.length
+    t.mock.timers.tick(600000)
+    f.tracker.setAccounts(f.configs)
+    for (let n = 0; n < 10; n++) await tick()
+    assert.equal(f.calls.length, calls)
+    assert.deepEqual((await f.configs[0].coverage.read(relay, [1]))[0].intervals, [])
+  })
+}
+
+test('storage errors retain their original frozen error and recover despite a relay-like message', { timeout: 3000 }, async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: NOW * 1000 })
+  const value = event(1, NOW - 10)
+  const error = Object.freeze(Object.assign(new Error('blocked: local database quota'), { category: 'relay', code: 'quota' }))
+  let fail = true
+  let probes = 0
+  const f = await fixture(t, {
+    events: [value], errorsAllowed: true, checkOnline: async () => { probes++; return false },
+    add: stored => { if (stored.id === value.id && fail) { fail = false; throw error } }
+  })
+  f.start()
+  await until(() => f.errors.some(item => item.error === error))
+  assert.equal(f.errors.find(item => item.error === error).context.source, 'storage')
+  t.mock.timers.tick(799)
+  for (let n = 0; n < 10; n++) await tick()
+  assert.equal(f.stored.some(item => item.event.id === value.id), false)
+  t.mock.timers.tick(1)
+  await until(() => f.stored.some(item => item.event.id === value.id))
+  assert.equal(probes, 0)
+})
+
+test('a definitive backfill refusal remains stopped after a later live reconnection', { timeout: 3000 }, async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: NOW * 1000 })
+  const f = await fixture(t, {
+    errorsAllowed: true,
+    beforeRead: filter => { if (filter.since === 0) throw Object.assign(new Error('pow: historical work required'), { category: 'relay' }) }
+  })
+  f.start()
+  await until(() => f.errors.filter(item => item.context.phase === 'backfill').length === 4)
+  const previous = f.calls.filter(call => call.filter.since === 0).length
+  const live = f.subscriptions.find(sub => !sub.closed && sub.filter.limit === 0 && sub.filter.kinds.includes(1))
+  live.handlers.onclose(Object.assign(new Error('connection interrupted'), { category: 'transport' }))
+  await until(() => f.errors.some(item => item.context.phase === 'initial-or-live'))
+  for (let n = 0; n < 10; n++) await tick()
+  t.mock.timers.tick(800)
+  await until(() => f.subscriptions.some(sub => sub !== live && !sub.closed && sub.filter.limit === 0 && sub.filter.kinds.includes(1)))
+  for (let n = 0; n < 20; n++) await tick()
+  assert.equal(f.calls.filter(call => call.filter.since === 0).length, previous)
+  assert.ok((await f.configs[0].coverage.read(relay, [1]))[0].intervals.some(([since]) => since >= NOW - 600))
+})
 
 test('readonly metadata uses separate feeds without persistence or coverage', async t => {
   const events = Array.from({ length: 6 }, (_, i) => event(1, NOW - 1000, pk(i + 1)))
@@ -170,7 +228,7 @@ test('transient initial read failure retries without duplicated stored messages'
   const value = event(1, NOW - 10)
   const f = await fixture(t, {
     events: [value], errorsAllowed: true, beforeRead: filter => {
-      if (!failed && filter.kinds.includes(1)) { failed = true; throw new Error('temporary disconnection') }
+      if (!failed && filter.kinds.includes(1)) { failed = true; throw Object.assign(new Error('temporary disconnection'), { category: 'transport' }) }
     }
   })
   f.start()
