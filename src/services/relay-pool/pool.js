@@ -1,10 +1,12 @@
 import { isValidEvent } from 'libp2r2p/event'
 import { normalizeRelayUrl } from 'libp2r2p/url'
+import { parseRelayRetryAdvice } from 'libp2r2p/relay'
 
 import { parseNostrFrame } from './classify.js'
 import { closeCodeLabel } from './close-code-label.js'
 import { RELAY_POOL_LIMITS } from './constants.js'
 import { RelayRegistry } from './registry.js'
+import { RelayDiagnostics } from './diagnostics.js'
 
 class LruSet {
   #limit
@@ -57,6 +59,7 @@ export class UnifiedRelayPool {
   #consolidating = new Set()
   #anonymousConsolidationAt = new Map()
   #relayFailures = new Map()
+  #diagnostics
   #serial = 0
   #counters = {
     physicalOpened: 0,
@@ -92,6 +95,7 @@ export class UnifiedRelayPool {
     this.#registry = registry
     this.#limits = limits
     this.#log = log
+    this.#diagnostics = new RelayDiagnostics(log)
   }
 
   get registry () {
@@ -119,6 +123,12 @@ export class UnifiedRelayPool {
     lifetimeMs = null
   } = {}) {
     const key = this.#normalize(url) ?? String(url)
+    if (phase === 'create' || phase === 'construct') {
+      this.recordDiagnostic('RELAY_SOCKET_CREATE_FAILED', { relay: key, phase, closeCode: code, wasClean, lifetimeMs })
+      return
+    }
+    const diagnosticCode = phase === 'protocol' ? 'RELAY_INVALID_SERVER_FRAME' : phase === 'send' ? 'RELAY_SOCKET_SEND_FAILED' : 'RELAY_SOCKET_CLOSED'
+    this.recordDiagnostic(diagnosticCode, { relay: key, phase, closeCode: code, wasClean, lifetimeMs })
     const previous = this.#relayFailures.get(key)
     this.#relayFailures.set(key, {
       count: (previous?.count ?? 0) + 1,
@@ -137,6 +147,17 @@ export class UnifiedRelayPool {
     }
     this.#counters.connectionFailures++
     this.#log('connection failed', key, code, reason || '<none>', phase)
+  }
+
+  recordDiagnostic (code, info) {
+    this.#diagnostics.record(code, info)
+  }
+
+  recordConsumerFailure (url, info = {}) {
+    this.recordDiagnostic('RELAY_CONSUMER_REPORTED_FAILURE', {
+      relay: this.#normalize(url) ?? String(url), phase: info.phase,
+      closeCode: info.code, wasClean: info.wasClean, lifetimeMs: info.lifetimeMs
+    })
   }
 
   quarantine (url, reason) {
@@ -221,6 +242,7 @@ export class UnifiedRelayPool {
       pendingPublicationsByRelay,
       droppedByOp: { ...this.#counters.droppedByOp },
       relayFailures: Object.fromEntries([...this.#relayFailures].map(([url, entry]) => [url, { ...entry }])),
+      failureDiagnostics: this.#diagnostics.snapshot(),
       buckets: this.#buckets.size,
       bucketsByHost,
       membersByOwner,
@@ -610,6 +632,7 @@ export class UnifiedRelayPool {
         const target = this.#selectSpillBucket(bucket, member)
         if (!target) {
           this.#counters.capacityRejections++
+          this.recordDiagnostic('RELAY_POOL_CAPACITY', { relay: bucket.url, phase: 'capacity' })
           this.#log('bucket capacity exhausted', bucket.url, bucket.identity ?? 'anonymous', JSON.stringify(this.#capacityDiagnostics(bucket.url)))
           return bucket.identity === null
             ? this.#closeMember(member, 1013, 'relay pool capacity', false)
@@ -761,6 +784,7 @@ export class UnifiedRelayPool {
     const validation = this.#validateAuthEvent(bucket, event)
     if (!validation.ok) {
       this.#counters.authRejected++
+      this.recordDiagnostic('RELAY_POOL_AUTH_INVALID', { relay: bucket.url, phase: 'auth' })
       this.#deliverMember(member, JSON.stringify(['OK', authEventId, false, validation.reason]))
       return
     }
@@ -813,6 +837,7 @@ export class UnifiedRelayPool {
     // The relay never answered. Whether it processed the AUTH is unknown,
     // so keep the bucket out of anonymous placement/consolidation targets.
     bucket.unverified = true
+    this.recordDiagnostic('RELAY_POOL_AUTH_TIMEOUT', { relay: bucket.url, phase: 'auth' })
     this.#deliverMember(entry.member, JSON.stringify(['OK', authEventId, false, 'error: AUTH timeout']))
     this.#consolidateBuckets(bucket.url, bucket.identity)
     this.#drainPendingMembers()
@@ -958,6 +983,7 @@ export class UnifiedRelayPool {
 
   #reconnectMember (member, reason) {
     this.#counters.authReconnects++
+    this.recordDiagnostic('RELAY_POOL_REHOME', { relay: member.url, phase: 'rehome' })
     this.#closeMember(member, 1006, reason, false)
   }
 
@@ -1008,6 +1034,7 @@ export class UnifiedRelayPool {
     const bytes = raw.length
     if (member.queuedFrames + 1 > this.#limits.maxQueuedFramesPerMember ||
         member.queuedBytes + bytes > this.#limits.maxQueuedBytesPerMember) {
+      this.recordDiagnostic('RELAY_POOL_QUEUE_OVERFLOW', { relay: bucket.url, phase: 'queue' })
       this.#closeMember(member, 1013, 'relay pool queue overflow', false)
       return
     }
@@ -1070,6 +1097,7 @@ export class UnifiedRelayPool {
       this.#counters.framesOut++
     } catch (error) {
       this.#log('control send failed', bucket.url, error?.message ?? error)
+      this.recordFailure(bucket.url, { code: 1006, reason: error?.message ?? 'send failed', phase: 'send', openedAt: bucket.openedAt, lifetimeMs: bucket.openedAt ? Date.now() - bucket.openedAt : null })
       this.#failBucket(bucket, 1006, 'send failed')
     }
   }
@@ -1196,7 +1224,7 @@ export class UnifiedRelayPool {
   }
 
   #routeClosed (bucket, message) {
-    this.#rememberRetryAfter(bucket, message[2], message[3])
+    message = this.#withRetryAdvice(bucket, message, 2, 3)
     const nsId = message[1]
     const member = bucket.subscriptions.get(nsId) ?? bucket.counts.get(nsId) ?? bucket.negs.get(nsId)
     if (!member) {
@@ -1248,15 +1276,17 @@ export class UnifiedRelayPool {
     this.#deliverMember(member, JSON.stringify([message[0], rawId, ...message.slice(2)]))
   }
 
-  #rememberRetryAfter (bucket, reason, extra) {
-    const seconds = extra?.retry_after
-    if (typeof reason !== 'string' || !reason.startsWith('rate-limited:') ||
-        typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) return
-    bucket.budget.retryAt = Math.max(bucket.budget.retryAt, Date.now() + Math.min(seconds, 300) * 1000)
+  #withRetryAdvice (bucket, message, reasonIndex, extraIndex) {
+    const advice = parseRelayRetryAdvice(message[reasonIndex], message[extraIndex])
+    if (!advice) return message
+    bucket.budget.retryAt = Math.max(bucket.budget.retryAt, advice.retryAt)
+    const forwarded = [...message]
+    forwarded[extraIndex] = { ...message[extraIndex], retry_at: bucket.budget.retryAt / 1000 }
+    return forwarded
   }
 
   #routeOk (bucket, message) {
-    if (message[2] === false) this.#rememberRetryAfter(bucket, message[3], message[4])
+    if (message[2] === false) message = this.#withRetryAdvice(bucket, message, 3, 4)
     const pendingAuth = bucket.pendingAuths.get(message[1])
     if (pendingAuth) {
       if (pendingAuth.timer) clearTimeout(pendingAuth.timer)
@@ -1315,6 +1345,7 @@ export class UnifiedRelayPool {
 
   #evictMember (member, reason, { alreadyRemoved = false } = {}) {
     if (member.closed) return
+    if (reason !== 'invalid-server-frame') this.recordDiagnostic('RELAY_POOL_INVALID_CLIENT_FRAME', { relay: member.url, phase: 'protocol' })
     const bucket = member.bucket
     this.#counters.detaches++
     this.#removeMemberFromBucket(member)

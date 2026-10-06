@@ -51,7 +51,7 @@ export function createBridgeReceiveQueue ({ endpointId, virtualId, owner, relay,
     if (closed) return
     const record = { ...snapshot(), ...detail, scope, limits: budget, exceeded }
     close()
-    try { onOverflow(record) } finally { onClose(1013, reason) }
+    try { onOverflow(record) } finally { onClose(1013, reason, scope === 'frame' ? 'RELAY_BRIDGE_FRAME_TOO_LARGE' : 'RELAY_BRIDGE_RECEIVE_QUEUE_OVERFLOW') }
   }
   const enforceBudget = (items, budget, scope) => {
     const usage = totals(items)
@@ -119,7 +119,7 @@ export function createBridgeReceiveQueue ({ endpointId, virtualId, owner, relay,
         : -1
       if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes !== expected || (through !== undefined && through !== pending[frames - 1]?.through)) {
         close()
-        onClose(1013, 'invalid relay bridge credit')
+        onClose(1013, 'invalid relay bridge credit', 'RELAY_BRIDGE_INVALID_CREDIT')
         return
       }
       const first = pending[0]

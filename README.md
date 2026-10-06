@@ -99,7 +99,7 @@ A newer relay list reconciles membership, retaining unchanged groups and drainin
 accepted events from retired groups. Removing an account or unmounting the root
 cancels its pending delivery. Only kinds 0/10002 also update vault metadata.
 
-The coordinated `libp2r2p@^0.11.15` pool coordinates subscription capacity. Grouped
+The coordinated `libp2r2p@^0.11.16` pool coordinates subscription capacity. Grouped
 feeds start with a bounded recent snapshot, with **ten minutes of overlap**.
 Before releasing buffered live events, the tracker completes any truncated recent
 pages and catches up gaps from each identity/kind's previous confirmed edge.
@@ -230,3 +230,10 @@ root-reference retention contracts; no injected API or storage schema changes.
 Account discovery tolerates provisional vault profiles: only authentic signed
 metadata seeds the event database, so an imported account without a fetched
 profile cannot block other accounts' synchronization.
+
+The unified pool forwards optional `retry_at` Unix seconds on rate-limited
+Nostr CLOSED/OK frames, preserving an absolute cooldown through delayed delivery.
+WebSocket events retain their standard API. Bounded internal diagnostics separate
+pool/bridge observations, transport/protocol observations and unverified consumer
+reports; remote origin/policy claims never affect routing. See
+[relay pool contracts](docs/relay-pool.md#internal-failure-attribution).

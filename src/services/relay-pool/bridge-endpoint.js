@@ -93,9 +93,10 @@ export function createRelayBridgeEndpoint ({
     else attachment.member?.close(code, reason)
   }
 
-  const dropAttachment = (virtualId, code = 1013, reason = 'relay bridge closed', wasClean = false) => {
+  const dropAttachment = (virtualId, code = 1013, reason = 'relay bridge closed', wasClean = false, diagnosticCode) => {
     const attachment = attachments.get(virtualId)
     if (!attachment) return
+    if (diagnosticCode) pool.recordDiagnostic?.(diagnosticCode, { relay: attachment.url, phase: 'bridge', closeCode: code, wasClean })
     releaseAttachment(attachment)
     attachment.suppressClose = true
     closeAttachment(attachment, 1000, '')
@@ -114,6 +115,7 @@ export function createRelayBridgeEndpoint ({
       log('delegated socket creation failed', url, error?.message ?? error)
     }
     if (!socket) {
+      pool.recordDiagnostic?.('RELAY_BRIDGE_UNAVAILABLE', { relay: url, phase: 'attach' })
       releaseAttachment(attachment)
       send(RELAY_BRIDGE.DETACH, { virtualId, reason: 'relay-pool-unavailable' })
       return
@@ -122,14 +124,7 @@ export function createRelayBridgeEndpoint ({
     try { socket.relayPoolOwner = owner } catch {}
     attachment.timer = setTimeout(() => {
       if (attachment.url) {
-        pool.recordFailure(attachment.url, {
-          code: 1006,
-          reason: 'relay attach timeout',
-          phase: 'attach',
-          wasClean: false,
-          openedAt: null,
-          lifetimeMs: null
-        })
+        pool.recordDiagnostic?.('RELAY_BRIDGE_ATTACH_TIMEOUT', { relay: attachment.url, phase: 'attach', closeCode: 1006 })
       }
       dropAttachment(virtualId, 1006, 'relay attach timeout', false)
     }, limits.speculativeDecisionTimeoutMs)
@@ -165,14 +160,7 @@ export function createRelayBridgeEndpoint ({
     pool.registry.addRelay(url)
     attachment.timer = setTimeout(() => {
       if (attachment.url) {
-        pool.recordFailure(attachment.url, {
-          code: 1006,
-          reason: 'relay attach timeout',
-          phase: 'attach',
-          wasClean: false,
-          openedAt: null,
-          lifetimeMs: null
-        })
+        pool.recordDiagnostic?.('RELAY_BRIDGE_ATTACH_TIMEOUT', { relay: attachment.url, phase: 'attach', closeCode: 1006 })
       }
       dropAttachment(virtualId, 1006, 'relay attach timeout', false)
     }, limits.speculativeDecisionTimeoutMs)
@@ -201,7 +189,7 @@ export function createRelayBridgeEndpoint ({
     if (!payload) return
     if (message.code === RELAY_BRIDGE.FAILURE) {
       if (payload.url) {
-        pool.recordFailure(payload.url, {
+        pool.recordConsumerFailure?.(payload.url, {
           code: payload.code,
           reason: payload.reason,
           phase: payload.phase,
@@ -232,7 +220,7 @@ export function createRelayBridgeEndpoint ({
         attachment.receive = createBridgeReceiveQueue({
           endpointId, virtualId, owner, relay: payload.url, limits, now,
           onFrame: (data, sequence) => send(RELAY_BRIDGE.FRAME, { virtualId, data, sequence }),
-          onClose: (code, reason) => dropAttachment(virtualId, code, reason, false),
+          onClose: (code, reason, diagnosticCode) => dropAttachment(virtualId, code, reason, false, diagnosticCode),
           onOverflow: details => {
             const record = { ...details, timestamp: Date.now(), direction: 'launcher-to-consumer' }
             queueOverflows++

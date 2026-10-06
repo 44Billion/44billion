@@ -419,9 +419,44 @@ cannot be followed by a stale request, and still releases only that member's
 subscription on the shared socket. Internal detach/migration cleanup uses the
 same immediate control path.
 
-CLOSED accepts/preserves an optional fourth metadata object. Numeric positive
-`retry_after` seconds on rate-limited CLOSED/rejected OK delay subsequent work
-across sockets to that host, bounded to five minutes. Invalid metadata is
-ignored; errors still reach consumers, and no automatic direct-socket fallback
-or event republication is introduced. Per-bucket drain timers and idle budget
+CLOSED accepts/preserves an optional fourth metadata object; rejected OK uses
+its fifth element. The public `parseRelayRetryAdvice` from libp2r2p accepts only
+finite positive timing on leading `rate-limited:` refusals. Absolute `retry_at`
+(Unix seconds, including fractions) takes precedence over relative `retry_after`
+seconds, even when the absolute deadline has expired. Future waits are capped at
+five minutes; invalid/absent absolute advice falls back to relative advice.
+
+The pool computes advice once on receipt, extends the existing host cooldown
+with max(existing deadline, advice.retryAt), and adds the effective `retry_at` to
+a copy of that frame's extra object. It preserves `retry_after` and other fields.
+Frames without valid advice acquire no synthetic wait. ID rewriting, FIFO port
+queues, delayed credit returns and vault delegation preserve the timestamp;
+they never recompute it at delivery. Existing operation deadlines still apply.
+Older consumers can ignore the extension; upgraded libraries avoid an extra
+relative wait after delayed delivery. Per-bucket drain timers and idle budget
 state are released on close/expiry.
+
+### Internal failure attribution
+
+`relayPoolSnapshot().failureDiagnostics` contains fixed `byOrigin`/`byCode`
+counters and at most 32 recent records. Origins are `pool`, `bridge`, `transport`,
+`protocol` and `consumer-report`. Codes describe actions observed internally:
+capacity, outgoing/receive overflow, invalid credit, rehome, local AUTH validation
+or timeout, unavailable/timed-out attachment, native construction/send/close and
+invalid server framing. Logs use the same sanitized records: time, relay,
+known phase/code and optional close/lifetime facts, never payloads, filters or
+account identities. Snapshots are copies, and records remain in memory only.
+
+Consumer `RELAY_FAILURE` reports are unverified, even when they claim physical
+transport failure. Locally observed pool/bridge failures and consumer reports
+do not increment legacy confirmed connection/relay failure counters. Native
+close/send and invalid server frame observations retain those diagnostics.
+Construction failure is local, not proof that a relay refused an operation.
+
+This attribution is diagnostic only. Nostr extras declaring `local`, `origin`,
+`retryable` or other policy are preserved as inert data and never trusted.
+WebSocket events retain their standard properties; no provenance travels over
+Nostr or reaches an app via event metadata. Generic app libraries still cannot
+reliably distinguish bridge failures from transport closures. Public error
+predicates and send routing are unchanged; trusted app integration and physical
+connection backoff remain future work.

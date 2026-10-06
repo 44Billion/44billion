@@ -54,7 +54,7 @@ try {
   await browser.until(() => browser.evaluate('WebSocket.name === "LauncherRelayPoolWebSocket"', vault), 'vault after navigation')
   for (const origin of [vault, appOrigin]) {
     await browser.evaluate(`(() => {
-      window.bridgeTest = { frames:[], credits:[], closes:[], sockets:[] };
+      window.bridgeTest = { frames:[], credits:[], closes:[], sockets:[], customEventProperties:[] };
       const post = MessagePort.prototype.postMessage;
       MessagePort.prototype.postMessage = function(message,...rest) {
         if(message?.code==='RELAY_CREDIT') { bridgeTest.credits.push({...message.payload}); if(bridgeTest.credits.length>32)bridgeTest.credits.shift(); }
@@ -62,12 +62,17 @@ try {
       };
       bridgeTest.open = async () => {
         const socket = new WebSocket('wss://nos.lol'); bridgeTest.sockets.push(socket);
-        socket.onclose = event => bridgeTest.closes.push({code:event.code,reason:event.reason});
+        const checkShape = (event, native) => {
+          const allowed = Object.getOwnPropertyNames(native);
+          bridgeTest.customEventProperties.push(...Object.getOwnPropertyNames(event).filter(key=>!allowed.includes(key)));
+        };
+        socket.onclose = event => { checkShape(event,new CloseEvent('close')); bridgeTest.closes.push({code:event.code,reason:event.reason}); };
         socket.onmessage = event => {
-          const [op,id,value] = JSON.parse(event.data);
+          checkShape(event,new MessageEvent('message'));
+          const [op,id,value,extra] = JSON.parse(event.data);
           // Block this consumer briefly while the launcher can continue receiving.
           if(op==='EVENT' && bridgeTest.frames.length===0) { const until=performance.now()+100; while(performance.now()<until){} }
-          bridgeTest.frames.push({op,id,index:value?.created_at,size:value?.content?.length});
+          bridgeTest.frames.push({op,id,index:value?.created_at,size:value?.content?.length,extra});
         };
         await new Promise((resolve,reject)=>{socket.onopen=resolve;socket.onerror=reject;}); return bridgeTest.sockets.length-1;
       };
@@ -85,6 +90,9 @@ try {
     await browser.until(() => browser.evaluate('bridgeTest.frames.some(frame=>frame.id === "rate-keep" && frame.op === "EOSE")', origin), 'active subscription before cooldown')
     await browser.evaluate('bridgeTest.sockets[0].send(JSON.stringify([\'REQ\',\'rate-limit\',{kinds:[9701],\'#t\':[\'limited\']}]))', origin)
     await browser.until(() => browser.evaluate('bridgeTest.frames.some(frame=>frame.op === "CLOSED" && frame.id === "rate-limit")', origin), 'rate rejection through real port')
+    const advice = await browser.evaluate('bridgeTest.frames.find(frame=>frame.id === "rate-limit").extra', origin)
+    assert.equal(advice.retry_after, 1)
+    assert.ok(Number.isFinite(advice.retry_at) && advice.retry_at > 0, 'both facades forward the optional absolute Nostr extension')
     await browser.evaluate(`
       bridgeTest.sockets[0].send(JSON.stringify(['REQ','rate-next',{kinds:[9702],'#t':['next']}]))
       bridgeTest.sockets[0].send(JSON.stringify(['REQ','rate-cancel',{kinds:[9702],'#t':['cancel']}]))
@@ -111,8 +119,9 @@ try {
     await browser.evaluate("bridgeTest.frames=[];bridgeTest.sockets[0].send(JSON.stringify(['REQ','after-overflow',{kinds:[9700],'#t':['burst']}]))", origin)
     await browser.until(() => browser.evaluate('bridgeTest.frames.length === 83 && bridgeTest.frames.at(-1).op === "EOSE"', origin), 'shared physical socket remains usable')
     await browser.evaluate('bridgeTest.sockets.forEach(socket=>socket.close())', origin)
+    assert.deepEqual(await browser.evaluate('bridgeTest.customEventProperties', origin), [], 'message/close events expose only native WebSocket properties')
   }
-  console.log('Real launcher/app/vault bridge: busy-consumer bursts, repeated REQ, FIFO, 2 MiB isolated frames, credit metadata and oversized virtual-only closure passed.')
+  console.log('Real launcher/app/vault bridge: FIFO, credits, absolute cooldown advice, native event properties and oversized virtual-only closure passed.')
 } catch (error) {
   await browser?.diagnose(root + '/tmp/browser-failures/relay-bridge')
   throw error

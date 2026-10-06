@@ -3,6 +3,7 @@ import { describe, it } from 'node:test'
 import { RelayPool } from 'libp2r2p/relay'
 import { finalizeEvent } from 'libp2r2p/event'
 import { generateSecretKey } from 'libp2r2p/key'
+import { installLauncherRelayPoolShim } from '../../../ez-vault/src/services/launcher-relay-pool.js'
 
 import { createBridgeTransport } from '#services/relay-pool/app-shim.js'
 import { createRelayBridgeEndpoint } from '#services/relay-pool/bridge-endpoint.js'
@@ -127,11 +128,11 @@ describe('relay pool end to end', () => {
 
 // Exercises the installed library and real MessagePorts. Only upstream socket
 // I/O is controlled; publication validation, timeout reports and routing are real.
-function publicationFixture (t, onEvent, onRequest = () => {}) {
+function publicationFixture (t, onEvent, onRequest = () => {}, { delayedCredits = false, vault = false } = {}) {
   const urls = ['wss://one.example', 'wss://two.example']
   const logs = []
   const registry = new RelayRegistry(urls)
-  const limits = { ...RELAY_POOL_LIMITS, slowPublicationMs: 0, bucketIdleMs: 20, bridgeReceiveCreditBytes: 256 * 1024 }
+  const limits = { ...RELAY_POOL_LIMITS, slowPublicationMs: 0, bucketIdleMs: 20, bridgeReceiveCreditBytes: 256 * 1024, ...(delayedCredits ? { bridgeReceiveCreditFrames: 1 } : {}) }
   const pool = new UnifiedRelayPool({
     registry, limits, log: (...args) => logs.push(args),
     createSocket: url => {
@@ -147,22 +148,37 @@ function publicationFixture (t, onEvent, onRequest = () => {}) {
     }
   })
   const { port1, port2 } = new MessageChannel()
+  const credits = []
+  const post = port1.postMessage.bind(port1)
+  if (delayedCredits) {
+    port1.postMessage = message => {
+      if (message.code === 'RELAY_CREDIT') credits.push(message)
+      else post(message)
+    }
+  }
   const endpoint = createRelayBridgeEndpoint({ port: port2, pool, limits })
   const WebSocket = createRelayPoolWebSocketClass({
     OriginalWebSocket: AppRealmWebSocket, registry, limits,
     baseUrl: 'https://app.example/',
     createPoolTransport: ({ url, callbacks }) => createBridgeTransport({ url, callbacks, getPort: async () => port1, limits })
   })
-  const publisher = new RelayPool({ WebSocket })
+  const shim = vault
+    ? installLauncherRelayPoolShim({
+      port: port1, targetWindow: { WebSocket: AppRealmWebSocket },
+      baseUrl: 'https://vault.example/', securePage: true, relayPoolImpl: {}
+    })
+    : null
+  const publisher = new RelayPool({ WebSocket: shim ? shim.WebSocket : WebSocket })
   t.after(async () => {
     await publisher.disconnectAll()
+    shim?.dispose()
     endpoint.dispose()
     pool.closeAll()
     port1.close()
     port2.close()
   })
   const event = finalizeEvent({ kind: 3560, created_at: 1, tags: [], content: 'test ciphertext' }, generateSecretKey())
-  return { publisher, urls, logs, event }
+  return { publisher, urls, logs, event, releaseCredit: () => post(credits.shift()), credits }
 }
 
 it('the installed publisher receives both relay acknowledgements on repeated publication through the app bridge', async t => {
@@ -208,3 +224,34 @@ it('the installed reader receives all queued history before EOSE completes the q
   assert.deepEqual(report.errors, [])
   assert.equal(report.relays[0].status, 'eose')
 })
+
+for (const vault of [false, true]) {
+  for (const operation of ['CLOSED', 'OK']) {
+    for (const delay of [4000, 12000]) {
+      it(`${vault ? 'vault' : 'app'} delivers delayed ${operation} advice after ${delay}ms without renewing the deadline`, async t => {
+        t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 10000 })
+        const reject = (socket, id) => {
+          socket.message(['NOTICE', 'occupy the first receive credit'])
+          socket.message(operation === 'CLOSED'
+            ? ['CLOSED', id, 'rate-limited: busy', { retry_after: 10, origin: 'local', retryable: false }]
+            : ['OK', id, false, 'rate-limited: busy', { retry_after: 10, origin: 'local', retryable: false }])
+        }
+        const fixture = publicationFixture(t, (socket, event) => reject(socket, event.id), reject, { delayedCredits: true, vault })
+        const pending = operation === 'CLOSED'
+          ? fixture.publisher.getEvents({ kinds: [3560] }, fixture.urls.slice(0, 1), { timeout: 30000 })
+          : fixture.publisher.sendEvent(fixture.event, fixture.urls.slice(0, 1), { timeout: 30000, timeoutUntilFirstFulfillment: 30000 }).then(result => result.promise)
+        await waitFor(() => fixture.credits.length > 0)
+        t.mock.timers.tick(delay)
+        fixture.releaseCredit()
+        const result = await pending
+        assert.equal(result.errors.length, 1)
+        const error = result.errors[0].reason
+        assert.equal(error.message, 'rate-limited: busy')
+        assert.equal(error.retryAfterMs, 10000)
+        assert.equal(error.retryAt, 20000, 'queues and both facades retain the original absolute deadline')
+        assert.equal(error.category, 'relay')
+        assert.equal(error.origin, undefined)
+      })
+    }
+  }
+}

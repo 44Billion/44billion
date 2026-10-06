@@ -23,7 +23,7 @@ function probeRelayNip11 (url, onPositive) {
     .finally(() => clearTimeout(timer))
 }
 
-export function createBridgeTransport ({ url, callbacks, getPort, limits, log }) {
+export function createBridgeTransport ({ url, callbacks, getPort, limits, log, onFailure = () => {} }) {
   const virtualId = `v${++virtualSerial}`
   const sendCredit = new CreditWindow({ frames: limits.bridgeCreditFrames, bytes: limits.bridgeCreditBytes })
   const queue = []
@@ -64,6 +64,7 @@ export function createBridgeTransport ({ url, callbacks, getPort, limits, log })
     closed = true
     port?.postMessage({ code: RELAY_BRIDGE.CLOSE, payload: { virtualId, code: 1000, reason: '' } })
     cleanup()
+    onFailure({ code: 1006, phase: 'bridge', wasClean: false })
     callbacks.onDetach?.(reason)
   }
 
@@ -145,6 +146,7 @@ export function createBridgeTransport ({ url, callbacks, getPort, limits, log })
           closed = true
           port?.postMessage({ code: RELAY_BRIDGE.CLOSE, payload: { virtualId, code: 1000, reason: '' } })
           cleanup()
+          onFailure({ code: 1013, phase: 'bridge', wasClean: false })
           callbacks.onClose?.({ code: 1013, reason: 'relay bridge queue overflow', wasClean: false })
         }
         return
@@ -224,6 +226,7 @@ export function installRelayPoolWebSocketShim ({
         callbacks,
         getPort: () => portPromise,
         limits,
+        onFailure: info => sendFailure(url, info),
         log
       })
     }

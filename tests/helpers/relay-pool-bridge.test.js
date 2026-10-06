@@ -45,7 +45,11 @@ function createFakePool () {
       return this.quarantined.has(url)
     },
     failures: [],
-    recordFailure (url, info) {
+    diagnostics: [],
+    recordDiagnostic (code, info) {
+      this.diagnostics.push({ code, ...info })
+    },
+    recordConsumerFailure (url, info) {
       this.failures.push({ url, ...info })
     },
     attach (url, handlers, options = {}) {
@@ -81,6 +85,7 @@ function createBridge (pool, url = 'wss://relay.example', { limits = RELAY_POOL_
       onDetach: reason => events.push(['detach', reason])
     },
     getPort: async () => appPort,
+    onFailure: info => appPort.postMessage({ code: 'RELAY_FAILURE', payload: { url, ...info } }),
     limits: transportLimits,
     log: () => {}
   })
@@ -165,7 +170,7 @@ describe('relay pool bridge', () => {
     assert.deepEqual(events.at(-1), ['close', { code: 1000, reason: '', wasClean: true }])
   })
 
-  it('records relay failures reported by the app side', async t => {
+  it('records consumer failure reports separately from launcher observations', async t => {
     const pool = createFakePool()
     const { appPort, cleanup } = createBridge(pool)
     t.after(cleanup)
@@ -193,7 +198,7 @@ describe('relay pool bridge', () => {
     }])
   })
 
-  it('records an attach timeout as a relay failure', async t => {
+  it('records an attach timeout as a bridge observation rather than a physical relay failure', async t => {
     const pool = createFakePool()
     const { cleanup } = createBridge(pool, 'wss://relay.example', {
       // Exercise the endpoint deadline independently of the app deadline.
@@ -202,9 +207,10 @@ describe('relay pool bridge', () => {
     })
     t.after(cleanup)
     await new Promise(resolve => setTimeout(resolve, 30))
-    assert.equal(pool.failures[0]?.code, 1006)
-    assert.equal(pool.failures[0]?.phase, 'attach')
-    assert.equal(pool.failures[0]?.lifetimeMs, null)
+    assert.deepEqual(pool.failures, [])
+    assert.equal(pool.diagnostics[0]?.code, 'RELAY_BRIDGE_ATTACH_TIMEOUT')
+    assert.equal(pool.diagnostics[0]?.phase, 'attach')
+    assert.equal(pool.diagnostics[0]?.closeCode, 1006)
   })
 
   it('detaches the vault socket when the launcher pool is unavailable', async t => {
@@ -218,6 +224,8 @@ describe('relay pool bridge', () => {
     await tick()
     await tick()
     assert.deepEqual(events, [['detach', 'relay-pool-unavailable']])
+    assert.equal(pool.diagnostics[0].code, 'RELAY_BRIDGE_UNAVAILABLE')
+    assert.deepEqual(pool.failures, [])
   })
 
   it('replenishes app-to-launcher credit so long send bursts keep flowing', async t => {
@@ -326,6 +334,8 @@ it('releases the launcher attachment on outgoing overflow', async t => {
   assert.equal(bridge.transport.bufferedAmount, 0)
   assert.deepEqual(bridge.events.at(-1), ['close', { code: 1013, reason: 'relay bridge queue overflow', wasClean: false }])
   await waitFor(() => bridge.endpoint.snapshot().attachments === 0)
+  assert.equal(pool.failures[0].phase, 'bridge')
+  assert.equal(pool.failures[0].code, 1013)
   assert.deepEqual(pool.attached[0].sent, ['frame-0'])
   pool.attached[0].handlers.onMessage('late frame')
   await tick()
@@ -356,6 +366,8 @@ for (const exceeded of ['frames', 'bytes']) {
     assert.equal(snapshot.queueOverflows, baseline + 1)
     assert.equal(snapshot.queuedFrames, 0)
     assert.equal(bridge.endpoint.snapshot().attachments, 0)
+    assert.equal(pool.diagnostics.at(-1).code, 'RELAY_BRIDGE_RECEIVE_QUEUE_OVERFLOW')
+    assert.deepEqual(pool.failures, [])
     const overflow = snapshot.recentOverflows.at(-1)
     assert.equal(overflow.owner, 'vault')
     assert.equal(overflow.relay, 'wss://relay.example')

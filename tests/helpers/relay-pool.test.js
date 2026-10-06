@@ -500,6 +500,8 @@ describe('unified relay pool', () => {
     assert.equal(sockets[0].sent.some(message => message[0] === 'AUTH'), false)
     assert.deepEqual(received.at(-1), ['OK', event.id, false, 'invalid: AUTH challenge'])
     assert.equal(pool.snapshot().authRejected, 1)
+    assert.equal(pool.snapshot().failureDiagnostics.byCode.RELAY_POOL_AUTH_INVALID, 1)
+    assert.equal(pool.snapshot().connectionFailures, 0)
   })
 
   it('authenticates a non-mergeable anonymous socket in place as a second bucket', async () => {
@@ -559,6 +561,8 @@ describe('unified relay pool', () => {
     assert.equal(closed.at(-1).code, 1006)
     assert.equal(sockets[0].sent.some(message => message[0] === 'AUTH' && message[1].id === authQ.id), false)
     assert.equal(pool.snapshot().authReconnects, 1)
+    assert.equal(pool.snapshot().failureDiagnostics.byCode.RELAY_POOL_REHOME, 1)
+    assert.equal(pool.snapshot().connectionFailures, 0)
   })
 
   it('allows a second authenticated bucket when the confirmed one has no room', async () => {
@@ -887,6 +891,8 @@ describe('unified relay pool', () => {
     await tick()
     await new Promise(resolve => setTimeout(resolve, 40))
     assert.equal(received.some(message => message[0] === 'OK' && message[1] === authA.id && message[2] === false && message[3] === 'error: AUTH timeout'), true)
+    assert.equal(pool.snapshot().failureDiagnostics.byCode.RELAY_POOL_AUTH_TIMEOUT, 1)
+    assert.equal(pool.snapshot().connectionFailures, 0)
     pool.attach('wss://relay.example', {})
     await tick()
     assert.equal(sockets.length, 2)
@@ -943,6 +949,7 @@ describe('unified relay pool', () => {
     await tick()
     assert.equal(pool.isQuarantined('wss://relay.example'), true)
     assert.deepEqual(detaches, ['invalid-server-frame'])
+    assert.equal(pool.snapshot().failureDiagnostics.byOrigin.protocol, 1)
   })
 
   it('closes only the offending member when its queue overflows', async () => {
@@ -1054,7 +1061,7 @@ it('preserves CLOSED metadata and honors cooldowns without holding resource clea
   await tick()
   const ns = sockets[0].sent.find(frame => frame[0] === 'REQ')[1]
   sockets[0].message(['CLOSED', ns, 'rate-limited: busy', { retry_after: 2 }])
-  assert.deepEqual(received.at(-1), ['CLOSED', 'limited', 'rate-limited: busy', { retry_after: 2 }])
+  assert.deepEqual(received.at(-1), ['CLOSED', 'limited', 'rate-limited: busy', { retry_after: 2, retry_at: 12 }])
   member.send(JSON.stringify(['REQ', 'next', {}]))
   member.send(JSON.stringify(['CLOSE', 'active']))
   await tick()
@@ -1067,4 +1074,134 @@ it('preserves CLOSED metadata and honors cooldowns without holding resource clea
   await tick()
   assert.equal(sockets[0].sent.length, count + 1)
   assert.equal(sockets[0].sent.at(-1)[0], 'REQ')
+})
+
+it('different sockets on one host receive the same effective deadline without renewing it', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 10000 })
+  const { pool, sockets } = createPool({ maxSubscriptionsPerBucket: 1 })
+  t.after(() => pool.closeAll())
+  const receivedA = []
+  const receivedB = []
+  const a = pool.attach('wss://relay.example', { onMessage: raw => receivedA.push(JSON.parse(raw)) })
+  const b = pool.attach('wss://relay.example', { onMessage: raw => receivedB.push(JSON.parse(raw)) })
+  await tick(); sockets[0].open()
+  a.send(JSON.stringify(['REQ', 'a', {}]))
+  b.send(JSON.stringify(['REQ', 'b', {}]))
+  await tick(); sockets[1].open(); await tick()
+  a.send(JSON.stringify(['EVENT', { id: 'e'.repeat(64) }]))
+  await tick()
+  const second = sockets[1].sent.find(frame => frame[0] === 'REQ')
+  const extra = { retry_after: 10, origin: 'local', local: true, retryable: false, note: 'preserved' }
+  sockets[0].message(['OK', 'e'.repeat(64), false, 'rate-limited: busy', extra])
+  assert.equal(receivedA.at(-1)[4].retry_at, 20)
+  assert.equal(extra.retry_at, undefined, 'the physical frame object is not mutated')
+  t.mock.timers.tick(1000)
+  sockets[1].message(['CLOSED', second[1], 'rate-limited: busy', { retry_after: 1 }])
+  assert.deepEqual(receivedB.at(-1), ['CLOSED', 'b', 'rate-limited: busy', { retry_after: 1, retry_at: 20 }])
+  assert.deepEqual(receivedA.at(-1)[4], { ...extra, retry_at: 20 })
+  assert.equal(pool.snapshot().failureDiagnostics.byOrigin.pool, 0, 'untrusted origin claims never create local diagnostics')
+})
+
+it('absolute-only and expired advice is forwarded without creating another relative wait', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 10000 })
+  const { pool, sockets } = createPool()
+  t.after(() => pool.closeAll())
+  const received = []
+  const member = pool.attach('wss://relay.example', { onMessage: raw => received.push(JSON.parse(raw)) })
+  await tick(); sockets[0].open()
+  member.send(JSON.stringify(['REQ', 'first', {}])); await tick()
+  let nsId = sockets[0].sent.at(-1)[1]
+  sockets[0].message(['CLOSED', nsId, 'rate-limited: busy', { retry_at: 10.125 }])
+  assert.equal(received.at(-1)[3].retry_at, 10.125)
+  member.send(JSON.stringify(['REQ', 'next', {}])); await tick()
+  t.mock.timers.tick(125); await tick()
+  nsId = sockets[0].sent.at(-1)[1]
+  t.mock.timers.tick(10000)
+  sockets[0].message(['CLOSED', nsId, 'rate-limited: busy', { retry_after: 10, retry_at: 10.125 }])
+  assert.equal(received.at(-1)[3].retry_at, 10.125)
+  member.send(JSON.stringify(['REQ', 'immediate', {}])); await tick()
+  assert.equal(sockets[0].sent.at(-1)[0], 'REQ')
+})
+
+it('local queue overflow is separate from observed physical failures and adds no close properties', async t => {
+  const { pool, sockets } = createPool({ messageBudgetPerRelay: 1, messageWindowMs: 2000, maxQueuedFramesPerMember: 1 })
+  t.after(() => pool.closeAll())
+  let closed
+  const member = pool.attach('wss://relay.example', { onClose: info => { closed = info } })
+  await tick(); sockets[0].open()
+  member.send(JSON.stringify(['REQ', 'a', {}])); await tick()
+  member.send(JSON.stringify(['REQ', 'b', {}]))
+  member.send(JSON.stringify(['REQ', 'c', {}]))
+  assert.deepEqual(closed, { code: 1013, reason: 'relay pool queue overflow', wasClean: false })
+  let snapshot = pool.snapshot()
+  assert.equal(snapshot.connectionFailures, 0)
+  assert.deepEqual(snapshot.relayFailures, {})
+  assert.equal(snapshot.failureDiagnostics.byCode.RELAY_POOL_QUEUE_OVERFLOW, 1)
+  const another = pool.attach('wss://relay.example')
+  await tick()
+  sockets[0].onclose({ code: 1006, reason: 'lost', wasClean: false })
+  snapshot = pool.snapshot()
+  assert.equal(snapshot.connectionFailures, 1)
+  assert.equal(snapshot.failureDiagnostics.byOrigin.transport, 1)
+  another.close()
+})
+
+it('consumer claims remain unverified and bounded without retaining identity or frame data', () => {
+  const { pool } = createPool()
+  for (let n = 0; n < 50; n++) {
+    pool.recordConsumerFailure('wss://relay.example', { code: 1006, phase: 'speculative', origin: 'transport', reason: 'account identity', pubkey: 'secret', frame: ['EVENT', {}] })
+  }
+  const diagnostics = pool.snapshot().failureDiagnostics
+  assert.equal(diagnostics.byOrigin['consumer-report'], 50)
+  assert.equal(diagnostics.byOrigin.transport, 0)
+  assert.equal(diagnostics.recent.length, 32)
+  assert.equal(pool.snapshot().connectionFailures, 0)
+  assert.deepEqual(pool.snapshot().relayFailures, {})
+  assert.ok(!JSON.stringify(diagnostics).includes('secret'))
+  assert.ok(!JSON.stringify(diagnostics).includes('identity'))
+  diagnostics.recent[0].origin = 'modified'
+  assert.equal(pool.snapshot().failureDiagnostics.recent[0].origin, 'consumer-report')
+  pool.closeAll()
+})
+
+it('construction, capacity and invalid client frames are local observations', async t => {
+  const construction = new UnifiedRelayPool({ createSocket: () => { throw new Error('native construction failed') } })
+  t.after(() => construction.closeAll())
+  construction.attach('wss://relay.example')
+  await tick()
+  assert.equal(construction.snapshot().failureDiagnostics.byCode.RELAY_SOCKET_CREATE_FAILED, 1)
+  assert.equal(construction.snapshot().connectionFailures, 0)
+  const { pool, sockets } = createPool({ maxSubscriptionsPerBucket: 1, maxBucketsPerRelay: 1 })
+  t.after(() => pool.closeAll())
+  const member = pool.attach('wss://relay.example')
+  await tick(); sockets[0].open()
+  member.send(JSON.stringify(['REQ', 'a', {}]))
+  member.send(JSON.stringify(['REQ', 'b', {}]))
+  await tick()
+  assert.equal(pool.snapshot().failureDiagnostics.byCode.RELAY_POOL_CAPACITY, 1)
+  const invalid = pool.attach('wss://relay.example')
+  await tick()
+  invalid.send('not a Nostr frame')
+  assert.equal(pool.snapshot().failureDiagnostics.byCode.RELAY_POOL_INVALID_CLIENT_FRAME, 1)
+  assert.equal(pool.snapshot().connectionFailures, 0)
+})
+
+it('invalid or unrelated timing does not add advice or postpone other hosts', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 10000 })
+  const { pool, sockets } = createPool()
+  t.after(() => pool.closeAll())
+  const received = []
+  const member = pool.attach('wss://relay.example', { onMessage: raw => received.push(JSON.parse(raw)) })
+  await tick(); sockets[0].open()
+  for (const [reason, extra] of [['rate-limited: busy', { retry_after: '10', retry_at: -1 }], ['blocked: denied', { retry_after: 10, local: true }]]) {
+    member.send(JSON.stringify(['REQ', 'a', {}])); await tick()
+    sockets[0].message(['CLOSED', sockets[0].sent.at(-1)[1], reason, extra])
+    assert.deepEqual(received.at(-1), ['CLOSED', 'a', reason, extra])
+  }
+  member.send(JSON.stringify(['REQ', 'limited', {}])); await tick()
+  sockets[0].message(['CLOSED', sockets[0].sent.at(-1)[1], 'rate-limited: busy', { retry_after: 10 }])
+  const other = pool.attach('wss://other.example')
+  await tick(); sockets[1].open()
+  other.send(JSON.stringify(['REQ', 'immediate', {}])); await tick()
+  assert.equal(sockets[1].sent.at(-1)[1].endsWith('immediate'), true)
 })
