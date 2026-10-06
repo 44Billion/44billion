@@ -1,5 +1,6 @@
 const ORIGINS = Object.freeze({
   RELAY_SOCKET_CLOSED: 'transport',
+  RELAY_SOCKET_CONNECT_TIMEOUT: 'transport',
   RELAY_SOCKET_SEND_FAILED: 'transport',
   RELAY_INVALID_SERVER_FRAME: 'protocol',
   RELAY_SOCKET_CREATE_FAILED: 'pool',
@@ -16,7 +17,7 @@ const ORIGINS = Object.freeze({
   RELAY_BRIDGE_INVALID_CREDIT: 'bridge',
   RELAY_CONSUMER_REPORTED_FAILURE: 'consumer-report'
 })
-const PHASES = new Set(['connection', 'construct', 'create', 'pool', 'send', 'protocol', 'attach', 'direct', 'speculative', 'bridge', 'auth', 'capacity', 'queue', 'rehome'])
+const PHASES = new Set(['connection', 'connect-timeout', 'construct', 'create', 'pool', 'send', 'protocol', 'attach', 'direct', 'speculative', 'bridge', 'auth', 'capacity', 'queue', 'rehome'])
 
 // Diagnostics describe observations by the launcher, not claims in relay frames.
 // Keep finite counters and only 32 records; no payloads, filters or identities.

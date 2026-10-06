@@ -8,18 +8,36 @@ import { prepareTestApp } from './runtime/prepare-app.js'
 const root = fileURLToPath(new URL('../../', import.meta.url))
 const runtime = await ensureRuntime({ log: () => {} })
 let browser
+let connectivityChecks = 0
 try {
   const app = await prepareTestApp([{ name: 'index.html', bytes: new TextEncoder().encode('<!doctype html><title>Relay bridge regression</title><p>Relay bridge regression</p>') }], { identifier: 'relay-bridge-regression', name: 'Relay bridge regression' })
-  browser = await launchChrome()
+  browser = await launchChrome({
+    intercept: request => {
+      if (!['www.gstatic.com', 'connectivitycheck.gstatic.com', 'captive.apple.com', 'connectivity-check.ubuntu.com'].includes(new URL(request.url).hostname)) return null
+      connectivityChecks++
+      return { responseCode: 204, body: '' }
+    }
+  })
   await browser.send('Page.addScriptToEvaluateOnNewDocument', {
     source: `
     if (location.hostname === 'localhost' && location.port === '10000') {
-      window.transport = { opened: 0, closed: 0, frames: [] };
+      window.transport = { opened: 0, closed: 0, frames: [], sockets: [], attempts: [], failuresRemaining: 0 };
       window.WebSocket = class extends EventTarget {
         static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
         CONNECTING = 0; OPEN = 1; CLOSING = 2; CLOSED = 3;
         readyState = 0; bufferedAmount = 0; extensions = ''; protocol = '';
-        constructor(url) { super(); this.url = url; transport.opened++; setTimeout(() => { this.readyState = 1; this.onopen?.({}); this.dispatchEvent(new Event('open')); }, 0); }
+        constructor(url) {
+          super(); this.url = url; transport.opened++;
+          transport.sockets.push(this); transport.attempts.push({url,at:performance.now()});
+          const fail = url.startsWith('wss://nos.lol') && transport.failuresRemaining>0;
+          if(fail)transport.failuresRemaining--;
+          setTimeout(() => {
+            if(this.readyState===3)return;
+            if(fail) { this.fail(); return; }
+            this.readyState = 1; this.onopen?.({}); this.dispatchEvent(new Event('open'));
+          }, 0);
+        }
+        fail() { this.readyState=3; transport.closed++; this.onclose?.({code:1006,reason:'controlled native failure',wasClean:false}); }
         send(raw) {
           const [op, id, filter] = JSON.parse(raw);
           transport.frames.push({op,id,marker:filter?.['#t']?.[0],at:performance.now()});
@@ -121,7 +139,32 @@ try {
     await browser.evaluate('bridgeTest.sockets.forEach(socket=>socket.close())', origin)
     assert.deepEqual(await browser.evaluate('bridgeTest.customEventProperties', origin), [], 'message/close events expose only native WebSocket properties')
   }
-  console.log('Real launcher/app/vault bridge: FIFO, credits, absolute cooldown advice, native event properties and oversized virtual-only closure passed.')
+  const baselineAttempts = await browser.evaluate('transport.attempts.length')
+  await browser.evaluate("transport.failuresRemaining=2;transport.sockets.filter(socket=>socket.url.startsWith('wss://nos.lol')&&socket.readyState<2).forEach(socket=>socket.fail())")
+  for (const origin of ['http://localhost:10000', vault, appOrigin]) {
+    await browser.evaluate(`(() => {
+      window.physicalRun={sockets:[],closes:[],opens:0,custom:[],active:true};
+      const check=(event,native)=>physicalRun.custom.push(...Object.getOwnPropertyNames(event).filter(key=>!Object.getOwnPropertyNames(native).includes(key)));
+      const connect=()=>{
+        if(!physicalRun.active)return;
+        const socket=new WebSocket('wss://nos.lol');physicalRun.sockets.push(socket);
+        socket.onopen=event=>{check(event,new Event('open'));physicalRun.opens++;socket.send(JSON.stringify(['REQ','physical',{kinds:[9702]}]));};
+        socket.onmessage=event=>check(event,new MessageEvent('message'));
+        socket.onclose=event=>{check(event,new CloseEvent('close'));physicalRun.closes.push(event.code);if(physicalRun.active)setTimeout(connect,0);};
+      };connect();
+    })()`, origin)
+  }
+  for (const origin of ['http://localhost:10000', vault, appOrigin]) {
+    await browser.until(() => browser.evaluate('physicalRun.sockets.at(-1)?.readyState===1', origin), `${origin} physical recovery`, 25000)
+    assert.deepEqual(await browser.evaluate('physicalRun.custom', origin), [])
+  }
+  const attempts = (await browser.evaluate('transport.attempts')).slice(baselineAttempts).filter(attempt => attempt.url.startsWith('wss://nos.lol'))
+  assert.equal(attempts.length, 3, 'all three consumers share each physical recovery attempt')
+  assert.ok(attempts[1].at - attempts[0].at >= 1500, 'second failure increases shared backoff')
+  assert.ok(attempts[2].at - attempts[1].at >= 3000, 'open consumers cannot bypass the next stage')
+  assert.ok(connectivityChecks > 0, 'physical failures use the real shared connectivity APIs')
+  for (const origin of ['http://localhost:10000', vault, appOrigin]) await browser.evaluate('physicalRun.active=false;physicalRun.sockets.forEach(socket=>socket.close())', origin)
+  console.log('Real launcher/app/vault bridge: FIFO, credits, absolute cooldowns, shared physical failure recovery, native events and isolated overflow passed.')
 } catch (error) {
   await browser?.diagnose(root + '/tmp/browser-failures/relay-bridge')
   throw error

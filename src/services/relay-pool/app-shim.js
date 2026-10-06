@@ -72,6 +72,9 @@ export function createBridgeTransport ({ url, callbacks, getPort, limits, log, o
     const message = event.data
     if (closed || message?.payload?.virtualId !== virtualId) return
     switch (message.code) {
+      case RELAY_BRIDGE.ATTACH_PENDING:
+        clearTimeout(portTimer)
+        break
       case RELAY_BRIDGE.ATTACHED:
         clearTimeout(portTimer)
         attached = true

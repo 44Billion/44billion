@@ -237,3 +237,10 @@ WebSocket events retain their standard API. Bounded internal diagnostics separat
 pool/bridge observations, transport/protocol observations and unverified consumer
 reports; remote origin/policy claims never affect routing. See
 [relay pool contracts](docs/relay-pool.md#internal-failure-attribution).
+
+Physical connections now share recovery per relay URL, with exponential backoff
+from one second to 30 seconds and jitter. Offline recovery waits for the shared
+connectivity monitor; healthy sockets remain available. Queued connections keep
+standard WebSocket semantics and caller deadlines. Queue admission is acknowledged
+unconditionally; no compatibility negotiation with older injected shims is kept. See
+[physical recovery contracts](docs/relay-pool.md#physical-connection-recovery).

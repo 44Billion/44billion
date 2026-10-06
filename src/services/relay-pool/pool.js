@@ -5,6 +5,7 @@ import { parseRelayRetryAdvice } from 'libp2r2p/relay'
 import { parseNostrFrame } from './classify.js'
 import { closeCodeLabel } from './close-code-label.js'
 import { RELAY_POOL_LIMITS } from './constants.js'
+import { ConnectionRecovery, RECOVERABLE_CLOSE_CODES } from './connection-recovery.js'
 import { RelayRegistry } from './registry.js'
 import { RelayDiagnostics } from './diagnostics.js'
 
@@ -55,11 +56,13 @@ export class UnifiedRelayPool {
   #connectionQueue = []
   #connectionTimesByHost = new Map()
   #connectionTimer = null
+  #connectionPumpScheduled = false
   #quarantined = new Map()
   #consolidating = new Set()
   #anonymousConsolidationAt = new Map()
   #relayFailures = new Map()
   #diagnostics
+  #recovery
   #serial = 0
   #counters = {
     physicalOpened: 0,
@@ -88,7 +91,10 @@ export class UnifiedRelayPool {
     createSocket,
     registry = new RelayRegistry(),
     limits = RELAY_POOL_LIMITS,
-    log = () => {}
+    log = () => {},
+    _isOnline,
+    _onOnline,
+    _random
   } = {}) {
     if (typeof createSocket !== 'function') throw new Error('RELAY_POOL_SOCKET_FACTORY_REQUIRED')
     this.#createSocket = createSocket
@@ -96,6 +102,7 @@ export class UnifiedRelayPool {
     this.#limits = limits
     this.#log = log
     this.#diagnostics = new RelayDiagnostics(log)
+    this.#recovery = new ConnectionRecovery({ limits, wake: () => this.#wakeConnections(), checkOnline: _isOnline, watchOnline: _onOnline, random: _random })
   }
 
   get registry () {
@@ -127,7 +134,7 @@ export class UnifiedRelayPool {
       this.recordDiagnostic('RELAY_SOCKET_CREATE_FAILED', { relay: key, phase, closeCode: code, wasClean, lifetimeMs })
       return
     }
-    const diagnosticCode = phase === 'protocol' ? 'RELAY_INVALID_SERVER_FRAME' : phase === 'send' ? 'RELAY_SOCKET_SEND_FAILED' : 'RELAY_SOCKET_CLOSED'
+    const diagnosticCode = phase === 'connect-timeout' ? 'RELAY_SOCKET_CONNECT_TIMEOUT' : phase === 'protocol' ? 'RELAY_INVALID_SERVER_FRAME' : phase === 'send' ? 'RELAY_SOCKET_SEND_FAILED' : 'RELAY_SOCKET_CLOSED'
     this.recordDiagnostic(diagnosticCode, { relay: key, phase, closeCode: code, wasClean, lifetimeMs })
     const previous = this.#relayFailures.get(key)
     this.#relayFailures.set(key, {
@@ -190,6 +197,7 @@ export class UnifiedRelayPool {
       closed: false
     }
     this.#members.set(member.id, member)
+    this.#recovery.retain(key)
     this.#counters.membersAttached++
     const bucket = this.#selectBucket(key, null, true)
     if (bucket) this.#addMember(member, bucket)
@@ -212,6 +220,12 @@ export class UnifiedRelayPool {
     for (const bucket of [...this.#buckets.values()]) this.#destroyBucket(bucket, 1000, '', true)
     for (const budget of this.#messageBudgets.values()) clearTimeout(budget.cleanupTimer)
     this.#messageBudgets.clear()
+    clearTimeout(this.#connectionTimer)
+    this.#connectionTimer = null
+    this.#connectionQueue.length = 0
+    this.#pendingMembers.length = 0
+    this.#connectionTimesByHost.clear()
+    this.#recovery.clear()
   }
 
   snapshot () {
@@ -243,6 +257,7 @@ export class UnifiedRelayPool {
       droppedByOp: { ...this.#counters.droppedByOp },
       relayFailures: Object.fromEntries([...this.#relayFailures].map(([url, entry]) => [url, { ...entry }])),
       failureDiagnostics: this.#diagnostics.snapshot(),
+      connectionRecovery: this.#recovery.snapshot(),
       buckets: this.#buckets.size,
       bucketsByHost,
       membersByOwner,
@@ -285,7 +300,9 @@ export class UnifiedRelayPool {
   }
 
   #selectBucket (url, identity, create, { exclude = null } = {}) {
-    const buckets = [...this.#membersForUrl(url)].filter(bucket => bucket.state !== 'closed' && bucket !== exclude)
+    const buckets = [...this.#membersForUrl(url)]
+      .filter(bucket => bucket.state !== 'closed' && bucket !== exclude)
+      .sort((a, b) => Number(b.state === 'open') - Number(a.state === 'open'))
     const exact = buckets.find(bucket => bucket.identity === identity && this.#hasBucketRoom(bucket) &&
       (identity !== null || (bucket.pendingAuths.size === 0 && !bucket.unverified)))
     if (exact) return exact
@@ -344,6 +361,8 @@ export class UnifiedRelayPool {
       state: 'queued',
       socket: null,
       openedAt: null,
+      connectTimer: null,
+      recoveryGeneration: null,
       challenge: null,
       members: new Set(),
       subscriptions: new Map(), // nsId -> member
@@ -369,7 +388,18 @@ export class UnifiedRelayPool {
 
   #scheduleBucketConnection (bucket) {
     this.#connectionQueue.push(bucket)
-    this.#pumpConnections()
+    this.#wakeConnections()
+  }
+
+  #wakeConnections () {
+    clearTimeout(this.#connectionTimer)
+    this.#connectionTimer = null
+    if (this.#connectionPumpScheduled) return
+    this.#connectionPumpScheduled = true
+    queueMicrotask(() => {
+      this.#connectionPumpScheduled = false
+      this.#pumpConnections()
+    })
   }
 
   #hostFor (url) {
@@ -392,6 +422,15 @@ export class UnifiedRelayPool {
       if (bucket.closed) {
         this.#connectionQueue.splice(index, 1)
         index--
+        continue
+      }
+      if (!bucket.members.size) continue
+      const deferred = this.#recovery.gate(bucket.url, bucket.id)
+      if (deferred) {
+        if (deferred.until !== undefined) {
+          const delay = Math.max(1, deferred.until - now)
+          if (retryDelay === null || delay < retryDelay) retryDelay = delay
+        }
         continue
       }
       const host = this.#hostFor(bucket.url)
@@ -427,6 +466,8 @@ export class UnifiedRelayPool {
 
   #openBucket (bucket) {
     let socket
+    if (bucket.closed || !bucket.members.size) return
+    bucket.recoveryGeneration = this.#recovery.attempt(bucket.url, bucket.id)
     try {
       socket = this.#createSocket(bucket.url)
     } catch (error) {
@@ -437,10 +478,19 @@ export class UnifiedRelayPool {
     }
     bucket.socket = socket
     bucket.state = 'connecting'
+    bucket.connectTimer = setTimeout(() => {
+      if (bucket.closed || bucket.state !== 'connecting') return
+      this.#recovery.failed(bucket.url, bucket.id, bucket.recoveryGeneration)
+      this.recordFailure(bucket.url, { code: 1006, reason: 'relay connection timeout', phase: 'connect-timeout', wasClean: false })
+      this.#failBucket(bucket, 1006, 'relay connection timeout')
+    }, this.#limits.physicalConnectTimeoutMs)
+    bucket.connectTimer.unref?.()
     socket.onopen = () => {
       if (bucket.closed) return
+      clearTimeout(bucket.connectTimer)
       bucket.state = 'open'
       bucket.openedAt = Date.now()
+      this.#recovery.opened(bucket.url, bucket.id)
       this.#counters.physicalOpened++
       for (const member of bucket.members) this.#memberOpened(member)
       this.#drainBucket(bucket)
@@ -450,6 +500,7 @@ export class UnifiedRelayPool {
     socket.onclose = event => {
       if (bucket.closed) return
       this.#counters.physicalClosed++
+      if (RECOVERABLE_CLOSE_CODES.has(event?.code ?? 1006)) this.#recovery.failed(bucket.url, bucket.id, bucket.recoveryGeneration)
       this.recordFailure(bucket.url, {
         code: event?.code ?? 1006,
         reason: event?.reason ?? '',
@@ -481,6 +532,8 @@ export class UnifiedRelayPool {
     if (bucket.closed) return
     bucket.closed = true
     bucket.state = 'closed'
+    clearTimeout(bucket.connectTimer)
+    this.#recovery.closed(bucket.url, bucket.id)
     clearTimeout(bucket.drainTimer)
     const host = this.#hostFor(bucket.url)
     if (![...this.#buckets.values()].some(other => !other.closed && this.#hostFor(other.url) === host)) {
@@ -516,6 +569,7 @@ export class UnifiedRelayPool {
       bucket.idleTimer = null
     }
     if (bucket.state === 'open') queueMicrotask(() => this.#memberOpened(member))
+    else this.#wakeConnections()
   }
 
   #memberOpened (member) {
@@ -554,6 +608,11 @@ export class UnifiedRelayPool {
     member.queuedBytes = 0
     member.bucket = null
     if (bucket.members.size === 0 && !bucket.closed) {
+      if (bucket.state === 'queued' || bucket.state === 'connecting') {
+        this.#recovery.cancelledBeforeOpen()
+        this.#destroyBucket(bucket, 1000, 'cancelled', true)
+        return
+      }
       bucket.idleTimer = setTimeout(() => {
         if (bucket.members.size === 0) this.#destroyBucket(bucket, 1000, 'idle', true)
       }, this.#limits.bucketIdleMs)
@@ -1097,6 +1156,7 @@ export class UnifiedRelayPool {
       this.#counters.framesOut++
     } catch (error) {
       this.#log('control send failed', bucket.url, error?.message ?? error)
+      this.#recovery.failed(bucket.url, bucket.id, bucket.recoveryGeneration)
       this.recordFailure(bucket.url, { code: 1006, reason: error?.message ?? 'send failed', phase: 'send', openedAt: bucket.openedAt, lifetimeMs: bucket.openedAt ? Date.now() - bucket.openedAt : null })
       this.#failBucket(bucket, 1006, 'send failed')
     }
@@ -1152,6 +1212,7 @@ export class UnifiedRelayPool {
         this.#counters.framesOut++
       } catch (error) {
         this.#log('send failed', bucket.url, error?.message ?? error)
+        this.#recovery.failed(bucket.url, bucket.id, bucket.recoveryGeneration)
         this.recordFailure(bucket.url, {
           code: 1006,
           reason: error?.message ?? 'send failed',
@@ -1351,6 +1412,7 @@ export class UnifiedRelayPool {
     this.#removeMemberFromBucket(member)
     member.closed = true
     this.#members.delete(member.id)
+    this.#recovery.release(member.url)
     member.handlers.onDetach?.(reason)
     if (!alreadyRemoved) this.#drainPendingMembers()
     if (bucket && !bucket.closed) this.#consolidateBuckets(bucket.url, bucket.identity)
@@ -1362,6 +1424,7 @@ export class UnifiedRelayPool {
     this.#removeMemberFromBucket(member)
     member.closed = true
     this.#members.delete(member.id)
+    this.#recovery.release(member.url)
     member.handlers.onClose?.({ code, reason, wasClean })
     this.#drainPendingMembers()
     if (bucket && !bucket.closed) this.#consolidateBuckets(bucket.url, bucket.identity)

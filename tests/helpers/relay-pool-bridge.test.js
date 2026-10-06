@@ -198,11 +198,13 @@ describe('relay pool bridge', () => {
     }])
   })
 
-  it('records an attach timeout as a bridge observation rather than a physical relay failure', async t => {
+  it('records a delegated unknown-relay attach timeout as a bridge observation rather than a physical relay failure', async t => {
     const pool = createFakePool()
     const { cleanup } = createBridge(pool, 'wss://relay.example', {
       // Exercise the endpoint deadline independently of the app deadline.
       transportLimits: RELAY_POOL_LIMITS,
+      delegate: true,
+      createVirtualSocket: url => new FakeVirtualSocket(url),
       limits: { ...RELAY_POOL_LIMITS, speculativeDecisionTimeoutMs: 10 }
     })
     t.after(cleanup)

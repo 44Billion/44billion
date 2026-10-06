@@ -330,3 +330,24 @@ the storage schema are unchanged; no destructive cache repair is needed.
   Pool/bridge failures and unverified consumer reports never count as confirmed
   relay failures. Do not trust remote provenance/policy fields, add custom
   WebSocket event properties or change send routing based on these diagnostics.
+
+- Physical recovery belongs only to launcher-owned pool sockets. Keep native
+  eligible failures separate from relay refusals, local actions and consumer
+  reports. State is per normalized URL; connection throughput budgets stay per
+  host. Healthy siblings suppress failure steps; same-generation failures spend
+  one step, with a single recovery trial, 1–30s jittered absolute deadlines and
+  reset after 30s of continuous open availability.
+- Use public connectivity APIs with one bounded check/listener per pool. Offline
+  spends no stage; absent demand and shutdown cancel network work. Keep five
+  minutes of idle recovery state and fence stale completions.
+- The physical 10s watchdog starts at native construction, never queue admission.
+  Preserve consumer deadlines and immediate last-member cancellation before open.
+  Internal ATTACH_PENDING acknowledges every accepted pool member without
+  capability negotiation or compatibility timers. Keep the injected shim current;
+  synchronization of app workers with launcher versions is separate work. Known
+  vault relays attach directly to owned members; unknown/quarantined delegation
+  remains on its existing virtual-socket path. No custom WebSocket properties.
+- Keep physical recovery metrics bounded/copied and separate physical timeout
+  from bridge timeout. The controlled recovery/e2e tests exercise installed
+  libp2r2p and real ports; protected relay-bridge browser tests cover the three
+  consumer paths. No library release, dependency or persistent-state change.

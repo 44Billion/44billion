@@ -33,9 +33,8 @@ export function broadcastRelayRegistry (urls) {
 }
 
 // Launcher side of the dedicated relay port for one owner (app instance or the
-// vault). In app mode each attachment maps to a pool member; in delegated mode
-// (the vault) the launcher creates and owns the virtual socket itself, so the
-// remote side only has to pipe frames.
+// vault). Known relays attach directly to pool members in both modes. Delegated
+// unknown/quarantined URLs retain the launcher's virtual-socket fallback path.
 export function createRelayBridgeEndpoint ({
   port,
   pool,
@@ -158,12 +157,6 @@ export function createRelayBridgeEndpoint ({
       return
     }
     pool.registry.addRelay(url)
-    attachment.timer = setTimeout(() => {
-      if (attachment.url) {
-        pool.recordDiagnostic?.('RELAY_BRIDGE_ATTACH_TIMEOUT', { relay: attachment.url, phase: 'attach', closeCode: 1006 })
-      }
-      dropAttachment(virtualId, 1006, 'relay attach timeout', false)
-    }, limits.speculativeDecisionTimeoutMs)
     attachment.member = pool.attach(url, {
       onOpen: info => {
         if (!isActive(attachment)) return
@@ -181,6 +174,7 @@ export function createRelayBridgeEndpoint ({
         send(RELAY_BRIDGE.DETACH, { virtualId, reason })
       }
     }, { owner })
+    if (isActive(attachment)) send(RELAY_BRIDGE.ATTACH_PENDING, { virtualId })
   }
 
   const onMessage = event => {
@@ -230,7 +224,8 @@ export function createRelayBridgeEndpoint ({
           }
         })
         attachments.set(virtualId, attachment)
-        if (delegate) attachDelegated(virtualId, payload.url, attachment)
+        const pooledDelegate = delegate && pool.registry.hasRelay(payload.url) && !pool.isQuarantined(payload.url)
+        if (delegate && !pooledDelegate) attachDelegated(virtualId, payload.url, attachment)
         else attachPoolMember(virtualId, payload.url, attachment)
         break
       }
@@ -278,13 +273,14 @@ export function createRelayBridgeEndpoint ({
     },
     dispose () {
       if (disposed) return
-      disposed = true
       port.removeEventListener('message', onMessage)
-      for (const attachment of attachments.values()) {
+      for (const attachment of [...attachments.values()]) {
         releaseAttachment(attachment)
         attachment.suppressClose = true
         closeAttachment(attachment, 1000, '')
+        send(RELAY_BRIDGE.CLOSED, { virtualId: attachment.virtualId, code: 1006, reason: 'relay bridge disposed', wasClean: false })
       }
+      disposed = true
       attachments.clear()
       endpoints.delete(endpoint)
     }

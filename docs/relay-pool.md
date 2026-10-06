@@ -60,7 +60,8 @@ anonymous bucket. Defaults live in `src/services/relay-pool/constants.js`:
   shared by physical sockets (round-robin within each socket);
 - 256 queued frames / 1 MiB per virtual socket, then only that socket is
   closed with 1013;
-- buckets with no members close after 30 seconds.
+- open buckets with no members close after 30 seconds; queued/connecting
+  buckets are destroyed immediately when their last member leaves.
 
 Subscription ids are namespaced per virtual socket before going to the relay
 and rewritten back before delivery. A `REQ` that reuses a raw subscription id
@@ -233,10 +234,10 @@ The vault sends a second `MessageChannel` port in `VAULT_READY`. After the
 launcher validates the iframe source/origin and the vault validates the
 reply origin, the launcher creates a delegated relay endpoint and the vault
 installs a thin `window.WebSocket` shim (hard-coded
-`ENABLE_LAUNCHER_RELAY_POOL` flag). The launcher owns the real virtual
-socket, so registry, speculative connect, pool adoption, detach and
-fallback logic stay only here; the vault pipes frames, credits and close
-events. Activation requires a completed handshake advertising
+`ENABLE_LAUNCHER_RELAY_POOL` flag). Known, non-quarantined relays attach
+directly to pool members owned by the vault. Other URLs retain launcher-owned
+virtual sockets for registry, speculative connect, adoption, detach and fallback.
+The vault pipes frames, credits and close events without implementing scheduling. Activation requires a completed handshake advertising
 `relayPoolSupported && relayPoolEnabled`; standalone vaults, old launchers
 and disabled pools keep native sockets. The physical sockets originate from
 the launcher origin, which Nostr relays normally ignore. Delegated sockets
@@ -458,5 +459,59 @@ This attribution is diagnostic only. Nostr extras declaring `local`, `origin`,
 WebSocket events retain their standard properties; no provenance travels over
 Nostr or reaches an app via event metadata. Generic app libraries still cannot
 reliably distinguish bridge failures from transport closures. Public error
-predicates and send routing are unchanged; trusted app integration and physical
-connection backoff remain future work.
+predicates and send routing are unchanged; trusted app attribution remains future
+work. Physical connection recovery is described below.
+
+
+### Physical connection recovery
+
+`physicalBackoffEnabled` defaults to true. The pool shares recovery by normalized
+relay URL, while existing connection rate budgets remain per host. Native send
+failure, the physical handshake watchdog, and native close codes 1001, 1005,
+1006, 1011, 1012, 1013, 1014 and 1015 qualify. Other codes retain their original
+handling. Construction errors, local closures, pool/bridge overflow or rehome,
+consumer reports and Nostr refusals never advance physical backoff. Physical
+observations establish transport behavior, not the underlying cause or blame.
+
+A healthy sibling prevents a failure from advancing URL recovery. Failed sockets
+in one generation consume at most one step. With demand, one bounded connectivity
+check classifies pending failures; online confirmation sets an absolute deadline
+from the failure time using 1, 2, 4... seconds, ±20% jitter, capped at 30 seconds.
+Offline uses public `onOnline`, consumes no step and permits no new native socket.
+Checks and the online listener are shared per pool, cancelled without demand and
+fenced against old generations. Remounts/online notifications never renew a deadline.
+
+When the deadline expires, one recovery socket may connect for the URL. Interested
+members share it or wait. Open releases the trial lease; other buckets may then
+connect under existing host budgets. Thirty continuous seconds with any open
+socket reset recovery. Healthy sockets remain reusable, and the scheduler skips
+blocked URLs rather than blocking unrelated destinations. Rate-limit `retry_at`
+remains an independent operation deadline, never a physical failure or added wait.
+
+The 10-second native handshake watchdog starts only when the socket is actually
+constructed. Queue time is excluded. Caller deadlines remain authoritative: the
+installed library can still cancel after its 3-second connection timeout. A last
+consumer cancellation destroys queued/connecting buckets immediately, without a
+failure step. Recovery state remains five minutes after losing interest, while
+shutdown clears gates, network work and timers. Active attempts retain deadlines.
+
+The private port protocol uses `RELAY_ATTACH_PENDING { virtualId }` for every
+accepted pool member, with no capability negotiation. Acknowledgment ends the
+injected app shim's attachment watchdog, confirming admission rather than socket
+readiness; WebSocket stays CONNECTING until actual open, failure or cancellation.
+Consumer deadlines and the physical handshake watchdog remain authoritative.
+There are no compatibility timers or special closures for older injected shims.
+An older shim served by an out-of-date app service worker can time out during a
+long queue wait and fall back to a direct connection. Synchronizing worker/shim
+versions is a separate runtime concern; this bridge does not emulate old behavior.
+The existing delegated vault facade ignores the internal acknowledgment and
+requires no update. Unknown/direct/speculative paths keep their existing behavior.
+Endpoint disposal closes pending facades before releasing the port attachments.
+
+`relayPoolSnapshot().connectionRecovery` reports native attempts, deferred
+connections, offline waits and cancellations before open, plus at most 32 URL
+summaries: next delay/deadline, recovery/check/trial state, healthy sockets and
+interests. Details are copied, in memory only, and contain no frames, filters or
+account identities. `RELAY_SOCKET_CONNECT_TIMEOUT` remains separate from bridge
+attachment timeout. Test-only connectivity/jitter injections are internal; no
+new app API, WebSocket property, Nostr metadata or persisted key is introduced.

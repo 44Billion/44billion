@@ -22,6 +22,144 @@ async function waitFor (predicate, attempts = 50) {
   throw new Error('condition not met')
 }
 
+function recoveryFixture (t, { checkOnline = async () => true, watchOnline } = {}) {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 100000 })
+  const url = 'wss://relay.example'
+  const registry = new RelayRegistry([url])
+  const sockets = []
+  const fallbacks = []
+  const limits = { ...RELAY_POOL_LIMITS }
+  class Native extends AppRealmWebSocket {
+    constructor (url) { super(url); fallbacks.push(url) }
+  }
+  const pool = new UnifiedRelayPool({
+    registry, limits, _isOnline: checkOnline, _onOnline: watchOnline, _random: () => 0.5,
+    createSocket: url => {
+      const socket = new PhysicalSocket(url)
+      const send = socket.send.bind(socket)
+      socket.send = raw => {
+        send(raw)
+        const frame = JSON.parse(raw)
+        if (frame[0] === 'REQ') socket.message(['EOSE', frame[1]])
+      }
+      sockets.push(socket)
+      return socket
+    }
+  })
+  const { port1: appPort, port2: appParent } = new MessageChannel()
+  const { port1: vaultPort, port2: vaultParent } = new MessageChannel()
+  const appEndpoint = createRelayBridgeEndpoint({ port: appParent, pool, limits })
+  const vaultEndpoint = createRelayBridgeEndpoint({
+    port: vaultParent, pool, limits, delegate: true, owner: 'vault',
+    createVirtualSocket: () => { throw new Error('a known relay must attach directly to the pool') }
+  })
+  const App = createRelayPoolWebSocketClass({
+    OriginalWebSocket: Native, registry, limits, baseUrl: 'https://app.example/',
+    createPoolTransport: ({ url, callbacks }) => createBridgeTransport({ url, callbacks, getPort: async () => appPort, limits })
+  })
+  const Launcher = createRelayPoolWebSocketClass({
+    OriginalWebSocket: Native, registry, limits, baseUrl: 'https://launcher.example/',
+    createPoolTransport: ({ url, callbacks }) => pool.attach(url, callbacks)
+  })
+  const vault = installLauncherRelayPoolShim({ port: vaultPort, targetWindow: { WebSocket: Native }, baseUrl: 'https://vault.example/', securePage: true, relayPoolImpl: {} })
+  const reader = new RelayPool({ WebSocket: App })
+  t.after(async () => {
+    await reader.disconnectAll()
+    pool.closeAll()
+    vault.dispose()
+    appEndpoint.dispose(); vaultEndpoint.dispose()
+    for (const port of [appPort, appParent, vaultPort, vaultParent]) port.close()
+  })
+  const advance = async ms => { t.mock.timers.tick(ms); for (let n = 0; n < 6; n++) await tick() }
+  return {
+    url, pool, sockets, fallbacks, reader, appEndpoint, App, Vault: vault.WebSocket, advance,
+    async warm () {
+      for (const delay of [0, 1000, 2000, 4000, 8000]) {
+        const socket = new Launcher(url)
+        await advance(0)
+        await advance(delay)
+        sockets.at(-1).readyState = 3
+        sockets.at(-1).onclose({ code: 1006, reason: 'native failure', wasClean: false })
+        await advance(0)
+        assert.equal(socket.readyState, 3)
+      }
+    }
+  }
+}
+
+it('real app/vault ports retain a shared sixteen-second wait and the installed library still cancels at three seconds', async t => {
+  const f = recoveryFixture(t)
+  await f.warm()
+  const app = new f.App(f.url)
+  const vault = new f.Vault(f.url)
+  await f.advance(0)
+  const deadline = f.pool.snapshot().connectionRecovery.urls[0].retryAt
+  assert.equal(deadline, Date.now() + 16000)
+  await f.advance(10000)
+  assert.equal(app.readyState, 0)
+  assert.equal(vault.readyState, 0)
+  assert.equal(f.sockets.length, 5)
+  const reading = f.reader.getEvents({ kinds: [1] }, [f.url], { timeout: 20000 })
+  await f.advance(0)
+  assert.equal(f.pool.snapshot().members, 3)
+  await f.advance(3000)
+  const report = await reading
+  assert.equal(report.errors[0].reason.message, 'CONNECT_TIMEOUT')
+  assert.equal(report.errors[0].reason.category, 'timeout')
+  assert.equal(f.pool.snapshot().members, 2)
+  app.close(); await f.advance(0)
+  assert.equal(f.pool.snapshot().members, 1)
+  assert.equal(f.pool.snapshot().connectionRecovery.urls[0].retryAt, deadline)
+  await f.advance(3000)
+  assert.equal(f.sockets.length, 6)
+  f.sockets.at(-1).open(); await f.advance(0)
+  assert.equal(app.readyState, 3)
+  assert.equal(vault.readyState, 1)
+  assert.deepEqual(f.fallbacks, [])
+  const resumed = await f.reader.getEvents({ kinds: [1] }, [f.url], { timeout: 20000 })
+  assert.equal(resumed.relays[0].status, 'eose')
+  assert.equal(f.pool.snapshot().membersByOwner.vault, 1)
+})
+
+it('a pending bridge consumer resumes after a long offline wait without consuming a stage', async t => {
+  let online
+  const f = recoveryFixture(t, { checkOnline: async () => false, watchOnline: callback => { online = callback; return () => {} } })
+  const initial = new f.App(f.url)
+  await f.advance(0)
+  f.sockets[0].readyState = 3
+  f.sockets[0].onclose({ code: 1006, reason: 'native failure', wasClean: false })
+  await f.advance(0)
+  assert.equal(initial.readyState, 3)
+  const waiting = new f.App(f.url)
+  await f.advance(0)
+  assert.equal(waiting.readyState, 0)
+  assert.equal(f.pool.snapshot().connectionRecovery.urls[0].nextDelayMs, 1000)
+  await f.advance(20000)
+  assert.equal(waiting.readyState, 0)
+  assert.equal(f.sockets.length, 1)
+  online(); await f.advance(0)
+  f.sockets[1].open(); await f.advance(0)
+  assert.equal(waiting.readyState, 1)
+  assert.deepEqual(f.fallbacks, [])
+})
+
+it('accepted pending attachments close on the native handshake deadline or endpoint disposal', async t => {
+  const f = recoveryFixture(t)
+  const first = new f.App(f.url)
+  let closed
+  first.onclose = event => { closed = event }
+  await f.advance(0)
+  await f.advance(10000)
+  assert.equal(first.readyState, 3)
+  assert.equal(closed.reason, 'relay connection timeout')
+  assert.equal(closed.relayContext, undefined)
+  const waiting = new f.App(f.url)
+  await f.advance(0)
+  f.appEndpoint.dispose(); await f.advance(0)
+  assert.equal(waiting.readyState, 3)
+  assert.equal(f.pool.snapshot().members, 0)
+})
+
 class PhysicalSocket {
   constructor (url) {
     this.url = url
