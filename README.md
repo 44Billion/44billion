@@ -99,7 +99,7 @@ A newer relay list reconciles membership, retaining unchanged groups and drainin
 accepted events from retired groups. Removing an account or unmounting the root
 cancels its pending delivery. Only kinds 0/10002 also update vault metadata.
 
-The coordinated `libp2r2p@^0.11.16` pool coordinates subscription capacity. Grouped
+The coordinated `libp2r2p@^0.11.19` pool coordinates subscription capacity. Grouped
 feeds start with a bounded recent snapshot, with **ten minutes of overlap**.
 Before releasing buffered live events, the tracker completes any truncated recent
 pages and catches up gaps from each identity/kind's previous confirmed edge.
@@ -244,3 +244,13 @@ connectivity monitor; healthy sockets remain available. Queued connections keep
 standard WebSocket semantics and caller deadlines. Queue admission is acknowledged
 unconditionally; no compatibility negotiation with older injected shims is kept. See
 [physical recovery contracts](docs/relay-pool.md#physical-connection-recovery).
+
+The installed libp2r2p 0.11.19 also exposes private-messenger pause status and
+recovers internally observed network/storage pauses without blocking text on
+historical recovery. Custom session factories must forward state observation;
+relay bridge frames and WebSocket events retain their existing contracts.
+Optional early private-message fallback and per-publication cancellation preserve
+shared relay connections. The launcher retains the default sequential policy.
+The coordinated patch also makes messenger readiness local by default and
+prepares contacts incrementally in the optional session. This changes no pool,
+WebSocket or injected app API contract.

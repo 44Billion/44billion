@@ -88,11 +88,15 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
 
 ## Connectivity recovery
 
+- The coordinated library patch uses local private-messenger readiness by default
+  and incremental peer preparation. Keep these policies in the library; no app
+  bridge, physical pool or WebSocket changes accompany this dependency update.
+
 - Use `isOnline` and `onOnline` from `libp2r2p/network`. The shared library
   monitor owns connectivity probes, capped retry delays, and browser wake-up
   listeners. `ConnectivityRetryCoordinator` owns waiters, cancellation, and
   concurrency of resumed app work; do not restore its duplicate probe timer.
-- Use the coordinated `libp2r2p@^0.11.16` range in package.json;
+- Use the coordinated `libp2r2p@^0.11.19` range in package.json;
   package-lock.json records the resolved release. Validate against the installed package rather than sibling
   source imports; it includes the shared connectivity monitor.
 
@@ -351,3 +355,16 @@ the storage schema are unchanged; no destructive cache repair is needed.
   from bridge timeout. The controlled recovery/e2e tests exercise installed
   libp2r2p and real ports; protected relay-bridge browser tests cover the three
   consumer paths. No library release, dependency or persistent-state change.
+
+## Private-messenger dependency contract
+
+- Consume the published libp2r2p 0.11.19 package through the lockfile. Its private
+  messenger observes owned pauses and recovers them independently of historical
+  completion; explicit caller pauses remain caller-owned. Session factories must
+  provide readStatus and initial/subsequent onStateChanged notifications. No
+  injected app API, WebSocket property or bridge wire change is introduced.
+
+- The 0.11.19 messenger optionally hedges automatic NIP-65 publication with
+  fallbackDelayMs and supports per-publication cancellation in RelayPool.sendEvent.
+  Launcher consumers retain the null default; do not change operation retries,
+  the physical pool, bridge protocol or WebSocket events for this dependency bump.
