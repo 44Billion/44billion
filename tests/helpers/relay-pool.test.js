@@ -1060,8 +1060,8 @@ it('preserves CLOSED metadata and honors cooldowns without holding resource clea
   member.send(JSON.stringify(['REQ', 'active', {}]))
   await tick()
   const ns = sockets[0].sent.find(frame => frame[0] === 'REQ')[1]
-  sockets[0].message(['CLOSED', ns, 'rate-limited: busy', { retry_after: 2 }])
-  assert.deepEqual(received.at(-1), ['CLOSED', 'limited', 'rate-limited: busy', { retry_after: 2, retry_at: 12 }])
+  sockets[0].message(['CLOSED', ns, 'rate-limited: busy', '2000'])
+  assert.deepEqual(received.at(-1), ['CLOSED', 'limited', 'rate-limited: busy', '@12000'])
   member.send(JSON.stringify(['REQ', 'next', {}]))
   member.send(JSON.stringify(['CLOSE', 'active']))
   await tick()
@@ -1088,18 +1088,15 @@ it('different sockets on one host receive the same effective deadline without re
   a.send(JSON.stringify(['REQ', 'a', {}]))
   b.send(JSON.stringify(['REQ', 'b', {}]))
   await tick(); sockets[1].open(); await tick()
-  a.send(JSON.stringify(['EVENT', { id: 'e'.repeat(64) }]))
+  a.send(JSON.stringify(['EVENT', { id: 'event-a' }]))
+  b.send(JSON.stringify(['EVENT', { id: 'event-b' }]))
   await tick()
-  const second = sockets[1].sent.find(frame => frame[0] === 'REQ')
-  const extra = { retry_after: 10, origin: 'local', local: true, retryable: false, note: 'preserved' }
-  sockets[0].message(['OK', 'e'.repeat(64), false, 'rate-limited: busy', extra])
-  assert.equal(receivedA.at(-1)[4].retry_at, 20)
-  assert.equal(extra.retry_at, undefined, 'the physical frame object is not mutated')
+  sockets[0].message(['OK', 'event-a', false, 'rate-limited: busy', '10000'])
+  assert.equal(receivedA.at(-1)[4], '@20000')
   t.mock.timers.tick(1000)
-  sockets[1].message(['CLOSED', second[1], 'rate-limited: busy', { retry_after: 1 }])
-  assert.deepEqual(receivedB.at(-1), ['CLOSED', 'b', 'rate-limited: busy', { retry_after: 1, retry_at: 20 }])
-  assert.deepEqual(receivedA.at(-1)[4], { ...extra, retry_at: 20 })
-  assert.equal(pool.snapshot().failureDiagnostics.byOrigin.pool, 0, 'untrusted origin claims never create local diagnostics')
+  sockets[1].message(['OK', 'event-b', false, 'rate-limited: busy', '1000'])
+  assert.deepEqual(receivedB.at(-1), ['OK', 'event-b', false, 'rate-limited: busy', '@20000'])
+  assert.equal(receivedA.at(-1)[4], '@20000', 'forwarded deadlines do not change after delivery')
 })
 
 it('absolute-only and expired advice is forwarded without creating another relative wait', async t => {
@@ -1111,14 +1108,14 @@ it('absolute-only and expired advice is forwarded without creating another relat
   await tick(); sockets[0].open()
   member.send(JSON.stringify(['REQ', 'first', {}])); await tick()
   let nsId = sockets[0].sent.at(-1)[1]
-  sockets[0].message(['CLOSED', nsId, 'rate-limited: busy', { retry_at: 10.125 }])
-  assert.equal(received.at(-1)[3].retry_at, 10.125)
+  sockets[0].message(['CLOSED', nsId, 'rate-limited: busy', '@10125'])
+  assert.equal(received.at(-1)[3], '@10125')
   member.send(JSON.stringify(['REQ', 'next', {}])); await tick()
   t.mock.timers.tick(125); await tick()
   nsId = sockets[0].sent.at(-1)[1]
   t.mock.timers.tick(10000)
-  sockets[0].message(['CLOSED', nsId, 'rate-limited: busy', { retry_after: 10, retry_at: 10.125 }])
-  assert.equal(received.at(-1)[3].retry_at, 10.125)
+  sockets[0].message(['CLOSED', nsId, 'rate-limited: busy', '@10125'])
+  assert.equal(received.at(-1)[3], '@10125')
   member.send(JSON.stringify(['REQ', 'immediate', {}])); await tick()
   assert.equal(sockets[0].sent.at(-1)[0], 'REQ')
 })
@@ -1193,15 +1190,129 @@ it('invalid or unrelated timing does not add advice or postpone other hosts', as
   const received = []
   const member = pool.attach('wss://relay.example', { onMessage: raw => received.push(JSON.parse(raw)) })
   await tick(); sockets[0].open()
-  for (const [reason, extra] of [['rate-limited: busy', { retry_after: '10', retry_at: -1 }], ['blocked: denied', { retry_after: 10, local: true }]]) {
+  for (const [reason, extra] of [['rate-limited: busy', '-1'], ['blocked: denied', '10000']]) {
     member.send(JSON.stringify(['REQ', 'a', {}])); await tick()
     sockets[0].message(['CLOSED', sockets[0].sent.at(-1)[1], reason, extra])
     assert.deepEqual(received.at(-1), ['CLOSED', 'a', reason, extra])
   }
   member.send(JSON.stringify(['REQ', 'limited', {}])); await tick()
-  sockets[0].message(['CLOSED', sockets[0].sent.at(-1)[1], 'rate-limited: busy', { retry_after: 10 }])
+  sockets[0].message(['CLOSED', sockets[0].sent.at(-1)[1], 'rate-limited: busy', '10000'])
   const other = pool.attach('wss://other.example')
   await tick(); sockets[1].open()
   other.send(JSON.stringify(['REQ', 'immediate', {}])); await tick()
   assert.equal(sockets[1].sent.at(-1)[1].endsWith('immediate'), true)
+})
+
+for (const limitedType of ['EVENT', 'AUTH', 'REQ', 'COUNT']) {
+  it(`${limitedType} cooldown permits other types to pass queued work and retains same-type FIFO`, async t => {
+    t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 10000 })
+    const { pool, sockets } = createPool()
+    t.after(() => pool.closeAll())
+    const received = []
+    const member = pool.attach('wss://relay.example', { onMessage: raw => received.push(JSON.parse(raw)) })
+    await tick(); sockets[0].open()
+    const socket = sockets[0]
+    socket.message(['AUTH', 'challenge'])
+    let serial = 0
+    const start = type => {
+      const id = `${type.toLowerCase()}-${++serial}`
+      if (type === 'AUTH') {
+        const event = authEvent(generateSecretKey(), { challenge: 'challenge' })
+        member.send(JSON.stringify([type, event]))
+        return event.id
+      }
+      member.send(JSON.stringify(type === 'EVENT' ? [type, { id }] : [type, id, {}]))
+      return id
+    }
+    const first = start(limitedType)
+    await tick()
+    const wireId = socket.sent.at(-1)[1]
+    socket.message(['EVENT', 'AUTH'].includes(limitedType)
+      ? ['OK', first, false, 'rate-limited: busy', '2500']
+      : ['CLOSED', wireId, 'rate-limited: busy', '2500'])
+    assert.equal(received.at(-1).at(-1), '@12500')
+    const before = socket.sent.length
+    const queuedA = start(limitedType)
+    const queuedB = start(limitedType)
+    for (const type of ['EVENT', 'AUTH', 'REQ', 'COUNT'].filter(type => type !== limitedType)) start(type)
+    await tick()
+    assert.deepEqual(socket.sent.slice(before).map(frame => frame[0]), ['EVENT', 'AUTH', 'REQ', 'COUNT'].filter(type => type !== limitedType))
+    assert.ok(member.bufferedAmount > 0)
+    t.mock.timers.tick(2499); await tick()
+    assert.equal(socket.sent.length, before + 3)
+    t.mock.timers.tick(1); await tick()
+    const released = socket.sent.slice(before + 3)
+    assert.deepEqual(released.map(frame => frame[0]), [limitedType, limitedType])
+    assert.deepEqual(released.map(frame => typeof frame[1] === 'object' ? frame[1].id : frame[1].split(':').at(-1)), [queuedA, queuedB])
+    assert.equal(member.bufferedAmount, 0)
+  })
+}
+
+it('host cooldowns span URLs and identities without blocking another type or host', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 10000 })
+  const { pool, sockets } = createPool()
+  t.after(() => pool.closeAll())
+  const a = pool.attach('wss://relay.example/public')
+  const b = pool.attach('wss://relay.example/private')
+  const other = pool.attach('wss://other.example/public')
+  await tick()
+  for (const socket of sockets) socket.open()
+  const publicSocket = sockets.find(socket => socket.url.includes('/public') && socket.url.includes('relay.example'))
+  const privateSocket = sockets.find(socket => socket.url.includes('/private'))
+  const otherSocket = sockets.find(socket => socket.url.includes('other.example'))
+  privateSocket.message(['AUTH', 'private-challenge'])
+  const authenticated = authEvent(generateSecretKey(), { challenge: 'private-challenge', relay: 'wss://relay.example/private' })
+  b.send(JSON.stringify(['AUTH', authenticated])); await tick()
+  privateSocket.message(['OK', authenticated.id, true, 'authenticated'])
+  const privateBefore = privateSocket.sent.length
+  a.send(JSON.stringify(['EVENT', { id: 'limited' }]))
+  await tick()
+  publicSocket.message(['OK', 'limited', false, 'rate-limited: busy', '2500'])
+  b.send(JSON.stringify(['EVENT', { id: 'delayed' }]))
+  b.send(JSON.stringify(['REQ', 'immediate', {}]))
+  other.send(JSON.stringify(['EVENT', { id: 'other-host' }]))
+  await tick()
+  assert.deepEqual(privateSocket.sent.slice(privateBefore).map(frame => frame[0]), ['REQ'])
+  assert.equal(otherSocket.sent.at(-1)[1].id, 'other-host')
+  t.mock.timers.tick(2500); await tick()
+  assert.equal(privateSocket.sent.at(-1)[1].id, 'delayed')
+})
+
+it('unmatched and late CLOSED/OK responses never create a cooldown', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 10000 })
+  const { pool, sockets } = createPool()
+  t.after(() => pool.closeAll())
+  const member = pool.attach('wss://relay.example')
+  await tick(); sockets[0].open()
+  member.send(JSON.stringify(['REQ', 'old', {}])); await tick()
+  const oldId = sockets[0].sent.at(-1)[1]
+  member.send(JSON.stringify(['CLOSE', 'old']))
+  sockets[0].message(['CLOSED', oldId, 'rate-limited: busy', '300000'])
+  sockets[0].message(['CLOSED', 'unknown', 'rate-limited: busy', '300000'])
+  sockets[0].message(['OK', 'unknown', false, 'rate-limited: busy', '300000'])
+  member.send(JSON.stringify(['EVENT', { id: 'immediate' }]))
+  member.send(JSON.stringify(['REQ', 'immediate', {}])); await tick()
+  assert.deepEqual(sockets[0].sent.slice(-2).map(frame => frame[0]), ['EVENT', 'REQ'])
+  assert.equal(pool.snapshot().closedConfirmations, 1)
+})
+
+it('AUTH that expires during its cooldown is removed before it can be sent', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 10000 })
+  const { pool, sockets } = createPool({ authPendingTimeoutMs: 1000 })
+  t.after(() => pool.closeAll())
+  const received = []
+  const member = pool.attach('wss://relay.example', { onMessage: raw => received.push(JSON.parse(raw)) })
+  await tick(); sockets[0].open()
+  sockets[0].message(['AUTH', 'challenge'])
+  const first = authEvent(generateSecretKey(), { challenge: 'challenge' })
+  member.send(JSON.stringify(['AUTH', first])); await tick()
+  sockets[0].message(['OK', first.id, false, 'rate-limited: busy', '10000'])
+  const queued = authEvent(generateSecretKey(), { challenge: 'challenge' })
+  member.send(JSON.stringify(['AUTH', queued])); await tick()
+  assert.ok(member.bufferedAmount > 0)
+  t.mock.timers.tick(1000); await tick()
+  assert.deepEqual(received.at(-1), ['OK', queued.id, false, 'error: AUTH timeout'])
+  assert.equal(member.bufferedAmount, 0)
+  t.mock.timers.tick(10000); await tick()
+  assert.equal(sockets[0].sent.filter(frame => frame[0] === 'AUTH').length, 1)
 })

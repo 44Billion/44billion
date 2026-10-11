@@ -69,7 +69,15 @@ describe('Nostr frame classification', () => {
   })
 })
 
-it('recognizes CLOSED with optional structured retry metadata', () => {
-  assert.equal(isStrictNostrFrame(JSON.stringify(['CLOSED', 'sub', 'rate-limited: busy', { retry_after: 2 }]), 'server'), true)
-  assert.equal(isStrictNostrFrame(JSON.stringify(['CLOSED', 'sub', 'rate-limited: busy', 'bad']), 'server'), false)
+it('recognizes optional string params while rejecting legacy and malformed frame shapes', () => {
+  for (const params of ['2500', '@1791738154332', 'future-extension']) {
+    assert.equal(isStrictNostrFrame(frame(['CLOSED', 'sub', 'rate-limited: busy', params]), 'server'), true)
+    assert.equal(isStrictNostrFrame(frame(['OK', event.id, false, 'rate-limited: busy', params]), 'server'), true)
+  }
+  for (const params of [null, 2500, {}, []]) {
+    assert.equal(isStrictNostrFrame(frame(['CLOSED', 'sub', 'rate-limited: busy', params]), 'server'), false)
+    assert.equal(isStrictNostrFrame(frame(['OK', event.id, false, 'rate-limited: busy', params]), 'server'), false)
+  }
+  assert.equal(isStrictNostrFrame(frame(['OK', event.id, true]), 'server'), false)
+  assert.equal(isStrictNostrFrame(frame(['OK', event.id, true, '', '2500', 'extra']), 'server'), false)
 })

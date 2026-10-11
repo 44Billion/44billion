@@ -43,7 +43,7 @@ try {
           transport.frames.push({op,id,marker:filter?.['#t']?.[0],at:performance.now()});
           if (op !== 'REQ') return;
           if(filter.kinds?.includes(9701)) {
-            setTimeout(() => { const data=JSON.stringify(['CLOSED',id,'rate-limited: test',{retry_after:1}]); this.onmessage?.({data}); this.dispatchEvent(new MessageEvent('message',{data})); },0);
+            setTimeout(() => { const data=JSON.stringify(['CLOSED',id,'rate-limited: test','1000']); this.onmessage?.({data}); this.dispatchEvent(new MessageEvent('message',{data})); },0);
             return;
           }
           const size = filter.kinds?.includes(9700) ? (filter['#t']?.[0] === 'large' ? 2*1024*1024 : filter['#t']?.[0] === 'oversize' ? 5*1024*1024 : 17*1024) : 0;
@@ -87,10 +87,10 @@ try {
         socket.onclose = event => { checkShape(event,new CloseEvent('close')); bridgeTest.closes.push({code:event.code,reason:event.reason}); };
         socket.onmessage = event => {
           checkShape(event,new MessageEvent('message'));
-          const [op,id,value,extra] = JSON.parse(event.data);
+          const [op,id,value,params] = JSON.parse(event.data);
           // Block this consumer briefly while the launcher can continue receiving.
           if(op==='EVENT' && bridgeTest.frames.length===0) { const until=performance.now()+100; while(performance.now()<until){} }
-          bridgeTest.frames.push({op,id,index:value?.created_at,size:value?.content?.length,extra});
+          bridgeTest.frames.push({op,id,index:value?.created_at,size:value?.content?.length,params});
         };
         await new Promise((resolve,reject)=>{socket.onopen=resolve;socket.onerror=reject;}); return bridgeTest.sockets.length-1;
       };
@@ -108,9 +108,8 @@ try {
     await browser.until(() => browser.evaluate('bridgeTest.frames.some(frame=>frame.id === "rate-keep" && frame.op === "EOSE")', origin), 'active subscription before cooldown')
     await browser.evaluate('bridgeTest.sockets[0].send(JSON.stringify([\'REQ\',\'rate-limit\',{kinds:[9701],\'#t\':[\'limited\']}]))', origin)
     await browser.until(() => browser.evaluate('bridgeTest.frames.some(frame=>frame.op === "CLOSED" && frame.id === "rate-limit")', origin), 'rate rejection through real port')
-    const advice = await browser.evaluate('bridgeTest.frames.find(frame=>frame.id === "rate-limit").extra', origin)
-    assert.equal(advice.retry_after, 1)
-    assert.ok(Number.isFinite(advice.retry_at) && advice.retry_at > 0, 'both facades forward the optional absolute Nostr extension')
+    const advice = await browser.evaluate('bridgeTest.frames.find(frame=>frame.id === "rate-limit").params', origin)
+    assert.match(advice, /^@[1-9]\d*$/, 'both facades forward absolute params')
     await browser.evaluate(`
       bridgeTest.sockets[0].send(JSON.stringify(['REQ','rate-next',{kinds:[9702],'#t':['next']}]))
       bridgeTest.sockets[0].send(JSON.stringify(['REQ','rate-cancel',{kinds:[9702],'#t':['cancel']}]))
@@ -123,7 +122,7 @@ try {
     const next = traffic.findLast(frame => frame.marker === 'next')
     const keep = traffic.findLast(frame => frame.marker === 'keep')
     const close = traffic.findLast(frame => frame.op === 'CLOSE' && frame.id === keep.id)
-    assert.ok(next.at - limited.at >= 950, 'work honors retry_after')
+    assert.ok(next.at - limited.at >= 950, 'work honors REQ params')
     assert.ok(close.at < next.at, 'CLOSE precedes work held by cooldown')
     assert.ok(!traffic.some(frame => frame.marker === 'cancel'), 'cancelled REQ never reaches the relay')
     await browser.until(() => browser.evaluate('bridgeTest.credits.some(item=>Number.isInteger(item.through)&&item.returnedAt>=item.receivedAt)', origin), 'sequenced credits with cross-context timing')

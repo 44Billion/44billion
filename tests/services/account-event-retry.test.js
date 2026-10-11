@@ -36,7 +36,7 @@ test('definitive, unknown and local authentication read failures never enter aut
   assert.equal(f.state.monitors, 0)
 })
 
-test('retry_after and local backoff compete as absolute deadlines and reconnection cannot bypass either', async t => {
+test('relay cooldown and local backoff compete as absolute deadlines and reconnection cannot bypass either', async t => {
   const f = fixture(t)
   let finished = false
   const first = f.wait(Object.assign(remote('rate-limited: busy'), { retryAt: 15000, retryAfterMs: 5000 })).then(value => { finished = true; return value })

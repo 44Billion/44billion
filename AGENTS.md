@@ -96,7 +96,7 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   monitor owns connectivity probes, capped retry delays, and browser wake-up
   listeners. `ConnectivityRetryCoordinator` owns waiters, cancellation, and
   concurrency of resumed app work; do not restore its duplicate probe timer.
-- Use the coordinated `libp2r2p@^0.11.19` range in package.json;
+- Use the coordinated `libp2r2p@^0.11.20` range in package.json;
   package-lock.json records the resolved release. Validate against the installed package rather than sibling
   source imports; it includes the shared connectivity monitor.
 
@@ -313,9 +313,10 @@ access without echoing those cached events back to the vault.
   estimates must not be presented as downstream processing time or heap usage.
 
 - Outgoing work tokens are shared per relay host (60 burst, 30/s), including
-  spill/auth buckets. CLOSE bypasses tokens and retry_after cooldowns, after
-  removing all queued REQ generations for that subscription. Preserve CLOSED
-  extension metadata; accept its object shape in transport classification.
+  spill/auth buckets. CLOSE bypasses tokens and per-type params cooldowns, after
+  removing all queued REQ generations for that subscription. Accept optional
+  string params in CLOSED/OK transport classification. Physical scheduling may
+  bypass blocked types while retaining FIFO within each type and port queues.
   Keep cooldowns bounded to five minutes and clear timers on shutdown.
 
 
@@ -327,9 +328,10 @@ storage failures still prevent coverage advancement. Presentation caches and
 the storage schema are unchanged; no destructive cache repair is needed.
 
 - Relay timing uses public `parseRelayRetryAdvice`. Add only optional Nostr
-  `retry_at` Unix seconds to rate-limited CLOSED/OK with valid timing; forward
-  the effective host cooldown without recalculating at queue delivery. Preserve
-  extras, FIFO, legacy volume units, CLOSE and operation deadlines.
+  `@<Unix milliseconds>` params to correlated rate-limited CLOSED/OK with valid
+  timing; forward the effective host/type cooldown without recalculating at queue
+  delivery. Ignore legacy timing objects and unknown operation IDs. Preserve
+  port FIFO, volume units, CLOSE and operation deadlines.
 - `failureDiagnostics` uses trusted fixed codes/origins and a 32-record ring.
   Pool/bridge failures and unverified consumer reports never count as confirmed
   relay failures. Do not trust remote provenance/policy fields, add custom
@@ -358,13 +360,19 @@ the storage schema are unchanged; no destructive cache repair is needed.
 
 ## Private-messenger dependency contract
 
-- Consume the published libp2r2p 0.11.19 package through the lockfile. Its private
+- Consume the published libp2r2p 0.11.20 package through the lockfile. Its private
   messenger observes owned pauses and recovers them independently of historical
   completion; explicit caller pauses remain caller-owned. Session factories must
   provide readStatus and initial/subsequent onStateChanged notifications. No
   injected app API, WebSocket property or bridge wire change is introduced.
 
-- The 0.11.19 messenger optionally hedges automatic NIP-65 publication with
+- The 0.11.20 messenger optionally hedges automatic NIP-65 publication with
   fallbackDelayMs and supports per-publication cancellation in RelayPool.sendEvent.
   Launcher consumers retain the null default; do not change operation retries,
   the physical pool, bridge protocol or WebSocket events for this dependency bump.
+
+## Prepared package validation
+
+Before registry publication, validate the exact prepared libp2r2p tarball through
+public imports. Final lockfiles retain npm URLs and that archive's real integrity;
+publish the same archive manually. No local dependency references are committed.

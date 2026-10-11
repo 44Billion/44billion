@@ -231,8 +231,10 @@ Account discovery tolerates provisional vault profiles: only authentic signed
 metadata seeds the event database, so an imported account without a fetched
 profile cannot block other accounts' synchronization.
 
-The unified pool forwards optional `retry_at` Unix seconds on rate-limited
+The unified pool forwards optional `@<Unix milliseconds>` params on rate-limited
 Nostr CLOSED/OK frames, preserving an absolute cooldown through delayed delivery.
+Deadlines are shared by host and client message type: rate-limited EVENT work
+does not block REQ, AUTH or COUNT. Consumers use libp2r2p 0.11.20.
 WebSocket events retain their standard API. Bounded internal diagnostics separate
 pool/bridge observations, transport/protocol observations and unverified consumer
 reports; remote origin/policy claims never affect routing. See

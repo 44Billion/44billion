@@ -420,22 +420,32 @@ cannot be followed by a stale request, and still releases only that member's
 subscription on the shared socket. Internal detach/migration cleanup uses the
 same immediate control path.
 
-CLOSED accepts/preserves an optional fourth metadata object; rejected OK uses
-its fifth element. The public `parseRelayRetryAdvice` from libp2r2p accepts only
-finite positive timing on leading `rate-limited:` refusals. Absolute `retry_at`
-(Unix seconds, including fractions) takes precedence over relative `retry_after`
-seconds, even when the absolute deadline has expired. Future waits are capped at
-five minutes; invalid/absent absolute advice falls back to relative advice.
+CLOSED accepts an optional fourth string `params`; rejected OK uses its fifth
+element. The public `parseRelayRetryAdvice` from libp2r2p accepts canonical positive
+safe integers in milliseconds, optionally prefixed with `@` for absolute Unix
+milliseconds. Only leading `rate-limited:` refusals supply timing. Future waits
+are capped at five minutes; an expired absolute timestamp never restarts a wait.
+Missing or invalid params do not instruct clients to retry immediately.
 
-The pool computes advice once on receipt, extends the existing host cooldown
-with max(existing deadline, advice.retryAt), and adds the effective `retry_at` to
-a copy of that frame's extra object. It preserves `retry_after` and other fields.
-Frames without valid advice acquire no synthetic wait. ID rewriting, FIFO port
-queues, delayed credit returns and vault delegation preserve the timestamp;
-they never recompute it at delivery. Existing operation deadlines still apply.
-Older consumers can ignore the extension; upgraded libraries avoid an extra
-relative wait after delayed delivery. Per-bucket drain timers and idle budget
-state are released on close/expiry.
+The pool correlates OK with pending EVENT/AUTH and CLOSED with REQ/COUNT before
+applying advice. Unknown IDs and late cleanup confirmations never create a
+cooldown. Deadlines are shared by host, separately for each client message type,
+and extend with max(existing deadline for that type, advice.retryAt). An EVENT
+refusal cannot hold up a REQ, AUTH or COUNT. Endpoints and identities on the same
+host share the deadline for the same type; the local token budget remains shared
+across all types.
+
+Before forwarding a valid refusal, the pool replaces params with the effective
+`@<Unix milliseconds>` deadline. Launcher, vault and app clocks are synchronized,
+so ID rewriting, FIFO port queues and delayed credit returns preserve this exact
+value without recomputing at delivery. Frames without valid advice acquire no
+synthetic wait. Legacy timing objects are not interpreted.
+
+Physical queue scheduling lets eligible types pass blocked types while preserving
+FIFO within each type and round-robin consumer fairness. It sleeps until both
+an eligible queued message and the shared token budget allow work. Existing
+operation deadlines, CLOSE cancellation and migration cleanup still apply;
+per-bucket drain timers and idle host budgets are released on close/expiry.
 
 ### Internal failure attribution
 
@@ -485,7 +495,7 @@ When the deadline expires, one recovery socket may connect for the URL. Interest
 members share it or wait. Open releases the trial lease; other buckets may then
 connect under existing host budgets. Thirty continuous seconds with any open
 socket reset recovery. Healthy sockets remain reusable, and the scheduler skips
-blocked URLs rather than blocking unrelated destinations. Rate-limit `retry_at`
+blocked URLs rather than blocking unrelated destinations. Rate-limit absolute `params`
 remains an independent operation deadline, never a physical failure or added wait.
 
 The 10-second native handshake watchdog starts only when the socket is actually

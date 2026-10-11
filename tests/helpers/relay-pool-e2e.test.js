@@ -371,8 +371,8 @@ for (const vault of [false, true]) {
         const reject = (socket, id) => {
           socket.message(['NOTICE', 'occupy the first receive credit'])
           socket.message(operation === 'CLOSED'
-            ? ['CLOSED', id, 'rate-limited: busy', { retry_after: 10, origin: 'local', retryable: false }]
-            : ['OK', id, false, 'rate-limited: busy', { retry_after: 10, origin: 'local', retryable: false }])
+            ? ['CLOSED', id, 'rate-limited: busy', '10000']
+            : ['OK', id, false, 'rate-limited: busy', '10000'])
         }
         const fixture = publicationFixture(t, (socket, event) => reject(socket, event.id), reject, { delayedCredits: true, vault })
         const pending = operation === 'CLOSED'
@@ -385,7 +385,7 @@ for (const vault of [false, true]) {
         assert.equal(result.errors.length, 1)
         const error = result.errors[0].reason
         assert.equal(error.message, 'rate-limited: busy')
-        assert.equal(error.retryAfterMs, 10000)
+        assert.equal(error.retryAfterMs, undefined)
         assert.equal(error.retryAt, 20000, 'queues and both facades retain the original absolute deadline')
         assert.equal(error.category, 'relay')
         assert.equal(error.origin, undefined)

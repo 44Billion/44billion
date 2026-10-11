@@ -347,7 +347,7 @@ export class UnifiedRelayPool {
     const host = this.#hostFor(url)
     let budget = this.#messageBudgets.get(host)
     if (!budget) {
-      budget = { tokens: this.#limits.messageBudgetPerRelay, lastRefill: Date.now(), retryAt: 0, cleanupTimer: null }
+      budget = { tokens: this.#limits.messageBudgetPerRelay, lastRefill: Date.now(), retryAtByType: new Map(), cleanupTimer: null }
       this.#messageBudgets.set(host, budget)
     }
     clearTimeout(budget.cleanupTimer)
@@ -538,7 +538,8 @@ export class UnifiedRelayPool {
     const host = this.#hostFor(bucket.url)
     if (![...this.#buckets.values()].some(other => !other.closed && this.#hostFor(other.url) === host)) {
       const budget = bucket.budget
-      budget.cleanupTimer = setTimeout(() => this.#messageBudgets.delete(host), Math.max(this.#limits.messageWindowMs, budget.retryAt - Date.now()))
+      budget.cleanupTimer = setTimeout(() => this.#messageBudgets.delete(host), Math.max(this.#limits.messageWindowMs,
+        ...[...budget.retryAtByType.values()].map(deadline => deadline - Date.now())))
       budget.cleanupTimer.unref?.()
     }
     if (bucket.idleTimer) clearTimeout(bucket.idleTimer)
@@ -893,6 +894,7 @@ export class UnifiedRelayPool {
     const entry = bucket.pendingAuths.get(authEventId)
     if (!entry) return
     bucket.pendingAuths.delete(authEventId)
+    this.#removeQueued(bucket, entry.member, ['AUTH', authEventId])
     // The relay never answered. Whether it processed the AUTH is unknown,
     // so keep the bucket out of anonymous placement/consolidation targets.
     bucket.unverified = true
@@ -1105,7 +1107,7 @@ export class UnifiedRelayPool {
       bucket.queues.set(member.id, queue)
       bucket.roundRobin.push(member.id)
     }
-    queue.push({ raw, bytes, op: message[0], operationId: message[1], eventId: message[0] === 'EVENT' ? message[1]?.id : null })
+    queue.push({ raw, bytes, op: message[0], operationId: ['EVENT', 'AUTH'].includes(message[0]) ? message[1]?.id : message[1], eventId: message[0] === 'EVENT' ? message[1]?.id : null })
     this.#drainBucket(bucket)
   }
 
@@ -1175,20 +1177,23 @@ export class UnifiedRelayPool {
       budget.tokens = Math.min(this.#limits.messageBudgetPerRelay,
         budget.tokens + elapsed * this.#limits.messageBudgetPerRelay / this.#limits.messageWindowMs)
       budget.lastRefill = now
-      if (now >= budget.retryAt) {
-        while (budget.tokens >= 1 && this.#sendNext(bucket)) budget.tokens--
-      }
-      if (this.#hasQueuedMessages(bucket)) {
-        const wait = Math.max(20, budget.retryAt - now,
-          (1 - budget.tokens) * this.#limits.messageWindowMs / this.#limits.messageBudgetPerRelay)
+      while (budget.tokens >= 1 && this.#sendNext(bucket)) budget.tokens--
+      const nextQueuedAt = this.#nextQueuedAt(bucket, now)
+      if (Number.isFinite(nextQueuedAt)) {
+        const wait = Math.ceil(Math.max(1, nextQueuedAt - now,
+          (1 - budget.tokens) * this.#limits.messageWindowMs / this.#limits.messageBudgetPerRelay))
         bucket.drainTimer = setTimeout(() => this.#drainBucket(bucket), wait)
       }
     })
   }
 
-  #hasQueuedMessages (bucket) {
-    for (const queue of bucket.queues.values()) if (queue.length > 0) return true
-    return false
+  // Sleep until both a queued message's own cooldown and the token budget allow work.
+  #nextQueuedAt (bucket, now) {
+    let next = Infinity
+    for (const queue of bucket.queues.values()) {
+      for (const item of queue) next = Math.min(next, Math.max(now, bucket.budget.retryAtByType.get(item.op) ?? 0))
+    }
+    return next
   }
 
   #sendNext (bucket) {
@@ -1198,7 +1203,10 @@ export class UnifiedRelayPool {
       const memberId = bucket.roundRobin[index]
       const queue = bucket.queues.get(memberId)
       if (!queue?.length) continue
-      const item = queue.shift()
+      // A blocked type must not hold up unrelated work; keep FIFO within each type.
+      const itemIndex = queue.findIndex(item => (bucket.budget.retryAtByType.get(item.op) ?? 0) <= Date.now())
+      if (itemIndex === -1) continue
+      const [item] = queue.splice(itemIndex, 1)
       bucket.roundRobinIndex = (index + 1) % bucket.roundRobin.length
       const member = this.#members.get(memberId)
       if (member) {
@@ -1285,7 +1293,6 @@ export class UnifiedRelayPool {
   }
 
   #routeClosed (bucket, message) {
-    message = this.#withRetryAdvice(bucket, message, 2, 3)
     const nsId = message[1]
     const member = bucket.subscriptions.get(nsId) ?? bucket.counts.get(nsId) ?? bucket.negs.get(nsId)
     if (!member) {
@@ -1294,6 +1301,9 @@ export class UnifiedRelayPool {
       return
     }
     const subscription = member.subscriptions.get(nsId)
+    const countEntry = member.counts.get(nsId)
+    const type = subscription ? 'REQ' : countEntry ? 'COUNT' : null
+    if (type) message = this.#withRetryAdvice(bucket, message, type, 2, 3)
     if (subscription) {
       member.subscriptions.delete(nsId)
       member.rawSubscriptions.delete(subscription.rawId)
@@ -1301,7 +1311,6 @@ export class UnifiedRelayPool {
       this.#drainPendingMembers()
       this.#consolidateBuckets(bucket.url, bucket.identity)
     }
-    const countEntry = member.counts.get(nsId)
     if (countEntry !== undefined) {
       member.counts.delete(nsId)
       bucket.counts.delete(nsId)
@@ -1337,19 +1346,23 @@ export class UnifiedRelayPool {
     this.#deliverMember(member, JSON.stringify([message[0], rawId, ...message.slice(2)]))
   }
 
-  #withRetryAdvice (bucket, message, reasonIndex, extraIndex) {
-    const advice = parseRelayRetryAdvice(message[reasonIndex], message[extraIndex])
+  #withRetryAdvice (bucket, message, type, reasonIndex, paramsIndex) {
+    const advice = parseRelayRetryAdvice(message[reasonIndex], message[paramsIndex])
     if (!advice) return message
-    bucket.budget.retryAt = Math.max(bucket.budget.retryAt, advice.retryAt)
+    const retryAt = Math.max(bucket.budget.retryAtByType.get(type) ?? 0, advice.retryAt)
+    bucket.budget.retryAtByType.set(type, retryAt)
+    for (const sibling of this.#buckets.values()) {
+      if (sibling.budget === bucket.budget) this.#drainBucket(sibling)
+    }
     const forwarded = [...message]
-    forwarded[extraIndex] = { ...message[extraIndex], retry_at: bucket.budget.retryAt / 1000 }
+    forwarded[paramsIndex] = `@${retryAt}`
     return forwarded
   }
 
   #routeOk (bucket, message) {
-    if (message[2] === false) message = this.#withRetryAdvice(bucket, message, 3, 4)
     const pendingAuth = bucket.pendingAuths.get(message[1])
     if (pendingAuth) {
+      if (message[2] === false) message = this.#withRetryAdvice(bucket, message, 'AUTH', 3, 4)
       if (pendingAuth.timer) clearTimeout(pendingAuth.timer)
       bucket.pendingAuths.delete(message[1])
       const confirmed = message[2] === true
@@ -1363,6 +1376,7 @@ export class UnifiedRelayPool {
       this.#dropFrame('OK')
       return
     }
+    if (message[2] === false) message = this.#withRetryAdvice(bucket, message, 'EVENT', 3, 4)
     // Pending publishers scope deduplication to this attempt. A later EVENT
     // with the same ID must receive a fresh OK, including after auth-required.
     bucket.publishes.delete(message[1])

@@ -223,7 +223,7 @@ it('rate advice, local overflow and consumer reports never advance physical back
   const f = fixture(t, { messageBudgetPerRelay: 1, maxQueuedFramesPerMember: 1 })
   const a = await f.attach(); f.state.sockets[0].open()
   a.send('["REQ","a",{}]'); await flush()
-  f.state.sockets[0].message(['CLOSED', f.state.sockets[0].sent[0][1], 'rate-limited: busy', { retry_after: 10 }])
+  f.state.sockets[0].message(['CLOSED', f.state.sockets[0].sent[0][1], 'rate-limited: busy', '10000'])
   a.send('["REQ","b",{}]'); a.send('["REQ","c",{}]')
   f.pool.recordConsumerFailure(A, { code: 1006 })
   const b = await f.attach()
