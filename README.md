@@ -21,8 +21,21 @@ Install npm dependencies here and in the sibling `ez-vault` repository. Node.js
 
 The supervisor waits for the builds, rejects port conflicts, and stops only its
 own children on shutdown. The vault uses untracked `.dev` output, also available
-through `http://vault.localhost:10000`; production uses `ez-vault/docs`.
+through `http://vault.localhost:10000`; production uses `ez-vault/dist`.
 `/__dev/health` identifies this checkout and reports readiness in development only.
+
+For production, run `npm run build` here before starting or restarting the server.
+It validates the sibling `../ez-vault` project, runs `npm i --include=dev` in both
+repositories, builds ez-vault into `ez-vault/dist`, then builds the launcher into
+`dist/44billion`. If the sibling is absent, it warns and builds only the launcher;
+an invalid sibling or a failed command stops the build. These outputs are ignored
+by Git and must be generated on the server. The ez-vault GitHub Actions workflow
+continues to deploy its GitHub Pages site independently.
+
+Run `npm i` manually in 44billion on initial setup or when dependencies needed by
+the build script are missing or changed: its imports run before the automatic
+installations. The development runtime does not run these production steps;
+install dependencies in both repositories manually before `npm start`.
 
 Sibling apps can import `ensureRuntime()` from `bin/dev-runtime.js`. The returned
 handle includes `url`, `owned`, `closed`, and an asynchronous `close()` method.

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import path from 'node:path'
 
 describe('Vault Router Security', () => {
-  const vaultDocsRoot = path.resolve(process.cwd(), '../ez-vault/docs')
+  const vaultOutputRoot = path.resolve(process.cwd(), '../ez-vault/dist')
 
   describe('Path Traversal Detection', () => {
     it('should allow legitimate paths', () => {
@@ -16,8 +16,8 @@ describe('Vault Router Security', () => {
       ]
 
       legitimatePaths.forEach(filePath => {
-        const resolvedPath = path.resolve(vaultDocsRoot, filePath)
-        const isAllowed = resolvedPath.startsWith(vaultDocsRoot + path.sep) || resolvedPath === vaultDocsRoot
+        const resolvedPath = path.resolve(vaultOutputRoot, filePath)
+        const isAllowed = resolvedPath.startsWith(vaultOutputRoot + path.sep) || resolvedPath === vaultOutputRoot
         assert.ok(isAllowed, `Legitimate path should be allowed: ${filePath}`)
       })
     })
@@ -32,8 +32,8 @@ describe('Vault Router Security', () => {
       ]
 
       maliciousPaths.forEach(filePath => {
-        const resolvedPath = path.resolve(vaultDocsRoot, filePath)
-        const isBlocked = !resolvedPath.startsWith(vaultDocsRoot + path.sep) && resolvedPath !== vaultDocsRoot
+        const resolvedPath = path.resolve(vaultOutputRoot, filePath)
+        const isBlocked = !resolvedPath.startsWith(vaultOutputRoot + path.sep) && resolvedPath !== vaultOutputRoot
         assert.ok(isBlocked, `Malicious path should be blocked: ${filePath}`)
       })
     })
@@ -46,8 +46,8 @@ describe('Vault Router Security', () => {
       ]
 
       edgeCases.forEach(({ path: testPath, expected }) => {
-        const resolvedPath = path.resolve(vaultDocsRoot, testPath)
-        const isBlocked = !resolvedPath.startsWith(vaultDocsRoot + path.sep) && resolvedPath !== vaultDocsRoot
+        const resolvedPath = path.resolve(vaultOutputRoot, testPath)
+        const isBlocked = !resolvedPath.startsWith(vaultOutputRoot + path.sep) && resolvedPath !== vaultOutputRoot
         assert.equal(isBlocked, expected, `Edge case path: ${testPath}`)
       })
     })
@@ -200,15 +200,15 @@ describe('Vault Router Security', () => {
   describe('File Path Construction', () => {
     it('should construct file paths correctly', () => {
       const testCases = [
-        { input: '/index.html', expected: path.join(vaultDocsRoot, 'index.html') },
-        { input: '/modules/avatar.js', expected: path.join(vaultDocsRoot, 'modules/avatar.js') },
-        { input: '/styles/main.css', expected: path.join(vaultDocsRoot, 'styles/main.css') }
+        { input: '/index.html', expected: path.join(vaultOutputRoot, 'index.html') },
+        { input: '/modules/avatar.js', expected: path.join(vaultOutputRoot, 'modules/avatar.js') },
+        { input: '/styles/main.css', expected: path.join(vaultOutputRoot, 'styles/main.css') }
       ]
 
       testCases.forEach(({ input, expected }) => {
         const filePath = input === '/' ? '/index.html' : input
-        const vaultDocsPath = path.resolve(vaultDocsRoot, filePath.slice(1))
-        assert.equal(vaultDocsPath, expected, `File path construction for: ${input}`)
+        const vaultOutputPath = path.resolve(vaultOutputRoot, filePath.slice(1))
+        assert.equal(vaultOutputPath, expected, `File path construction for: ${input}`)
       })
     })
   })

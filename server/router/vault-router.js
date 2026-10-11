@@ -8,7 +8,7 @@ import mime from 'mime'
 
 const isDev = process.env.NODE_ENV === 'development'
 
-// Cache-Control strategy for the generated ez-vault/docs output:
+// Cache-Control strategy for the generated ez-vault/dist output:
 // - hashed chunks (chunks/*-<hash>.js) are immutable — long TTL, never
 //   revalidated (same rationale as the launcher's getChunk);
 // - sw.js must be re-checked on every load so a new worker is detected;
@@ -40,7 +40,7 @@ const vaultRouter = IttyRouter()
     res.end()
     return res
   })
-  // Handle all other routes by serving files from ez-vault/docs
+  // Handle all other routes by serving files from ez-vault/dist
   .get('*', async (req, res) => {
     try {
       const pathname = req.webUrl.pathname
@@ -82,14 +82,14 @@ const vaultRouter = IttyRouter()
         return res
       }
 
-      // Construct the absolute path to the vault docs file
+      // Construct the absolute path to the vault output file
       // Current project is at ~/repositories/44billion, vault is at ~/repositories/ez-vault
-      const vaultDocsRoot = path.resolve(import.meta.dirname, '../../../ez-vault', isDev ? '.dev' : 'docs')
-      const vaultDocsPath = path.resolve(vaultDocsRoot, filePath.slice(1)) // Remove leading slash
+      const vaultOutputRoot = path.resolve(import.meta.dirname, '../../../ez-vault', isDev ? '.dev' : 'dist')
+      const vaultOutputPath = path.resolve(vaultOutputRoot, filePath.slice(1)) // Remove leading slash
 
-      // Security check: ensure the resolved path is still within the vault/docs directory
+      // Security check: ensure the resolved path is still within the vault output directory
       // e.g. preventing acess to /../../../home/user/.ssh/id_rsa
-      if (!vaultDocsPath.startsWith(vaultDocsRoot + path.sep) && vaultDocsPath !== vaultDocsRoot) {
+      if (!vaultOutputPath.startsWith(vaultOutputRoot + path.sep) && vaultOutputPath !== vaultOutputRoot) {
         res.setHeader('content-type', 'text/plain')
         res.writeHead(403)
         res.end('Access denied: Path traversal not allowed')
@@ -97,7 +97,7 @@ const vaultRouter = IttyRouter()
       }
 
       // Block access to potentially sensitive file types
-      const fileExt = path.extname(vaultDocsPath).toLowerCase()
+      const fileExt = path.extname(vaultOutputPath).toLowerCase()
       const blockedExtensions = ['.env', '.key', '.pem', '.p12', '.pfx', '.crt', '.csr', '.log']
       if (blockedExtensions.includes(fileExt)) {
         res.setHeader('content-type', 'text/plain')
@@ -108,7 +108,7 @@ const vaultRouter = IttyRouter()
 
       // Check if file exists
       try {
-        await fs.promises.access(vaultDocsPath, fs.constants.F_OK)
+        await fs.promises.access(vaultOutputPath, fs.constants.F_OK)
       } catch (_err) {
         // File not found
         res.setHeader('content-type', 'text/plain')
@@ -117,10 +117,10 @@ const vaultRouter = IttyRouter()
         return res
       }
 
-      const stats = await fs.promises.stat(vaultDocsPath)
+      const stats = await fs.promises.stat(vaultOutputPath)
       if (stats.isDirectory()) {
         // Try to serve index.html from the directory
-        const indexPath = path.join(vaultDocsPath, 'index.html')
+        const indexPath = path.join(vaultOutputPath, 'index.html')
         try {
           await fs.promises.access(indexPath, fs.constants.F_OK)
           const contentType = mime.getType('.html') || 'text/html'
@@ -151,14 +151,14 @@ const vaultRouter = IttyRouter()
         }
       }
 
-      const contentType = mime.getType(path.extname(vaultDocsPath)) || 'application/octet-stream'
-      const ts = await getFileModificationTime(vaultDocsPath)
+      const contentType = mime.getType(path.extname(vaultOutputPath)) || 'application/octet-stream'
+      const ts = await getFileModificationTime(vaultOutputPath)
 
       const cacheControl = cacheControlFor(filePath)
       res.setHeader('cache-control', cacheControl)
       res.setHeader('content-type', contentType)
 
-      const fileStream = fs.createReadStream(vaultDocsPath)
+      const fileStream = fs.createReadStream(vaultOutputPath)
       const [streamForRes, streamForEtag] = dupeRstream(fileStream, 2)
 
       if (await handleEtag(req, res, { data: streamForEtag, ts })) return res

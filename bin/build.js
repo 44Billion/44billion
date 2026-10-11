@@ -10,10 +10,15 @@ import swModulePlugin from './plugins/sw-module.js'
 import { EMIT_SOURCEMAPS } from './build-settings.js'
 import { createSourceMaps } from './sourcemaps.js'
 import { createBuildOutput } from './build-output.js'
+import { prepareProductionBuild } from './prepare-production-build.js'
 
 const { dirname } = import.meta
 const isDev = process.env.NODE_ENV === 'development'
 const emitSourceMaps = isDev || EMIT_SOURCEMAPS
+
+// Dependencies needed by these imports must already be installed. Production
+// preparation refreshes both projects before hashing sources or bundling.
+if (!isDev) await prepareProductionBuild()
 
 async function hashTree (dir, hash) {
   const entries = (await readdir(dir, { withFileTypes: true }))

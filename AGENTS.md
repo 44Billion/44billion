@@ -117,8 +117,15 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   fixed. The bridge expects localhost:10000. Wait for the launcher and vault
   builds before reporting readiness; handle SIGINT, SIGTERM and child failure.
 - The vault development server and launcher vault route serve `ez-vault/.dev`.
-  Production serves `ez-vault/docs`. Preserve the existing localhost:4000 origin
-  so development vault accounts remain accessible.
+  Production serves `ez-vault/dist`. Run `npm run build` in 44billion before
+  starting or restarting production: it installs both projects with
+  `npm i --include=dev`, builds the vault, then builds the launcher. A missing
+  `../ez-vault` warns and builds only the launcher; an invalid sibling or a failed
+  command aborts. Run `npm i` manually in 44billion first if dependencies needed
+  by the builder's imports are missing or changed. Preparation lives in
+  `bin/prepare-production-build.js`, runs before hashing/bundling, and never runs
+  in development. Generated dist/ output remains ignored by Git. Preserve the
+  existing localhost:4000 origin so development vault accounts remain accessible.
 - The health endpoint is development-only; it is not an injected app API.
   Draft updates retain their current origin/event cleanup behavior.
 - The draft watcher must wait for the first-open manifest write. Recheck the
