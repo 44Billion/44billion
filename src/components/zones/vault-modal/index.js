@@ -814,13 +814,16 @@ function initMessageListener ({
 
   async function applyVaultAccountsState (accounts) {
     await reconcileNostrDbAccounts(accounts)
-    signerStates.setAccounts(accounts)
     try {
       await pruneNostrDbsForVaultAccounts(accounts)
     } catch (err) {
       console.warn('Failed to prune stale NostrDB databases', err)
     }
-    return setAccountsState(accounts, storage, tabStorage)
+    const metadata = await setAccountsState(accounts, storage, tabStorage)
+    // App callbacks may immediately use methods guarded by the persisted flags.
+    // Publish readiness only after those flags and workspace ownership agree.
+    signerStates.setAccounts(accounts)
+    return metadata
   }
 
   function listenToVaultMessages ({ vaultPort, signal }) {

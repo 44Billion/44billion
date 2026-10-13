@@ -145,10 +145,17 @@ unsubscribe()
 
 The subscription registers before delivering its initial snapshot; no separate
 initial query is needed. Snapshots contain `pubkey`, `connection` (`unknown`,
-`connected`, `disconnected`), `access` (`allowed`, `revoked`), `isLocked` and
-`isReadOnly`. Account flags are null while unknown/disconnected. Temporary
-launcher accounts are read-only. Lock changes are emitted even if persona
-membership is unchanged. Availability queries do not prompt for signing. Authenticated document lifecycle
+`connected`, `disconnected`), `access` (`allowed`, `revoked`), `isLocked`,
+`isReadOnly`, `isDefaultUser` and `supportsContentKeyMethods`. Lock/read-only flags
+are null while unknown/disconnected. For authorized identities, `isDefaultUser`
+identifies the launcher's provisional signed-out identity independently of vault
+connectivity; it is not inferred from read-only access. The primary identity is
+fixed for each app document; signing in opens/reloads a document for that account.
+`supportsContentKeyMethods` is the effective capability used by the injected
+signer surface, including cached metadata and the legacy `!isReadOnly` fallback.
+Capability changes notify listeners even when lock/read-only flags are unchanged;
+the signer objects update before those callbacks run. All account flags are null
+in the terminal revoked snapshot. Availability queries do not prompt for signing. Authenticated document lifecycle
 messages report navigation/unload, and a serial five-second heartbeat with a
 two-second timeout detects unresponsive ports and subsequent recovery.
 
@@ -159,8 +166,9 @@ with unknown connection and null account flags, then closes the subscription.
 Unsubscribe and document unload suppress queued callbacks. The returned
 unsubscribe function's `ready` promise reports asynchronous setup failure.
 Listeners are invoked in notification order; async listener bodies must guard
-their own overlapping work. The scoped signer/store objects themselves keep
-their existing surfaces; availability is queried on `window.napp` with `pubkey`.
+their own overlapping work. Scoped signer/store objects remain bound to their
+identity. The three content-key methods follow capability updates; availability
+is queried on `window.napp` with `pubkey`.
 
 ## Instance metadata
 

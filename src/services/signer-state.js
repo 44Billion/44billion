@@ -11,9 +11,12 @@ export function createSignerStateService ({ getStorage = () => globalThis.localS
   function read ({ pubkey, ownerPubkey, readKeys, readFlags }) {
     pubkey ??= ownerPubkey
     if (!/^[0-9a-f]{64}$/.test(pubkey || '') || (pubkey !== ownerPubkey && !readKeys().includes(pubkey))) throw denied()
-    const flags = accounts.get(pubkey) || readFlags?.(pubkey)
+    const localFlags = readFlags?.(pubkey)
+    const flags = accounts.get(pubkey) || localFlags
     return {
       pubkey, connection, access: 'allowed',
+      isDefaultUser: localFlags?.isDefaultUser === true,
+      supportsContentKeyMethods: supportsContentKeyMethods(pubkey),
       isLocked: connection === 'connected' && flags ? !!flags.isLocked : null,
       isReadOnly: connection === 'connected' && flags ? !!(flags.isReadOnly || flags.isDefaultUser) : null
     }
@@ -21,7 +24,7 @@ export function createSignerStateService ({ getStorage = () => globalThis.localS
   function deliver (entry) {
     let state
     try { state = read(entry.scope) } catch {
-      state = { pubkey: entry.pubkey, connection: 'unknown', access: 'revoked', isLocked: null, isReadOnly: null }
+      state = { pubkey: entry.pubkey, connection: 'unknown', access: 'revoked', isDefaultUser: null, supportsContentKeyMethods: null, isLocked: null, isReadOnly: null }
       subscriptions.delete(entry)
     }
     const fingerprint = JSON.stringify(state)

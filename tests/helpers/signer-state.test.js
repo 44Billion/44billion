@@ -20,7 +20,7 @@ test('signer state reports lock changes without persona changes and revokes with
   assert.equal(states.at(-1).isReadOnly, true)
   keys = [owner]
   service.invalidate()
-  assert.deepEqual(states.at(-1), { pubkey: peer, connection: 'unknown', access: 'revoked', isLocked: null, isReadOnly: null })
+  assert.deepEqual(states.at(-1), { pubkey: peer, connection: 'unknown', access: 'revoked', isDefaultUser: null, supportsContentKeyMethods: null, isLocked: null, isReadOnly: null })
   const count = states.length
   service.setConnection('disconnected')
   assert.equal(states.length, count)
@@ -43,6 +43,27 @@ test('signer client suppresses queued callbacks on unsubscribe and exposes setup
   await assert.rejects(denied.getSignerState({ pubkey: peer }), error)
   await assert.rejects(denied.onSignerStateChanged(() => {}, { pubkey: peer }).ready, error)
   client.close(); denied.close()
+})
+
+test('public signer state distinguishes signed-out identities and notifies on capability-only changes', () => {
+  const service = createSignerStateService()
+  const scope = { ownerPubkey: owner, readKeys: () => [], readFlags: () => ({ isDefaultUser: true, isReadOnly: false, isLocked: false }) }
+  assert.equal(service.read(scope).isDefaultUser, true)
+  assert.equal(service.read(scope).connection, 'unknown')
+  assert.equal(service.read({ ...scope, readFlags: () => ({ isReadOnly: true }) }).isDefaultUser, false)
+  const updates = []
+  const order = []
+  service.setAccounts([{ pubkey: owner, isReadOnly: false, isLocked: false, supportsContentKeyMethods: false }])
+  service.setConnection('connected')
+  service.subscribeContentKeyCapabilities(scope, () => order.push('surface'))
+  service.subscribe({ ...scope, readFlags: () => ({ isDefaultUser: false }) }, state => { updates.push(state); order.push('state') })
+  order.length = 0
+  service.setAccounts([{ pubkey: owner, isReadOnly: false, isLocked: false, supportsContentKeyMethods: true }])
+  assert.deepEqual(order, ['surface', 'state'])
+  assert.equal(updates.at(-1).supportsContentKeyMethods, true)
+  assert.equal(updates.at(-1).isDefaultUser, false)
+  assert.equal(updates.at(-1).isLocked, updates.at(-2).isLocked)
+  assert.equal(updates.at(-1).isReadOnly, updates.at(-2).isReadOnly)
 })
 
 test('signer port scopes identities, sends initial state before reply and stops on unload', async () => {
