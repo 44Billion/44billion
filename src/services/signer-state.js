@@ -1,8 +1,12 @@
+import { base16ToBase62 } from 'libp2r2p/base62'
+
 // Informational state only: operation authorization remains in the request path.
-export function createSignerStateService () {
+export function createSignerStateService ({ getStorage = () => globalThis.localStorage } = {}) {
   let connection = 'unknown'
   let accounts = new Map()
+  let receivedAccounts = false
   const subscriptions = new Set()
+  const capabilitySubscriptions = new Set()
   const denied = () => Object.assign(new Error('Pubkey is not part of the app active persona'), { code: 'PUBKEY_NOT_IN_PERSONA' })
   function read ({ pubkey, ownerPubkey, readKeys, readFlags }) {
     pubkey ??= ownerPubkey
@@ -25,12 +29,49 @@ export function createSignerStateService () {
     entry.fingerprint = fingerprint
     entry.notify(state)
   }
-  function invalidate () { for (const entry of [...subscriptions]) deliver(entry) }
+  function readContentKeyCapabilities ({ ownerPubkey, readKeys }) {
+    return {
+      ownerPubkey,
+      pubkeysSupportingContentKeyMethods: [...new Set([ownerPubkey, ...readKeys()])]
+        .filter(supportsContentKeyMethods)
+        .sort()
+    }
+  }
+  function supportsContentKeyMethods (pubkey) {
+    if (!/^[0-9a-f]{64}$/.test(pubkey || '')) return false
+    if (receivedAccounts) {
+      const account = accounts.get(pubkey)
+      if (!account) return false
+      return typeof account.supportsContentKeyMethods === 'boolean'
+        ? account.supportsContentKeyMethods
+        : !account.isReadOnly
+    }
+    const storage = getStorage()
+    if (!storage) return false
+    // Match setAccountsState's encoding. The compatibility fallback is only
+    // used for reading; an inferred capability is never persisted.
+    const prefix = `session_accountByUserPk_${base16ToBase62(pubkey)}`
+    const capability = storage.getItem(`${prefix}_supportsContentKeyMethods`)
+    if (capability === 'true' || capability === 'false') return capability === 'true'
+    return storage.getItem(`${prefix}_isReadOnly`) !== 'true'
+  }
+  function deliverCapabilities (entry) {
+    const capabilities = readContentKeyCapabilities(entry.scope)
+    const fingerprint = JSON.stringify(capabilities)
+    if (entry.fingerprint === fingerprint) return
+    entry.fingerprint = fingerprint
+    entry.notify(capabilities)
+  }
+  function invalidate () {
+    for (const entry of [...capabilitySubscriptions]) deliverCapabilities(entry)
+    for (const entry of [...subscriptions]) deliver(entry)
+  }
   return {
-    read, invalidate,
+    read, invalidate, readContentKeyCapabilities,
     setConnection (value) { connection = value; invalidate() },
     setAccounts (values) {
-      accounts = new Map(values.map(({ pubkey, isLocked, isReadOnly }) => [pubkey, { isLocked, isReadOnly }]))
+      receivedAccounts = true
+      accounts = new Map(values.map(({ pubkey, isLocked, isReadOnly, supportsContentKeyMethods }) => [pubkey, { isLocked, isReadOnly, supportsContentKeyMethods }]))
       invalidate()
     },
     subscribe (scope, notify) {
@@ -39,6 +80,12 @@ export function createSignerStateService () {
       subscriptions.add(entry)
       deliver(entry)
       return () => subscriptions.delete(entry)
+    },
+    subscribeContentKeyCapabilities (scope, notify) {
+      const entry = { scope, notify }
+      capabilitySubscriptions.add(entry)
+      deliverCapabilities(entry)
+      return () => capabilitySubscriptions.delete(entry)
     }
   }
 }

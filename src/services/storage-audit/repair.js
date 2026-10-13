@@ -1,5 +1,6 @@
 import AppFileManager from '#services/app-file-manager/index.js'
 import AppUpdater from '#services/app-updater/index.js'
+import { ACCOUNT_SUFFIXES } from '#constants/storage-schema.js'
 import {
   cleanupNostrDbAppForOwner
 } from '#helpers/nostrdb-app-cleanup.js'
@@ -95,7 +96,7 @@ export async function applyStorageRepairPlan (plan, {
 
   const ownersToDelete = new Set(plan.removeNostrDbOwners ?? [])
   for (const item of plan.removeAccounts ?? []) {
-    for (const suffix of ['_isReadOnly', '_isLocked', '_profile', '_relays']) {
+    for (const suffix of ACCOUNT_SUFFIXES) {
       setStoredValue(localStorageArea, `session_accountByUserPk_${item.userPk}${suffix}`, null)
     }
     if (item.ownerPubkey) ownersToDelete.add(item.ownerPubkey)

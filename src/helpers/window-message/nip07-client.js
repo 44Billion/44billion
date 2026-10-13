@@ -17,11 +17,12 @@ function plaintextBytes (value) {
 
 // Both the app API and the local vault channel carry binary plaintext.
 // All identity/namespace variants must use this same boundary.
-export function createNip07Method ({ method, context, connection, ask, timeout = 5 * 60 * 1000 }) {
+export function createNip07Method ({ method, context, connection, ask, isSupported = () => true, timeout = 5 * 60 * 1000 }) {
   return async (...params) => {
     // Snapshot bytes before waiting for the handshake or permission UI.
     if (encryptMethods.has(method)) params[3] = plaintextBytes(params[3]).slice().buffer
     const port = await connection
+    if (!isSupported()) throw new ValidationError('UNSUPPORTED_METHOD', { message: 'This signer does not support the requested method.' })
     const { payload, error } = await ask(port, {
       code: 'NIP07', payload: { ...context, method, params }
     }, { timeout })

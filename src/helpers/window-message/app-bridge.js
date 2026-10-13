@@ -1,6 +1,6 @@
 import { assertNostrDbAccess, isNostrDbAccessError } from '#services/idb/nostrdb/access.js'
 import { signerStates } from '#services/signer-state.js'
-import { connectSignerStatePort } from './signer-state-port.js'
+import { connectSignerStatePort, connectSignerCapabilitiesPort } from './signer-state-port.js'
 import { createNfileCredit } from './nfile-credit.js'
 import { readSubdomainLifecycle, subdomainStorage } from '#helpers/subdomain-mapping.js'
 import { personaPublicKeys, readAppPersonaPublicKeys } from '#services/personas/public-keys.js'
@@ -646,6 +646,10 @@ function createAppPageMessageListener ({
       readKeys: () => readAppPersonaPublicKeys(record),
       readFlags: pubkey => readSignerAccountFlags(base16ToBase62(pubkey, { mode: 'integer', minLength: 43 }), { defaultUserPk })
     })
+    const signerCapabilities = connectSignerCapabilitiesPort({
+      port: appPagePort, signal: documentSignal, ownerPubkey: userPkB16,
+      readKeys: () => readAppPersonaPublicKeys(record)
+    })
     documentSignal.addEventListener('abort', eventStoreBridge.dispose, { once: true })
     appPagePort.addEventListener('message', event => {
       if (event.data.code === 'INSTANCE_DOCUMENT_UNLOADED') eventStoreBridge.dispose()
@@ -1044,6 +1048,7 @@ function createAppPageMessageListener ({
         isWidget: instanceKind === 'widget',
         instanceMetadata: metadata,
         personaPublicKeys: initialPublicKeys,
+        signerCapabilities,
         relayUrls: relayRegistry.urls(),
         relayPoolEnabled: isRelayPoolEnabled()
       }

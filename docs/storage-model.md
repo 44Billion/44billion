@@ -138,6 +138,18 @@ registered instance identity.
 - `session_accountByUserPk_<userPk>_isLocked`
 - `session_accountByUserPk_<userPk>_profile`
 - `session_accountByUserPk_<userPk>_relays`
+- `session_accountByUserPk_<userPk>_supportsContentKeyMethods`: boolean
+  from the latest vault account snapshot. `true` enables injected double signing
+  and Double DH; `false` omits them. A missing/invalid value defaults to
+  `!isReadOnly` in the consumer, but that inferred value is never persisted.
+  Only explicit booleans from vault snapshots populate the field. The launcher
+  uses the stored value for the initial app handshake before the vault responds,
+  then applies live snapshots and updates open apps. Account cleanup removes it;
+  the audit preserves booleans and removes invalid values without inventing a
+  capability. Like the other account fields, it is required by the audit for an
+  account without a valid workspace: its absence plans local account removal.
+  Accounts with a valid workspace remain preserved when the field is missing.
+  This metadata does not grant signing permission or imply unlock.
 
 ### Subdomain mappings
 

@@ -11,6 +11,7 @@ import { provideAppI18n } from '#i18n/index.js'
 import { f, useStore, useGlobalStore, useClosestStore, useWebStorage } from '#f'
 import { useInitInstanceMetadata } from '#hooks/use-instance-metadata.js'
 import { instanceMetadata } from '#services/instance-metadata/index.js'
+import { signerStates } from '#services/signer-state.js'
 import { getAppBridgeState, getAppBridgeSpecs, disposeAppBridge } from '#helpers/window-message/app-bridge-registry.js'
 import { retryAppBridge } from '#helpers/window-message/app-bridge.js'
 import { addressObjToAppId } from '#helpers/app.js'
@@ -32,12 +33,26 @@ const draftStartup = new URLSearchParams(location.search).has('draft-startup')
 const kind = draftStartup ? 35130 : 35128
 const appId = addressObjToAppId({ kind, pubkey, dTag: 'bridge-test' })
 const fixture = window.fixture = { setAccountsState, allocateAppSubdomain, retireSubdomainsFor, subdomainStorage, processSubdomainCleanup, askAppToClearData, appId, userPk, instanceMetadata, getAppBridgeState, getAppBridgeSpecs, retryAppBridge, disposeAppBridge, AppUpdater, toBase62: hex => base16ToBase62(hex, { mode: 'integer', minLength: 43 }), setAppPersonaSelection, updatePersonaUserPks, dialogs: [], loaded: [] }
+fixture.setSignerAccounts = accounts => signerStates.setAccounts(accounts)
+fixture.bootId = Math.random()
+fixture.signerConnection = () => signerStates.read({
+  ownerPubkey: pubkey, readKeys: () => [], readFlags: () => ({})
+}).connection
 
 const bytes = new TextEncoder().encode(`<!doctype html><html><head><title>Bridge Test</title></head><body>Cached app loaded<script>
 window.documentToken = Math.random().toString(36);
 window.personaChanges = [];
 window.scopedSigners = new Map();
 window.scopedEventStores = new Map();
+const contentSurfaces = new Map();
+function contentSupport(key, signer) {
+  if (!contentSurfaces.has(key)) contentSurfaces.set(key, [signer, signer.ns('notes'), signer.withSharedKey('${pubkey}', 'fixture')]);
+  return contentSurfaces.get(key).map(surface => [
+    'doubleSignEvent' in surface,
+    'encryptDoubleDH' in surface.nip44v3,
+    'decryptDoubleDH' in surface.nip44v3
+  ]);
+}
 window.napp.onPersonaPublicKeysChanged(keys => window.personaChanges.push(keys));
 window.napp.getInstanceMetadata().then(metadata => {
   parent.postMessage({code:'FIXTURE_LOADED', metadata, token:documentToken}, '${location.origin}');
@@ -57,7 +72,8 @@ window.addEventListener('message', async event => {
     }
     parent.postMessage({code:'FIXTURE_PERSONA_REPLY', requestId:event.data.requestId, payload:{
       keys:await window.napp.getPersonaPublicKeys(), changes:personaChanges,
-      metadata:await window.napp.getInstanceMetadata(), peek:await window.nostr.peekPublicKey(), href:location.pathname+location.search+location.hash, token:documentToken, signers, eventStores
+      metadata:await window.napp.getInstanceMetadata(), peek:await window.nostr.peekPublicKey(), href:location.pathname+location.search+location.hash, token:documentToken, signers, eventStores,
+      contentMethods:{owner:contentSupport('owner', window.nostr), scoped:event.data.pubkeys.map(pk => contentSupport(pk, scopedSigners.get(pk)))}
     }}, event.origin);
   }
   if(event.data.code === 'FIXTURE_STORAGE') {

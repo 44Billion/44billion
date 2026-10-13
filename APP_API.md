@@ -69,6 +69,30 @@ vault signer:
 | `nip44v3.decryptDoubleDH(pubkey, kind, scope, ciphertext, peerContentPubkey?, ownContentPubkey?)` | Returns plaintext as an `ArrayBuffer`. Optional content pubkeys select the Double DH keys. |
 | `obfuscate(...params)` | Vault obfuscation extension. |
 
+`doubleSignEvent`, `nip44v3.encryptDoubleDH` and `nip44v3.decryptDoubleDH`
+use the account's content-key capability. With confirmed vault metadata they
+are exposed only for local `nsec` accounts and are absent for `bunker` accounts,
+including on persona, namespace and `withSharedKey` signer objects, even if a
+remote signer advertises equivalent commands. Read-only accounts also omit them.
+The app handshake uses previously persisted account capabilities even when the
+vault is temporarily unavailable. App opening does not wait for the vault.
+Before the app/launcher handshake completes, the three methods are absent.
+When the indicator is missing or invalid, the consumer temporarily defaults to
+`!isReadOnly`. Thus writable legacy accounts offer the methods after the app
+handshake, including legacy bunker accounts until the vault supplies an explicit
+`false`. Explicit `true`/`false` always override this fallback. The inferred value
+is never persisted; only explicit vault capabilities are stored.
+Awaiting `getPublicKey()` waits for the app/launcher handshake,
+but does not guarantee a fresh vault snapshot, account unlock or signer connectivity.
+Live snapshots update persisted capabilities and existing signer objects; persona
+access changes also update their method surfaces. Previously captured functions reject with
+`UNSUPPORTED_METHOD` before sending a request if support has been removed.
+
+Internally, `BROWSER_READY.payload.signerCapabilities` and the payload of
+`NIP07_CAPABILITIES_CHANGED` use `{ ownerPubkey,
+pubkeysSupportingContentKeyMethods }`. The list contains account identity pubkeys
+accessible to that document that support the three methods, not content-key pubkeys.
+
 `ns(name, ...namespaceParams)` returns a method object using that namespace.
 
 NIP-44 v3 follows the [NIP-07 extension](https://github.com/nostr-land/nip44v3/blob/master/extensions/nip07.md):

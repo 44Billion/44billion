@@ -78,6 +78,7 @@ describe('storage repair plan', () => {
       session_accountByUserPk_user_isLocked: JSON.stringify(false),
       session_accountByUserPk_user_profile: JSON.stringify({}),
       session_accountByUserPk_user_relays: JSON.stringify({}),
+      session_accountByUserPk_user_supportsContentKeyMethods: JSON.stringify(true),
       session_workspaceByKey_ws_userPk: JSON.stringify('user'),
       session_subdomainByUserAndApp_user_app: JSON.stringify('7'),
       session_subdomainToApp_7: JSON.stringify({ userPk: 'user', appId: 'app' })
@@ -102,6 +103,7 @@ describe('storage repair plan', () => {
     assert.equal(local.getItem('session_to_remove'), null)
     assert.deepEqual(JSON.parse(local.getItem('44billion:nostrdb-quotas:v1')), { cacheBytes: 1024 })
     assert.equal(local.getItem('session_accountByUserPk_user_profile'), null)
+    assert.equal(local.getItem('session_accountByUserPk_user_supportsContentKeyMethods'), null)
     assert.equal(session.getItem('session_appByKey_key_visibility'), null)
     assert.equal(local.getItem('session_workspaceByKey_ws_userPk'), null)
     assert.equal(local.getItem('session_subdomainByUserAndApp_user_app'), null)

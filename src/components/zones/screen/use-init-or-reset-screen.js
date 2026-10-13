@@ -238,6 +238,9 @@ export async function setAccountsState (nextAccountState, storage, tabStorage) {
     storage[`session_accountByUserPk_${userPk}_isLocked$`](isReadOnly ? false : (account.isLocked ?? true))
     storage[`session_accountByUserPk_${userPk}_profile$`](account.profile)
     storage[`session_accountByUserPk_${userPk}_relays$`](account.relays)
+    storage[`session_accountByUserPk_${userPk}_supportsContentKeyMethods$`](
+      typeof account.supportsContentKeyMethods === 'boolean' ? account.supportsContentKeyMethods : undefined
+    )
   })
 
   // Special case: moving from default-only to first account(s). The first
@@ -386,6 +389,7 @@ export async function setAccountsState (nextAccountState, storage, tabStorage) {
       storage[`session_accountByUserPk_${userPk}_isLocked$`](undefined)
       storage[`session_accountByUserPk_${userPk}_profile$`](undefined)
       storage[`session_accountByUserPk_${userPk}_relays$`](undefined)
+      storage[`session_accountByUserPk_${userPk}_supportsContentKeyMethods$`](undefined)
     })
 
   return activationMetadata

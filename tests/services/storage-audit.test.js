@@ -59,6 +59,33 @@ function validState (overrides = {}) {
 }
 
 describe('storage audit', () => {
+  it('requires the capability for accounts without a workspace and never invents a value', () => {
+    for (const value of [true, false]) {
+      const state = validState({ local: { session_accountByUserPk_user_supportsContentKeyMethods: value } })
+      assert.equal(hasStorageRepairActions(auditPersistedState(state.local, state.session).plan), false)
+    }
+    const legacy = validState()
+    assert.equal(hasStorageRepairActions(auditPersistedState(legacy.local, legacy.session).plan), false)
+    assert.equal(legacy.local.getItem('session_accountByUserPk_user_supportsContentKeyMethods'), null)
+    const invalid = validState({ local: { session_accountByUserPk_user_supportsContentKeyMethods: 'true' } })
+    assert.equal(auditPersistedState(invalid.local, invalid.session).plan.local.session_accountByUserPk_user_supportsContentKeyMethods, null)
+    const orphan = validState({ local: { session_accountByUserPk_missing_supportsContentKeyMethods: true } })
+    assert.equal(auditPersistedState(orphan.local, orphan.session).plan.local.session_accountByUserPk_missing_supportsContentKeyMethods, null)
+    // The missing field is an orphan criterion only without a valid workspace.
+    const retained = validState({ local: {
+      session_accountUserPks: ['user', 'other'],
+      session_accountByUserPk_other_isReadOnly: false,
+      session_accountByUserPk_other_isLocked: true,
+      session_accountByUserPk_other_profile: {},
+      session_accountByUserPk_other_relays: {}
+    } })
+    assert.deepEqual(auditPersistedState(retained.local, retained.session).plan.removeAccounts.map(account => account.userPk), ['other'])
+    for (const value of [true, false]) {
+      retained.local.setItem('session_accountByUserPk_other_supportsContentKeyMethods', JSON.stringify(value))
+      assert.deepEqual(auditPersistedState(retained.local, retained.session).plan.removeAccounts, [])
+    }
+  })
+
   it('preserves visual pins and legacy records when repairing the widget catalog', () => {
     const legacy = { appId: 'app1', wsKey: 'ws1', row: 0, col: 0, desired: { w: 1, h: 1 }, pinnedRoute: '/route' }
     const pinned = { ...legacy, isPinned: true }

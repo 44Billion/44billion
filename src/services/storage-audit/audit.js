@@ -896,6 +896,11 @@ function auditOrphanKeys (local, session, {
     }
     if (key.startsWith('session_accountByUserPk_')) {
       const userPk = extractDynamicId(key, accountPrefixes, ACCOUNT_SUFFIXES)
+      if (key.endsWith('_supportsContentKeyMethods') &&
+          (isInvalid(local, key) || typeof getValue(local, key) !== 'boolean')) {
+        issue('invalid_content_key_capability', 'Content-key capability must be a boolean when present', { key })
+        setLocal(key, null)
+      }
       if (userPk && !referencedUserPks.has(userPk) && !accountUserPks.includes(userPk)) {
         issue('orphan_account_key', 'Orphan account key', { key })
         setLocal(key, null)

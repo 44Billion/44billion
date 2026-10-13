@@ -14,12 +14,18 @@ export default async function checkPersonas ({ evaluate, until, wait, port, send
   })`)
   const windowFrame = 'app-window iframe'
   const widgetFrame = 'widget-window iframe'
+  await evaluate(`fixture.setSignerAccounts([{pubkey:${JSON.stringify(a)}, supportsContentKeyMethods:true}])`)
+  await wait(60)
   const original = await request(windowFrame, [a, b])
   const originalWidget = await request(widgetFrame)
   assert.deepEqual(original.keys, [a])
   assert.deepEqual(original.signers, [a, { error: 'PUBKEY_NOT_IN_PERSONA' }])
   assert.deepEqual(original.eventStores, [true, { error: 'PUBKEY_NOT_IN_PERSONA' }])
   assert.deepEqual(original.changes, [[a]])
+  const supported = Array.from({ length: 3 }, () => [true, true, true])
+  const unsupported = Array.from({ length: 3 }, () => [false, false, false])
+  assert.deepEqual(original.contentMethods.owner, supported)
+  assert.deepEqual(original.contentMethods.scoped, [supported, unsupported])
 
   // The real toolbar menu should offer the selected app's eligible identities.
   await evaluate(`fixture.memberB62=fixture.toBase62(${JSON.stringify(b)});
@@ -46,6 +52,19 @@ export default async function checkPersonas ({ evaluate, until, wait, port, send
   assert.equal(selected.token, original.token)
   assert.equal(selectedWidget.token, originalWidget.token)
 
+  // Retained default, persona, namespace and shared-key objects follow account
+  // type changes over the actual app bridge, without reloading either document.
+  await evaluate(`fixture.setSignerAccounts([
+    {pubkey:${JSON.stringify(a)}, supportsContentKeyMethods:false},
+    {pubkey:${JSON.stringify(b)}, supportsContentKeyMethods:true}
+  ])`)
+  await wait(60)
+  const bunkerOwner = await request(windowFrame, [a, b])
+  assert.deepEqual(bunkerOwner.contentMethods.owner, unsupported)
+  assert.deepEqual(bunkerOwner.contentMethods.scoped, [unsupported, supported])
+  assert.deepEqual((await request(widgetFrame, [b])).contentMethods.scoped, [supported])
+  assert.equal(bunkerOwner.token, original.token)
+
   await evaluate("fixture.tabStorage.session_appByKey_window_visibility$('minimized');fixture.updatePersonaUserPks({localStorageArea:localStorage,personaId:'team',userPks:[fixture.memberB62]})")
   await wait(100)
   const reset = await request(windowFrame, [b, null, ''])
@@ -53,6 +72,7 @@ export default async function checkPersonas ({ evaluate, until, wait, port, send
   assert.deepEqual(reset.signers, Array(3).fill({ error: 'PUBKEY_NOT_IN_PERSONA' }))
   assert.deepEqual(reset.eventStores, Array(3).fill({ error: 'PUBKEY_NOT_IN_PERSONA' }))
   assert.deepEqual(reset.changes, [[a], [a, b], [a]])
+  assert.deepEqual(reset.contentMethods.scoped[0], unsupported)
   assert.deepEqual((await request(widgetFrame)).changes, [[a], [a, b], [a]])
   assert.equal(await evaluate('fixture.storage.local_appPersonaSelections$().ws?.[fixture.appId]??null'), null)
   assert.equal(reset.token, original.token)

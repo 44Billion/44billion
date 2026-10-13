@@ -2,6 +2,25 @@ import { signerStates } from '#services/signer-state.js'
 import { tell, reply } from './index.js'
 import { serializeError } from '#helpers/error.js'
 
+export function connectSignerCapabilitiesPort ({ port, signal, ownerPubkey, readKeys }) {
+  let initial
+  const stop = signerStates.subscribeContentKeyCapabilities({ ownerPubkey, readKeys }, capabilities => {
+    if (!initial) initial = capabilities
+    else tell(port, { code: 'NIP07_CAPABILITIES_CHANGED', payload: capabilities })
+  })
+  if (signal.aborted) stop()
+  else {
+    signal.addEventListener('abort', stop, { once: true })
+    port.addEventListener('message', event => {
+      if (event.data.code === 'INSTANCE_DOCUMENT_UNLOADED') stop()
+    }, { signal })
+    globalThis.window?.addEventListener('storage', event => {
+      if (event.key === null || event.key.endsWith('_supportsContentKeyMethods')) signerStates.invalidate()
+    }, { signal })
+  }
+  return initial
+}
+
 export function connectSignerStatePort ({ port, signal, ownerPubkey, readKeys, readFlags }) {
   const subscriptions = new Map()
   let closed = false

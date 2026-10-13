@@ -89,3 +89,49 @@ test('connection probes are serial, recover availability and ignore results from
   const late = timers.shift(); controller.abort(); await late()
   assert.equal(states.length, 2); assert.equal(timers.length, 0)
 })
+
+test('content-key capabilities use vault metadata, stay scoped to the persona and survive local account locking', () => {
+  const service = createSignerStateService()
+  let keys = [peer]
+  const snapshots = []
+  const scope = { ownerPubkey: owner, readKeys: () => keys }
+  const stop = service.subscribeContentKeyCapabilities(scope, snapshot => snapshots.push(snapshot))
+  assert.deepEqual(snapshots[0], { ownerPubkey: owner, pubkeysSupportingContentKeyMethods: [] })
+  service.setAccounts([
+    { pubkey: owner, supportsContentKeyMethods: false },
+    { pubkey: peer, supportsContentKeyMethods: true, isLocked: true },
+    { pubkey: 'c'.repeat(64), supportsContentKeyMethods: true }
+  ])
+  assert.deepEqual(snapshots.at(-1).pubkeysSupportingContentKeyMethods, [peer])
+  service.setAccounts([{ pubkey: owner, supportsContentKeyMethods: true, isLocked: true }])
+  assert.deepEqual(snapshots.at(-1).pubkeysSupportingContentKeyMethods, [owner])
+  service.setAccounts([{ pubkey: owner, isReadOnly: true }, { pubkey: peer, supportsContentKeyMethods: true }])
+  assert.deepEqual(snapshots.at(-1).pubkeysSupportingContentKeyMethods, [peer])
+  keys = []; service.invalidate()
+  assert.deepEqual(snapshots.at(-1).pubkeysSupportingContentKeyMethods, [])
+  keys = [peer]; service.invalidate()
+  assert.deepEqual(snapshots.at(-1).pubkeysSupportingContentKeyMethods, [peer])
+  stop()
+  const count = snapshots.length
+  service.setAccounts([])
+  assert.equal(snapshots.length, count)
+})
+
+test('capability port returns the handshake snapshot without an early message and disposes on unload', async () => {
+  const { signerStates } = await import('../../src/services/signer-state.js')
+  const { connectSignerCapabilitiesPort } = await import('../../src/helpers/window-message/signer-state-port.js')
+  const port = new EventTarget()
+  const messages = []
+  port.postMessage = message => messages.push(message)
+  const controller = new AbortController()
+  signerStates.setAccounts([{ pubkey: owner, supportsContentKeyMethods: true }])
+  const initial = connectSignerCapabilitiesPort({ port, signal: controller.signal, ownerPubkey: owner, readKeys: () => [] })
+  assert.deepEqual(initial, { ownerPubkey: owner, pubkeysSupportingContentKeyMethods: [owner] })
+  assert.deepEqual(messages, [])
+  signerStates.setAccounts([{ pubkey: owner, supportsContentKeyMethods: false }])
+  assert.deepEqual(messages[0], { code: 'NIP07_CAPABILITIES_CHANGED', payload: { ownerPubkey: owner, pubkeysSupportingContentKeyMethods: [] } })
+  port.dispatchEvent(new MessageEvent('message', { data: { code: 'INSTANCE_DOCUMENT_UNLOADED' } }))
+  signerStates.setAccounts([{ pubkey: owner, supportsContentKeyMethods: true }])
+  assert.equal(messages.length, 1)
+  controller.abort()
+})

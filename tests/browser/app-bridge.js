@@ -1,5 +1,6 @@
 import checkIdentity from './identity-regressions.js'
 import checkPersonas from './persona-regressions.js'
+import checkSignerCapabilities from './signer-capability-regressions.js'
 import { spawn } from 'node:child_process'
 import { readFileSync, mkdtempSync, rmSync } from 'node:fs'
 import path from 'node:path'
@@ -260,6 +261,7 @@ try {
   await setVisibility('window', 'closed')
   await until('fixture.getAppBridgeState("2").windows.size===0 && !fixture.getAppBridgeState("2").currentPort', 'recovered bridge still cleans up')
   await checkIdentity({ evaluate, until, wait, port, send, cdp })
+  await checkSignerCapabilities({ evaluate, until, cdp })
   assert.deepEqual(await evaluate('fixtureErrors'), [])
   console.log('Chrome: real cold/warm bridge, draft startup without reload, cross-origin draft reloads, app navigation and live ports, minimize/close/reopen, shared windows/widgets, automatic/manual retries, bounded timeout recovery and embedded lifecycle passed')
 } catch (error) {

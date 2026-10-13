@@ -52,6 +52,7 @@ const SITE_MANIFEST_KINDS = new Set([
 ])
 let appBridgeId = ''
 let signerStateClient
+let nip07Capabilities
 // A restarted service worker has lost its client map. Re-identify this document
 // over a dedicated reply port, without falling back to another tab's bridge.
 navigator.serviceWorker?.addEventListener('message', event => {
@@ -85,7 +86,7 @@ function injectLocale () {
   stripBridgeMarker()
   hideAutoFitContent()
   const p = Promise.withResolvers()
-  injectNip07(p.promise) // first thing
+  nip07Capabilities = injectNip07(p.promise) // first thing
   injectLocale()
   signerStateClient = createSignerStateClient({ handshake: p.promise, ask, tell, reportError: originalConsole.error })
   Object.assign(window.napp, {
@@ -179,6 +180,7 @@ function tellParentImReady (p) {
     localeClient.setLocale(e.data.payload?.locale)
     instanceMetadataClient.setMetadata(e.data.payload?.instanceMetadata)
     personaPublicKeysClient.setPublicKeys(e.data.payload?.personaPublicKeys)
+    nip07Capabilities.setCapabilities(e.data.payload?.signerCapabilities)
     relayPoolShim?.setRegistry(e.data.payload?.relayUrls ?? [])
     if (e.data.payload?.relayPoolEnabled === false) relayPoolShim?.setEnabled(false)
     const bridgeId = e.data.payload?.bridgeId
@@ -196,6 +198,7 @@ function tellParentImReady (p) {
   browserPort.addEventListener('message', e => {
     if (e.data.code === 'LOCALE_CHANGED') localeClient.setLocale(e.data.payload?.locale)
     else if (e.data.code === 'SIGNER_STATE_CHANGED') signerStateClient.receive(e.data.payload)
+    else if (e.data.code === 'NIP07_CAPABILITIES_CHANGED') nip07Capabilities.setCapabilities(e.data.payload)
     else if (e.data.code === 'PERSONA_PUBLIC_KEYS_CHANGED') personaPublicKeysClient.setPublicKeys(e.data.payload)
     else if (e.data.code === 'INSTANCE_METADATA_CHANGED') instanceMetadataClient.setMetadata(e.data.payload)
     else if (e.data.code === 'WIDGET_SELECT_MODE') {
@@ -521,6 +524,25 @@ function finalizeFirstFit () {
 }
 
 function injectNip07 (promise) {
+  const contentKeyMethods = new Set([
+    'doubleSignEvent',
+    'nip44v3.encryptDoubleDH',
+    'nip44v3.decryptDoubleDH'
+  ])
+  let ownerPubkey
+  let contentKeyPubkeys = new Set()
+  const surfaces = new Set()
+  const supportsContentKeys = context => contentKeyPubkeys.has('userPk' in context ? context.userPk : ownerPubkey)
+  function updateSurface (surface) {
+    const object = surface.reference.deref()
+    if (!object) { surfaces.delete(surface); return }
+    for (const { path, method } of surface.methods) {
+      const target = path.length === 1 ? object : object[path[0]]
+      const name = path[path.length - 1]
+      if (supportsContentKeys(surface.context)) target[name] = method
+      else delete target[name]
+    }
+  }
   const nip07Methods = [
     'peekPublicKey',
     'getPublicKey',
@@ -549,29 +571,38 @@ function injectNip07 (promise) {
 
   const timeout = 5 * 60 * 1000
 
-  function createNostrMethod (method, context) {
-    return createNip07Method({ method, context, connection: promise, ask, timeout })
+  function createNostrMethod (method, context, requiresContentKeys = false) {
+    return createNip07Method({
+      method, context, connection: promise, ask, timeout,
+      isSupported: () => !requiresContentKeys || supportsContentKeys(context)
+    })
   }
 
-  function buildMethodsObject (methods, context) {
-    const obj = {}
+  function buildMethodsObject (methods, context, obj = {}) {
+    const contentMethods = []
     methods.map(toNip46MethodName).forEach((nip46MethodName, i) => {
       const originalMethodName = methods[i]
       originalMethodName.split('.').reduce((r, part, j, methodParts) => {
         if (j === methodParts.length - 1) {
-          r[part] = createNostrMethod(nip46MethodName, context)
+          const requiresContentKeys = contentKeyMethods.has(originalMethodName)
+          const method = createNostrMethod(nip46MethodName, context, requiresContentKeys)
+          if (requiresContentKeys) contentMethods.push({ path: methodParts, method })
+          else r[part] = method
         } else {
           r[part] ??= {}
         }
         return r[part]
       }, obj)
     })
+    const surface = { reference: new WeakRef(obj), context, methods: contentMethods }
+    surfaces.add(surface)
+    updateSurface(surface)
     return obj
   }
 
   const nostr = {}
   // Add the default methods to nostr
-  Object.assign(nostr, buildMethodsObject(nip07Methods, { ns: [''] }))
+  buildMethodsObject(nip07Methods, { ns: [''] }, nostr)
 
   // Add the namespace method
   nostr.ns = (nsName, ...nsParams) => {
@@ -619,6 +650,13 @@ function injectNip07 (promise) {
   }
 
   Object.assign(window, { nostr, napp })
+  return {
+    setCapabilities (capabilities) {
+      ownerPubkey = capabilities?.ownerPubkey
+      contentKeyPubkeys = new Set(capabilities?.pubkeysSupportingContentKeyMethods || [])
+      for (const surface of surfaces) updateSurface(surface)
+    }
+  }
 }
 
 // Intercept and cancel navigations to app URLs

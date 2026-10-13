@@ -96,7 +96,8 @@ export const ACCOUNT_SUFFIXES = [
   '_isReadOnly',
   '_isLocked',
   '_profile',
-  '_relays'
+  '_relays',
+  '_supportsContentKeyMethods'
 ]
 
 export const DYNAMIC_LOCAL_PREFIXES = [
