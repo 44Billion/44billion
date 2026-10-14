@@ -103,7 +103,7 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   monitor owns connectivity probes, capped retry delays, and browser wake-up
   listeners. `ConnectivityRetryCoordinator` owns waiters, cancellation, and
   concurrency of resumed app work; do not restore its duplicate probe timer.
-- Use the coordinated `libp2r2p@^0.11.20` range in package.json;
+- Use the coordinated `libp2r2p@^0.11.21` range in package.json;
   package-lock.json records the resolved release. Validate against the installed package rather than sibling
   source imports; it includes the shared connectivity monitor.
 
@@ -374,7 +374,7 @@ the storage schema are unchanged; no destructive cache repair is needed.
 
 ## Private-messenger dependency contract
 
-- Consume the published libp2r2p 0.11.20 package through the lockfile. Its private
+- Consume libp2r2p 0.11.21 through the registry-resolved lockfile. Its private
   messenger observes owned pauses and recovers them independently of historical
   completion; explicit caller pauses remain caller-owned. Session factories must
   provide readStatus and initial/subsequent onStateChanged notifications. No
@@ -386,6 +386,11 @@ the storage schema are unchanged; no destructive cache repair is needed.
   the physical pool, bridge protocol or WebSocket events for this dependency bump.
 
 ## Prepared package validation
+
+Kind 18716 uses `CONTENT_KEY_ANNOUNCEMENT` from `libp2r2p/kind`. The 0.11.21
+catalog makes it eligible for account import and shared across apps; opening
+NostrDB reconciles stale app references. The removed content-key event constant
+must not be restored as an alias.
 
 Before registry publication, validate the exact prepared libp2r2p tarball through
 public imports. Final lockfiles retain npm URLs and that archive's real integrity;

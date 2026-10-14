@@ -373,12 +373,16 @@ describe('nostrdb', () => {
     const db = new FakeDB(dbName, 1)
     const text = event({ id: '1'.repeat(64), kind: eventKinds.TEXT_NOTE })
     const custom = event({ id: '2'.repeat(64), kind: eventKinds.CUSTOM_APP_DATA, tags: [['d', 'settings']] })
+    const announcement = event({ id: '3'.repeat(64), kind: eventKinds.CONTENT_KEY_ANNOUNCEMENT, tags: [['cp', B]] })
     const appRef = appIdToDbAppRef(APP1)
     const staleTextRecord = toStoredRecord(text)
     staleTextRecord.ap = [appRef]
+    const staleAnnouncementRecord = toStoredRecord(announcement)
+    staleAnnouncementRecord.ap = [appRef]
 
     createNostrDbSchema(db)
     db.stores.get('events').records.set(eventIdIndexKey(text.id), staleTextRecord)
+    db.stores.get('events').records.set(eventIdIndexKey(announcement.id), staleAnnouncementRecord)
     db.stores.get('events').records.set(eventIdIndexKey(custom.id), toStoredRecord(custom, { appRef }))
     db.stores.get(KIND_REGISTRY_STORE).records.set('appNeutralKinds', {
       key: 'appNeutralKinds',
@@ -389,6 +393,7 @@ describe('nostrdb', () => {
     await openNostrDb(owner)
 
     assert.equal('ap' in db.stores.get('events').records.get(eventIdIndexKey(text.id)), false)
+    assert.equal('ap' in db.stores.get('events').records.get(eventIdIndexKey(announcement.id)), false)
     assertAppRefs(db.stores.get('events').records.get(eventIdIndexKey(custom.id)), [APP1])
     assert.deepEqual(db.stores.get(KIND_REGISTRY_STORE).records.get('appNeutralKinds'), {
       key: 'appNeutralKinds',

@@ -132,6 +132,27 @@ describe('permission translations', () => {
     assert.match(format('pt-BR', { name: 'eventAccessPersonal', eKind: 30499 }), /listas de sites/)
   })
 
+  it('describes app data and content-key announcements in the existing access templates', () => {
+    for (const [eKind, en, ptBR] of [
+      [30078, 'app settings and data', 'configurações e dados de aplicativos'],
+      [18716, 'public information for private communication', 'informações públicas para comunicação privada']
+    ]) {
+      assert.equal(format('en', { name: 'eventAccess', eKind }), `Can I access ${en}?`)
+      assert.equal(format('en', { name: 'eventAccessPersonal', eKind }), `Can I access personal copies of ${en}?`)
+      assert.equal(format('pt-BR', { name: 'eventAccess', eKind }), `Posso acessar estes dados: ${ptBR}?`)
+      assert.equal(format('pt-BR', { name: 'eventAccessPersonal', eKind }), `Posso acessar cópias pessoais destes dados: ${ptBR}?`)
+
+      for (const locale of SUPPORTED_LOCALES) {
+        const translate = getT(permissionDialogLocales, { locale })
+        for (const name of ['eventAccess', 'eventAccessPersonal']) {
+          const text = format(locale, { name, eKind })
+          assert.ok(text.includes(translate(en)), `${locale}: ${name}, ${eKind}`)
+          assert.ok(!text.includes(String(eKind)), `${locale}: ${name}, ${eKind}`)
+        }
+      }
+    }
+  })
+
   it('pluralizes deletion counts and preserves localized scope punctuation', () => {
     const event = count => ({ tags: Array.from({ length: count }, (_, index) => ['e', String(index)]) })
     assert.equal(format('en', { name: 'delete', eKind: 5, meta: { params: [event(1)] } }), 'Can I delete 1 item?')

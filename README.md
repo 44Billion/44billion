@@ -172,6 +172,13 @@ or invalid-filter refusals are not retried automatically. Error diagnostics incl
 relay, phase and selection without event content. Unknown kinds are not imported;
 new known kinds enter through updates to the library's list, subject to exclusions.
 
+The libp2r2p 0.11.21 catalog includes `CONTENT_KEY_ANNOUNCEMENT` (18716), which
+enters account import and is shared across apps. The existing NostrDB catalog
+reconciliation removes stale app references from these records on opening the
+database. Permission prompts describe them as public information for private
+communication, and kind 30078 as app settings and data, using the existing access
+and personal-copy templates in all supported languages.
+
 Automatic import excludes ephemeral kinds and tag-defined ephemeral events, plus:
 
 - NIP-78 app data (78/30078) and personal copies (1006).
