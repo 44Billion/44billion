@@ -49,6 +49,12 @@ Run `node tests/browser/menu-focus.js` to verify that reopening the shared menu
 for another app keeps initial focus on its container, while Tab still gives
 actions visible keyboard focus. It uses real pointer and keyboard input in Chrome.
 
+Run `node bin/run-browser-tests.js -- node tests/browser/permission-dialog.js`
+for permission text expansion. It mounts the actual permission dialog and queue
+with the launcher reset/theme, checking three initial lines, two-line increments
+through pointer/Enter/Space, full reveal, locale/resize changes, independent
+requests and unchanged grant/deny behavior in a disposable browser profile.
+
 Account-ingestion regression:
 
 ```sh

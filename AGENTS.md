@@ -69,6 +69,13 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   (`tests/helpers/theme.test.js`) green — it enforces token format, WCAG contrast
   pairs, and the absence of authored color literals outside `theme.js`.
 
+- Permission cards own a transient three-line text limit, increased by two on
+  each activation. Use a native button and a CSS custom property for the clamp;
+  keep expansion separate from grant/deny, with no overflow measurement or
+  persisted expansion state. Each keyed request starts with its own limit.
+  The protected `tests/browser/permission-dialog.js` check covers pointer and
+  keyboard expansion, narrow layouts, full text and independent requests.
+
 ## Persisted state
 
 - Every localStorage/sessionStorage key or IndexedDB store must be documented in

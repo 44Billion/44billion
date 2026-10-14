@@ -4,6 +4,10 @@ A Nostr app launcher with isolated app origins, injected signer/event-store APIs
 local app installation, and live draft updates. See [APP_API.md](APP_API.md) for
 the injected contract and [AGENTS.md](AGENTS.md) for contribution rules.
 
+Permission prompts initially show up to three lines. Clicking the prompt or
+activating it with Enter/Space reveals two more lines at a time. Each request
+starts collapsed; expanding its text does not grant or deny the permission.
+
 [NostrDB internals and maintenance](docs/nostrdb.md) documents event-store cleanup,
 concurrency, recovery and storage growth limits for developers.
 [Relay pooling](docs/relay-pool.md) describes shared connections and bounded FIFO

@@ -263,12 +263,14 @@ f('permissionDialogStack', function () {
   `
 })
 
-f('permissionDialogCard', function () {
+f('permission-dialog-card', ({ h, props }) => {
   const storage = useWebStorage(localStorage)
   const pdsStore = useClosestStore('<permission-dialog-stack>')
   const store = useStore(() => ({
-    req$: this.props.req$,
-    index$: this.props.index$,
+    req$: props.req$,
+    index$: props.index$,
+    textLines$: 3,
+    expandText () { this.textLines$(lines => lines + 2) },
     resolveCurrent (granted) { return pdsStore.resolveCurrent(granted, this.req$()) },
     isButtonsDisabled$: false,
     allow () {
@@ -298,16 +300,16 @@ f('permissionDialogCard', function () {
       const pubkey = this.req$().meta?.accountUserPk
       return typeof pubkey === 'string' && pubkey ? pubkey : null
     }
-  }))
+  }), { shouldCache: false })
   const appIconProps = useStore(() => ({
     app$: () => ({
       id: store.req$().app.id,
       name: store.appName$()
     })
   }))
-  return this.h`
+  return h`
     <style>${`
-      .permission-dialog-card {
+      permission-dialog-card > .permission-dialog-card {
         border-radius: 8px;
         display: flex;
         align-items: flex-start;
@@ -374,15 +376,18 @@ f('permissionDialogCard', function () {
         }
 
         .permission-text {
+          width: 100%; padding: 0; border: 0; background: transparent;
+          font: inherit; text-align: start; cursor: pointer; user-select: text;
           font-size: 16rem;
           line-height: 1.3;
           color: ${cssVars.colors.fgMuted};
           margin-top: 2px;
           display: -webkit-box;
           -webkit-box-orient: vertical;
-          -webkit-line-clamp: 3;
+          -webkit-line-clamp: var(--permission-text-lines, 3);
           overflow: hidden;
           overflow-wrap: anywhere;
+          &:focus-visible { outline: 2px solid ${cssVars.colors.bgAccentPrimary}; outline-offset: -2px; }
         }
 
         .permission-actions {
@@ -483,12 +488,13 @@ f('permissionDialogCard', function () {
     <div class='permission-dialog-card'>
       <div class="app-icon">
         <app-icon props=${appIconProps} />
-        ${store.isWidget$() ? this.h`<span class="widget-badge">W</span>` : ''}
+        ${store.isWidget$() ? h`<span class="widget-badge">W</span>` : ''}
       </div>
       <div class="app-info">
         <div class="app-name">${store.appName$()}</div>
-        <div class="permission-text">${store.permissionText$()}</div>
-        ${store.accountUserPk$() ? this.h`<div class="permission-account">${t('Account: {{pubkey}}', { pubkey: `${store.accountUserPk$().slice(0, 8)}...${store.accountUserPk$().slice(-8)}` })}</div>` : ''}
+        <button type="button" class="permission-text" style=${`--permission-text-lines: ${store.textLines$()}`}
+          aria-expanded=${String(store.textLines$() > 3)} onclick=${store.expandText}>${store.permissionText$()}</button>
+        ${store.accountUserPk$() ? h`<div class="permission-account">${t('Account: {{pubkey}}', { pubkey: `${store.accountUserPk$().slice(0, 8)}...${store.accountUserPk$().slice(-8)}` })}</div>` : ''}
       </div>
       <div class="permission-actions">
         <button
