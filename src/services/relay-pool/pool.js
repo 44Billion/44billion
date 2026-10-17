@@ -1386,7 +1386,7 @@ export class UnifiedRelayPool {
       const now = Date.now()
       if (pending && now - pending.startedAt >= this.#limits.slowPublicationMs) {
         this.#counters.slowPublicationResponses++
-        this.#log('slow publication response', {
+        this.#log('slow publication response', JSON.stringify({
           relay: bucket.url,
           eventId: message[1],
           owner: member.owner,
@@ -1395,7 +1395,7 @@ export class UnifiedRelayPool {
           elapsedMs: now - pending.startedAt,
           queueMs: pending.sentAt === null ? null : pending.sentAt - pending.queuedAt,
           responseMs: pending.sentAt === null ? null : now - pending.sentAt
-        })
+        }))
       }
       member.pendingPublishes.delete(message[1])
       this.#deliverMember(member, raw)

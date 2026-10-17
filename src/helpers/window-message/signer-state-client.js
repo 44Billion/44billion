@@ -12,7 +12,7 @@ export function createSignerStateClient ({ handshake, ask, tell, reportError = c
   }
   return {
     getSignerState: options => request('SIGNER_STATE_GET', scope(options)),
-    onSignerStateChanged (listener, options) {
+    onSignerStateChanged (listener, options, contentKeys = false) {
       if (typeof listener !== 'function') throw new TypeError('listener should be a function')
       const id = crypto.randomUUID()
       const entry = { listener }
@@ -23,18 +23,19 @@ export function createSignerStateClient ({ handshake, ask, tell, reportError = c
           if (!closed) tell(port, { code: 'SIGNER_STATE_UNSUBSCRIBE', payload: { id } })
         }).catch(reportError)
       }
-      unsubscribe.ready = request('SIGNER_STATE_SUBSCRIBE', { ...scope(options), id }).catch(error => {
+      unsubscribe.ready = request(contentKeys ? 'CONTENT_KEYS_SUBSCRIBE' : 'SIGNER_STATE_SUBSCRIBE', { ...scope(options), id }).catch(error => {
         subscriptions.delete(id)
         throw error
       })
       unsubscribe.ready.catch(reportError)
       return unsubscribe
     },
-    receive ({ id, state }) {
+    receive ({ id, state, revoked = false }) {
       const entry = subscriptions.get(id)
       if (!entry || closed) return
       queueMicrotask(() => {
         if (closed || subscriptions.get(id) !== entry) return
+        if (revoked) { subscriptions.delete(id); return }
         try { Promise.resolve(entry.listener({ ...state })).catch(reportError) } catch (error) { reportError(error) }
         if (state.access === 'revoked') subscriptions.delete(id)
       })

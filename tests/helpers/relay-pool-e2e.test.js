@@ -344,7 +344,7 @@ it('delivery before a late OK can coexist with a final timeout report', async t 
   assert.ok(report.errors.every(({ reason }) => reason.message === 'PUBLISH_TIMEOUT'))
   for (const acknowledge of acknowledgements) acknowledge()
   await waitFor(() => fixture.logs.filter(([label]) => label === 'slow publication response').length === 2)
-  assert.ok(fixture.logs.filter(([label]) => label === 'slow publication response').every(([, response]) => response.accepted))
+  assert.ok(fixture.logs.filter(([label]) => label === 'slow publication response').every(([, response]) => JSON.parse(response).accepted))
   assert.equal((await result.promise).success, false, 'a late OK does not revise the already finalized library report')
 })
 

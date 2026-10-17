@@ -103,7 +103,7 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   monitor owns connectivity probes, capped retry delays, and browser wake-up
   listeners. `ConnectivityRetryCoordinator` owns waiters, cancellation, and
   concurrency of resumed app work; do not restore its duplicate probe timer.
-- Use the coordinated `libp2r2p@^0.11.21` range in package.json;
+- Use the coordinated `libp2r2p@^0.11.22` range in package.json;
   package-lock.json records the resolved release. Validate against the installed package rather than sibling
   source imports; it includes the shared connectivity monitor.
 
@@ -374,7 +374,15 @@ the storage schema are unchanged; no destructive cache repair is needed.
 
 ## Private-messenger dependency contract
 
-- Consume libp2r2p 0.11.21 through the registry-resolved lockfile. Its private
+- The prepared 0.11.22 patch adds the specific legacy queue-index migration and
+  bounded pending-ciphertext recovery. onContentKeysChanged uses the existing
+  authorized signer-state port lifecycle, forwarding committed vault changes as
+  opaque per-account revisions. Keep revisions/inventories out of WebStorage;
+  no key material crosses this notification. Public error contexts preserve
+  selected crypto codes/coordinates and bounded causes. Slow publication timing
+  is JSON text with the existing threshold and no event payloads.
+
+- Consume libp2r2p 0.11.22 through the registry-resolved lockfile. Its private
   messenger observes owned pauses and recovers them independently of historical
   completion; explicit caller pauses remain caller-owned. Session factories must
   provide readStatus and initial/subsequent onStateChanged notifications. No

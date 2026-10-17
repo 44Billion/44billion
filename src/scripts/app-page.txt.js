@@ -91,7 +91,8 @@ function injectLocale () {
   signerStateClient = createSignerStateClient({ handshake: p.promise, ask, tell, reportError: originalConsole.error })
   Object.assign(window.napp, {
     getSignerState: signerStateClient.getSignerState,
-    onSignerStateChanged: signerStateClient.onSignerStateChanged
+    onSignerStateChanged: signerStateClient.onSignerStateChanged,
+    onContentKeysChanged: (listener, options) => signerStateClient.onSignerStateChanged(listener, options, true)
   })
   Object.assign(window.napp, {
     getFileDownloadUrl: async url => {

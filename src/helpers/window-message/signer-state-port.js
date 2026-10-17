@@ -37,16 +37,18 @@ export function connectSignerStatePort ({ port, signal, ownerPubkey, readKeys, r
       subscriptions.get(payload.id)?.(); subscriptions.delete(payload.id)
       return
     }
-    if (code !== 'SIGNER_STATE_GET' && code !== 'SIGNER_STATE_SUBSCRIBE') return
+    if (!['SIGNER_STATE_GET', 'SIGNER_STATE_SUBSCRIBE', 'CONTENT_KEYS_SUBSCRIBE'].includes(code)) return
     try {
       const scope = { pubkey: payload.pubkey, ownerPubkey, readKeys, readFlags }
       if (code === 'SIGNER_STATE_GET') {
         reply(event, { payload: signerStates.read(scope) }, { to: port })
       } else {
         if (typeof payload.id !== 'string' || subscriptions.has(payload.id)) throw new Error('INVALID_SUBSCRIPTION_ID')
-        const stop = signerStates.subscribe(scope, state => {
-          tell(port, { code: 'SIGNER_STATE_CHANGED', payload: { id: payload.id, state } })
-          if (state.access === 'revoked') subscriptions.delete(payload.id)
+        const contentKeys = code === 'CONTENT_KEYS_SUBSCRIBE'
+        const subscribe = contentKeys ? signerStates.subscribeContentKeys : signerStates.subscribe
+        const stop = subscribe(scope, (state, revoked = false) => {
+          tell(port, { code: 'SIGNER_STATE_CHANGED', payload: { id: payload.id, state, ...(revoked ? { revoked: true } : {}) } })
+          if (revoked || state.access === 'revoked') subscriptions.delete(payload.id)
         })
         subscriptions.set(payload.id, stop)
         reply(event, { payload: true }, { to: port })

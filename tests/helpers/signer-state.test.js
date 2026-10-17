@@ -5,6 +5,47 @@ import { createSignerStateClient } from '../../src/helpers/window-message/signer
 
 const owner = 'a'.repeat(64)
 const peer = 'b'.repeat(64)
+
+test('content-key revisions are private, deduplicated, account-scoped and revoked with persona access', () => {
+  const service = createSignerStateService()
+  let keys = [peer]
+  const states = []
+  const scope = { ownerPubkey: owner, pubkey: peer, readKeys: () => keys }
+  const stop = service.subscribeContentKeys(scope, (state, revoked) => states.push({ state, revoked: !!revoked }))
+  assert.deepEqual(Object.keys(states[0].state).sort(), ['pubkey', 'revision'])
+  const initial = states[0].state.revision
+  service.contentKeysChanged(owner)
+  service.invalidate()
+  assert.equal(states.length, 1)
+  service.contentKeysChanged(peer)
+  assert.notEqual(states[1].state.revision, initial)
+  keys = []
+  service.invalidate()
+  assert.equal(states.at(-1).revoked, true)
+  const count = states.length
+  service.contentKeysChanged(peer)
+  assert.equal(states.length, count)
+  assert.throws(() => service.subscribeContentKeys(scope, () => {}), { code: 'PUBKEY_NOT_IN_PERSONA' })
+  stop()
+})
+
+test('content-key client uses the scoped subscription, initial callback and cancellation contract', async () => {
+  const requests = []
+  const states = []
+  const client = createSignerStateClient({ handshake: Promise.resolve({}), ask: async (_, message) => { requests.push(message); return { payload: true } }, tell: () => {}, reportError: () => {} })
+  const stop = client.onSignerStateChanged(value => states.push(value), { pubkey: peer }, true)
+  await stop.ready
+  assert.equal(requests[0].code, 'CONTENT_KEYS_SUBSCRIBE')
+  const id = requests[0].payload.id
+  client.receive({ id, state: { pubkey: peer, revision: 'revision' } })
+  await Promise.resolve()
+  assert.deepEqual(states, [{ pubkey: peer, revision: 'revision' }])
+  client.receive({ id, state: { pubkey: peer, revision: 'stale' } })
+  stop()
+  await Promise.resolve()
+  assert.equal(states.length, 1)
+  client.close()
+})
 test('signer state reports lock changes without persona changes and revokes without account details', () => {
   const service = createSignerStateService()
   let keys = [owner, peer]

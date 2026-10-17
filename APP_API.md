@@ -132,6 +132,25 @@ The ordinary, unnamespaced public-key getters are answered directly by the
 launcher. Other operations may require the vault, account unlock and permission.
 Bridge errors reject the returned promise; inspect their `code` when provided.
 
+## Content-key changes
+
+```js
+const unsubscribe = window.napp.onContentKeysChanged(({ pubkey, revision }) => {
+  // Request a local pending-ciphertext retry when the signer is available.
+}, { pubkey }) // optional: defaults to the instance owner
+await unsubscribe.ready
+unsubscribe()
+```
+
+The subscription sends an initial `{ pubkey, revision }` and later committed
+content-key changes. Revision is an opaque, process-local change token, not a
+key identifier or a durable counter. No key material or key inventory is sent.
+Authorization matches signer-state subscriptions; unauthorized setup rejects
+with `PUBKEY_NOT_IN_PERSONA`, and loss of persona access closes the subscription.
+Unsubscribe/unload suppress pending callbacks. Availability and permissions are
+still checked by each signer operation. Applications should feature-detect this
+API on older launchers and retain startup/unlock recovery.
+
 ## Signer availability
 
 ```js

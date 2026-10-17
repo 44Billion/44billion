@@ -868,6 +868,10 @@ function initMessageListener ({
           await accountState.apply(e.data.payload.accounts, { allowAttention: true })
           break
         }
+        case 'CONTENT_KEYS_CHANGED': {
+          signerStates.contentKeysChanged(e.data.payload?.pubkey)
+          break
+        }
         case 'NOSTRDB': {
           const { ownerPubkey, method, params = [], subscriptionId } = e.data.payload || {}
           if (method === 'subscribe') {

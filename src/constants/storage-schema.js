@@ -118,6 +118,11 @@ export const DYNAMIC_SESSION_PREFIXES = [
 // Persisted within each app origin, not the launcher's storage areas.
 export const APP_ORIGIN_SESSION_KEYS = ['44billion:subdomain-assignment']
 
+// Owned/maintained by libp2r2p inside app and vault origins, never WebStorage
+// repair candidates in the launcher origin. See docs/storage-model.md.
+export const PRIVATE_MESSENGER_PENDING_DECRYPTION_DATABASE = 'libp2r2p:private-messenger:<pubkey>:pending-decryption:idb-queue'
+export const PRIVATE_MESSENGER_PENDING_DECRYPTION_STORES = ['items', 'state']
+
 // Per-owner 44billion_nostrdb:<ownerPubkey>, schema version 2.
 // The checkpoint is committed with the corresponding events/deletions batch.
 export const NOSTRDB_MAINTENANCE_STORE = 'maintenance'

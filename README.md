@@ -1,5 +1,12 @@
 # 44billion
 
+Content-key change notifications are available through
+`window.napp.onContentKeysChanged`; see [APP_API.md](APP_API.md). They forward
+committed vault changes only to authorized identities, allowing consumers to
+resume pending ciphertext without a reload. The coordinated libp2r2p 0.11.22
+patch migrates its legacy message index and isolates decryption failures in a
+bounded FIFO. Slow-publication diagnostics include copyable JSON timings.
+
 A Nostr app launcher with isolated app origins, injected signer/event-store APIs,
 local app installation, and live draft updates. See [APP_API.md](APP_API.md) for
 the injected contract and [AGENTS.md](AGENTS.md) for contribution rules.

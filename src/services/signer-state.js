@@ -7,6 +7,26 @@ export function createSignerStateService ({ getStorage = () => globalThis.localS
   let receivedAccounts = false
   const subscriptions = new Set()
   const capabilitySubscriptions = new Set()
+  const contentKeySubscriptions = new Set()
+  const contentKeyRevisions = new Map()
+  const revisionEpoch = crypto.randomUUID()
+  function contentKeysChanged (pubkey) {
+    if (!/^[0-9a-f]{64}$/.test(pubkey || '')) return
+    contentKeyRevisions.set(pubkey, (contentKeyRevisions.get(pubkey) || 0) + 1)
+    for (const entry of [...contentKeySubscriptions]) deliverContentKeys(entry)
+  }
+  function deliverContentKeys (entry) {
+    let state
+    try { state = read(entry.scope) } catch {
+      contentKeySubscriptions.delete(entry)
+      entry.notify({ pubkey: entry.pubkey, revision: null }, true)
+      return
+    }
+    const revision = `${revisionEpoch}:${contentKeyRevisions.get(state.pubkey) || 0}`
+    if (entry.revision === revision) return
+    entry.revision = revision
+    entry.notify({ pubkey: state.pubkey, revision })
+  }
   const denied = () => Object.assign(new Error('Pubkey is not part of the app active persona'), { code: 'PUBKEY_NOT_IN_PERSONA' })
   function read ({ pubkey, ownerPubkey, readKeys, readFlags }) {
     pubkey ??= ownerPubkey
@@ -68,13 +88,18 @@ export function createSignerStateService ({ getStorage = () => globalThis.localS
   function invalidate () {
     for (const entry of [...capabilitySubscriptions]) deliverCapabilities(entry)
     for (const entry of [...subscriptions]) deliver(entry)
+    for (const entry of [...contentKeySubscriptions]) deliverContentKeys(entry)
   }
   return {
-    read, invalidate, readContentKeyCapabilities,
+    read, invalidate, readContentKeyCapabilities, contentKeysChanged,
     setConnection (value) { connection = value; invalidate() },
     setAccounts (values) {
+      const previous = accounts
       receivedAccounts = true
       accounts = new Map(values.map(({ pubkey, isLocked, isReadOnly, supportsContentKeyMethods }) => [pubkey, { isLocked, isReadOnly, supportsContentKeyMethods }]))
+      for (const [pubkey, account] of accounts) {
+        if (!account.isLocked && previous.get(pubkey)?.isLocked !== false) contentKeysChanged(pubkey)
+      }
       invalidate()
     },
     subscribe (scope, notify) {
@@ -83,6 +108,13 @@ export function createSignerStateService ({ getStorage = () => globalThis.localS
       subscriptions.add(entry)
       deliver(entry)
       return () => subscriptions.delete(entry)
+    },
+    subscribeContentKeys (scope, notify) {
+      const initial = read(scope)
+      const entry = { scope, notify, pubkey: initial.pubkey }
+      contentKeySubscriptions.add(entry)
+      deliverContentKeys(entry)
+      return () => contentKeySubscriptions.delete(entry)
     },
     subscribeContentKeyCapabilities (scope, notify) {
       const entry = { scope, notify }

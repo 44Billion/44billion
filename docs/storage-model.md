@@ -174,6 +174,18 @@ registered instance identity.
 
 ## IndexedDB
 
+### Consumer pending decryption
+
+`libp2r2p:private-messenger:<pubkey>:pending-decryption:idb-queue` belongs to the
+app/vault origin running that messenger, not the launcher WebStorage audit.
+Its `items`/`state` stores reuse the library queue schema and a 16 MiB FIFO byte
+limit. Records contain ciphertext, public packet coordinates, a stable dedupe ID
+and persisted MAC-attempt counts, without plaintext, secret keys or per-item TTL.
+Duplicate/retry updates preserve FIFO positions. Explicit channel clearing and
+the library's identity-storage maintenance include these records. The launcher
+must not classify them as orphaned launcher state or delete them on key changes.
+Content-key revision notifications themselves are in memory only.
+
 ### `44billion_browser`
 
 - `fileChunks` — app file chunks keyed by `[appId, fx, pos]`.
