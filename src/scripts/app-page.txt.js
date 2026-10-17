@@ -451,6 +451,11 @@ function fitAutoFit () {
           if (needsOpaqueBg) root.style.backgroundColor = previousBg
         }
       })
+      // A skipped animation rejects ready even when the DOM update succeeds.
+      // Keep finalization owned by finished below.
+      transition.ready.catch(error => {
+        originalConsole.warn('[app-page] Auto-fit animation skipped before becoming ready', error)
+      })
       transition.finished.then(
         () => finishTransition(null),
         finishTransition
