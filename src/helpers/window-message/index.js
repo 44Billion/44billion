@@ -1,3 +1,4 @@
+import { recordPerformance } from '#services/performance-diagnostics.js'
 import { reviveError } from '#helpers/error.js'
 const isDev = !!IS_DEVELOPMENT
 const protocol = isDev ? 'http://' : 'https://'
@@ -39,7 +40,7 @@ export function handleMessageReply (e) {
   }
 
   if (e.data.error) resrej.reject(reviveError(e.data.error))
-  else resrej.resolve({ payload: e.data.payload, isLast: e.data.isLast ?? true, ports: e.ports, origin: e.origin })
+  else resrej.resolve({ payload: e.data.payload, isLast: e.data.isLast ?? true, ports: e.ports, origin: e.origin, ...(isDev && e.data.diagnostics ? { diagnostics: e.data.diagnostics } : {}) })
 }
 export const initReplyListener = ((
   hasRunKey,
@@ -65,22 +66,26 @@ export async function ask (to, message, options, transfer) {
   initReplyListener(to)
   const reqId = getReqId()
   const promise = initReqPromise(reqId, message.code, options.timeout)
+  const startedAt = isDev ? performance.now() : 0
+  if (isDev) recordPerformance({ stage: 'rpc-start', requestId: reqId, parentId: message.diagnostics?.requestId })
   to.postMessage({
     ...message,
     reqId
   }, options)
   return promise
-    .then(({ payload, ports, origin }) => ({
+    .then(({ payload, ports, origin, diagnostics }) => ({
       code: message.code,
       payload,
       ports,
-      origin
+      origin,
+      ...(isDev && diagnostics ? { diagnostics } : {})
     }))
     .catch(error => ({
       code: message.code,
       payload: null,
       error
     }))
+    .finally(() => { if (isDev) recordPerformance({ stage: 'rpc-complete', requestId: reqId, elapsedMs: performance.now() - startedAt }) })
 }
 export function reply (originalMsgEvent, message, options, transfer) {
   if ((!('payload' in message) && !('error' in message))) throw new Error('Missing args')

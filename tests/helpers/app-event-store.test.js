@@ -254,3 +254,32 @@ it('read-only state invalidates an idle app subscription without a new event', a
     assert.equal(f.streams[0].iterator.closed, true)
   } finally { f.bridge.dispose() }
 })
+
+it('inherits personal-copy scheduling per request without changing cached database callbacks', async () => {
+  const { finalizeEvent } = await import('libp2r2p/event')
+  const { askNip07 } = await import('../../src/helpers/window-message/browser/nip07.js')
+  const secret = new Uint8Array(32).fill(1)
+  const identity = finalizeEvent({ kind: 0, created_at: 1, tags: [], content: '' }, secret).pubkey
+  const calls = []; const cached = []
+  const baseAsk = async (message, options) => {
+    calls.push({ message, options })
+    const { method, params } = message.payload
+    return { payload: method.includes('sign') ? finalizeEvent(params[0], secret) : method === 'obfuscate' ? 'a'.repeat(64) : 'ciphertext' }
+  }
+  const f = fixture({
+    ownerPubkey: identity, readPersonaPublicKeys: () => [identity], askNip07, askVault: baseAsk,
+    getNostrDb: (pubkey, options) => { cached.push(options); return { ownerPubkey: pubkey, add: async () => ({ ok: true }) } }
+  })
+  const send = kind => f.request({ method: 'addPersonalCopy', params: [{ kind, created_at: 1, tags: [], content: 'private' }] })
+  await send(9)
+  assert.ok(calls.length >= 5)
+  assert.ok(calls.every(call => call.options.scheduling.priority === true))
+  assert.ok(calls.some(call => call.message.payload.method === 'obfuscate'))
+  assert.ok(calls.some(call => call.message.payload.method === 'double_sign_event'))
+  calls.length = 0
+  await send(3)
+  assert.ok(calls.every(call => call.options.scheduling.priority === false))
+  calls.length = 0
+  await cached[0].personalCopyObfuscate('value', 1006, '.id')
+  assert.equal(calls[0].options.scheduling, undefined)
+})

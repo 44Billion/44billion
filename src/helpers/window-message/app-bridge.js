@@ -1,3 +1,4 @@
+import { withRequestDiagnostics } from '#services/performance-diagnostics.js'
 import { assertNostrDbAccess, isNostrDbAccessError } from '#services/idb/nostrdb/access.js'
 import { signerStates } from '#services/signer-state.js'
 import { connectSignerStatePort, connectSignerCapabilitiesPort } from './signer-state-port.js'
@@ -780,7 +781,7 @@ function createAppPageMessageListener ({
           const accountFlags = readSignerAccountFlags(targetUserPkB62, { defaultUserPk })
           let msg
           try {
-            msg = await askNip07(askVault, targetUserPkB16, { ns, withSharedKey, method, params }, {
+            msg = await askNip07((message, options) => askVault(withRequestDiagnostics(message, { reqId: e.data.reqId }), options), targetUserPkB16, { ns, withSharedKey, method, params }, {
               ...accountFlags,
               onSignerRequestAttention: kind => notifySignerRequestAttention({ kind, userPk: targetUserPkB62 }),
               requestPermission,

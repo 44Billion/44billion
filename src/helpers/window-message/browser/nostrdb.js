@@ -29,11 +29,12 @@ export function nostrDbSignMethodForTemplate (event) {
     : 'sign_event'
 }
 
-export function buildNostrDbAddOptions (options, { appId, signEvent }) {
+export function buildNostrDbAddOptions (options, { appId, signEvent, onTiming }) {
   return {
     ...(options && typeof options === 'object' && !Array.isArray(options) ? options : {}),
     appId,
     mergeSource: 'local',
+    ...(onTiming ? { onTiming } : {}),
     signEvent
   }
 }
@@ -374,6 +375,7 @@ export async function runNostrDbMethod ({
   personalCopyEncrypt,
   personalCopyObfuscate,
   deferCacheAccess = false,
+  onTiming,
   assertAccess
 }) {
   if (!NOSTRDB_ONE_SHOT_METHODS.includes(method)) throw new Error(`Unknown nostrdb method ${method}`)
@@ -396,7 +398,7 @@ export async function runNostrDbMethod ({
     } else {
       await requestPermissions(eventAccessPermissionRequestsForEvent(event), permissionContext)
     }
-    return db.add(event, buildNostrDbAddOptions(options, { appId, signEvent }))
+    return db.add(event, buildNostrDbAddOptions(options, { appId, signEvent, onTiming }))
   }
 
   if (method === 'addPersonalCopy') {
@@ -416,7 +418,7 @@ export async function runNostrDbMethod ({
       encrypt: personalCopyEncrypt,
       obfuscate: personalCopyObfuscate
     })
-    const result = await db.add(event, buildNostrDbAddOptions(addOptions, { appId, signEvent }))
+    const result = await db.add(event, buildNostrDbAddOptions(addOptions, { appId, signEvent, onTiming }))
     return { event: result?.storedEvent ?? event, result }
   }
 

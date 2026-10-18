@@ -389,6 +389,7 @@ export class NostrDb {
   // the CRDT layer uses deterministic ordering instead of authoring-time order.
   async add (event, {
     appId,
+    onTiming,
     signEvent,
     mergeReplaceable,
     mergeSource,
@@ -557,6 +558,7 @@ export class NostrDb {
         forceCoordinateReplace: !!mergedEvent && crdtMergeSource === 'sync',
         personalCopy: mergedEvent ? null : personalCopyToStore,
         personalCopyResolution: resolutionToStore,
+        onTiming,
         chunkData,
         blobRefs,
         log: false
@@ -903,6 +905,7 @@ export class NostrDb {
   // IndexedDB/tombstones but does not publish events by itself.
   async addEvent (event, {
     appId,
+    onTiming,
     appRef = normalizeOptionalAppRef(appId),
     consumeDeletionRequestIds = [],
     now = currentUnixTime(),
@@ -1102,7 +1105,7 @@ export class NostrDb {
 
         await putQuotaEvent(db, tx, record, { personalCopy, personalCopyRefs })
         return addResult(replaced ? 'replaced' : 'stored', { stored: true, storedRecord: record })
-      }, { admission: true, beforeMutation: this.assertAccess })
+      }, { admission: true, beforeMutation: this.assertAccess, onTiming })
     } catch (error) {
       await abortChunkPayloadStage(chunkStage).catch(() => {})
       const code = error instanceof NostrDbQuotaError ? 'quota' : error.code === 'unavailable' ? 'unavailable' : 'error'

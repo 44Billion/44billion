@@ -1,3 +1,4 @@
+import { recordPerformance } from '#services/performance-diagnostics.js'
 import { assertNostrDbAccess, isNostrDbAccessError } from './access.js'
 import {
   NOSTRDB_CACHE_ACCESS_STORE as CACHE,
@@ -40,9 +41,16 @@ function unavailable () {
   return Object.assign(new Error('NostrDB quota coordination is unavailable'), { code: 'unavailable' })
 }
 
-export function withNostrDbQuotaLock (callback) {
+export function withNostrDbQuotaLock (callback, onTiming) {
   if (!globalThis.navigator?.locks?.request) return Promise.reject(unavailable())
-  return navigator.locks.request(QUOTA_LOCK, callback)
+  if (typeof IS_DEVELOPMENT === 'undefined' || !IS_DEVELOPMENT) return navigator.locks.request(QUOTA_LOCK, callback)
+  const queuedAt = performance.now()
+  return navigator.locks.request(QUOTA_LOCK, async () => {
+    const startedAt = performance.now()
+    const report = entry => { if (onTiming) { try { onTiming(entry) } catch {} } else recordPerformance(entry) }
+    report({ stage: 'quota-lock-wait', elapsedMs: startedAt - queuedAt })
+    try { return await callback() } finally { report({ stage: 'quota-lock-execution', elapsedMs: performance.now() - startedAt }) }
+  })
 }
 
 export function cacheEventLimit (bytes) {
@@ -444,7 +452,7 @@ async function evict (dbs, limits, { extra = {}, excludeDb, excluded = new Set()
   return totals
 }
 
-export function withQuotaMutation (db, callback, { admission = false, beforeMutation } = {}) {
+export function withQuotaMutation (db, callback, { admission = false, beforeMutation, onTiming } = {}) {
   return withNostrDbQuotaLock(async () => {
     assertNostrDbAccess(db.name.slice(NOSTRDB_PREFIX.length))
     beforeMutation?.()
@@ -464,7 +472,7 @@ export function withQuotaMutation (db, callback, { admission = false, beforeMuta
       totals = await evict(dbs, limits, { extra: error.delta, excludeDb: db.name, excluded: error.excluded })
       return mutate(db, callback, { totals, limits })
     }
-  }).finally(scheduleQuotaMaintenance)
+  }, onTiming).finally(scheduleQuotaMaintenance)
 }
 
 export function queueCacheAccess (owner, events) {

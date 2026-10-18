@@ -103,7 +103,7 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   monitor owns connectivity probes, capped retry delays, and browser wake-up
   listeners. `ConnectivityRetryCoordinator` owns waiters, cancellation, and
   concurrency of resumed app work; do not restore its duplicate probe timer.
-- Use the coordinated `libp2r2p@^0.11.22` range in package.json;
+- Use the coordinated `libp2r2p@^0.11.24` range in package.json;
   package-lock.json records the resolved release. Validate against the installed package rather than sibling
   source imports; it includes the shared connectivity monitor.
 
@@ -382,7 +382,7 @@ the storage schema are unchanged; no destructive cache repair is needed.
   selected crypto codes/coordinates and bounded causes. Slow publication timing
   is JSON text with the existing threshold and no event payloads.
 
-- Consume libp2r2p 0.11.22 through the registry-resolved lockfile. Its private
+- Consume libp2r2p 0.11.24 through the registry-resolved lockfile. Its private
   messenger observes owned pauses and recovers them independently of historical
   completion; explicit caller pauses remain caller-owned. Session factories must
   provide readStatus and initial/subsequent onStateChanged notifications. No
@@ -394,6 +394,14 @@ the storage schema are unchanged; no destructive cache repair is needed.
   the physical pool, bridge protocol or WebSocket events for this dependency bump.
 
 ## Prepared package validation
+
+Vault requests use the launcher-owned scheduler described in
+`docs/vault-request-scheduling.md`: five running requests, four normal maximum,
+two identifiable chunks maximum, and three priority admissions per normal
+admission when both classes are eligible. Preserve account permissions and
+connection-generation isolation. Personal-copy preparation inherits priority
+through request-local callbacks, never cached database callbacks. Diagnostics
+are development-only, bounded and contain identifiers/timings only.
 
 Kind 18716 uses `CONTENT_KEY_ANNOUNCEMENT` from `libp2r2p/kind`. The 0.11.21
 catalog makes it eligible for account import and shared across apps; opening

@@ -1,3 +1,6 @@
+import { classifyVaultRequest } from '#services/vault-request-queue.js'
+import { withRequestDiagnostics, recordPerformance } from '#services/performance-diagnostics.js'
+import { getEventHash } from 'libp2r2p/event'
 import { assertNostrDbAccountFlags, assertNostrDbAccess, watchNostrDbAccess } from '#services/idb/nostrdb/access.js'
 import { NOSTRDB_CAPABILITIES } from '#services/idb/nostrdb/capabilities.js'
 import { base16ToBase62 } from 'libp2r2p/base62'
@@ -159,11 +162,21 @@ export function createAppEventStoreBridge ({
         if (active()) reply(event, { payload: nostrDbStreamDonePayload(subscriptionId), isLast: true })
         return
       }
+      let eventId
+      if (typeof IS_DEVELOPMENT !== 'undefined' && IS_DEVELOPMENT && method === 'addPersonalCopy') {
+        try { eventId = getEventHash({ ...params[0], pubkey: params[0]?.pubkey || scope.pubkey }) } catch {}
+      }
+      const inherited = method === 'addPersonalCopy'
+        ? classifyVaultRequest({ code: 'NIP07', payload: { method: 'signEvent', params: [params[0]] } })
+        : undefined
+      const requestVault = (message, options) => askVault(withRequestDiagnostics(message, { reqId: event.data.reqId, eventId }), { ...options, ...(inherited ? { scheduling: inherited } : {}) })
+      const localSignerOptions = { ...signerOptions, askVault: requestVault }
+      const startedAt = performance.now()
       const signEvent = async template => {
         scope.assertAvailable()
         scope.guard({ method: nostrDbSignMethodForTemplate(template), params: [template] })
         const signed = await createNostrDbSignEvent({
-          askNip07, askVault, pubkey: scope.pubkey, app,
+          askNip07, askVault: requestVault, pubkey: scope.pubkey, app,
           ...readAccountFlags(scope.userPk), onSignerRequestAttention: scope.onAttention
         })(template)
         scope.assertAvailable()
@@ -171,12 +184,14 @@ export function createAppEventStoreBridge ({
       }
       const result = await runNostrDbMethod({
         db, method, params, appId, signEvent, requestPermission: scope.permission,
-        app, personalCopyEncrypt, personalCopyObfuscate, deferCacheAccess: true,
+        onTiming: typeof IS_DEVELOPMENT !== 'undefined' && IS_DEVELOPMENT ? entry => recordPerformance({ ...entry, eventId, requestId: event.data.reqId }) : undefined,
+        app, personalCopyEncrypt: isDefaultUser ? null : createNostrDbPersonalCopyEncrypt(localSignerOptions), personalCopyObfuscate: isDefaultUser ? null : createNostrDbPersonalCopyObfuscate(localSignerOptions), deferCacheAccess: true,
         assertAccess: () => {
           scope.assertAvailable()
           if (!active()) throw new Error('NOSTRDB_REQUEST_CANCELLED')
         }
       })
+      recordPerformance({ stage: 'event-store', eventId, requestId: event.data.reqId, elapsedMs: performance.now() - startedAt })
       scope.assertAvailable()
       if (active()) {
         reply(event, { payload: result })

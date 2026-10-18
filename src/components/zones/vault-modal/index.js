@@ -1,6 +1,8 @@
+import { createVaultRequestQueue } from '#services/vault-request-queue.js'
+import { recordPerformance, withRequestDiagnostics } from '#services/performance-diagnostics.js'
 import { reconcileNostrDbAccounts } from '#services/nostrdb-account-lifecycle.js'
 import { watchSignerConnection } from '#services/signer-connection.js'
-import { f, useGlobalStore, useGlobalSignal, useClosestStore, useStore, useTask, useCallback, useComputed, useSignal } from '#f'
+import { f, useGlobalStore, useGlobalSignal, useClosestStore, useStore, useTask, useCallback, useComputed, useSignal, useMemo } from '#f'
 import { useWebStorage } from '#f'
 import { tell, ask, reply } from '#helpers/window-message/index.js'
 import { createRelayBridgeEndpoint } from '#services/relay-pool/bridge-endpoint.js'
@@ -993,58 +995,7 @@ export function useVaultActor (vaultPort$) {
 
 function useVaultActorInit (vaultPort$) {
   const storage = useWebStorage(localStorage)
-  const {
-    config_vaultUrl$: vaultUrl$
-  } = storage
-
-  const {
-    msgQueue$
-  } = useGlobalStore('vaultActor', () => ({
-    vaultPort$,
-    vaultOrigin$ () { return new URL(vaultUrl$()).origin },
-    msgQueue$: {
-      waiting: [],
-      running: []
-    },
-    tellVault (msg) {
-      if (!this.vaultPort$()) return Promise.reject(new Error('Vault not connected'))
-      tell(this.vaultPort$(), msg)
-    },
-    async askVault (msg, { timeout, instant = false } = {}) {
-      if (instant) {
-        if (!this.vaultPort$()) return Promise.reject(new Error('Vault not connected'))
-        return ask(this.vaultPort$(), msg, {
-          ...(timeout != null && { timeout })
-        })
-      }
-
-      const queuedAt = Date.now()
-      const p = Promise.withResolvers()
-      p.promise.finally(() => {
-        // trigger useTask below
-        this.msgQueue$(v => {
-          v.running = v.running.filter(r => r.p !== p)
-          return { ...v }
-        })
-      })
-
-      // trigger useTask below
-      this.msgQueue$(v => {
-        v.waiting.push({ msg, timeout, queuedAt, p })
-        return { ...v }
-      })
-      return p.promise
-    },
-    cancelPreviousRequests (error) {
-      this.msgQueue$().running.forEach(v => v.p.resolve({
-        // same signature as ask()'s soft-rejection
-        code: v.msg.code,
-        payload: null,
-        error: error || new Error('Canceled')
-      }))
-    }
-  }))
-
+  const { config_vaultUrl$: vaultUrl$ } = storage
   const vaultModalStore = useVaultModalStore()
   const tabStorage = useWebStorage(sessionStorage)
   const { order$: openWorkspaceKeys$ } = useActiveWorkspaceOrder(storage, tabStorage)
@@ -1053,37 +1004,25 @@ function useVaultActorInit (vaultPort$) {
     return storage[`session_workspaceByKey_${wsKey}_userPk$`]()
   })
   const isLoggedIn$ = useComputed(() => userPk$() !== storage.session_defaultUserPk$() || openWorkspaceKeys$().length > 1)
-  const maybeFailEarly = useCallback(job => {
-    if (isLoggedIn$()) return false
-
-    // TODO: don't trigger it if automated requests such as the signing of AUTH events
-    vaultModalStore.open()
-    job.p.resolve({
-      code: job.msg.code,
-      payload: null,
-      error: new Error('Not logged in')
-    })
-    return true
-  })
-
-  // synchronous; no need to guard againt multiple calls
-  useTask(({ track }) => {
-    const [queue, vaultPort] = track(() => [msgQueue$(), vaultPort$()])
-    if (!vaultPort) return
-
-    const promisesToStart = Math.min(5 - queue.running.length, queue.waiting.length)
-    const now = Date.now()
-    for (let i = 0; i < promisesToStart; i++) {
-      const job = queue.waiting.shift()
-      queue.running.push(job)
-      if (maybeFailEarly(job)) return
-
-      const { msg, timeout, queuedAt, p } = queue.running[queue.running.length - promisesToStart + i]
-      // this never errors out, it resolves with { error } in that case
-      ask(vaultPort, msg, {
-        ...(timeout != null && { timeout: queuedAt + timeout - now })
-      })
-        .then(v => { p.resolve(v) })
+  const queue = useMemo(() => createVaultRequestQueue({
+    send: ask,
+    onDebug: IS_DEVELOPMENT ? recordPerformance : undefined,
+    beforeSend: msg => {
+      if (isLoggedIn$()) return
+      vaultModalStore.open()
+      return { code: msg.code, payload: null, error: new Error('Not logged in') }
     }
-  })
+  }))
+  useGlobalStore('vaultActor', () => ({
+    vaultPort$,
+    vaultOrigin$ () { return new URL(vaultUrl$()).origin },
+    tellVault (msg) {
+      if (!this.vaultPort$()) return Promise.reject(new Error('Vault not connected'))
+      tell(this.vaultPort$(), msg)
+    },
+    askVault: (msg, options) => queue.ask(withRequestDiagnostics(msg, msg.diagnostics ? { reqId: msg.diagnostics.parentId, eventId: msg.diagnostics.eventId } : undefined), options),
+    cancelPreviousRequests: error => queue.cancel(error)
+  }))
+  useTask(({ track }) => queue.setPort(track(() => vaultPort$())))
+  useTask(({ cleanup }) => cleanup(() => queue.close()))
 }
