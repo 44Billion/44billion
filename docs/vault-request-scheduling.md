@@ -30,3 +30,8 @@ writes correlate quota-lock waiting/execution to their request. The most recent
 message/event payloads, crypto buffers, raw scopes or keys. Correlation and timing
 reply fields are internal diagnostics, absent in production; public app methods
 and NIP07 parameters are unchanged.
+
+For recovery-record writes, development traces also carry the fixed library seed
+coordinate (`seedRecordId`). It links a session's main event/publication trace to
+the derived personal-copy hash and its internal signer requests. This extraction
+is diagnostic-only, validates the coordinate shape and never changes priority.

@@ -163,13 +163,16 @@ export function createAppEventStoreBridge ({
         return
       }
       let eventId
+      let seedRecordId
       if (typeof IS_DEVELOPMENT !== 'undefined' && IS_DEVELOPMENT && method === 'addPersonalCopy') {
         try { eventId = getEventHash({ ...params[0], pubkey: params[0]?.pubkey || scope.pubkey }) } catch {}
+        const coordinate = Array.isArray(params[0]?.tags) ? params[0].tags.find(tag => Array.isArray(tag) && tag[0] === 'd')?.[1] : undefined
+        if (params[0]?.kind === 30078 && /^libp2r2p:recovery:seed:[a-f0-9]{64}$/.test(coordinate)) seedRecordId = coordinate
       }
       const inherited = method === 'addPersonalCopy'
         ? classifyVaultRequest({ code: 'NIP07', payload: { method: 'signEvent', params: [params[0]] } })
         : undefined
-      const requestVault = (message, options) => askVault(withRequestDiagnostics(message, { reqId: event.data.reqId, eventId }), { ...options, ...(inherited ? { scheduling: inherited } : {}) })
+      const requestVault = (message, options) => askVault(withRequestDiagnostics(message, { reqId: event.data.reqId, eventId, seedRecordId }), { ...options, ...(inherited ? { scheduling: inherited } : {}) })
       const localSignerOptions = { ...signerOptions, askVault: requestVault }
       const startedAt = performance.now()
       const signEvent = async template => {
@@ -184,14 +187,14 @@ export function createAppEventStoreBridge ({
       }
       const result = await runNostrDbMethod({
         db, method, params, appId, signEvent, requestPermission: scope.permission,
-        onTiming: typeof IS_DEVELOPMENT !== 'undefined' && IS_DEVELOPMENT ? entry => recordPerformance({ ...entry, eventId, requestId: event.data.reqId }) : undefined,
+        onTiming: typeof IS_DEVELOPMENT !== 'undefined' && IS_DEVELOPMENT ? entry => recordPerformance({ ...entry, eventId, seedRecordId, requestId: event.data.reqId }) : undefined,
         app, personalCopyEncrypt: isDefaultUser ? null : createNostrDbPersonalCopyEncrypt(localSignerOptions), personalCopyObfuscate: isDefaultUser ? null : createNostrDbPersonalCopyObfuscate(localSignerOptions), deferCacheAccess: true,
         assertAccess: () => {
           scope.assertAvailable()
           if (!active()) throw new Error('NOSTRDB_REQUEST_CANCELLED')
         }
       })
-      recordPerformance({ stage: 'event-store', eventId, requestId: event.data.reqId, elapsedMs: performance.now() - startedAt })
+      recordPerformance({ stage: 'event-store', eventId, seedRecordId, requestId: event.data.reqId, elapsedMs: performance.now() - startedAt })
       scope.assertAvailable()
       if (active()) {
         reply(event, { payload: result })

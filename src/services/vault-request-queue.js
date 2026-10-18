@@ -31,7 +31,7 @@ export function createVaultRequestQueue ({ send, beforeSend = () => {}, onDebug,
   const failure = (msg, error) => ({ code: msg.code, payload: null, error })
   const snapshot = () => ({ waiting: waiting[0].length + waiting[1].length, running: running.size })
   const debug = (job, stage) => {
-    try { onDebug?.({ stage, requestId: job.msg.diagnostics?.requestId, parentId: job.msg.diagnostics?.parentId, eventId: job.msg.diagnostics?.eventId, priority: job.priority, chunk: job.chunk, elapsedMs: now() - job.queuedAt, ...snapshot() }) } catch {}
+    try { onDebug?.({ stage, requestId: job.msg.diagnostics?.requestId, parentId: job.msg.diagnostics?.parentId, eventId: job.msg.diagnostics?.eventId, seedRecordId: job.msg.diagnostics?.seedRecordId, priority: job.priority, chunk: job.chunk, elapsedMs: now() - job.queuedAt, ...snapshot() }) } catch {}
   }
   function finish (job, result) {
     if (job.done) return
@@ -42,7 +42,7 @@ export function createVaultRequestQueue ({ send, beforeSend = () => {}, onDebug,
     const index = queue.indexOf(job)
     if (index !== -1) queue.splice(index, 1)
     if (job.startedAt != null) {
-      try { onDebug?.({ stage: 'vault-execution', requestId: job.msg.diagnostics?.requestId, parentId: job.msg.diagnostics?.parentId, eventId: job.msg.diagnostics?.eventId, elapsedMs: now() - job.startedAt, ...(Number.isFinite(result?.diagnostics?.vaultDurationMs) ? { durationMs: result.diagnostics.vaultDurationMs } : {}) }) } catch {}
+      try { onDebug?.({ stage: 'vault-execution', requestId: job.msg.diagnostics?.requestId, parentId: job.msg.diagnostics?.parentId, eventId: job.msg.diagnostics?.eventId, seedRecordId: job.msg.diagnostics?.seedRecordId, elapsedMs: now() - job.startedAt, ...(Number.isFinite(result?.diagnostics?.vaultDurationMs) ? { durationMs: result.diagnostics.vaultDurationMs } : {}) }) } catch {}
     }
     debug(job, 'vault-complete')
     job.resolve(result)

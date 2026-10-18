@@ -1,12 +1,12 @@
 const enabled = typeof IS_DEVELOPMENT !== 'undefined' && IS_DEVELOPMENT
 const recent = []
-const fields = ['stage', 'requestId', 'parentId', 'eventId', 'priority', 'chunk', 'elapsedMs', 'waiting', 'running', 'kind', 'durationMs']
+const fields = ['stage', 'requestId', 'parentId', 'eventId', 'seedRecordId', 'publicationId', 'priority', 'chunk', 'elapsedMs', 'waiting', 'running', 'kind', 'durationMs']
 
 export function recordPerformance (entry) {
   if (!enabled) return
   const value = Object.fromEntries(fields.filter(key => {
     const value = entry[key]
-    if (['stage', 'requestId', 'parentId', 'eventId'].includes(key)) return typeof value === 'string' && /^[a-zA-Z0-9:_-]{1,128}$/.test(value)
+    if (['stage', 'requestId', 'parentId', 'eventId', 'seedRecordId', 'publicationId'].includes(key)) return typeof value === 'string' && /^[a-zA-Z0-9:_-]{1,160}$/.test(value)
     return typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value))
   }).map(key => [key, entry[key]]))
   recent.push(value)
@@ -16,7 +16,7 @@ export function recordPerformance (entry) {
 
 export function withRequestDiagnostics (message, parent) {
   if (!enabled) return message
-  return { ...message, diagnostics: { requestId: crypto.randomUUID(), ...(parent ? { parentId: parent.reqId, ...(parent.eventId ? { eventId: parent.eventId } : {}) } : {}) } }
+  return { ...message, diagnostics: { requestId: crypto.randomUUID(), ...(parent ? { parentId: parent.reqId, ...(parent.eventId ? { eventId: parent.eventId } : {}), ...(parent.seedRecordId ? { seedRecordId: parent.seedRecordId } : {}) } : {}) } }
 }
 
 export function performanceSnapshot () { return recent.map(entry => ({ ...entry })) }

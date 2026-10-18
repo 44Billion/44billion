@@ -12,6 +12,13 @@ test('development diagnostics bound history and retain only identifiers and nume
     const snapshot = performanceSnapshot()
     assert.equal(snapshot.length, 128)
     assert.deepEqual(snapshot[0], { stage: 'vault-dispatch', requestId: 'request-12', elapsedMs: 12 })
+    const { withRequestDiagnostics } = await import('../../src/services/performance-diagnostics.js?development-test')
+    const seedRecordId = `libp2r2p:recovery:seed:${'a'.repeat(64)}`
+    const message = withRequestDiagnostics({ code: 'NIP07' }, { reqId: 'origin', eventId: 'event', seedRecordId })
+    assert.equal(message.diagnostics.parentId, 'origin')
+    assert.equal(message.diagnostics.seedRecordId, seedRecordId)
+    recordPerformance({ stage: 'vault-dispatch', seedRecordId, publicationId: 'envelope', content: 'private' })
+    assert.deepEqual(performanceSnapshot().at(-1), { stage: 'vault-dispatch', seedRecordId, publicationId: 'envelope' })
     snapshot[0].stage = 'changed'
     assert.equal(performanceSnapshot()[0].stage, 'vault-dispatch')
   } finally {

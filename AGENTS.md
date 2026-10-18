@@ -103,7 +103,7 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   monitor owns connectivity probes, capped retry delays, and browser wake-up
   listeners. `ConnectivityRetryCoordinator` owns waiters, cancellation, and
   concurrency of resumed app work; do not restore its duplicate probe timer.
-- Use the coordinated `libp2r2p@^0.11.24` range in package.json;
+- Use the coordinated `libp2r2p@^0.11.25` range in package.json;
   package-lock.json records the resolved release. Validate against the installed package rather than sibling
   source imports; it includes the shared connectivity monitor.
 
@@ -382,7 +382,7 @@ the storage schema are unchanged; no destructive cache repair is needed.
   selected crypto codes/coordinates and bounded causes. Slow publication timing
   is JSON text with the existing threshold and no event payloads.
 
-- Consume libp2r2p 0.11.24 through the registry-resolved lockfile. Its private
+- Consume libp2r2p 0.11.25 through the registry-resolved lockfile. Its private
   messenger observes owned pauses and recovers them independently of historical
   completion; explicit caller pauses remain caller-owned. Session factories must
   provide readStatus and initial/subsequent onStateChanged notifications. No
