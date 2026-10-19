@@ -173,7 +173,7 @@ export function createAppEventStoreBridge ({
         ? classifyVaultRequest({ code: 'NIP07', payload: { method: 'signEvent', params: [params[0]] } })
         : undefined
       const requestVault = (message, options) => askVault(withRequestDiagnostics(message, { reqId: event.data.reqId, eventId, seedRecordId }), { ...options, ...(inherited ? { scheduling: inherited } : {}) })
-      const localSignerOptions = { ...signerOptions, askVault: requestVault }
+      const localSignerOptions = { ...signerOptions, askVault: requestVault, cacheObfuscation: true, diagnostics: { requestId: event.data.reqId, eventId, seedRecordId } }
       const startedAt = performance.now()
       const signEvent = async template => {
         scope.assertAvailable()

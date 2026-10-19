@@ -41,6 +41,7 @@ try {
         send(raw) {
           const [op, id, filter] = JSON.parse(raw);
           transport.frames.push({op,id,marker:filter?.['#t']?.[0],at:performance.now()});
+          if (op === 'EVENT') { setTimeout(() => { const data=JSON.stringify(['OK',id.id,true,'']); this.onmessage?.({data}); this.dispatchEvent(new MessageEvent('message',{data})); },0); return; }
           if (op !== 'REQ') return;
           if(filter.kinds?.includes(9701)) {
             setTimeout(() => { const data=JSON.stringify(['CLOSED',id,'rate-limited: test','1000']); this.onmessage?.({data}); this.dispatchEvent(new MessageEvent('message',{data})); },0);
@@ -72,12 +73,14 @@ try {
   await browser.until(() => browser.evaluate('WebSocket.name === "LauncherRelayPoolWebSocket"', vault), 'vault after navigation')
   for (const origin of [vault, appOrigin]) {
     await browser.evaluate(`(() => {
-      window.bridgeTest = { frames:[], credits:[], closes:[], sockets:[], customEventProperties:[] };
+      window.bridgeTest = { frames:[], credits:[], closes:[], sockets:[], customEventProperties:[], heldCredits:[], holdCredits:false };
       const post = MessagePort.prototype.postMessage;
       MessagePort.prototype.postMessage = function(message,...rest) {
         if(message?.code==='RELAY_CREDIT') { bridgeTest.credits.push({...message.payload}); if(bridgeTest.credits.length>32)bridgeTest.credits.shift(); }
+        if(message?.code==='RELAY_CREDIT' && bridgeTest.holdCredits) { bridgeTest.heldCredits.push({port:this,message,rest}); return; }
         return post.call(this,message,...rest);
       };
+      bridgeTest.releaseCredits = () => { bridgeTest.holdCredits=false; for(const held of bridgeTest.heldCredits.splice(0))post.call(held.port,held.message,...held.rest); };
       bridgeTest.open = async () => {
         const socket = new WebSocket('wss://nos.lol'); bridgeTest.sockets.push(socket);
         const checkShape = (event, native) => {
@@ -104,6 +107,15 @@ try {
       assert.deepEqual(frames.slice(0, -1).map(frame => frame.index), Array.from({ length: frames.length - 1 }, (_, index) => index))
       assert.deepEqual(await browser.evaluate('bridgeTest.closes', origin), [])
     }
+    await browser.evaluate('bridgeTest.frames=[]; bridgeTest.holdCredits=true; bridgeTest.sockets[0].send(JSON.stringify([\'REQ\',\'priority-history\',{kinds:[9700],\'#t\':[\'burst\']}]))', origin)
+    await browser.until(() => browser.evaluate('bridgeTest.frames.length>=30 && bridgeTest.heldCredits.length>0', origin), 'history fills normal receive credit')
+    const priorityId = 'f'.repeat(64)
+    await browser.evaluate(`bridgeTest.sockets[0].send(JSON.stringify(['EVENT',{id:'${priorityId}',pubkey:'a'.repeat(64),sig:'b'.repeat(128),kind:9,created_at:1,tags:[],content:''}]))`, origin)
+    await browser.until(() => browser.evaluate(`bridgeTest.frames.some(frame=>frame.op==='OK'&&frame.id==='${priorityId}')`, origin), 'priority ACK passes history using reserved credit')
+    assert.equal(await browser.evaluate("bridgeTest.frames.some(frame=>frame.op==='EOSE'&&frame.id==='priority-history')", origin), false)
+    await browser.evaluate('bridgeTest.releaseCredits()', origin)
+    await browser.until(() => browser.evaluate("bridgeTest.frames.some(frame=>frame.op==='EOSE'&&frame.id==='priority-history')", origin), 'history and EOSE resume after credit return')
+    assert.deepEqual(await browser.evaluate("bridgeTest.frames.filter(frame=>frame.op==='EVENT').map(frame=>frame.index)", origin), Array.from({ length: 82 }, (_, index) => index))
     await browser.evaluate('bridgeTest.frames=[]; bridgeTest.sockets[0].send(JSON.stringify([\'REQ\',\'rate-keep\',{kinds:[9702],\'#t\':[\'keep\']}]))', origin)
     await browser.until(() => browser.evaluate('bridgeTest.frames.some(frame=>frame.id === "rate-keep" && frame.op === "EOSE")', origin), 'active subscription before cooldown')
     await browser.evaluate('bridgeTest.sockets[0].send(JSON.stringify([\'REQ\',\'rate-limit\',{kinds:[9701],\'#t\':[\'limited\']}]))', origin)
@@ -163,7 +175,7 @@ try {
   assert.ok(attempts[2].at - attempts[1].at >= 3000, 'open consumers cannot bypass the next stage')
   assert.ok(connectivityChecks > 0, 'physical failures use the real shared connectivity APIs')
   for (const origin of ['http://localhost:10000', vault, appOrigin]) await browser.evaluate('physicalRun.active=false;physicalRun.sockets.forEach(socket=>socket.close())', origin)
-  console.log('Real launcher/app/vault bridge: FIFO, credits, absolute cooldowns, shared physical failure recovery, native events and isolated overflow passed.')
+  console.log('Real launcher/app/vault bridge: priority ACK, FIFO history, credits, absolute cooldowns, shared physical failure recovery, native events and isolated overflow passed.')
 } catch (error) {
   await browser?.diagnose(root + '/tmp/browser-failures/relay-bridge')
   throw error

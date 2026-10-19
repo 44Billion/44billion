@@ -35,3 +35,12 @@ For recovery-record writes, development traces also carry the fixed library seed
 coordinate (`seedRecordId`). It links a session's main event/publication trace to
 the derived personal-copy hash and its internal signer requests. This extraction
 is diagnostic-only, validates the coordinate shape and never changes priority.
+
+Personal-copy preparation overlaps encryption and independent mirrors, with four
+outstanding primitives per preparation. Signing follows complete preparation;
+original mirror/tag order is retained. Request-local callbacks keep inherited
+priority. The launcher reuses only context/author obfuscations after existing
+guards: per-account/connection-generation/kind/scope/value keys, 64/account,
+256/realm, 60-second idle lifetime. Disconnect and committed account changes
+clear the cache and fence late results. No IDs, arbitrary tags, callbacks or key
+material are cached. No grouped preparation RPC or app API was added.

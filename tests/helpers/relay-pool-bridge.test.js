@@ -286,10 +286,10 @@ for (const owner of ['app', 'vault']) {
     source.message(frames.at(-1))
     const pending = bridge.endpoint.snapshot().queues[0]
     assert.equal(pending.owner, owner)
-    assert.equal(pending.queuedFrames, 2)
+    assert.equal(pending.queuedFrames, 3)
     assert.equal(pending.oldestQueuedMs, 25)
-    assert.equal(pending.headFrameBytes, frames[4].length)
-    assert.equal(pending.queuedBytes, frames[4].length + frames[5].length)
+    assert.equal(pending.headFrameBytes, frames[3].length)
+    assert.equal(pending.queuedBytes, frames[3].length + frames[4].length + frames[5].length)
     await waitFor(() => bridge.events.filter(([type]) => type === 'message').length === 6)
     assert.deepEqual(bridge.events.filter(([type]) => type === 'message').map(([, data]) => data), frames)
     assert.deepEqual(bridge.endpoint.snapshot().queues, [])

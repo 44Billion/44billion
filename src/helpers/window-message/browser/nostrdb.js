@@ -1,3 +1,4 @@
+import { cachedPersonalCopyObfuscation } from '#services/personal-copy-cache.js'
 import { createLocalPersonalCopy } from '#services/idb/nostrdb/personal-copy.js'
 import { normalizeLocalRemovalTargets, localRemovalResult } from '#services/idb/nostrdb/local-removal.js'
 import {
@@ -148,22 +149,29 @@ export function createNostrDbPersonalCopyEncrypt ({ askVault, pubkey, guard }) {
   }
 }
 
-export function createNostrDbPersonalCopyObfuscate ({ askVault, pubkey, guard }) {
+export function createNostrDbPersonalCopyObfuscate ({ askVault, pubkey, guard, cacheObfuscation = false, diagnostics }) {
   return async (value, kind, scope) => {
     const params = [value, String(kind), scope]
     guard?.({ method: 'obfuscate', params })
-    const { payload, error } = await askVault({
-      code: 'NIP07',
-      payload: {
-        pubkey,
-        ns: [''],
-        method: 'obfuscate',
-        params,
-        context: NOSTRDB_PERSONAL_COPY_CONTEXT
-      }
-    }, { timeout: 120000 })
-    if (error) throw error
-    return payload
+    const operation = async () => {
+      const { payload, error } = await askVault({
+        code: 'NIP07',
+        payload: {
+          pubkey,
+          ns: [''],
+          method: 'obfuscate',
+          params,
+          context: NOSTRDB_PERSONAL_COPY_CONTEXT
+        }
+      }, { timeout: 120000 })
+      if (error) throw error
+      return payload
+    }
+    const result = cacheObfuscation
+      ? await cachedPersonalCopyObfuscation(pubkey, value, String(kind), scope, operation, diagnostics)
+      : await operation()
+    guard?.({ method: 'obfuscate', params })
+    return result
   }
 }
 

@@ -300,8 +300,8 @@ access without echoing those cached events back to the vault.
 
 ## Relay bridge queues
 
-- Preserve FIFO in both bridge directions even when a newer smaller frame fits
-  the remaining credit. `EOSE` must never overtake queued history events.
+- Preserve FIFO within each scheduling class even when a newer smaller frame
+  fits the remaining credit; correlated priority OK may pass queued history. `EOSE` must never overtake queued history events.
 - Return trailing receive credits in a microtask; they acknowledge port delivery,
   not downstream asynchronous processing. Outgoing publication limits remain
   64 frames/256 KiB of credit and 256 frames/1 MiB queued. Incoming defaults are
@@ -425,3 +425,15 @@ publish the same archive manually. No local dependency references are committed.
   atomic checks remain unchanged. Revalidate LRU timestamps/eligibility in the
   deletion transaction and reselect changed candidates. Keep cross-owner sums,
   schema and legacy reconstruction; no global persisted total/cache is added.
+
+## Send scheduling and preparation
+
+User-authorized private scheduling spans all buckets per host: 3 priority / 1
+normal, eight of 60 tokens reserved, unchanged 2s refill/cooldowns. Private kinds
+9/1063/3560/26300/26400 and validated AUTH are priority; identifiable chunks stay
+normal. Shims reserve 4 frames/32 KiB outgoing, bridge return reserves 8/64 KiB.
+Only correlated OK/AUTH controls (<=16 KiB) pass history. Keep sequence ledgers
+in dispatch order and EVENT/EOSE dependencies. Vault policy parity is tested.
+Personal-copy primitives overlap at most four; sign after dependencies. Stable
+context/author mirrors have bounded generation-fenced in-memory reuse after
+guards, never app scopes or shared callback mutation. No storage schema changes.

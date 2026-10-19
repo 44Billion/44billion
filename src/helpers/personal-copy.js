@@ -162,9 +162,13 @@ export async function preparePersonalCopyUnsignedEvent ({
       ? PERSONAL_COPY_PROVENANCE.SIGNED_EVENT
       : PERSONAL_COPY_PROVENANCE.DIRECT_RUMOR
   const plaintext = JSON.stringify(prepared.inner)
-  const content = await encrypt(prepared.inner.kind, plaintext)
-  const mirrors = await buildMirrorDataFromDescription(prepared, obfuscate)
-  const contextValue = await obfuscate(String(context ?? ''), PERSONAL_COPY_KIND, '')
+  const run = limitPreparation(4)
+  const limitedObfuscate = (...args) => run(() => obfuscate(...args))
+  const [content, mirrors, contextValue] = await Promise.all([
+    run(() => encrypt(prepared.inner.kind, plaintext)),
+    buildMirrorDataFromDescription(prepared, limitedObfuscate),
+    limitedObfuscate(String(context ?? ''), PERSONAL_COPY_KIND, '')
+  ])
   // The address includes the context: the same inner coordinate in two
   // contexts is two independent copies.
   const addressTag = await personalCopyCoordinateTag({
@@ -303,19 +307,20 @@ export async function buildPersonalCopyMirrorData ({ innerEvent, wrapperPubkey, 
   if (!description) throw new Error('INVALID_PERSONAL_COPY_INNER_EVENT')
   if (typeof obfuscate !== 'function') throw new Error('PERSONAL_COPY_OBFUSCATE_REQUIRED')
 
-  return buildMirrorDataFromDescription(description, obfuscate)
+  const run = limitPreparation(4)
+  return buildMirrorDataFromDescription(description, (...args) => run(() => obfuscate(...args)))
 }
 
 async function buildMirrorDataFromDescription (description, obfuscate) {
-  const tags = []
-  for (const tag of description.inner.tags) {
-    if (tag[0].length !== 1 || typeof tag[1] !== 'string') continue
-    tags.push(['o', await obfuscate(tag[1], PERSONAL_COPY_KIND, `#${tag[0]}`)])
-  }
-
-  const sourceMirror = await obfuscate(description.sourceId, PERSONAL_COPY_KIND, '.id')
-  const authorMirror = await obfuscate(description.effectivePubkey, PERSONAL_COPY_KIND, '.pubkey')
-  tags.push(['o', sourceMirror], ['o', authorMirror])
+  const inputs = description.inner.tags.filter(tag => tag[0].length === 1 && typeof tag[1] === 'string')
+  const results = await Promise.all([
+    ...inputs.map(tag => obfuscate(tag[1], PERSONAL_COPY_KIND, `#${tag[0]}`)),
+    obfuscate(description.sourceId, PERSONAL_COPY_KIND, '.id'),
+    obfuscate(description.effectivePubkey, PERSONAL_COPY_KIND, '.pubkey')
+  ])
+  const sourceMirror = results[inputs.length]
+  const authorMirror = results[inputs.length + 1]
+  const tags = results.map(value => ['o', value])
 
   return {
     tags,
@@ -415,4 +420,18 @@ function parseJsonObject (value) {
   } catch {
     return null
   }
+}
+
+// Bound vault admission across encryption and all mirrors of one preparation.
+function limitPreparation (limit) {
+  let running = 0
+  const waiting = []
+  function drain () {
+    while (running < limit && waiting.length) {
+      const { operation, resolve, reject } = waiting.shift()
+      running++
+      Promise.resolve().then(operation).then(resolve, reject).finally(() => { running--; drain() })
+    }
+  }
+  return operation => new Promise((resolve, reject) => { waiting.push({ operation, resolve, reject }); drain() })
 }

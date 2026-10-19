@@ -183,8 +183,9 @@ dedicated to relay frames. Internal messages:
 - `RELAY_CLOSE` / `RELAY_CLOSED`;
 - `RELAY_REGISTRY` / `RELAY_REGISTRY_ADD`.
 
-Both directions preserve FIFO, including when a large queued frame does not
-fit the remaining credit but a newer small frame would. In particular, `EOSE`
+Each scheduling class preserves FIFO, including when a large queued frame does
+not fit remaining credit but a newer small frame would. Correlated priority OK
+may pass history; subscription `EOSE`
 cannot overtake queued `EVENT`s and prematurely complete a history read. App and
 vault consumers return receive credits in a microtask, including a trailing
 partial batch, so the next large frame cannot stall waiting for unreturned
@@ -237,7 +238,7 @@ installs a thin `window.WebSocket` shim (hard-coded
 `ENABLE_LAUNCHER_RELAY_POOL` flag). Known, non-quarantined relays attach
 directly to pool members owned by the vault. Other URLs retain launcher-owned
 virtual sockets for registry, speculative connect, adoption, detach and fallback.
-The vault pipes frames, credits and close events without implementing scheduling. Activation requires a completed handshake advertising
+The vault pipes frames, credits and close events with the same bounded outgoing priority policy as the app shim. Activation requires a completed handshake advertising
 `relayPoolSupported && relayPoolEnabled`; standalone vaults, old launchers
 and disabled pools keep native sockets. The physical sockets originate from
 the launcher origin, which Nostr relays normally ignore. Delegated sockets
@@ -437,15 +438,15 @@ across all types.
 
 Before forwarding a valid refusal, the pool replaces params with the effective
 `@<Unix milliseconds>` deadline. Launcher, vault and app clocks are synchronized,
-so ID rewriting, FIFO port queues and delayed credit returns preserve this exact
+so ID rewriting, per-class port queues and delayed credit returns preserve this exact
 value without recomputing at delivery. Frames without valid advice acquire no
 synthetic wait. Legacy timing objects are not interpreted.
 
 Physical queue scheduling lets eligible types pass blocked types while preserving
-FIFO within each type and round-robin consumer fairness. It sleeps until both
+FIFO within each eligible scheduling class and round-robin producer fairness. It sleeps until both
 an eligible queued message and the shared token budget allow work. Existing
 operation deadlines, CLOSE cancellation and migration cleanup still apply;
-per-bucket drain timers and idle host budgets are released on close/expiry.
+per-host drain timers and idle host budgets are released on close/expiry.
 
 ### Internal failure attribution
 
@@ -525,3 +526,34 @@ interests. Details are copied, in memory only, and contain no frames, filters or
 account identities. `RELAY_SOCKET_CONNECT_TIMEOUT` remains separate from bridge
 attachment timeout. Test-only connectivity/jitter injections are internal; no
 new app API, WebSocket property, Nostr metadata or persisted key is introduced.
+
+## Private publication scheduling
+
+Physical message admission runs once per host across all open buckets, sharing
+60 tokens / 2 seconds. Eight tokens are reserved for priority; normal work can
+use the remaining capacity and refills. Eligible private kinds 9, 1063, 3560,
+26300 and 26400 receive three admissions per normal admission, round-robin
+between producers. Kind 34601 and transport envelopes with an explicit numeric
+`i` chunk index remain normal. AUTH admission keeps its existing validation.
+Cooldowns determine eligibility; the next wake includes the actual lane's token
+threshold, with no polling while only reserved tokens remain. CLOSE still
+purges queued REQ generations and bypasses tokens. Connection limits are unchanged.
+
+App/vault outgoing queues reserve four frames / 32 KiB of existing credit.
+Incoming queues reserve eight frames / 64 KiB. Correlated positive/negative OK
+and AUTH controls may pass queued history; unrelated OK stays normal. The
+correlation inventory holds at most 256 outstanding priority IDs per attachment.
+Controls over 16 KiB stay normal. EVENT/EOSE/closing dependencies remain FIFO.
+Large accepted frames can travel alone; reservations never permanently strand
+a valid frame. Non-Nostr traffic retains ordinary FIFO behavior. Sequence and
+refund ledgers follow actual dispatch; no credit wire format changes.
+
+Development-only bounded timings include shim admission, physical dispatch,
+bufferedAmount, pool ACK and bridge ACK dispatch. Durations are local queue
+measurements, not a claim about remote server execution. No payloads are logged.
+
+Normal-only work preserves the reserved lane. Under sustained mixed demand, a
+normal admission due after three priorities may use the reserved window; this
+prevents starvation at saturation. Oversized normal frames due for service wait
+for existing credits to return before travelling alone. This rule applies to
+physical tokens and both bridge directions; it never raises total budgets.

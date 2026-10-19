@@ -236,6 +236,7 @@ export function createRelayBridgeEndpoint ({
       case RELAY_BRIDGE.SEND: {
         const attachment = attachments.get(virtualId)
         if (!attachment) return
+        attachment.receive.noteOutgoing(payload.data)
         if (attachment.socket) attachment.socket.send(payload.data)
         else attachment.member?.send(payload.data)
         grantSendCredit(attachment, frameSize(payload.data))

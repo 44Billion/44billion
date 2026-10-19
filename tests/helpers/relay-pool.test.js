@@ -1022,9 +1022,11 @@ it('shares message tokens across physical sockets on one host', async t => {
   await tick()
   b.send(JSON.stringify(['REQ', 'b', { kinds: [1] }]))
   await tick()
-  assert.equal(sockets.flatMap(socket => socket.sent).filter(frame => frame[0] === 'REQ').length, 2)
+  assert.equal(sockets.flatMap(socket => socket.sent).filter(frame => frame[0] === 'REQ').length, 1)
   t.mock.timers.tick(1000)
   await tick()
+  assert.equal(sockets.flatMap(socket => socket.sent).filter(frame => frame[0] === 'REQ').length, 2)
+  t.mock.timers.tick(1000); await tick()
   assert.equal(sockets.flatMap(socket => socket.sent).filter(frame => frame[0] === 'REQ').length, 3)
 })
 
@@ -1237,7 +1239,7 @@ for (const limitedType of ['EVENT', 'AUTH', 'REQ', 'COUNT']) {
     const queuedB = start(limitedType)
     for (const type of ['EVENT', 'AUTH', 'REQ', 'COUNT'].filter(type => type !== limitedType)) start(type)
     await tick()
-    assert.deepEqual(socket.sent.slice(before).map(frame => frame[0]), ['EVENT', 'AUTH', 'REQ', 'COUNT'].filter(type => type !== limitedType))
+    assert.deepEqual(socket.sent.slice(before).map(frame => frame[0]), ['AUTH', 'EVENT', 'REQ', 'COUNT'].filter(type => type !== limitedType))
     assert.ok(member.bufferedAmount > 0)
     t.mock.timers.tick(2499); await tick()
     assert.equal(socket.sent.length, before + 3)
@@ -1316,4 +1318,53 @@ it('AUTH that expires during its cooldown is removed before it can be sent', asy
   assert.equal(member.bufferedAmount, 0)
   t.mock.timers.tick(10000); await tick()
   assert.equal(sockets[0].sent.filter(frame => frame[0] === 'AUTH').length, 1)
+})
+
+it('host scheduling prefers private text across buckets, retains 3:1 service and reserves eight tokens', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 10000 })
+  const { pool, sockets } = createPool({ maxSubscriptionsPerBucket: 1 })
+  t.after(() => pool.closeAll())
+  const normal = pool.attach('wss://relay.example')
+  normal.send(JSON.stringify(['REQ', 'first', {}]))
+  const urgent = pool.attach('wss://relay.example')
+  urgent.send(JSON.stringify(['REQ', 'second', {}]))
+  await tick()
+  // Queue before opening so both producers participate in one host drain.
+  const normalEvent = index => ({ id: `normal-${index}`, kind: 1, sig: 'sig', tags: [] })
+  const privateEvent = index => ({ id: `private-${index}`, kind: 26300, sig: 'sig', tags: [] })
+  for (let i = 0; i < 80; i++) normal.send(JSON.stringify(['EVENT', normalEvent(i)]))
+  for (let i = 0; i < 6; i++) urgent.send(JSON.stringify(['EVENT', privateEvent(i)]))
+  const order = []
+  for (const socket of sockets) {
+    const send = socket.send.bind(socket)
+    socket.send = raw => { order.push(JSON.parse(raw)); send(raw) }
+    socket.open()
+  }
+  await tick()
+  assert.deepEqual(order.slice(0, 8).map(frame => frame[1]?.id?.startsWith('private-') ?? false), [true, true, true, false, true, true, true, false])
+  assert.equal(order.filter(frame => frame[0] === 'EVENT' && frame[1].id.startsWith('private-')).length, 6)
+  assert.equal(order.length, 52)
+  urgent.send(JSON.stringify(['EVENT', privateEvent(7)]))
+  await tick()
+  assert.equal(order.at(-1)[1].id, 'private-7')
+  assert.equal(order.length, 53)
+  t.mock.timers.tick(2000); await tick()
+  assert.equal(normal.bufferedAmount, 0)
+})
+
+it('saturated priority demand still admits normal work every fourth token', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 10000 })
+  const { pool, sockets } = createPool()
+  t.after(() => pool.closeAll())
+  const member = pool.attach('wss://relay.example')
+  await tick()
+  for (let i = 0; i < 70; i++) {
+    member.send(JSON.stringify(['EVENT', { id: `p${i}`, kind: 9, sig: 'sig', tags: [] }]))
+    member.send(JSON.stringify(['EVENT', { id: `n${i}`, kind: 1, sig: 'sig', tags: [] }]))
+  }
+  sockets[0].open(); await tick()
+  assert.equal(sockets[0].sent.length, 60)
+  assert.equal(sockets[0].sent.filter(frame => frame[1].kind === 1).length, 15)
+  for (let i = 0; i < 4; i++) { t.mock.timers.tick(34); await tick() }
+  assert.equal(sockets[0].sent.filter(frame => frame[1].kind === 1).length, 16)
 })

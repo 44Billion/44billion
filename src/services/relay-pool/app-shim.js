@@ -1,3 +1,5 @@
+import { recordPerformance } from '../performance-diagnostics.js'
+import { isPriorityPublication, sendQueueIndex, canUseSendCredit, parsePriorityFrame } from './priority.js'
 import { installInsecureWebSocketGuard } from '#helpers/insecure-websocket-guard.js'
 
 import { CreditWindow, frameSize } from './bridge-protocol.js'
@@ -28,6 +30,7 @@ export function createBridgeTransport ({ url, callbacks, getPort, limits, log, o
   const sendCredit = new CreditWindow({ frames: limits.bridgeCreditFrames, bytes: limits.bridgeCreditBytes })
   const queue = []
   let queuedBytes = 0
+  let priorityStreak = 0
   let port = null
   let attached = false
   let closed = false
@@ -50,11 +53,14 @@ export function createBridgeTransport ({ url, callbacks, getPort, limits, log, o
   const flushQueue = () => {
     while (true) {
       if (queue.length === 0 || !attached || closed) return
-      const size = frameSize(queue[0])
-      if (!sendCredit.canSend(size)) return
-      const data = queue.shift()
+      const index = sendQueueIndex(queue, priorityStreak, sendCredit.snapshot(), limits)
+      if (index < 0) return
+      const [{ data, size, priority, queuedAt }] = queue.splice(index, 1)
+      priorityStreak = priority ? priorityStreak + 1 : 0
       queuedBytes -= size
       sendCredit.consume(size)
+      const frame = parsePriorityFrame(data)
+      recordPerformance({ stage: 'shim-dispatch', publicationId: frame?.[0] === 'EVENT' ? frame[1]?.id : undefined, elapsedMs: queuedAt === undefined ? 0 : performance.now() - queuedAt, queuedFrames: queue.length, queuedBytes })
       port.postMessage({ code: RELAY_BRIDGE.SEND, payload: { virtualId, data } })
     }
   }
@@ -142,8 +148,9 @@ export function createBridgeTransport ({ url, callbacks, getPort, limits, log, o
     send (data) {
       if (closed) return
       const size = frameSize(data)
-      if (queue.length > 0 || !attached || !sendCredit.canSend(size)) {
-        queue.push(data)
+      const item = { data, size, queuedAt: performance.now(), priority: isPriorityPublication(data) }
+      if (queue.length > 0 || !attached || !canUseSendCredit(item, sendCredit.snapshot(), limits)) {
+        queue.push(item)
         queuedBytes += size
         if (queue.length > limits.maxQueuedFramesPerMember || queuedBytes > limits.maxQueuedBytesPerMember) {
           closed = true
@@ -152,8 +159,10 @@ export function createBridgeTransport ({ url, callbacks, getPort, limits, log, o
           onFailure({ code: 1013, phase: 'bridge', wasClean: false })
           callbacks.onClose?.({ code: 1013, reason: 'relay bridge queue overflow', wasClean: false })
         }
+        flushQueue()
         return
       }
+      priorityStreak = item.priority ? priorityStreak + 1 : 0
       sendCredit.consume(size)
       port.postMessage({ code: RELAY_BRIDGE.SEND, payload: { virtualId, data } })
     },

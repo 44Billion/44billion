@@ -1,3 +1,5 @@
+import { recordPerformance } from '../performance-diagnostics.js'
+import { isPriorityPublication } from './priority.js'
 import { isValidEvent } from 'libp2r2p/event'
 import { normalizeRelayUrl } from 'libp2r2p/url'
 import { parseRelayRetryAdvice } from 'libp2r2p/relay'
@@ -218,7 +220,7 @@ export class UnifiedRelayPool {
   closeAll () {
     for (const member of [...this.#members.values()]) this.#closeMember(member, 1000, '', true)
     for (const bucket of [...this.#buckets.values()]) this.#destroyBucket(bucket, 1000, '', true)
-    for (const budget of this.#messageBudgets.values()) clearTimeout(budget.cleanupTimer)
+    for (const budget of this.#messageBudgets.values()) { clearTimeout(budget.cleanupTimer); clearTimeout(budget.drainTimer) }
     this.#messageBudgets.clear()
     clearTimeout(this.#connectionTimer)
     this.#connectionTimer = null
@@ -347,7 +349,7 @@ export class UnifiedRelayPool {
     const host = this.#hostFor(url)
     let budget = this.#messageBudgets.get(host)
     if (!budget) {
-      budget = { tokens: this.#limits.messageBudgetPerRelay, lastRefill: Date.now(), retryAtByType: new Map(), cleanupTimer: null }
+      budget = { tokens: this.#limits.messageBudgetPerRelay, lastRefill: Date.now(), retryAtByType: new Map(), buckets: new Set(), cleanupTimer: null, drainTimer: null, drainScheduled: false, priorityStreak: 0, cursor: null }
       this.#messageBudgets.set(host, budget)
     }
     clearTimeout(budget.cleanupTimer)
@@ -372,13 +374,10 @@ export class UnifiedRelayPool {
       closedNsIds: new Map(), // nsId -> expiresAt for client-initiated CLOSE confirmations
       pendingAuths: new Map(), // auth eventId -> { member, pubkey, timer }
       queues: new Map(), // memberId -> [{ raw, bytes }]
-      roundRobin: [],
-      roundRobinIndex: 0,
-      drainTimer: null,
       idleTimer: null,
-      drainScheduled: false,
       closed: false
     }
+    budget.buckets.add(bucket)
     this.#buckets.set(bucket.id, bucket)
     this.#membersForUrl(url).add(bucket)
     this.#counters.bucketsCreated++
@@ -534,10 +533,11 @@ export class UnifiedRelayPool {
     bucket.state = 'closed'
     clearTimeout(bucket.connectTimer)
     this.#recovery.closed(bucket.url, bucket.id)
-    clearTimeout(bucket.drainTimer)
     const host = this.#hostFor(bucket.url)
-    if (![...this.#buckets.values()].some(other => !other.closed && this.#hostFor(other.url) === host)) {
+    bucket.budget.buckets.delete(bucket)
+    if (!bucket.budget.buckets.size) {
       const budget = bucket.budget
+      clearTimeout(budget.drainTimer)
       budget.cleanupTimer = setTimeout(() => this.#messageBudgets.delete(host), Math.max(this.#limits.messageWindowMs,
         ...[...budget.retryAtByType.values()].map(deadline => deadline - Date.now())))
       budget.cleanupTimer.unref?.()
@@ -1105,9 +1105,8 @@ export class UnifiedRelayPool {
     if (!queue) {
       queue = []
       bucket.queues.set(member.id, queue)
-      bucket.roundRobin.push(member.id)
     }
-    queue.push({ raw, bytes, op: message[0], operationId: ['EVENT', 'AUTH'].includes(message[0]) ? message[1]?.id : message[1], eventId: message[0] === 'EVENT' ? message[1]?.id : null })
+    queue.push({ raw, bytes, queuedAt: performance.now(), priority: isPriorityPublication(message), op: message[0], operationId: ['EVENT', 'AUTH'].includes(message[0]) ? message[1]?.id : message[1], eventId: message[0] === 'EVENT' ? message[1]?.id : null })
     this.#drainBucket(bucket)
   }
 
@@ -1165,75 +1164,84 @@ export class UnifiedRelayPool {
   }
 
   #drainBucket (bucket) {
-    if (bucket.closed || bucket.drainScheduled) return
-    bucket.drainScheduled = true
+    const budget = bucket.budget
+    if (budget.drainScheduled) return
+    budget.drainScheduled = true
     queueMicrotask(() => {
-      bucket.drainScheduled = false
-      if (bucket.closed || bucket.state !== 'open') return
-      clearTimeout(bucket.drainTimer)
+      budget.drainScheduled = false
+      clearTimeout(budget.drainTimer)
+      budget.drainTimer = null
       const now = Date.now()
-      const budget = bucket.budget
-      const elapsed = Math.max(0, now - budget.lastRefill)
-      budget.tokens = Math.min(this.#limits.messageBudgetPerRelay,
-        budget.tokens + elapsed * this.#limits.messageBudgetPerRelay / this.#limits.messageWindowMs)
+      const rate = this.#limits.messageBudgetPerRelay / this.#limits.messageWindowMs
+      budget.tokens = Math.min(this.#limits.messageBudgetPerRelay, budget.tokens + Math.max(0, now - budget.lastRefill) * rate)
       budget.lastRefill = now
-      while (budget.tokens >= 1 && this.#sendNext(bucket)) budget.tokens--
-      const nextQueuedAt = this.#nextQueuedAt(bucket, now)
-      if (Number.isFinite(nextQueuedAt)) {
-        const wait = Math.ceil(Math.max(1, nextQueuedAt - now,
-          (1 - budget.tokens) * this.#limits.messageWindowMs / this.#limits.messageBudgetPerRelay))
-        bucket.drainTimer = setTimeout(() => this.#drainBucket(bucket), wait)
+      while (this.#sendHostNext(budget)) budget.tokens--
+      // Both cooldown and the reserved lane determine actual eligibility. Never
+      // wake for a normal token that cannot spend the priority reserve.
+      let next = Infinity
+      const reserve = Math.min(8, Math.max(0, this.#limits.messageBudgetPerRelay - 1))
+      for (const candidate of budget.buckets) {
+        if (candidate.closed || candidate.state !== 'open') continue
+        for (const queue of candidate.queues.values()) {
+          for (const item of queue) {
+            const tokens = item.priority ? 1 : reserve + 1
+            next = Math.min(next, Math.max(now + Math.max(0, tokens - budget.tokens) / rate, budget.retryAtByType.get(item.op) ?? 0))
+          }
+        }
+      }
+      if (Number.isFinite(next)) {
+        budget.drainTimer = setTimeout(() => this.#drainBucket(bucket), Math.max(1, Math.ceil(next - now)))
+        budget.drainTimer?.unref?.()
       }
     })
   }
 
-  // Sleep until both a queued message's own cooldown and the token budget allow work.
-  #nextQueuedAt (bucket, now) {
-    let next = Infinity
-    for (const queue of bucket.queues.values()) {
-      for (const item of queue) next = Math.min(next, Math.max(now, bucket.budget.retryAtByType.get(item.op) ?? 0))
+  #sendHostNext (budget) {
+    if (budget.tokens < 1) return false
+    const producers = []
+    for (const bucket of budget.buckets) {
+      if (bucket.closed || bucket.state !== 'open') continue
+      for (const [memberId, queue] of bucket.queues) if (queue.length) producers.push({ bucket, memberId, queue, key: `${bucket.id}:${memberId}` })
     }
-    return next
-  }
-
-  #sendNext (bucket) {
-    if (bucket.roundRobin.length === 0) return false
-    for (let attempt = 0; attempt < bucket.roundRobin.length; attempt++) {
-      const index = (bucket.roundRobinIndex + attempt) % bucket.roundRobin.length
-      const memberId = bucket.roundRobin[index]
-      const queue = bucket.queues.get(memberId)
-      if (!queue?.length) continue
-      // A blocked type must not hold up unrelated work; keep FIFO within each type.
-      const itemIndex = queue.findIndex(item => (bucket.budget.retryAtByType.get(item.op) ?? 0) <= Date.now())
-      if (itemIndex === -1) continue
-      const [item] = queue.splice(itemIndex, 1)
-      bucket.roundRobinIndex = (index + 1) % bucket.roundRobin.length
-      const member = this.#members.get(memberId)
-      if (member) {
-        member.queuedFrames = Math.max(0, member.queuedFrames - 1)
-        member.queuedBytes = Math.max(0, member.queuedBytes - item.bytes)
+    if (!producers.length) return false
+    const start = Math.max(0, producers.findIndex(value => value.key === budget.cursor) + 1) % producers.length
+    const reserve = Math.min(8, Math.max(0, this.#limits.messageBudgetPerRelay - 1))
+    const find = (priority, reservedTurn = false) => {
+      if (!priority && budget.tokens < reserve + 1 && !reservedTurn) return null
+      for (let attempt = 0; attempt < producers.length; attempt++) {
+        const producer = producers[(start + attempt) % producers.length]
+        const index = producer.queue.findIndex(item => item.priority === priority && (budget.retryAtByType.get(item.op) ?? 0) <= Date.now())
+        if (index >= 0) return { ...producer, index }
       }
-      const pending = member?.pendingPublishes.get(item.eventId)
-      if (pending && pending.sentAt === null) pending.sentAt = Date.now()
-      try {
-        bucket.socket?.send(item.raw)
-        this.#counters.framesOut++
-      } catch (error) {
-        this.#log('send failed', bucket.url, error?.message ?? error)
-        this.#recovery.failed(bucket.url, bucket.id, bucket.recoveryGeneration)
-        this.recordFailure(bucket.url, {
-          code: 1006,
-          reason: error?.message ?? 'send failed',
-          phase: 'send',
-          openedAt: bucket.openedAt,
-          lifetimeMs: bucket.openedAt ? Date.now() - bucket.openedAt : null
-        })
-        this.#failBucket(bucket, 1006, 'send failed')
-        return false
-      }
-      return true
+      return null
     }
-    return false
+    const high = find(true)
+    const normal = find(false, Boolean(high && budget.priorityStreak >= 3))
+    const selected = high && (budget.priorityStreak < 3 || !normal) ? high : normal
+    if (!selected) return false
+    const { bucket, memberId, queue, index, key } = selected
+    const [item] = queue.splice(index, 1)
+    budget.cursor = key
+    budget.priorityStreak = item.priority ? Math.min(3, budget.priorityStreak + 1) : 0
+    const member = this.#members.get(memberId)
+    if (member) {
+      member.queuedFrames = Math.max(0, member.queuedFrames - 1)
+      member.queuedBytes = Math.max(0, member.queuedBytes - item.bytes)
+    }
+    const pending = member?.pendingPublishes.get(item.eventId)
+    if (pending && pending.sentAt === null) pending.sentAt = Date.now()
+    try {
+      recordPerformance({ stage: 'pool-dispatch', publicationId: item.eventId, elapsedMs: performance.now() - item.queuedAt, bufferedAmount: bucket.socket?.bufferedAmount ?? 0, priority: item.priority, queuedFrames: member?.queuedFrames, queuedBytes: member?.queuedBytes })
+      bucket.socket?.send(item.raw)
+      this.#counters.framesOut++
+    } catch (error) {
+      this.#log('send failed', bucket.url, error?.message ?? error)
+      this.#recovery.failed(bucket.url, bucket.id, bucket.recoveryGeneration)
+      this.recordFailure(bucket.url, { code: 1006, reason: error?.message ?? 'send failed', phase: 'send', openedAt: bucket.openedAt, lifetimeMs: bucket.openedAt ? Date.now() - bucket.openedAt : null })
+      this.#failBucket(bucket, 1006, 'send failed')
+      return false
+    }
+    return true
   }
 
   #handleServerData (bucket, data) {
@@ -1397,6 +1405,7 @@ export class UnifiedRelayPool {
           responseMs: pending.sentAt === null ? null : now - pending.sentAt
         }))
       }
+      recordPerformance({ stage: 'pool-ack', publicationId: message[1], at: performance.timeOrigin + performance.now(), elapsedMs: pending?.sentAt === null ? undefined : now - pending?.sentAt })
       member.pendingPublishes.delete(message[1])
       this.#deliverMember(member, raw)
     }

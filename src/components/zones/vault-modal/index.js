@@ -1,3 +1,4 @@
+import { clearPersonalCopyCache } from '#services/personal-copy-cache.js'
 import { createVaultRequestQueue } from '#services/vault-request-queue.js'
 import { recordPerformance, withRequestDiagnostics } from '#services/performance-diagnostics.js'
 import { reconcileNostrDbAccounts } from '#services/nostrdb-account-lifecycle.js'
@@ -507,6 +508,7 @@ f('vault-messenger', function () {
   // meaning <vault-messenger> won't fully init,
   // the port won't be stuck to the previous one
   useTask(({ cleanup }) => cleanup(() => {
+    clearPersonalCopyCache()
     signerStates.setConnection('disconnected')
     vaultPort$(null)
     connectedVaultUrl$(null)
@@ -587,6 +589,7 @@ f('vault-messenger', function () {
   // boot recovery state and closes the dialog if it's still open.
   useTask(({ track }) => {
     const port = track(() => vaultPort$())
+    clearPersonalCopyCache()
     signerStates.setConnection(port ? 'connected' : 'disconnected')
     if (!port) return
     clearRecoveryTimer()
@@ -824,6 +827,7 @@ function initMessageListener ({
     const metadata = await setAccountsState(accounts, storage, tabStorage)
     // App callbacks may immediately use methods guarded by the persisted flags.
     // Publish readiness only after those flags and workspace ownership agree.
+    clearPersonalCopyCache()
     signerStates.setAccounts(accounts)
     return metadata
   }
@@ -850,6 +854,7 @@ function initMessageListener ({
     vaultPort.addEventListener('message', async e => {
       switch (e.data.code) {
         case 'VAULT_CONNECTION_STATE': {
+          if (e.data.payload?.connected !== true) clearPersonalCopyCache()
           signerStates.setConnection(e.data.payload?.connected === true ? 'connected' : 'disconnected')
           break
         }

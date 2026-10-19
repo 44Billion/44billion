@@ -1,3 +1,5 @@
+import { recordPerformance } from '../performance-diagnostics.js'
+import { createControlPriority, parsePriorityFrame, isNostrSchedulingFrame, priorityIndex } from './priority.js'
 import { frameSize } from './bridge-protocol.js'
 
 // Only launcher-to-consumer traffic participates in these shared budgets.
@@ -19,6 +21,8 @@ const sample = (stat, value) => {
 
 export function createBridgeReceiveQueue ({ endpointId, virtualId, owner, relay, limits, now = () => performance.now(), epochNow = () => performance.timeOrigin + performance.now(), onFrame, onClose, onOverflow }) {
   const queue = []
+  const controlPriority = createControlPriority()
+  let priorityStreak = 0
   const pending = []
   const latency = { roundTrip: metric(), delivery: metric(), consumer: metric(), return: metric() }
   let queuedBytes = 0
@@ -43,6 +47,7 @@ export function createBridgeReceiveQueue ({ endpointId, virtualId, owner, relay,
     if (closed) return
     closed = true
     receivers.delete(receiver)
+    controlPriority.clear()
     queue.length = 0
     pending.length = 0
     queuedBytes = pendingBytes = 0
@@ -71,14 +76,28 @@ export function createBridgeReceiveQueue ({ endpointId, virtualId, owner, relay,
   const flush = () => {
     while (queue.length) {
       if (closed) return
-      const item = queue[0]
-      // A larger, bounded frame may travel alone, repaying its full volume on ACK.
-      if (pending.length && (pending.length >= limits.bridgeReceiveCreditFrames || pendingBytes + item.size > limits.bridgeReceiveCreditBytes)) return
-      queue.shift()
+      const firstHigh = queue.find(item => item.priority)
+      const firstNormal = queue.find(item => !item.priority)
+      if (priorityStreak >= 3 && firstNormal?.size > limits.bridgeReceiveCreditBytes && pending.length) return
+      const reservedTurn = priorityStreak >= 3 && firstHigh && (!pending.length || (pending.length < limits.bridgeReceiveCreditFrames && pendingBytes + firstHigh.size <= limits.bridgeReceiveCreditBytes))
+      const eligible = item => {
+        // The existing isolated-large-frame exception repays its full volume.
+        if (!pending.length) return true
+        if (pending.length >= limits.bridgeReceiveCreditFrames || pendingBytes + item.size > limits.bridgeReceiveCreditBytes) return false
+        if (item.priority || reservedTurn || !isNostrSchedulingFrame(item.data)) return true
+        return pending.length < limits.bridgeReceiveCreditFrames - Math.min(8, limits.bridgeReceiveCreditFrames - 1) && pendingBytes + item.size <= limits.bridgeReceiveCreditBytes - Math.min(65536, limits.bridgeReceiveCreditBytes - 1)
+      }
+      // Only controls can pass history. A smaller later normal frame must wait.
+      const index = priorityIndex(queue, priorityStreak, item => (item.priority || item === firstNormal) && eligible(item))
+      if (index < 0) return
+      const [item] = queue.splice(index, 1)
+      priorityStreak = item.priority ? priorityStreak + 1 : 0
       queuedBytes -= item.size
       const through = ++sequence
       pending.push({ size: item.size, through, sentAt: now(), sentEpoch: epochNow() })
       pendingBytes += item.size
+      const frame = parsePriorityFrame(item.data)
+      if (frame?.[0] === 'OK') recordPerformance({ stage: 'bridge-ack-dispatch', publicationId: frame[1], at: epochNow(), elapsedMs: now() - item.queuedAt, queuedFrames: queue.length, queuedBytes, pendingFrames: pending.length, pendingBytes })
       onFrame(item.data, through)
     }
   }
@@ -87,6 +106,7 @@ export function createBridgeReceiveQueue ({ endpointId, virtualId, owner, relay,
     get heldFrames () { return queue.length + pending.length },
     get heldBytes () { return queuedBytes + pendingBytes },
     snapshot, close, fail,
+    noteOutgoing: raw => controlPriority.note(raw),
     push (data) {
       if (closed) return
       const size = frameSize(data)
@@ -95,7 +115,8 @@ export function createBridgeReceiveQueue ({ endpointId, virtualId, owner, relay,
         fail('relay bridge frame too large', 'frame', budget, ['bytes'], { frameBytes: size })
         return
       }
-      queue.push({ data, size, queuedAt: now() })
+      const correlated = controlPriority.take(data)
+      queue.push({ data, size, queuedAt: now(), priority: correlated && size <= 16384 })
       queuedBytes += size
       // An immediately sendable frame is not a pending backlog.
       const canFlush = queue.length === 1 && (!pending.length || (pending.length < limits.bridgeReceiveCreditFrames && pendingBytes + size <= limits.bridgeReceiveCreditBytes))
