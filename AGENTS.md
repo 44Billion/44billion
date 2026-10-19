@@ -382,7 +382,7 @@ the storage schema are unchanged; no destructive cache repair is needed.
   selected crypto codes/coordinates and bounded causes. Slow publication timing
   is JSON text with the existing threshold and no event payloads.
 
-- Consume libp2r2p 0.11.25 through the registry-resolved lockfile. Its private
+- Consume libp2r2p 0.11.26 through the registry-resolved lockfile. Its private
   messenger observes owned pauses and recovers them independently of historical
   completion; explicit caller pauses remain caller-owned. Session factories must
   provide readStatus and initial/subsequent onStateChanged notifications. No
@@ -411,3 +411,17 @@ must not be restored as an alias.
 Before registry publication, validate the exact prepared libp2r2p tarball through
 public imports. Final lockfiles retain npm URLs and that archive's real integrity;
 publish the same archive manually. No local dependency references are committed.
+
+
+## Quota maintenance scheduling
+
+- Cache access timestamps bypass the global quota lock and only use cached
+  connection generations, revalidating access before a transaction. Never open
+  databases for statistics, recreate removed access rows or touch a replacement
+  generation. Keep 2,048 queued IDs, 100 per flush, 25 per transaction and minute
+  per-record throttling, with yields between transactions.
+- Ready counters use readonly maintenance reads. Periodic eviction is limited to
+  100 examinations/25 deletions per lock round; admission's existing bounds and
+  atomic checks remain unchanged. Revalidate LRU timestamps/eligibility in the
+  deletion transaction and reselect changed candidates. Keep cross-owner sums,
+  schema and legacy reconstruction; no global persisted total/cache is added.

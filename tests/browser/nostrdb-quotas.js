@@ -115,7 +115,19 @@ try {
   assert.equal(promotedUsage.cacheCount, 0)
   const targetCounts = await Promise.all(contexts.map(c => evaluate(c, 'fixture.db.count({ids:[fixture.target.id]})')))
   assert.equal(targetCounts.reduce((sum, n) => sum + n, 0), 1)
-  console.log('NostrDB quotas: concurrent admissions/promotions, exclusive totals, reload and cross-tab owner removal passed')
+  await evaluate(contexts[0], 'fixture.setNostrDbQuotaLimits({publicBytes:536870912});')
+  // A cache-only transaction must finish even while another tab owns the global
+  // quota lock. Timestamp metadata must not recreate a replacement database.
+  await evaluate(contexts[0], 'fixture.preparePromotion(40)')
+  await evaluate(contexts[0], `(async()=>{fixture.raw = await fixture.openNostrDb(fixture.owner); await new Promise((resolve,reject) => {
+    const tx=fixture.raw.transaction('cacheAccess','readwrite'); tx.objectStore('cacheAccess').openCursor().onsuccess=e=>{const c=e.target.result;if(c){c.update({...c.value,lastAccessAt:1});c.continue()}};tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error);
+  })})()`)
+  await evaluate(contexts[1], 'void navigator.locks.request(fixture.QUOTA_LOCK, () => new Promise(resolve => { globalThis.releaseTouchLock = resolve }))')
+  await browser.until(() => evaluate(contexts[1], '!!releaseTouchLock'), 'cross-tab touch barrier')
+  await evaluate(contexts[0], 'fixture.queueCacheAccess(fixture.owner,[fixture.target]); fixture.flushCacheAccess()')
+  assert.ok(await evaluate(contexts[0], 'new Promise((resolve,reject)=>{const req=fixture.raw.transaction(\'cacheAccess\').objectStore(\'cacheAccess\').getAll();req.onsuccess=()=>resolve(req.result.some(row=>row.lastAccessAt>1));req.onerror=()=>reject(req.error)})'))
+  await evaluate(contexts[1], 'releaseTouchLock()')
+  console.log('NostrDB quotas: concurrent admissions/promotions, cross-tab touches outside quota lock, reload and owner removal passed')
 } finally {
   await browser.diagnose('/tmp/44billion-nostrdb-quota-browser')
   await browser.close()

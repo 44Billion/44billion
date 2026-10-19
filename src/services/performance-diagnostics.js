@@ -1,12 +1,12 @@
 const enabled = typeof IS_DEVELOPMENT !== 'undefined' && IS_DEVELOPMENT
 const recent = []
-const fields = ['stage', 'requestId', 'parentId', 'eventId', 'seedRecordId', 'publicationId', 'priority', 'chunk', 'elapsedMs', 'waiting', 'running', 'kind', 'durationMs']
+const fields = ['stage', 'requestId', 'parentId', 'eventId', 'seedRecordId', 'publicationId', 'priority', 'chunk', 'elapsedMs', 'waiting', 'running', 'kind', 'durationMs', 'category', 'count', 'examined', 'deleted']
 
 export function recordPerformance (entry) {
   if (!enabled) return
   const value = Object.fromEntries(fields.filter(key => {
     const value = entry[key]
-    if (['stage', 'requestId', 'parentId', 'eventId', 'seedRecordId', 'publicationId'].includes(key)) return typeof value === 'string' && /^[a-zA-Z0-9:_-]{1,160}$/.test(value)
+    if (['stage', 'requestId', 'parentId', 'eventId', 'seedRecordId', 'publicationId', 'category'].includes(key)) return typeof value === 'string' && /^[a-zA-Z0-9:_-]{1,160}$/.test(value)
     return typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value))
   }).map(key => [key, entry[key]]))
   recent.push(value)

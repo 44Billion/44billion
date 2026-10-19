@@ -9,7 +9,7 @@ import {
 import { isPersonalCopyEvent } from '#helpers/personal-copy.js'
 import {
   NOSTRDB_PREFIX, EVENTS_STORE, DELETIONS_STORE, INDEX,
-  openNostrDb, eventIdIndexKey, addressKey, getCoordinate, deleteStoredEvent
+  openNostrDb, captureNostrDbConnection, eventIdIndexKey, addressKey, getCoordinate, deleteStoredEvent
 } from './index.js'
 
 export const QUOTA_LOCK = '44billion:nostrdb-quota:v1'
@@ -213,6 +213,18 @@ async function forPage (tx, after, visit) {
 }
 
 async function initializeUsage (db) {
+  // Most databases are already initialized. This narrow readonly transaction
+  // neither waits for nor blocks cacheAccess writes on the other store.
+  const readyTx = db.transaction(MAINTENANCE)
+  const readyDone = transactionDone(readyTx)
+  try {
+    const ready = await request(readyTx.objectStore(MAINTENANCE).get(USAGE_KEY))
+    await readyDone
+    if (ready?.phase === 'ready') return ready
+  } catch (error) {
+    await readyDone.catch(() => {})
+    throw error
+  }
   while (true) {
     const tx = db.transaction([EVENTS_STORE, CACHE, MAINTENANCE], 'readwrite')
     const done = transactionDone(tx)
@@ -407,7 +419,7 @@ async function nextAccess (db, after) {
   return cursor ? { db, key: cursor.key, access: cursor.value } : null
 }
 
-async function evict (dbs, limits, { extra = {}, excludeDb, excluded = new Set(), maxDeleted = 1000 } = {}) {
+async function evict (dbs, limits, { extra = {}, excludeDb, excluded = new Set(), maxDeleted = 1000, maxExamined = 1000, onStats } = {}) {
   let totals = await sumUsage(dbs)
   if (!cacheExcess(totals, limits, extra)) return totals
   if (['cacheBytes', 'cacheCount'].some(key => (extra[key] ?? 0) > limits[key])) return totals
@@ -415,15 +427,15 @@ async function evict (dbs, limits, { extra = {}, excludeDb, excluded = new Set()
   const heads = (await Promise.all(dbs.map(db => nextAccess(db)))).filter(Boolean)
   let examined = 0
   let deleted = 0
-  while (heads.length && examined < 1000 && deleted < maxDeleted && cacheExcess(totals, target, extra)) {
+  while (heads.length && examined < maxExamined && deleted < maxDeleted && cacheExcess(totals, target, extra)) {
     const batch = new Map()
     let selected = 0
     const projected = { ...totals }
-    while (heads.length && examined < 1000 && selected < Math.min(100, maxDeleted - deleted) && cacheExcess(projected, target, extra)) {
+    while (heads.length && examined < maxExamined && selected < Math.min(100, maxDeleted - deleted) && cacheExcess(projected, target, extra)) {
       heads.sort((a, b) => a.access.lastAccessAt - b.access.lastAccessAt || indexedDB.cmp(a.db.name, b.db.name) || indexedDB.cmp(a.access.i, b.access.i))
       const candidate = heads.shift()
       examined++
-      const next = await nextAccess(candidate.db, candidate.key)
+      const next = candidate.refreshed ? null : await nextAccess(candidate.db, candidate.key)
       if (next) heads.push(next)
       if (candidate.db.name === excludeDb && excluded.has(candidate.access.i)) continue
       const row = await request(candidate.db.transaction(EVENTS_STORE).objectStore(EVENTS_STORE).get(candidate.access.i))
@@ -431,16 +443,24 @@ async function evict (dbs, limits, { extra = {}, excludeDb, excluded = new Set()
       projected.cacheBytes -= row.eventBytes
       projected.cacheCount--
       const ids = batch.get(candidate.db) ?? []
-      ids.push(candidate.access.i)
+      ids.push(candidate)
       batch.set(candidate.db, ids)
       selected++
     }
     for (const [db, ids] of batch) {
       deleted += await mutate(db, async tx => {
         let count = 0
-        for (const id of ids) {
+        for (const candidate of ids) {
+          const id = candidate.access.i
+          const access = await request(tx.objectStore(CACHE).get(id))
           const row = await request(tx.objectStore(EVENTS_STORE).get(id))
-          if (!row || !foreignPublic(db, row) || await isOwnerReferenced(db, tx, row)) continue
+          if (!access || !row || !foreignPublic(db, row) || await isOwnerReferenced(db, tx, row)) continue
+          if (access.lastAccessAt !== candidate.access.lastAccessAt) {
+            // Re-enter LRU selection with the committed timestamp. Selection
+            // may race with touches, but deletion shares their IDB store lock.
+            heads.push({ db, access, key: [access.lastAccessAt, access.i], refreshed: true })
+            continue
+          }
           await deleteStoredEvent(db, tx, row)
           count++
         }
@@ -449,6 +469,7 @@ async function evict (dbs, limits, { extra = {}, excludeDb, excluded = new Set()
     }
     totals = await sumUsage(dbs)
   }
+  onStats?.({ examined, deleted })
   return totals
 }
 
@@ -472,16 +493,26 @@ export function withQuotaMutation (db, callback, { admission = false, beforeMuta
       totals = await evict(dbs, limits, { extra: error.delta, excludeDb: db.name, excluded: error.excluded })
       return mutate(db, callback, { totals, limits })
     }
-  }, onTiming).finally(scheduleQuotaMaintenance)
+  }, entry => {
+    const measure = { ...entry, category: admission ? 'admission' : 'mutation' }
+    if (onTiming) onTiming(measure)
+    else recordPerformance(measure)
+  }).finally(scheduleQuotaMaintenance)
 }
 
 export function queueCacheAccess (owner, events) {
+  let connection
+  try { connection = captureNostrDbConnection(owner) } catch (error) {
+    if (isNostrDbAccessError(error)) return
+    throw error
+  }
+  if (!connection) return
   for (const event of events) {
     if (!event || typeof event !== 'object' || isPersonalCopyEvent(event) || event.pubkey === owner) continue
     const i = eventIdIndexKey(event.id)
     const key = `${owner}:${i}`
     touchQueue.delete(key)
-    touchQueue.set(key, { owner, i, time: Date.now() })
+    touchQueue.set(key, { owner, connection, i, time: Date.now() })
     if (touchQueue.size > 2048) touchQueue.delete(touchQueue.keys().next().value)
   }
   scheduleTouches()
@@ -503,37 +534,44 @@ export async function flushCacheAccess () {
   try {
     const groups = new Map()
     for (const [, item] of batch) {
-      const group = groups.get(item.owner) ?? []
+      const group = groups.get(item.connection.generation) ?? []
       group.push(item)
-      groups.set(item.owner, group)
+      groups.set(item.connection.generation, group)
     }
-    for (const [owner, items] of groups) {
-      await withNostrDbQuotaLock(async () => {
-        // Do not reopen deleted databases to deliver pending statistics.
-        if (typeof globalThis.indexedDB?.databases !== 'function') return
-        if (!(await indexedDB.databases()).some(({ name }) => name === `${NOSTRDB_PREFIX}${owner}`)) return
-        let db
-        try { db = await openNostrDb(owner, { quotaLockHeld: true, create: false }) } catch (error) {
-          if (isNostrDbAccessError(error)) return
-          throw error
-        }
-        if (!db) return
-        const tx = db.transaction(CACHE, 'readwrite')
-        const done = transactionDone(tx)
+    for (const items of groups.values()) {
+      for (let offset = 0; offset < items.length; offset += 25) {
+        const diagnostic = typeof IS_DEVELOPMENT !== 'undefined' && IS_DEVELOPMENT
+        const startedAt = diagnostic ? performance.now() : 0
+        const chunk = items.slice(offset, offset + 25)
+        const connection = chunk[0].connection
+        let tx, done, executingAt
         try {
+          const db = await connection.resolve()
+          if (!db || !connection.isCurrent()) continue
+          tx = db.transaction(CACHE, 'readwrite')
+          done = transactionDone(tx)
           const store = tx.objectStore(CACHE)
-          for (const item of items) {
+          for (const item of chunk) {
+            if (item.connection.generation !== connection.generation) continue
             const access = await request(store.get(item.i))
+            if (diagnostic && executingAt === undefined) executingAt = performance.now()
             if (!access || item.time - access.lastAccessAt < 60000) continue
             await request(store.put({ ...access, lastAccessAt: item.time }))
           }
           await done
         } catch (error) {
-          try { tx.abort() } catch {}
-          await done.catch(() => {})
-          throw error
+          try { tx?.abort() } catch {}
+          await done?.catch(() => {})
+          if (!isNostrDbAccessError(error) && error.name !== 'InvalidStateError') throw error
+        } finally {
+          if (diagnostic) {
+            recordPerformance({ stage: 'cache-access-wait', elapsedMs: (executingAt ?? performance.now()) - startedAt, count: chunk.length })
+            recordPerformance({ stage: 'cache-access-execution', elapsedMs: performance.now() - (executingAt ?? performance.now()), count: chunk.length })
+          }
         }
-      })
+        // Give foreground work an opportunity between small auxiliary writes.
+        await new Promise(resolve => setTimeout(resolve, 0))
+      }
     }
   } finally { touchRunning = false; scheduleTouches() }
 }
@@ -541,9 +579,13 @@ export async function flushCacheAccess () {
 export function maintainNostrDbCache () {
   return withNostrDbQuotaLock(async () => {
     const limits = getNostrDbQuotaLimits()
-    const totals = await evict(await allDatabases(), limits, { maxDeleted: 100 })
+    const totals = await evict(await allDatabases(), limits, {
+      maxDeleted: 25, maxExamined: 100, onStats: stats => {
+        if (typeof IS_DEVELOPMENT !== 'undefined' && IS_DEVELOPMENT) recordPerformance({ stage: 'cache-maintenance', ...stats })
+      }
+    })
     return { excess: cacheExcess(totals, limits) }
-  })
+  }, entry => recordPerformance({ ...entry, category: 'maintenance' }))
 }
 
 function scheduleQuotaMaintenance () {

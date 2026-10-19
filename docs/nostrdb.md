@@ -258,7 +258,7 @@ remain allowed. A quota failure aborts the whole attempted mutation and reports
 
 When cache admission exceeds a ceiling, merge the oldest index candidate from
 each DB, ordered by `lastAccessAt`, DB name and ID. Read candidates incrementally,
-revalidate existence/protection on deletion, exclude versions needed by the
+revalidate existence/protection and the selected access timestamp on deletion, exclude versions needed by the
 pending replacement, delete in transactions of at most 100, and examine at most
 1,000 candidates per admission. Aim for 90% of both cache limits, but admit if the
 hard limits fit even when that margin cannot be reached. Already committed cache
@@ -278,11 +278,27 @@ touches only delivered events, not the whole snapshot.
 The execution-context queue deduplicates IDs and retains at most 2,048 pending
 touches, dropping the oldest when full. Flush after 250 ms in batches of 100;
 check the stored timestamp to persist at most once per event per minute across
-tabs. Only `cacheAccess` is written, without rewriting event/tag indices or
+tabs. Each batch uses transactions of at most 25 records, yielding between them.
+Touches bypass the origin quota lock: they change neither bytes nor counts. Each
+queued touch captures the already-cached connection's in-memory generation; access
+and generation are rechecked before its transaction. Closed, replaced, removed or
+read-only connections are discarded. This path never opens/recreates a database.
+Deletion rechecks eligibility and last access in its own transaction; a changed
+timestamp returns to LRU selection under the examination limit.
+Only `cacheAccess` is written, without rewriting event/tag indices or
 recreating removed/promoted rows. Losing pending touches affects LRU quality,
 not event integrity. Synthetic app reads can still influence approximate LRU.
 
 ### Initialization, settings and repair
+
+Ready quota counters are confirmed through a readonly `maintenance` transaction,
+without a broad write transaction on unrelated event/access stores. Periodic cache
+maintenance examines at most 100 candidates and deletes at most 25 per round,
+releasing the global lock before scheduling a remaining round (one-second delay
+while excess remains, otherwise the existing minute interval). Admission retains
+its 1,000-candidate / 100-record transaction limits and atomic global checks.
+Development diagnostics distinguish admission/mutation/maintenance lock wait and
+execution from the separate access transaction wait/execution and round counts.
 
 Existing databases initialize in two resumable passes, at most 1,000 rows per
 transaction: fill event sizes/references, then classify cache and build counters.

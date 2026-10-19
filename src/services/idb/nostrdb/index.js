@@ -216,6 +216,27 @@ const HEARSAY_PRUNE_BATCH_SIZE = 100
 const textEncoder = new TextEncoder()
 const textDecoder = new TextDecoder()
 const dbCache = new Map()
+// A queued access statistic may use only this cached connection generation.
+// Capturing or resolving this lease never opens a database.
+export function captureNostrDbConnection (owner) {
+  assertNostrDbAccess(owner)
+  const name = NOSTRDB_PREFIX + owner
+  const generation = dbCache.get(name)
+  if (!generation) return null
+  const isCurrent = () => {
+    assertNostrDbAccess(owner)
+    return dbCache.get(name) === generation
+  }
+  return {
+    generation,
+    isCurrent,
+    async resolve () {
+      const db = await generation
+      return isCurrent() ? db : null
+    }
+  }
+}
+
 const storeCache = new Map()
 let globalChunkMaintenance
 

@@ -287,3 +287,8 @@ shared relay connections. The launcher retains the default sequential policy.
 The coordinated patch also makes messenger readiness local by default and
 prepares contacts incrementally in the optional session. This changes no pool,
 WebSocket or injected app API contract.
+
+
+NostrDB keeps global quota admission atomic while batching auxiliary cache-access
+updates outside that lock. Periodic eviction releases it after at most 100
+candidate examinations and 25 deletions; see [NostrDB internals](docs/nostrdb.md).

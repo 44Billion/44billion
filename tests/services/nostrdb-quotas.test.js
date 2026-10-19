@@ -14,7 +14,7 @@ import {
 import {
   DEFAULT_NOSTRDB_QUOTAS, getNostrDbQuotaUsage, setNostrDbQuotaLimits,
   maintainNostrDbCache, queueCacheAccess, flushCacheAccess, ownerReferenceKeys,
-  startGlobalQuotaMaintenance, cacheEventLimit, getNostrDbQuotaLimits
+  startGlobalQuotaMaintenance, cacheEventLimit, getNostrDbQuotaLimits, withNostrDbQuotaLock
 } from '#services/idb/nostrdb/quotas.js'
 
 globalThis.indexedDB = indexedDB
@@ -441,7 +441,8 @@ it('bounds and batches the access queue, dropping its oldest pending entry', asy
   const before = (await access(a.raw, event)).lastAccessAt
   t.mock.method(Date, 'now', () => before + 61000)
   const calls = []
-  t.mock.method(globalThis, 'setTimeout', (fn, ms) => { calls.push({ fn, ms }); return { unref () {} } })
+  const realSetTimeout = globalThis.setTimeout
+  t.mock.method(globalThis, 'setTimeout', (fn, ms) => { if (ms === 0) return realSetTimeout(fn, ms); calls.push({ fn, ms }); return { unref () {} } })
   t.mock.method(globalThis, 'clearTimeout', () => {})
   queueCacheAccess(a.pubkey, [event])
   // Other IDs need not be stored: draining their touches must never create rows.
@@ -1110,4 +1111,130 @@ it('recovery event-store adapters round-trip encrypted immutable snapshots and p
   assert.equal(replay.result.code, 'blocked')
   assert.equal((await a.db.query({ kinds: [1006], '#k': ['5'] })).results.length, 1)
   one.close(); two.close()
+})
+
+it('flushes access statistics while the origin quota lock is held and uses transactions of 25', async t => {
+  const a = await owner(); const b = await owner()
+  const events = Array.from({ length: 61 }, () => signed())
+  for (const event of events) await a.db.add(event)
+  const before = (await access(a.raw, events[0])).lastAccessAt
+  t.mock.method(Date, 'now', () => before + 61000)
+  const transactions = []
+  const original = a.raw.transaction.bind(a.raw)
+  t.mock.method(a.raw, 'transaction', (...args) => {
+    const tx = original(...args)
+    if (args[0] === 'cacheAccess' && args[1] === 'readwrite') {
+      const store = tx.objectStore('cacheAccess'); const get = store.get.bind(store)
+      const batch = { count: 0 }; transactions.push(batch)
+      store.get = key => { batch.count++; return get(key) }
+    }
+    return tx
+  })
+  queueCacheAccess(a.pubkey, events)
+  await withNostrDbQuotaLock(async () => {
+    await flushCacheAccess() // would deadlock if it still requested this lock
+    assert.equal((await access(a.raw, events[0])).lastAccessAt, before + 61000)
+  })
+  assert.deepEqual(transactions.map(batch => batch.count), [25, 25, 11])
+  assert.equal((await b.db.add(signed({}, b.secret))).stored, true)
+})
+
+it('drops touches from deleted generations without touching replacement rows or opening databases', async t => {
+  const a = await owner(); const event = signed()
+  await a.db.add(event)
+  const before = (await access(a.raw, event)).lastAccessAt
+  t.mock.method(Date, 'now', () => before + 61000)
+  queueCacheAccess(a.pubkey, [event])
+  await deleteNostrDb(a.pubkey)
+  const replacement = getNostrDb(a.pubkey, { maintenance: false })
+  await replacement.add(event)
+  const raw = await openNostrDb(a.pubkey)
+  await setAccessTimes(raw, [[event, 123]])
+  const open = t.mock.method(indexedDB, 'open', () => assert.fail('touches must never open a database'))
+  await flushCacheAccess()
+  assert.equal((await access(raw, event)).lastAccessAt, 123)
+  open.mock.restore()
+  queueCacheAccess(a.pubkey, [event])
+  await deleteNostrDb(a.pubkey)
+  t.mock.method(indexedDB, 'open', () => assert.fail('must not recreate a deleted database'))
+  await flushCacheAccess()
+  assert.ok(!(await indexedDB.databases()).some(db => db.name === NOSTRDB_PREFIX + a.pubkey))
+})
+
+it('ready counter reads avoid broad write initialization on other owners', async t => {
+  const a = await owner(); const b = await owner()
+  const original = b.raw.transaction.bind(b.raw)
+  t.mock.method(b.raw, 'transaction', (...args) => {
+    assert.ok(!(args[1] === 'readwrite' && Array.isArray(args[0]) && args[0].includes('events')))
+    return original(...args)
+  })
+  assert.equal((await a.db.add(signed({}, a.secret))).stored, true)
+  assert.equal((await getNostrDbQuotaUsage()).publicCount, 1)
+})
+
+it('revalidates last access atomically and evicts the next cold event after a raced touch', async t => {
+  const a = await owner()
+  const hot = signed({ content: 'a'.repeat(6000) }); const cold = signed({ content: 'b'.repeat(6000) }); const other = signed({ content: 'c'.repeat(6000) })
+  for (const event of [hot, cold, other]) await a.db.add(event)
+  await setAccessTimes(a.raw, [[hot, 1], [cold, 2], [other, 3]])
+  await limits({ cacheBytes: Math.ceil(byteSize(hot) * 2 / 0.9) })
+  const original = a.raw.transaction.bind(a.raw); let raced = false
+  t.mock.method(a.raw, 'transaction', (...args) => {
+    if (!raced && args[1] === 'readwrite' && Array.isArray(args[0]) && args[0].includes('events')) {
+      raced = true
+      original('cacheAccess', 'readwrite').objectStore('cacheAccess').put({ i: eventIdIndexKey(hot.id), lastAccessAt: 99000 })
+    }
+    return original(...args)
+  })
+  await maintainNostrDbCache()
+  assert.ok(raced)
+  assert.ok(await row(a.raw, hot)); assert.equal(await row(a.raw, cold), undefined)
+  assert.ok(await row(a.raw, other))
+  assert.equal((await getNostrDbQuotaUsage()).cacheCount, 2)
+})
+
+it('periodic rounds delete at most 25 and release the lock for admissions between rounds', async () => {
+  const a = await owner(); const b = await owner()
+  for (let i = 0; i < 61; i++) await a.db.add(signed())
+  await limits({ cacheBytes: 0 })
+  assert.equal((await maintainNostrDbCache()).excess, true)
+  assert.equal((await getNostrDbQuotaUsage()).cacheCount, 36)
+  assert.equal((await b.db.add(signed({}, b.secret))).stored, true)
+  assert.equal((await maintainNostrDbCache()).excess, true)
+  assert.equal((await getNostrDbQuotaUsage()).cacheCount, 11)
+  assert.equal((await maintainNostrDbCache()).excess, false)
+  assert.equal((await getNostrDbQuotaUsage()).cacheCount, 0)
+})
+
+it('caps periodic examination at 100 even when every selected timestamp changes', async t => {
+  const a = await owner(); const event = signed()
+  await a.db.add(event)
+  await setAccessTimes(a.raw, [[event, 1]])
+  await limits({ cacheBytes: 0 })
+  const original = a.raw.transaction.bind(a.raw); let examinations = 0; let clock = 1
+  t.mock.method(a.raw, 'transaction', (...args) => {
+    if (args[0] === 'events' && args[1] === undefined) examinations++
+    if (args[1] === 'readwrite' && Array.isArray(args[0]) && args[0].includes('events')) {
+      original('cacheAccess', 'readwrite').objectStore('cacheAccess').put({ i: eventIdIndexKey(event.id), lastAccessAt: ++clock })
+    }
+    return original(...args)
+  })
+  assert.equal((await maintainNostrDbCache()).excess, true)
+  assert.equal(examinations, 100)
+  assert.ok(await row(a.raw, event))
+})
+
+it('drops queued access after read-only fencing or closing the cached handle', async t => {
+  const a = await owner(); const event = signed()
+  await a.db.add(event)
+  const before = (await access(a.raw, event)).lastAccessAt
+  t.mock.method(Date, 'now', () => before + 61000)
+  queueCacheAccess(a.pubkey, [event])
+  settings.set('local_nostrDbPendingDeletions', JSON.stringify({ [a.pubkey]: 'removal-generation' }))
+  await flushCacheAccess()
+  assert.equal((await access(a.raw, event)).lastAccessAt, before)
+  settings.delete('local_nostrDbPendingDeletions')
+  queueCacheAccess(a.pubkey, [event])
+  a.raw.close()
+  await flushCacheAccess()
 })
