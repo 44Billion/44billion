@@ -308,8 +308,10 @@ access without echoing those cached events back to the vault.
 
 ## Relay bridge queues
 
-- Preserve FIFO within each scheduling class even when a newer smaller frame
-  fits the remaining credit; correlated priority OK may pass queued history. `EOSE` must never overtake queued history events.
+- Preserve FIFO within outgoing classes and incoming normal traffic even when
+  a newer smaller frame fits remaining credit. Eligible controls can bypass
+  dependency-blocked controls from other streams and unrelated queued history;
+  EOSE/CLOSED and NEG controls never overtake earlier results of their own stream.
 - Return trailing receive credits in a microtask; they acknowledge port delivery,
   not downstream asynchronous processing. Outgoing publication limits remain
   64 frames/256 KiB of credit and 256 frames/1 MiB queued. Incoming defaults are
@@ -446,11 +448,17 @@ publish the same archive manually. No local dependency references are committed.
 ## Send scheduling and preparation
 
 User-authorized private scheduling spans all buckets per host: 3 priority / 1
-normal, eight of 60 tokens reserved, unchanged 2s refill/cooldowns. Private kinds
-9/1063/3560/26300/26400 and validated AUTH are priority; identifiable chunks stay
-normal. Shims reserve 4 frames/32 KiB outgoing, bridge return reserves 8/64 KiB.
-Only correlated OK/AUTH controls (<=16 KiB) pass history. Keep sequence ledgers
-in dispatch order and EVENT/EOSE dependencies. Vault policy parity is tested.
+normal, eight of 60 tokens reserved, unchanged 2s refill/cooldowns. Only outer
+3560 and validated AUTH are priority on relay publication; signer kinds remain
+unchanged. Encrypted chunks cannot be distinguished from other 3560 envelopes.
+Shims reserve 4 frames/32 KiB outgoing; return reserves 8/64 KiB. Incoming high
+(private OK/AUTH), intermediate (other correlated OK/COUNT/EOSE/CLOSED/NEG),
+and normal get hierarchical 3:1 then 2:1 service (9:2:1 when all are eligible).
+Controls over 16 KiB stay normal. Preserve own-stream dependencies in both
+directions of ordering: terminators wait for earlier results, live EVENT waits
+for EOSE, NEG errors wait for earlier NEG responses. Do not promote history.
+Keep bounded attachment-local correlation and sequence ledgers in dispatch
+order. Vault outgoing policy parity is tested.
 Personal-copy primitives overlap at most four; sign after dependencies. Stable
 context/author mirrors have bounded generation-fenced in-memory reuse after
 guards, never app scopes or shared callback mutation. No storage schema changes.

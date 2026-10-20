@@ -1,5 +1,4 @@
 // Scheduling hints only: authorization and full event validation stay at admission.
-const kinds = new Set([9, 1063, 3560, 26300, 26400])
 export function parsePriorityFrame (raw) {
   if (Array.isArray(raw)) return raw
   if (typeof raw !== 'string') return null
@@ -21,8 +20,7 @@ export function isPriorityPublication (raw) {
   const event = frame?.[1]
   if (!event || typeof event !== 'object' || !Array.isArray(event.tags) || typeof event.id !== 'string' || typeof event.sig !== 'string') return false
   if (frame[0] === 'AUTH') return frame.length === 2 && event.kind === 22242
-  if (frame[0] !== 'EVENT' || frame.length !== 2 || !kinds.has(event.kind)) return false
-  return !([26300, 26400].includes(event.kind) && event.tags.some(tag => Array.isArray(tag) && tag[0] === 'i' && /^(0|[1-9][0-9]*)$/.test(tag[1])))
+  return frame[0] === 'EVENT' && frame.length === 2 && event.kind === 3560
 }
 export function priorityIndex (queue, streak, eligible = () => true) {
   let high = queue.findIndex(item => item.priority)
@@ -49,24 +47,4 @@ export function sendQueueIndex (queue, streak, credit, limits) {
   if (streak >= 3 && normal && normal.size > limits.bridgeCreditBytes && isNostrSchedulingFrame(normal.data) && !full) return -1
   const reservedTurn = Boolean(streak >= 3 && high && canUseSendCredit(high, credit, limits))
   return priorityIndex(queue, streak, item => canUseSendCredit(item, credit, limits, reservedTurn))
-}
-export function createControlPriority () {
-  const pending = new Map()
-  return {
-    note (raw) {
-      const frame = parsePriorityFrame(raw)
-      if (!isPriorityPublication(frame)) return
-      pending.delete(frame[1].id)
-      pending.set(frame[1].id, true)
-      while (pending.size > 256) pending.delete(pending.keys().next().value)
-    },
-    take (raw) {
-      const frame = parsePriorityFrame(raw)
-      if (frame?.[0] === 'AUTH' && frame.length === 2 && typeof frame[1] === 'string') return true
-      if (frame?.[0] !== 'OK' || typeof frame[2] !== 'boolean' || typeof frame[3] !== 'string') return false
-      const found = pending.delete(frame[1])
-      return found
-    },
-    clear () { pending.clear() }
-  }
 }

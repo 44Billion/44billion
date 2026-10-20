@@ -42,9 +42,14 @@ try {
           const [op, id, filter] = JSON.parse(raw);
           transport.frames.push({op,id,marker:filter?.['#t']?.[0],at:performance.now()});
           if (op === 'EVENT') { setTimeout(() => { const data=JSON.stringify(['OK',id.id,true,'']); this.onmessage?.({data}); this.dispatchEvent(new MessageEvent('message',{data})); },0); return; }
+          if (op === 'COUNT' || op === 'NEG-OPEN') {
+            const frames = op === 'COUNT' ? [['COUNT',id,{count:1}]] : [['NEG-MSG',id,'aa'],['NEG-ERR',id,'closed: test']];
+            setTimeout(() => { for(const frame of frames) { const data=JSON.stringify(frame); this.onmessage?.({data}); this.dispatchEvent(new MessageEvent('message',{data})); } },0);
+            return;
+          }
           if (op !== 'REQ') return;
-          if(filter.kinds?.includes(9701)) {
-            setTimeout(() => { const data=JSON.stringify(['CLOSED',id,'rate-limited: test','1000']); this.onmessage?.({data}); this.dispatchEvent(new MessageEvent('message',{data})); },0);
+          if(filter.kinds?.includes(9701) || filter.kinds?.includes(9703)) {
+            setTimeout(() => { const frame=filter.kinds.includes(9701) ? ['CLOSED',id,'rate-limited: test','1000'] : ['CLOSED',id,'error: test']; const data=JSON.stringify(frame); this.onmessage?.({data}); this.dispatchEvent(new MessageEvent('message',{data})); },0);
             return;
           }
           const size = filter.kinds?.includes(9700) ? (filter['#t']?.[0] === 'large' ? 2*1024*1024 : filter['#t']?.[0] === 'oversize' ? 5*1024*1024 : 17*1024) : 0;
@@ -110,9 +115,21 @@ try {
     await browser.evaluate('bridgeTest.frames=[]; bridgeTest.holdCredits=true; bridgeTest.sockets[0].send(JSON.stringify([\'REQ\',\'priority-history\',{kinds:[9700],\'#t\':[\'burst\']}]))', origin)
     await browser.until(() => browser.evaluate('bridgeTest.frames.length>=30 && bridgeTest.heldCredits.length>0', origin), 'history fills normal receive credit')
     const priorityId = 'f'.repeat(64)
-    await browser.evaluate(`bridgeTest.sockets[0].send(JSON.stringify(['EVENT',{id:'${priorityId}',pubkey:'a'.repeat(64),sig:'b'.repeat(128),kind:9,created_at:1,tags:[],content:''}]))`, origin)
+    await browser.evaluate(`bridgeTest.sockets[0].send(JSON.stringify(['EVENT',{id:'${priorityId}',pubkey:'a'.repeat(64),sig:'b'.repeat(128),kind:3560,created_at:1,tags:[],content:''}]))`, origin)
     await browser.until(() => browser.evaluate(`bridgeTest.frames.some(frame=>frame.op==='OK'&&frame.id==='${priorityId}')`, origin), 'priority ACK passes history using reserved credit')
     assert.equal(await browser.evaluate("bridgeTest.frames.some(frame=>frame.op==='EOSE'&&frame.id==='priority-history')", origin), false)
+    await browser.evaluate(`
+      bridgeTest.sockets[0].send(JSON.stringify(['EVENT',{id:'e'.repeat(64),pubkey:'a'.repeat(64),sig:'b'.repeat(128),kind:9,created_at:1,tags:[],content:''}]))
+      bridgeTest.sockets[0].send(JSON.stringify(['COUNT','control-count',{}]))
+      bridgeTest.sockets[0].send(JSON.stringify(['REQ','control-empty',{kinds:[9702]}]))
+      bridgeTest.sockets[0].send(JSON.stringify(['REQ','control-closed',{kinds:[9703]}]))
+      bridgeTest.sockets[0].send(JSON.stringify(['NEG-OPEN','control-neg',{},'aa']))
+    `, origin)
+    await browser.until(() => browser.evaluate(`
+      [['OK','e'.repeat(64)],['COUNT','control-count'],['EOSE','control-empty'],['CLOSED','control-closed'],['NEG-MSG','control-neg'],['NEG-ERR','control-neg']].every(([op,id])=>bridgeTest.frames.some(frame=>frame.op===op&&frame.id===id))
+    `, origin), 'correlated intermediate controls pass unrelated history')
+    assert.equal(await browser.evaluate("bridgeTest.frames.some(frame=>frame.op==='EOSE'&&frame.id==='priority-history')", origin), false, 'own history still blocks its terminator')
+    assert.deepEqual(await browser.evaluate("bridgeTest.frames.filter(frame=>frame.id==='control-neg').map(frame=>frame.op)", origin), ['NEG-MSG', 'NEG-ERR'])
     await browser.evaluate('bridgeTest.releaseCredits()', origin)
     await browser.until(() => browser.evaluate("bridgeTest.frames.some(frame=>frame.op==='EOSE'&&frame.id==='priority-history')", origin), 'history and EOSE resume after credit return')
     assert.deepEqual(await browser.evaluate("bridgeTest.frames.filter(frame=>frame.op==='EVENT').map(frame=>frame.index)", origin), Array.from({ length: 82 }, (_, index) => index))
@@ -175,7 +192,7 @@ try {
   assert.ok(attempts[2].at - attempts[1].at >= 3000, 'open consumers cannot bypass the next stage')
   assert.ok(connectivityChecks > 0, 'physical failures use the real shared connectivity APIs')
   for (const origin of ['http://localhost:10000', vault, appOrigin]) await browser.evaluate('physicalRun.active=false;physicalRun.sockets.forEach(socket=>socket.close())', origin)
-  console.log('Real launcher/app/vault bridge: priority ACK, FIFO history, credits, absolute cooldowns, shared physical failure recovery, native events and isolated overflow passed.')
+  console.log('Real launcher/app/vault bridge: private ACK, correlated intermediate controls, ordered history/NEG, credits, absolute cooldowns, shared physical failure recovery, native events and isolated overflow passed.')
 } catch (error) {
   await browser?.diagnose(root + '/tmp/browser-failures/relay-bridge')
   throw error

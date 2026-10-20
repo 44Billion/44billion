@@ -5,14 +5,15 @@ import { isPriorityPublication, canUseSendCredit, priorityIndex, sendQueueIndex 
 import { createBridgeReceiveQueue } from '#services/relay-pool/bridge-receive-queue.js'
 import { RELAY_POOL_LIMITS } from '#services/relay-pool/constants.js'
 
-const publication = (id, kind = 26300, tags = []) => JSON.stringify(['EVENT', { id, kind, tags, sig: 'signature' }])
+const publication = (id, kind = 3560, tags = []) => JSON.stringify(['EVENT', { id, kind, tags, sig: 'signature' }])
 const vaultPolicy = new URL('../../../ez-vault/src/services/relay-priority.js', import.meta.url)
 test('vault and launcher use identical priority policy', { skip: !existsSync(vaultPolicy) }, () => {
   assert.equal(readFileSync(new URL('../../src/services/relay-pool/priority.js', import.meta.url), 'utf8'), readFileSync(vaultPolicy, 'utf8'))
 })
 
 test('kinds/chunks and credit reserves are bounded', () => {
-  for (const kind of [9, 1063, 3560, 26300, 26400]) assert.equal(isPriorityPublication(publication('id', kind)), true)
+  assert.equal(isPriorityPublication(publication('id', 3560)), true)
+  for (const kind of [9, 1063, 26300, 26400]) assert.equal(isPriorityPublication(publication('id', kind)), false)
   assert.equal(isPriorityPublication(publication('id', 34601)), false)
   assert.equal(isPriorityPublication(publication('id', 26300, [['i', '12']])), false)
   const item = { data: publication('normal', 1), size: 200, priority: false }

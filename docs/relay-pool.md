@@ -183,11 +183,11 @@ dedicated to relay frames. Internal messages:
 - `RELAY_CLOSE` / `RELAY_CLOSED`;
 - `RELAY_REGISTRY` / `RELAY_REGISTRY_ADD`.
 
-Each scheduling class preserves FIFO, including when a large queued frame does
-not fit remaining credit but a newer small frame would. Correlated priority OK
-may pass history; subscription `EOSE`
-cannot overtake queued `EVENT`s and prematurely complete a history read. App and
-vault consumers return receive credits in a microtask, including a trailing
+Outgoing classes and incoming normal traffic preserve FIFO, including when a
+large queued frame does not fit remaining credit but a newer small frame would.
+Incoming controls may pass unrelated history and dependency-blocked controls;
+subscription `EOSE`/`CLOSED` cannot overtake their own queued results and
+prematurely complete a history read. App and vault consumers return receive credits in a microtask, including a trailing
 partial batch, so the next large frame cannot stall waiting for unreturned
 credits. Credits acknowledge delivery across the port, not completion of the
 consumer's asynchronous event processing.
@@ -531,19 +531,41 @@ new app API, WebSocket property, Nostr metadata or persisted key is introduced.
 
 Physical message admission runs once per host across all open buckets, sharing
 60 tokens / 2 seconds. Eight tokens are reserved for priority; normal work can
-use the remaining capacity and refills. Eligible private kinds 9, 1063, 3560,
-26300 and 26400 receive three admissions per normal admission, round-robin
-between producers. Kind 34601 and transport envelopes with an explicit numeric
-`i` chunk index remain normal. AUTH admission keeps its existing validation.
+use the remaining capacity and refills. Only outer kind 3560 publications and
+validated AUTH receive three admissions per normal admission, round-robin
+between producers. Inner kinds 9/1063/26300/26400 and plain chunks 34601 are
+normal when published directly. Encrypted 3560 envelopes may contain chunks;
+the pool cannot distinguish them and never inspects ciphertext. Signer request
+priorities are independent and unchanged.
 Cooldowns determine eligibility; the next wake includes the actual lane's token
 threshold, with no polling while only reserved tokens remain. CLOSE still
 purges queued REQ generations and bypasses tokens. Connection limits are unchanged.
 
 App/vault outgoing queues reserve four frames / 32 KiB of existing credit.
-Incoming queues reserve eight frames / 64 KiB. Correlated positive/negative OK
-and AUTH controls may pass queued history; unrelated OK stays normal. The
-correlation inventory holds at most 256 outstanding priority IDs per attachment.
-Controls over 16 KiB stay normal. EVENT/EOSE/closing dependencies remain FIFO.
+Incoming queues reserve eight frames / 64 KiB and use three classes:
+
+- High: positive/negative OK for a pending 3560 publication or AUTH, plus AUTH
+  challenges.
+- Intermediate: other pending publication OK, COUNT responses, active REQ
+  EOSE/CLOSED, and active negentropy NEG-MSG/NEG-ERR.
+- Normal: history events, uncorrelated controls and controls over 16 KiB.
+
+High receives three turns per lower turn; lower turns serve two intermediate
+per normal admission when both are eligible (9:2:1 under fully eligible demand).
+Without high traffic, intermediate and normal receive 2:1 service. A blocked control does not
+hold up eligible controls from other streams. EOSE/CLOSED cannot overtake earlier
+EVENT/EOSE/CLOSED of their own subscription; NEG-MSG/NEG-ERR retain their own
+session order, including oversized responses. Live events cannot overtake their
+own EOSE. Only already-dispatched dependencies are considered complete; no
+history is promoted along with its terminator. The MessagePort preserves their
+dispatch order; credit acknowledges delivery, not downstream async completion.
+
+Correlation is bounded to 256 IDs per operation family (publication, REQ, COUNT,
+NEG) per attachment, with separate REQ/NEG namespaces. CLOSE/NEG-CLOSE and
+terminal replies release hints; attachment teardown clears all hints. Reused
+subscription IDs conservatively retain the order of queued earlier results.
+Unknown/evicted hints lose preference only. Raw frames, absolute retry params
+and credit formats are unchanged.
 Large accepted frames can travel alone; reservations never permanently strand
 a valid frame. Non-Nostr traffic retains ordinary FIFO behavior. Sequence and
 refund ledgers follow actual dispatch; no credit wire format changes.
@@ -556,4 +578,17 @@ Normal-only work preserves the reserved lane. Under sustained mixed demand, a
 normal admission due after three priorities may use the reserved window; this
 prevents starvation at saturation. Oversized normal frames due for service wait
 for existing credits to return before travelling alone. This rule applies to
-physical tokens and both bridge directions; it never raises total budgets.
+physical tokens and outgoing bridges. Incoming lower turns similarly allow
+normal service through the reserved window when eligible controls compete; a
+normal frame due for service accumulates sufficient outstanding credit before
+smaller controls can spend further partial refunds. Frames larger than the
+window still travel alone. Neither policy raises total budgets.
+
+
+Validation for the three-class return policy covers pending/unknown operation
+IDs, correlation bounds/cancellation, reused IDs, separate REQ/NEG streams,
+9:2:1 weights, oversized NEG responses, partial-refund starvation prevention,
+reserved credit and actual-dispatch ledger refunds. The protected relay-bridge
+scenario runs real app and vault ports with held credits, checking private OK,
+other OK/COUNT/EOSE/CLOSED/NEG controls and ordered history before release.
+These checks demonstrate queue behavior, not a guaranteed end-to-end latency.

@@ -1,5 +1,6 @@
 import { recordPerformance } from '../performance-diagnostics.js'
-import { createControlPriority, parsePriorityFrame, isNostrSchedulingFrame, priorityIndex } from './priority.js'
+import { parsePriorityFrame, isNostrSchedulingFrame } from './priority.js'
+import { createControlPriority, receiveCandidates } from './receive-priority.js'
 import { frameSize } from './bridge-protocol.js'
 
 // Only launcher-to-consumer traffic participates in these shared budgets.
@@ -23,6 +24,7 @@ export function createBridgeReceiveQueue ({ endpointId, virtualId, owner, relay,
   const queue = []
   const controlPriority = createControlPriority()
   let priorityStreak = 0
+  let controlStreak = 0
   const pending = []
   const latency = { roundTrip: metric(), delivery: metric(), consumer: metric(), return: metric() }
   let queuedBytes = 0
@@ -76,10 +78,16 @@ export function createBridgeReceiveQueue ({ endpointId, virtualId, owner, relay,
   const flush = () => {
     while (queue.length) {
       if (closed) return
-      const firstHigh = queue.find(item => item.priority)
-      const firstNormal = queue.find(item => !item.priority)
-      if (priorityStreak >= 3 && firstNormal?.size > limits.bridgeReceiveCreditBytes && pending.length) return
-      const reservedTurn = priorityStreak >= 3 && firstHigh && (!pending.length || (pending.length < limits.bridgeReceiveCreditFrames && pendingBytes + firstHigh.size <= limits.bridgeReceiveCreditBytes))
+      const { high, control, normal } = receiveCandidates(queue)
+      // Three high controls per lower admission. Serve two intermediate per
+      // normal admission in lower turns: 9:2:1 under fully eligible demand.
+      const lower = control && (!normal || controlStreak < 2) ? control : normal
+      const preferred = high && (priorityStreak < 3 || !lower) ? high : lower
+      const fits = item => item && (!pending.length || (pending.length < limits.bridgeReceiveCreditFrames && pendingBytes + item.size <= limits.bridgeReceiveCreditBytes))
+      // Accumulate enough credit for a normal turn instead of letting a
+      // continuous stream of smaller controls consume every partial refund.
+      if (preferred === normal && pending.length && !fits(normal)) return
+      const reservedTurn = preferred === normal && (fits(high) || fits(control))
       const eligible = item => {
         // The existing isolated-large-frame exception repays its full volume.
         if (!pending.length) return true
@@ -87,17 +95,24 @@ export function createBridgeReceiveQueue ({ endpointId, virtualId, owner, relay,
         if (item.priority || reservedTurn || !isNostrSchedulingFrame(item.data)) return true
         return pending.length < limits.bridgeReceiveCreditFrames - Math.min(8, limits.bridgeReceiveCreditFrames - 1) && pendingBytes + item.size <= limits.bridgeReceiveCreditBytes - Math.min(65536, limits.bridgeReceiveCreditBytes - 1)
       }
-      // Only controls can pass history. A smaller later normal frame must wait.
-      const index = priorityIndex(queue, priorityStreak, item => (item.priority || item === firstNormal) && eligible(item))
-      if (index < 0) return
+      // Dependency eligibility precedes credit eligibility. Only controls can
+      // pass unrelated history, never their own preceding results/terminators.
+      const selected = [preferred, high, lower, control, normal].find(item => item && eligible(item))
+      if (!selected) return
+      const index = queue.indexOf(selected)
       const [item] = queue.splice(index, 1)
-      priorityStreak = item.priority ? priorityStreak + 1 : 0
+      if (item.priority === 2) priorityStreak = Math.min(3, priorityStreak + 1)
+      else {
+        priorityStreak = 0
+        controlStreak = item.priority === 1 ? Math.min(2, controlStreak + 1) : 0
+      }
       queuedBytes -= item.size
       const through = ++sequence
       pending.push({ size: item.size, through, sentAt: now(), sentEpoch: epochNow() })
       pendingBytes += item.size
       const frame = parsePriorityFrame(item.data)
-      if (frame?.[0] === 'OK') recordPerformance({ stage: 'bridge-ack-dispatch', publicationId: frame[1], at: epochNow(), elapsedMs: now() - item.queuedAt, queuedFrames: queue.length, queuedBytes, pendingFrames: pending.length, pendingBytes })
+      if (frame?.[0] === 'OK') recordPerformance({ stage: 'bridge-ack-dispatch', priority: item.priority, publicationId: frame[1], at: epochNow(), elapsedMs: now() - item.queuedAt, queuedFrames: queue.length, queuedBytes, pendingFrames: pending.length, pendingBytes })
+      else if (item.priority) recordPerformance({ stage: 'bridge-control-dispatch', priority: item.priority, elapsedMs: now() - item.queuedAt, queuedFrames: queue.length, queuedBytes, pendingFrames: pending.length, pendingBytes })
       onFrame(item.data, through)
     }
   }
@@ -115,8 +130,8 @@ export function createBridgeReceiveQueue ({ endpointId, virtualId, owner, relay,
         fail('relay bridge frame too large', 'frame', budget, ['bytes'], { frameBytes: size })
         return
       }
-      const correlated = controlPriority.take(data)
-      queue.push({ data, size, queuedAt: now(), priority: correlated && size <= 16384 })
+      const { priority, stream } = controlPriority.take(data)
+      queue.push({ data, size, queuedAt: now(), priority: size <= 16384 ? priority : 0, stream })
       queuedBytes += size
       // An immediately sendable frame is not a pending backlog.
       const canFlush = queue.length === 1 && (!pending.length || (pending.length < limits.bridgeReceiveCreditFrames && pendingBytes + size <= limits.bridgeReceiveCreditBytes))

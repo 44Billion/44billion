@@ -1337,7 +1337,7 @@ it('host scheduling prefers private text across buckets, retains 3:1 service and
   await tick()
   // Queue before opening so both producers participate in one host drain.
   const normalEvent = index => ({ id: `normal-${index}`, kind: 1, sig: 'sig', tags: [] })
-  const privateEvent = index => ({ id: `private-${index}`, kind: 26300, sig: 'sig', tags: [] })
+  const privateEvent = index => ({ id: `private-${index}`, kind: 3560, sig: 'sig', tags: [] })
   for (let i = 0; i < 80; i++) normal.send(JSON.stringify(['EVENT', normalEvent(i)]))
   for (let i = 0; i < 6; i++) urgent.send(JSON.stringify(['EVENT', privateEvent(i)]))
   const order = []
@@ -1365,7 +1365,7 @@ it('saturated priority demand still admits normal work every fourth token', asyn
   const member = pool.attach('wss://relay.example')
   await tick()
   for (let i = 0; i < 70; i++) {
-    member.send(JSON.stringify(['EVENT', { id: `p${i}`, kind: 9, sig: 'sig', tags: [] }]))
+    member.send(JSON.stringify(['EVENT', { id: `p${i}`, kind: 3560, sig: 'sig', tags: [] }]))
     member.send(JSON.stringify(['EVENT', { id: `n${i}`, kind: 1, sig: 'sig', tags: [] }]))
   }
   sockets[0].open(); await tick()
