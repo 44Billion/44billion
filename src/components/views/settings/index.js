@@ -1,3 +1,5 @@
+import { useQuotaState } from '#hooks/use-quota-state.js'
+import { quotaNeedsAttention } from '#services/idb/nostrdb/quotas.js'
 import { eventStorageLocales } from '#views/event-storage/locales.js'
 import { f, useSignal, useCallback, useComputed } from '#f'
 import { useWebStorage } from '#f'
@@ -49,6 +51,7 @@ f('a-settings', function () {
   } = storage
   const { requestConfirmation } = useConfirmationDialogStore()
   const stickyBadgeCount$ = useStickySessionBadgeCount()
+  const quotaState$ = useQuotaState()
   const stickyEnabled$ = useComputed(() => stickySessions$() === true)
   const stickyToggleReset$ = useSignal(0)
   const updateMode$ = useComputed(() => appUpdateMode$() ?? 'always')
@@ -117,6 +120,7 @@ f('a-settings', function () {
   return this.h`
     <style>${`
       a-settings {
+        .quota-dot { width: 8px; height: 8px; border-radius: 50%; background: ${cssVars.colors.bgAccentPrimary}; flex-shrink: 0; }
         flex-grow: 1;
         width: 100%;
         min-width: 0;
@@ -345,6 +349,7 @@ f('a-settings', function () {
           <div class="section-title">${t('Advanced')}</div>
           <button class="item" onclick=${() => location.pushState({}, '', '/event-storage')}>
             <div class="item-content"><div class="item-title">${storageT('Event storage')}</div></div>
+            ${quotaNeedsAttention(quotaState$()) ? this.h`<span class="quota-dot" role="img" aria-label=${storageT('Above limit')}></span>` : ''}
           </button>
 
           <div class="item" style="cursor: default;">

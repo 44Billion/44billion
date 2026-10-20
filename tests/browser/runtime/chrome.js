@@ -4,6 +4,7 @@ import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises'
 import { setTimeout as delay } from 'node:timers/promises'
 import path from 'node:path'
 import os from 'node:os'
+import { contextForOrigin, frameKey } from './contexts.js'
 
 // A deny-by-default proxy also blocks WebSocket/CONNECT traffic from workers.
 async function localProxy () {
@@ -71,7 +72,7 @@ export async function launchChrome ({ externalNetwork = false, intercept = () =>
       await send('Network.enable', {}, sessionId)
       const { frameTree } = await send('Page.getFrameTree', {}, sessionId)
       const remember = tree => {
-        frames.set(tree.frame.id, tree.frame.url)
+        frames.set(frameKey(sessionId, tree.frame.id), tree.frame.url)
         for (const child of tree.childFrames || []) remember(child)
       }
       remember(frameTree)
@@ -119,9 +120,12 @@ export async function launchChrome ({ externalNetwork = false, intercept = () =>
         exceptions.push({ sessionId, ...params })
         if (exceptions.length > 30) exceptions.shift()
       }
-      if (method === 'Target.detachedFromTarget') sessions.delete(params.sessionId)
-      if (method === 'Page.frameDetached') frames.delete(params.frameId)
-      if (method === 'Page.frameNavigated') frames.set(params.frame.id, params.frame.url)
+      if (method === 'Target.detachedFromTarget') {
+        sessions.delete(params.sessionId)
+        for (const key of frames.keys()) if (key.startsWith(`${params.sessionId}:`)) frames.delete(key)
+      }
+      if (method === 'Page.frameDetached') frames.delete(frameKey(sessionId, params.frameId))
+      if (method === 'Page.frameNavigated') frames.set(frameKey(sessionId, params.frame.id), params.frame.url)
       if (method === 'Target.attachedToTarget') configure(params.sessionId, params.targetInfo).catch(error => remember(logs, String(error)))
       if (method === 'Runtime.executionContextCreated') contexts.set(`${sessionId}:${params.context.id}`, { ...params.context, sessionId })
       if (method === 'Runtime.executionContextDestroyed') contexts.delete(`${sessionId}:${params.executionContextId}`)
@@ -152,7 +156,7 @@ export async function launchChrome ({ externalNetwork = false, intercept = () =>
     throw new Error(`Timed out: ${label}${lastError ? ` (${lastError.message})` : ''}`)
   }
   // The trusted bridge iframe shares the app's origin but is not the app document.
-  const contextFor = origin => [...contexts.values()].find(context => context.origin === origin && context.auxData?.isDefault && !frames.get(context.auxData.frameId)?.includes('/~~napp'))
+  const contextFor = origin => contextForOrigin(contexts, frames, origin)
   const evaluate = async (expression, origin = 'http://localhost:10000') => {
     const context = await until(() => contextFor(origin), `context ${origin}`)
     const objectGroup = `evaluation-${++sequence}`

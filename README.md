@@ -78,6 +78,8 @@ Chrome regressions. `CHROME_BIN` selects a Chrome executable. Consumer apps can 
 `tests/browser/runtime/` to install local, unpublished builds with the production
 manifest/chunk writers and test the full launcher in disposable Chrome profiles.
 The Chrome helper blocks external traffic by default and supports network fixtures.
+It scopes frame metadata by CDP session and waits for a known app-document URL,
+excluding same-origin bridge and file-download documents from app evaluations.
 
 A normal app-document reload preserves data. A new draft version currently clears
 app-origin data and app-owned events before reloading. The initial manifest and
@@ -292,12 +294,18 @@ prepares contacts incrementally in the optional session. This changes no pool,
 WebSocket or injected app API contract.
 
 
-NostrDB keeps global quota admission atomic while batching auxiliary cache-access
-updates outside that lock. Periodic eviction releases it after at most 100
-candidate examinations and 25 deletions; see [NostrDB internals](docs/nostrdb.md).
+NostrDB keeps per-owner usage exact in each event transaction and reviews global
+quotas asynchronously. Ordinary writes and removals neither acquire the global
+quota lock nor enumerate other accounts. Temporary excess is permitted; shared
+advisory gates block subsequent growth, with bounded background LRU cleanup.
+The storage screen shows excess and propagates persistent quota alerts through
+Settings and the toolbar; see [NostrDB internals](docs/nostrdb.md).
+The checks and performance experiment are recorded in
+[quota validation](docs/nostrdb-quota-validation.md).
 Bounded primary-key probes select narrower tag lookups with early decisions.
-Ordinary no-change duplicates bypass write admission, and eligible personal-copy provenance resolves
-once in its write transaction. Existing schemas and quota guarantees are retained.
+Ordinary no-change duplicates bypass write admission, and eligible personal-copy
+provenance resolves once in its write transaction. Existing IndexedDB schemas
+are retained; a registered advisory WebStorage summary shares quota state.
 
 Private publication scheduling and bounded bridge ACK preference are documented
 in [relay-pool.md](docs/relay-pool.md). Personal-copy preparation overlaps up to

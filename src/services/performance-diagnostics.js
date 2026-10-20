@@ -1,6 +1,6 @@
 const enabled = typeof IS_DEVELOPMENT !== 'undefined' && IS_DEVELOPMENT
 const recent = []
-const fields = ['stage', 'requestId', 'parentId', 'eventId', 'seedRecordId', 'publicationId', 'priority', 'chunk', 'elapsedMs', 'waiting', 'running', 'kind', 'durationMs', 'category', 'count', 'examined', 'probes', 'keysExamined', 'earlyDecision', 'budgetExhausted', 'deleted', 'cacheHit', 'bufferedAmount', 'queuedFrames', 'queuedBytes', 'pendingFrames', 'pendingBytes', 'at']
+const fields = ['stage', 'requestId', 'parentId', 'eventId', 'seedRecordId', 'publicationId', 'priority', 'chunk', 'elapsedMs', 'waiting', 'running', 'kind', 'durationMs', 'category', 'count', 'examined', 'probes', 'keysExamined', 'earlyDecision', 'budgetExhausted', 'deleted', 'exhausted', 'excess', 'cacheHit', 'bufferedAmount', 'queuedFrames', 'queuedBytes', 'pendingFrames', 'pendingBytes', 'at']
 
 export function recordPerformance (entry) {
   if (!enabled) return

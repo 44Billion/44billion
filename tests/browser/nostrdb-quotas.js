@@ -13,6 +13,7 @@ const bundle = await build({
     import * as quotas from './src/services/idb/nostrdb/quotas.js';
     import { finalizeEvent } from 'libp2r2p/event';
     import { getPublicKey } from 'libp2r2p/key';
+    quotas.startGlobalQuotaMaintenance();
     globalThis.fixture = {
       ...quotas, deleteNostrDb, openNostrDb,
       async preparePromotion(seed) {
@@ -68,53 +69,43 @@ try {
   await evaluate(contexts[0], `fixture.setNostrDbQuotaLimits({ publicBytes: ${info[0].bytes} })`)
   await evaluate(contexts[0], 'void navigator.locks.request(fixture.QUOTA_LOCK, () => new Promise(resolve => { globalThis.releaseQuotaLock = resolve }))')
   await browser.until(() => evaluate(contexts[0], '!!globalThis.releaseQuotaLock'), 'quota barrier')
-  const admissions = contexts.map(c => evaluate(c, 'fixture.db.add(fixture.event)'))
-  await browser.until(() => evaluate(contexts[0], 'navigator.locks.query().then(state => state.pending.filter(lock => lock.name === fixture.QUOTA_LOCK).length >= 2)'), 'both tabs waiting on global quota')
+  const results = await Promise.all(contexts.map(c => evaluate(c, 'fixture.db.add(fixture.event)')))
+  assert.equal(results.filter(r => r.stored).length, 2, 'admissions finish while maintenance lock is held')
+  const removal = await evaluate(contexts[0], "fixture.db.remove([['e', fixture.event.id]])")
+  assert.equal(removal.deleted, 1, 'removal also bypasses maintenance')
+  assert.equal((await evaluate(contexts[0], 'fixture.db.add(fixture.event)')).stored, true)
   await evaluate(contexts[0], 'releaseQuotaLock()')
-  const results = await Promise.all(admissions)
-  assert.equal(results.filter(r => r.stored).length, 1)
-  assert.equal(results.filter(r => r.quotaCategory === 'public').length, 1)
-  assert.equal((await evaluate(contexts[1], 'fixture.getNostrDbQuotaUsage()')).publicBytes, info[0].bytes)
-
-  const winnerContext = contexts[results.findIndex(r => r.stored)]
-  await evaluate(contexts[0], 'void navigator.locks.request(fixture.QUOTA_LOCK, () => new Promise(resolve => { globalThis.releaseRemovalLock = resolve }))')
-  await browser.until(() => evaluate(contexts[0], '!!globalThis.releaseRemovalLock'), 'removal lock barrier')
-  await evaluate(winnerContext, 'fixture.allowed = true')
-  const removal = evaluate(winnerContext, 'fixture.db.remove([[\'e\', fixture.event.id]], {assertAccess() { if (!fixture.allowed) throw Object.assign(new Error(\'revoked\'), {code:\'PUBKEY_NOT_IN_PERSONA\'}) }}).catch(error => ({code:error.code}))')
-  await browser.until(() => evaluate(contexts[0], 'navigator.locks.query().then(state => state.pending.some(lock => lock.name === fixture.QUOTA_LOCK))'), 'removal waiting on quota lock')
-  await evaluate(winnerContext, 'fixture.allowed = false')
-  await evaluate(contexts[0], 'releaseRemovalLock()')
-  assert.equal((await removal).code, 'PUBKEY_NOT_IN_PERSONA')
-  assert.equal((await evaluate(winnerContext, 'fixture.getNostrDbQuotaUsage()')).publicCount, 1)
-  assert.equal((await evaluate(winnerContext, "fixture.db.remove([['e', fixture.event.id]])")).deleted, 1)
-  assert.equal((await evaluate(contexts[0], 'fixture.getNostrDbQuotaUsage()')).publicCount, 0)
-  assert.equal((await evaluate(winnerContext, 'fixture.db.add(fixture.event)')).stored, true)
-
-  // Reload without restoring any data and read the persisted global summaries.
+  assert.equal((await evaluate(contexts[0], 'fixture.getNostrDbQuotaUsage()')).publicCount, 2)
+  await browser.until(() => evaluate(contexts[1], 'fixture.readQuotaState()?.blocked.public === true'), 'quota revision reached other tab')
+  assert.equal((await evaluate(contexts[1], "fixture.db.add({...fixture.event, id:'bad'})")).code, 'invalid')
+  assert.equal((await evaluate(contexts[1], "fixture.db.remove([['e',fixture.event.id]],{assertAccess(){throw Object.assign(new Error('revoked'),{code:'PUBKEY_NOT_IN_PERSONA'})}}).catch(e=>({code:e.code}))")).code, 'PUBKEY_NOT_IN_PERSONA')
+  // Reload without restoring data. Both the events and growth gates survive.
   const previous = new Set(contexts.map(c => c.uniqueId))
   await Promise.all(contexts.map(c => browser.send('Page.reload', {}, c.sessionId)))
   contexts = await tabs(previous)
   await browser.until(async () => (await Promise.all(contexts.map(c => evaluate(c, '!!globalThis.fixture')))).every(Boolean), 'reloaded modules')
-  assert.equal((await evaluate(contexts[0], 'fixture.getNostrDbQuotaUsage()')).publicCount, 1)
-  const winner = info[results.findIndex(r => r.stored)].owner
-  await evaluate(contexts[1], `fixture.openNostrDb('${winner}').then(() => true)`)
-  assert.equal(await evaluate(contexts[0], `fixture.deleteNostrDb('${winner}')`), true)
-  assert.equal((await evaluate(contexts[1], 'fixture.getNostrDbQuotaUsage()')).publicBytes, 0)
+  assert.equal((await evaluate(contexts[0], 'fixture.getNostrDbQuotaUsage()')).publicCount, 2)
+  assert.equal(await evaluate(contexts[1], 'fixture.readQuotaState().blocked.public'), true)
+  for (const { owner } of info) {
+    await evaluate(contexts[1], `fixture.openNostrDb('${owner}').then(() => true)`)
+    assert.equal(await evaluate(contexts[0], `fixture.deleteNostrDb('${owner}')`), true)
+  }
+  assert.equal((await evaluate(contexts[1], 'fixture.getNostrDbQuotaUsage()')).publicCount, 0)
+  await evaluate(contexts[0], 'fixture.setNostrDbQuotaLimits({publicBytes:536870912})')
   const promotions = await Promise.all(contexts.map((c, i) => evaluate(c, `fixture.preparePromotion(${30 + i})`)))
   const promotionBudget = promotions[0].refBytes + promotions[1].refBytes + promotions[0].targetBytes
   await evaluate(contexts[0], `fixture.setNostrDbQuotaLimits({publicBytes:${promotionBudget}})`)
   await evaluate(contexts[0], 'void navigator.locks.request(fixture.QUOTA_LOCK, () => new Promise(resolve => { globalThis.releasePromotionLock = resolve }))')
   await browser.until(() => evaluate(contexts[0], '!!globalThis.releasePromotionLock'), 'promotion barrier')
-  const pendingPromotions = contexts.map(c => evaluate(c, 'fixture.db.add(fixture.ref)'))
-  await browser.until(() => evaluate(contexts[0], 'navigator.locks.query().then(state => state.pending.filter(lock => lock.name === fixture.QUOTA_LOCK).length >= 2)'), 'concurrent referrers')
+  const promoted = await Promise.all(contexts.map(c => evaluate(c, 'fixture.db.add(fixture.ref)')))
+  assert.ok(promoted.every(r => r.stored))
   await evaluate(contexts[0], 'releasePromotionLock()')
-  assert.ok((await Promise.all(pendingPromotions)).every(r => r.stored))
   const promotedUsage = await evaluate(contexts[0], 'fixture.getNostrDbQuotaUsage()')
-  assert.equal(promotedUsage.publicBytes, promotionBudget)
-  assert.equal(promotedUsage.publicCount, 3)
+  assert.ok(promotedUsage.publicBytes > promotionBudget)
+  assert.equal(promotedUsage.publicCount, 4)
   assert.equal(promotedUsage.cacheCount, 0)
   const targetCounts = await Promise.all(contexts.map(c => evaluate(c, 'fixture.db.count({ids:[fixture.target.id]})')))
-  assert.equal(targetCounts.reduce((sum, n) => sum + n, 0), 1)
+  assert.equal(targetCounts.reduce((sum, n) => sum + n, 0), 2, 'protected targets survive overshoot')
   await evaluate(contexts[0], 'fixture.setNostrDbQuotaLimits({publicBytes:536870912});')
   // A cache-only transaction must finish even while another tab owns the global
   // quota lock. Timestamp metadata must not recreate a replacement database.
@@ -127,7 +118,7 @@ try {
   await evaluate(contexts[0], 'fixture.queueCacheAccess(fixture.owner,[fixture.target]); fixture.flushCacheAccess()')
   assert.ok(await evaluate(contexts[0], 'new Promise((resolve,reject)=>{const req=fixture.raw.transaction(\'cacheAccess\').objectStore(\'cacheAccess\').getAll();req.onsuccess=()=>resolve(req.result.some(row=>row.lastAccessAt>1));req.onerror=()=>reject(req.error)})'))
   await evaluate(contexts[1], 'releaseTouchLock()')
-  console.log('NostrDB quotas: concurrent admissions/promotions, cross-tab touches outside quota lock, reload and owner removal passed')
+  console.log('NostrDB quotas: foreground admission/removal during maintenance, advisory gates, cross-tab protected promotions, touches, reload and owner removal passed')
 } finally {
   await browser.diagnose('/tmp/44billion-nostrdb-quota-browser')
   await browser.close()

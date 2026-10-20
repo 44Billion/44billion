@@ -20,11 +20,15 @@ describe('relay registry', () => {
     assert.deepEqual(updates, [['wss://relay.example']])
   })
 
-  it('remembers non-relays with a TTL', async () => {
+  it('remembers non-relays until the exact TTL boundary', t => {
+    let now = 1000
+    t.mock.method(Date, 'now', () => now)
     const registry = new RelayRegistry()
     registry.addNonRelay('wss://generic.example', 5)
     assert.equal(registry.isNonRelay('wss://generic.example'), true)
-    await new Promise(resolve => setTimeout(resolve, 10))
+    now += 4
+    assert.equal(registry.isNonRelay('wss://generic.example'), true)
+    now++
     assert.equal(registry.isNonRelay('wss://generic.example'), false)
   })
 })

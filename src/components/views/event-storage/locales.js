@@ -1,4 +1,56 @@
 export const eventStorageLocales = {
+  'Last checked': {
+    en: 'Last checked',
+    fr: 'Dernière vérification',
+    it: 'Ultimo controllo',
+    de: 'Zuletzt geprüft',
+    es: 'Última comprobación',
+    'pt-BR': 'Última verificação',
+    ru: 'Последняя проверка',
+    'zh-CN': '上次检查',
+    'zh-TW': '上次檢查',
+    ja: '最終確認',
+    ko: '마지막 확인'
+  },
+  'Limit disabled': {
+    en: 'Limit disabled',
+    fr: 'Stockage désactivé',
+    it: 'Archiviazione disabilitata',
+    de: 'Speicherung deaktiviert',
+    es: 'Almacenamiento desactivado',
+    'pt-BR': 'Armazenamento desativado',
+    ru: 'Хранение отключено',
+    'zh-CN': '存储已禁用',
+    'zh-TW': '儲存已停用',
+    ja: '保存は無効です',
+    ko: '저장 비활성화'
+  },
+  'Over by': {
+    en: 'Over by',
+    fr: 'Dépassement de',
+    it: 'Eccedenza di',
+    de: 'Überschreitung um',
+    es: 'Exceso de',
+    'pt-BR': 'Excedido em',
+    ru: 'Превышение на',
+    'zh-CN': '超出',
+    'zh-TW': '超出',
+    ja: '超過量',
+    ko: '초과량'
+  },
+  'Usage is refreshed in the background. Temporary excess is possible.': {
+    en: 'Usage is refreshed in the background. Temporary excess is possible.',
+    fr: 'L’utilisation est actualisée en arrière-plan. Un dépassement temporaire est possible.',
+    it: 'L’utilizzo viene aggiornato in background. Sono possibili superamenti temporanei.',
+    de: 'Die Nutzung wird im Hintergrund aktualisiert. Vorübergehende Überschreitungen sind möglich.',
+    es: 'El uso se actualiza en segundo plano. Puede haber excesos temporales.',
+    'pt-BR': 'O uso é atualizado em segundo plano. Pode haver excessos temporários.',
+    ru: 'Использование обновляется в фоне. Возможно временное превышение.',
+    'zh-CN': '用量在后台更新，可能暂时超出限额。',
+    'zh-TW': '用量在背景更新，可能暫時超出限額。',
+    ja: '使用量はバックグラウンドで更新されます。一時的に上限を超える場合があります。',
+    ko: '사용량은 백그라운드에서 갱신되며 일시적으로 한도를 초과할 수 있습니다.'
+  },
   'Event storage': {
     en: 'Event storage',
     fr: 'Stockage des événements',

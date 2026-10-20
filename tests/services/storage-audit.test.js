@@ -617,3 +617,12 @@ it('preserves pending NostrDB deletion owners while normalizing invalid tokens',
   const valid = validState({ local: { local_nostrDbPendingDeletions: { [owner]: 'retry-token' } } })
   assert.equal(Object.hasOwn(auditPersistedState(valid.local, valid.session).plan.local, 'local_nostrDbPendingDeletions'), false)
 })
+
+it('reports a malformed advisory quota snapshot without deleting state or accounting', () => {
+  const key = '44billion:nostrdb-quota-state:v1'
+  const state = validState({ local: { [key]: { version: 1, revision: 'invalid' } } })
+  const result = auditPersistedState(state.local, state.session)
+  assert.ok(result.issues.some(issue => issue.code === 'invalid-nostrdb-quota-state' && issue.actionable === false))
+  assert.equal(Object.hasOwn(result.plan.local, key), false)
+  assert.deepEqual(result.plan.removeNostrDbOwners, [])
+})

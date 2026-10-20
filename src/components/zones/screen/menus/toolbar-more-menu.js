@@ -1,3 +1,5 @@
+import { useQuotaState } from '#hooks/use-quota-state.js'
+import { quotaNeedsAttention } from '#services/idb/nostrdb/quotas.js'
 import { f, useStore, useGlobalStore, useGlobalSignal, useComputed, useSignal, useTask } from '#f'
 import { cssVars } from '#assets/styles/theme.js'
 import '#shared/menu.js'
@@ -60,6 +62,8 @@ f('toolbar-more-menu', function () {
     (appUpdateMode$() ?? 'always') === 'manual' && (appUpdateCount$() ?? 0) > 0
   )
   const stickyBadgeCount$ = useStickySessionBadgeCount()
+  const quotaState$ = useQuotaState()
+  const quotaAttention$ = useComputed(() => quotaNeedsAttention(quotaState$()))
   const launcherUpdatePending$ = useComputed(() =>
     launcherUpdateState$() === 'dismissed'
   )
@@ -178,7 +182,7 @@ f('toolbar-more-menu', function () {
         }}>
           <div class='icon-wrapper'><icon-settings props=${{ size: '16px' }} /></div>
           <div class='menu-label'>${t('Settings')}</div>
-          ${showUpdateIndicator$() || stickyBadgeCount$() > 0 ? this.h`<div class='badge-dot'></div>` : ''}
+          ${showUpdateIndicator$() || stickyBadgeCount$() > 0 || quotaAttention$() ? this.h`<div class='badge-dot'></div>` : ''}
         </div>
       </div>
     `
@@ -235,7 +239,7 @@ f('toolbar-more-menu', function () {
         }
       `}</style>
       <icon-dots props=${{ size: '24px' }} />
-      ${showUpdateIndicator$() || launcherUpdatePending$() || stickyBadgeCount$() > 0
+      ${showUpdateIndicator$() || launcherUpdatePending$() || stickyBadgeCount$() > 0 || quotaAttention$()
         ? this.h`<div class='more-menu-badge'></div>`
         : ''}
     </div>

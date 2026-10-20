@@ -12,9 +12,11 @@ const bundle = await build({
   define: { IS_DEVELOPMENT: 'false', IS_PRODUCTION: 'true' },
   stdin: {
     resolveDir: root, contents: `
-    import { f, useLocation } from 'thenameisf';
+    import { f, useLocation, useGlobalStore } from 'thenameisf';
     import 'thenameisf/components/f-route.js';
     import router from './src/components/zones/multi-napp/router.js';
+    import './src/components/zones/screen/menus/toolbar-more-menu.js';
+    import { useInitQuotaState } from './src/components/hooks/use-quota-state.js';
     import { useInitI18n } from './src/i18n/index.js';
     import { cssStrings, cssClasses } from './src/assets/styles/theme.js';
     import { getNostrDb } from './src/services/idb/nostrdb/index.js';
@@ -25,8 +27,9 @@ const bundle = await build({
     const style = document.createElement('style'); style.textContent = cssStrings.defaultTheme;
     document.head.append(style); document.documentElement.classList.add(cssClasses.defaultTheme);
     f('storage-fixture', ({h}) => {
-      const location = useLocation(router); useInitI18n(); fixture.location = location;
-      return h\`<f-route props=\${{path:'/event-storage'}} /><f-route props=\${{path:'/settings'}} /><f-route props=\${{path:'/sticky-sessions'}} /><f-route props=\${{path:'/app-updates'}} />\`;
+      const location = useLocation(router); useInitI18n(); useInitQuotaState(); fixture.location = location;
+      useGlobalStore('useAppRouter', { openApp () {} });
+      return h\`<aside style="position:fixed;right:0;top:0"><toolbar-more-menu /></aside><f-route props=\${{path:'/event-storage'}} /><f-route props=\${{path:'/settings'}} /><f-route props=\${{path:'/sticky-sessions'}} /><f-route props=\${{path:'/app-updates'}} />\`;
     });
     document.body.insertAdjacentHTML('beforeend', '<storage-fixture></storage-fixture>');
     fixture.seed = async () => {
@@ -62,10 +65,19 @@ async function evaluate (expression, ctx = context) {
   if (reply.exceptionDetails) throw new Error(JSON.stringify(reply.exceptionDetails))
   return reply.result.value
 }
-const input = async (key, value) => evaluate(`{const el=document.getElementById('${key}-input');el.value=${JSON.stringify(value)};el.dispatchEvent(new Event('input',{bubbles:true}));}`)
+// Let pending controlled-value commits settle before the next synthetic action.
+// Otherwise a stale commit can replace an input between its event and the click.
+const settle = () => evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+const input = async (key, value) => {
+  await settle()
+  await evaluate(`{const el=document.getElementById('${key}-input');el.value=${JSON.stringify(value)};el.dispatchEvent(new Event('input',{bubbles:true}));}`)
+  await settle()
+}
 const click = async text => {
+  await settle()
   await browser.until(() => evaluate(`[...document.querySelectorAll('event-storage button')].some(el=>el.textContent==='${text}' && !el.disabled)`), `enabled ${text}`)
-  return evaluate(`[...document.querySelectorAll('event-storage button')].find(el=>el.textContent==='${text}').click()`)
+  await evaluate(`[...document.querySelectorAll('event-storage button')].find(el=>el.textContent==='${text}').click()`)
+  await settle()
 }
 const ready = async () => {
   context = await browser.until(() => [...browser.contexts.values()].find(c => c.origin === origin && c.auxData?.isDefault), 'storage page context')
@@ -105,15 +117,28 @@ try {
   await browser.until(() => evaluate('!!globalThis.fixture', second), 'second fixture')
   await evaluate('fixture.setNostrDbQuotaLimits({publicBytes: 400*1048576, privateBytes: 500*1048576})', second)
   await browser.send('Page.bringToFront', {}, context.sessionId)
-  await browser.until(() => evaluate('document.getElementById("privateBytes-input").value === "500"'), 'external limits')
+  await browser.until(() => evaluate('document.getElementById("privateBytes-input").value === "500"'), 'external limits').catch(async error => {
+    console.error('External quota update', await evaluate('({limits:fixture.getNostrDbQuotaLimits(),summary:fixture.readQuotaState(),inputs:[...document.querySelectorAll("event-storage input")].map(input=>({id:input.id,value:input.value,attribute:input.getAttribute("value")}))})'))
+    throw error
+  })
   assert.equal(await evaluate('document.getElementById("publicBytes-input").value'), '123')
   await browser.until(() => evaluate('document.body.innerText.includes("another window")'), 'external change notice')
   await click('Discard changes')
+  await input('publicBytes', '0.001')
+  await click('Save limits')
+  await browser.until(() => evaluate('document.body.innerText.includes("Over by")'), 'explicit excess amount')
+  assert.match(await evaluate('document.querySelector("event-storage .track").getAttribute("aria-valuetext")'), /[1-9][0-9]{2,}(?:[.,][0-9]+)?%/)
   await input('publicBytes', '0')
   await click('Save limits')
   await browser.until(() => evaluate('document.body.innerText.includes("Above limit")'), 'exceeded quota')
   assert.equal((await evaluate('fixture.getNostrDbQuotaUsage()')).publicBytes, usage.publicBytes)
   assert.equal(await evaluate('document.querySelector("event-storage .track").getAttribute("aria-valuenow")'), '100')
+  assert.match(await evaluate('document.querySelector("event-storage .track").getAttribute("aria-valuetext")'), /Limit disabled/)
+
+  assert.equal(await evaluate('!!document.querySelector("#toolbar-more-menu-button .more-menu-badge")'), true)
+  await evaluate('document.getElementById("toolbar-more-menu-button").click()')
+  await browser.until(() => evaluate('[...document.querySelectorAll("toolbar-more-menu .menu-label")].some(el=>el.textContent===\'Settings\' && el.parentElement.querySelector(\'.badge-dot\'))'), 'Settings quota indicator')
+  await evaluate('document.getElementById("toolbar-more-menu-button").click()')
 
   // Failure and retry without overwriting drafts.
   await evaluate('fixture.originalLocks = navigator.locks.request.bind(navigator.locks); navigator.locks.request = () => Promise.reject(new Error("fixture unavailable"));window.dispatchEvent(new Event("focus"))')
@@ -136,6 +161,7 @@ try {
   assert.equal(await evaluate('document.activeElement.id'), 'privateBytes-input')
   await evaluate('fixture.location.pushState({}, "", "/settings")')
   await browser.until(() => evaluate('!!document.querySelector("a-settings")'), 'settings route')
+  assert.equal(await evaluate('!!document.querySelector("a-settings .quota-dot")'), true)
   await evaluate('[...document.querySelectorAll("a-settings button")].find(el=>el.textContent.includes("Event storage")).click()')
   await browser.until(() => evaluate('location.pathname === "/event-storage" && !!document.querySelector("event-storage input")'), 'settings navigation')
   await evaluate('fixture.location.back()')

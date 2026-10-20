@@ -291,15 +291,15 @@ quota; cache reductions schedule automatic LRU cleanup.
 Cache does not consume public quota; removing cache does not free public capacity.
 Personal-copy contexts and inner authors share the private limit. Limits count
 UTF-8 JSON event bytes; external chunk payloads retain their separate policy.
-When a new owner reference protects existing cache, persistence of the referrer
-has priority. After reserving its net quota usage, the store promotes the targets
-that fit public quota, preferring the most recently accessed, and locally deletes
-those that do not fit. This affects only previously cached targets, never already
-preserved records. All changes share the admission transaction: if the referrer
-itself cannot fit or the transaction aborts, no promotion/discard is committed.
-No new tombstone is created. Its references remain intact; later arrivals of
-referenced targets must fit public quota rather than falling back to cache.
-The existing add result format is unchanged; success may include these discards.
+Quota enforcement is asynchronous. Each owner bank atomically maintains exact
+local counters; background review aggregates them and blocks subsequent growth
+in exceeded categories. Temporary excess is allowed, including concurrent writes.
+Zero limits disable growth immediately. Review failures preserve known gates;
+without a usable prior aggregate, positive budgets remain available. Real storage
+failures still return errors. This does not change injected method signatures.
+When owner references protect already stored cache, all targets are promoted and
+retained atomically with their referrer. Category transfers do not constitute
+new admission and never discard targets to fit a budget.
 
 `addPersonalCopy(unsignedEvent, { context })` always derives a wrapper `d` tag
 for inner events that live at a coordinate (replaceable kinds, including 0 and
@@ -362,9 +362,9 @@ are disposable cache and may be evicted by approximate LRU. Expiration, explicit
 deletion and newer coordinate replacement still apply to preserved events.
 
 No-growth duplicates and net non-growing replacements remain admissible above a
-limit. A refusal never partially replaces an event; cache removals committed
-while attempting admission may remain. Missing quota coordination or database
-enumeration returns `ok: false, code: 'unavailable'`. Invalid new signatures
+limit. A refusal never partially replaces an event. Cache cleanup runs only in
+background maintenance. Failed global enumeration does not block otherwise
+admissible foreground writes or replace the last valid aggregate. Invalid new signatures
 return `code: 'invalid'`. Quota results reveal no other account's events or
 identity. Limit configuration and aggregate usage are launcher-only, not methods
 of this injected object. Full app reads/subscription deliveries update approximate
@@ -527,7 +527,7 @@ address-only requests use access to the target kinds (including existing transpo
 exceptions); any ID target requests one-time `delete` with `remember: false`.
 No event is signed or persisted. Permission denial and loss of persona access
 reject the Promise through the existing bridge. Access is rechecked after
-authorization and under the global quota lock before the transaction.
+authorization and again with connection-generation validation before the transaction.
 
 The selected account's complete local records are removed, including records
 from other authors, protected records, personal copies and records shared between

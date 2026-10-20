@@ -1,3 +1,4 @@
+import { useInitQuotaState } from '#hooks/use-quota-state.js'
 import { useAppSubdomain } from '#hooks/use-app-subdomain.js'
 import { useAppPersona } from '#hooks/use-app-persona.js'
 import { personaT } from '#i18n/personas.js'
@@ -141,6 +142,7 @@ f('aScreen', function () {
   const widgetsRevealActive$ = useGlobalSignal('widgetsRevealActive', false)
   const widgetEditReveal$ = useGlobalSignal('widgetEditReveal', null)
   const revealWidgets$ = useComputed(() => widgetsRevealActive$() || !!widgetEditReveal$())
+  useInitQuotaState()
   useInitPersonas({ storage })
   useInitInstanceMetadata({
     storage,

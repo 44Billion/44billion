@@ -26,6 +26,7 @@ import {
   queueCacheAccess,
   referenceKeysFromTags,
   startGlobalQuotaMaintenance,
+  scheduleQuotaMaintenance,
   withNostrDbQuotaLock,
   withQuotaMutation
 } from './quotas.js'
@@ -2658,7 +2659,9 @@ export async function openNostrDb (ownerPubkey, { quotaLockHeld = false, create 
       if (typeof indexedDB.databases !== 'function' || !(await indexedDB.databases()).some(({ name }) => name === dbName)) return null
       assertNostrDbAccess(ownerPubkey)
     }
-    if (!dbCache.has(dbName)) dbCache.set(dbName, initNostrDb(dbName).catch(() => null))
+    if (!dbCache.has(dbName)) {
+      dbCache.set(dbName, initNostrDb(dbName).then(db => { scheduleQuotaMaintenance({ immediate: true }); return db }).catch(() => null))
+    }
     const db = await dbCache.get(dbName)
     assertNostrDbAccess(ownerPubkey)
     return db
@@ -2701,7 +2704,10 @@ export async function deleteNostrDb (ownerPubkey) {
       })
     })
   } catch { return false }
-  if (deleted) await clearOwnerChunkCache(ownerPubkey)
+  if (deleted) {
+    scheduleQuotaMaintenance({ immediate: true })
+    await clearOwnerChunkCache(ownerPubkey)
+  }
   return deleted
 }
 

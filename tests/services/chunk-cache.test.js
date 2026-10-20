@@ -512,7 +512,7 @@ describe('normalized global chunk cache', () => {
   })
 })
 
-it('reconciles chunk protection after a cached blob referrer cannot be promoted', async t => {
+it('preserves chunk protection when a cached blob referrer is promoted above quota', async t => {
   const { getNostrDbQuotaUsage, setNostrDbQuotaLimits } = await import('#services/idb/nostrdb/quotas.js')
   const priorStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
   const settings = new Map()
@@ -541,8 +541,9 @@ it('reconciles chunk protection after a cached blob referrer cannot be promoted'
   const usage = await getNostrDbQuotaUsage()
   await setNostrDbQuotaLimits({ publicBytes: usage.publicBytes + new TextEncoder().encode(JSON.stringify(ref)).length })
   assert.equal((await db.add(ref)).stored, true)
-  assert.equal(await db.count({ ids: [cached.id] }), 0)
-  await waitFor(async () => (await getChunkState()).unreferencedBytes === before.unreferencedBytes + 4)
+  assert.equal(await db.count({ ids: [cached.id] }), 1)
+  await db.maintainChunks()
+  assert.equal((await getChunkState()).unreferencedBytes, before.unreferencedBytes)
   const copy = await getOwnerChunkCopy(ownerB.pubkey, fixture.root, 0)
   assert.ok(copy)
   assert.ok(await getChunkPayload(copy.contentHash, { touch: false }))

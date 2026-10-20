@@ -1,10 +1,13 @@
+import { createQuotaScheduler, quotaBlocks, quotaTotalKeys, readQuotaState, reloadQuotaState, publishQuotaState, resetQuotaStateMemory, reportQuotaStateFailure } from './quota-state.js'
+export { readQuotaState, subscribeQuotaState, quotaNeedsAttention } from './quota-state.js'
 import { recordPerformance } from '#services/performance-diagnostics.js'
 import { assertNostrDbAccess, isNostrDbAccessError } from './access.js'
 import {
   NOSTRDB_CACHE_ACCESS_STORE as CACHE,
   NOSTRDB_MAINTENANCE_STORE as MAINTENANCE,
   NOSTRDB_QUOTA_USAGE_KEY as USAGE_KEY,
-  NOSTRDB_QUOTA_SETTINGS_KEY as SETTINGS_KEY
+  NOSTRDB_QUOTA_SETTINGS_KEY as SETTINGS_KEY,
+  NOSTRDB_QUOTA_STATE_KEY as STATE_KEY
 } from '#constants/storage-schema.js'
 import { isPersonalCopyEvent } from '#helpers/personal-copy.js'
 import {
@@ -26,14 +29,21 @@ const touchQueue = new Map()
 let touchTimer
 let touchRunning = false
 let maintenance
+let channel
+let reviewPromise
+
+function broadcastQuotaMessage (message) {
+  try { channel?.postMessage(message) } catch {
+    // Cross-context hints must not turn a committed mutation into a failure.
+    recordPerformance({ stage: 'quota-state-notify-failed' })
+  }
+}
 
 export class NostrDbQuotaError extends Error {
-  constructor (category, delta, excluded) {
+  constructor (category) {
     super(`NostrDB ${category} quota exceeded`)
     this.code = 'quota'
     this.category = category
-    this.delta = delta
-    this.excluded = excluded
   }
 }
 
@@ -81,9 +91,15 @@ export async function setNostrDbQuotaLimits (overrides) {
     const next = { ...getNostrDbQuotaLimits(), ...overrides }
     delete next.cacheCount
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(next))
-    return getNostrDbQuotaLimits()
+    const limits = getNostrDbQuotaLimits()
+    try { publishQuotaState({ limits }) } catch {
+      reportQuotaStateFailure()
+      recordPerformance({ stage: 'quota-state-persist-failed' })
+    }
+    broadcastQuotaMessage({ type: 'state' })
+    return limits
   })
-  scheduleQuotaMaintenance()
+  scheduleQuotaMaintenance({ immediate: true })
   return limits
 }
 
@@ -213,6 +229,12 @@ async function forPage (tx, after, visit) {
 }
 
 async function initializeUsage (db) {
+  const connection = captureNostrDbConnection(ownerFromDb(db))
+  if (!connection || await connection.resolve() !== db) throw unavailable()
+  const check = () => {
+    if (!connection.isCurrent()) throw Object.assign(new Error('NOSTRDB_RESET'), { code: 'NOSTRDB_RESET' })
+  }
+  check()
   // Most databases are already initialized. This narrow readonly transaction
   // neither waits for nor blocks cacheAccess writes on the other store.
   const readyTx = db.transaction(MAINTENANCE)
@@ -226,6 +248,7 @@ async function initializeUsage (db) {
     throw error
   }
   while (true) {
+    check()
     const tx = db.transaction([EVENTS_STORE, CACHE, MAINTENANCE], 'readwrite')
     const done = transactionDone(tx)
     try {
@@ -263,11 +286,9 @@ async function allDatabases () {
     .filter(name => name?.startsWith(NOSTRDB_PREFIX)).sort()
   const dbs = []
   for (const name of names) {
-    let db
-    try { db = await openNostrDb(name.slice(NOSTRDB_PREFIX.length), { quotaLockHeld: true, create: false }) } catch (error) {
-      if (isNostrDbAccessError(error)) continue
-      throw error
-    }
+    // An inaccessible bank may still occupy space during lifecycle cleanup.
+    // Keep the last complete aggregate rather than publishing a partial sum.
+    const db = await openNostrDb(name.slice(NOSTRDB_PREFIX.length), { quotaLockHeld: true, create: false })
     if (!db) throw unavailable()
     await initializeUsage(db)
     dbs.push(db)
@@ -286,7 +307,73 @@ async function sumUsage (dbs) {
 }
 
 export function getNostrDbQuotaUsage () {
-  return withNostrDbQuotaLock(async () => sumUsage(await allDatabases()))
+  return reviewQuotaUsage(false).then(result => result.totals)
+}
+
+// Explicit reads share an in-flight review. Cache eviction only belongs to
+// maintenance; opening settings must not synchronously delete cached events.
+function reviewQuotaUsage (cleanup, scheduled = false) {
+  if (!cleanup && reviewPromise) return reviewPromise
+  const work = (async () => {
+    let waitedRevision
+    while (true) {
+      const result = await withNostrDbQuotaLock(async () => {
+        const limits = getNostrDbQuotaLimits()
+        const previous = reloadQuotaState()
+        const startedAt = Date.now()
+        if (previous && previous.revision !== waitedRevision && startedAt >= previous.maintenance.startedAt && startedAt < (previous.maintenance.retryAt ?? 0)) {
+          return { deferMs: previous.maintenance.retryAt - startedAt, revision: previous.revision }
+        }
+        if (previous && previous.revision !== waitedRevision && startedAt >= previous.maintenance.startedAt && startedAt < previous.maintenance.startedAt + 250) {
+          return { deferMs: previous.maintenance.startedAt + 250 - startedAt, revision: previous.revision }
+        }
+        let stats = { examined: 0, deleted: 0, exhausted: false }
+        try {
+          const dbs = await allDatabases()
+          const totals = cleanup
+            ? await evict(dbs, limits, { maxDeleted: 25, maxExamined: 100, onStats: value => { stats = value } })
+            : await sumUsage(dbs)
+          const excess = cacheExcess(totals, limits)
+          publishQuotaState({
+            totals, limits, checkedAt: Date.now(), maintenance: {
+              startedAt,
+              failed: false, failureCount: 0, retryAt: 0,
+              cacheAttention: excess && (cleanup ? stats.exhausted : previous?.maintenance.cacheAttention ?? false)
+            }
+          })
+          broadcastQuotaMessage({ type: 'state' })
+          recordPerformance({ stage: 'quota-review', elapsedMs: Date.now() - startedAt, ...stats, excess })
+          return { totals, excess }
+        } catch (error) {
+          try {
+            const failureCount = Math.min(6, (previous?.maintenance.failureCount ?? 0) + 1)
+            publishQuotaState({
+              limits, maintenance: {
+                startedAt,
+                failed: true, failureCount, retryAt: Date.now() + Math.min(30000, 1000 * 2 ** (failureCount - 1)), cacheAttention: !!previous?.blocked.cache
+              }
+            })
+            broadcastQuotaMessage({ type: 'state' })
+          } catch {}
+          recordPerformance({ stage: 'quota-review-failed', elapsedMs: Date.now() - startedAt })
+          throw error
+        }
+      }, entry => recordPerformance({ ...entry, category: cleanup ? 'maintenance' : 'review' }))
+      if (!result.deferMs || scheduled) return result
+      // Wait outside the lock. The revision check also handles a wall clock
+      // that stays fixed or moves backwards while this context is suspended.
+      await new Promise(resolve => setTimeout(resolve, result.deferMs))
+      waitedRevision = result.revision
+    }
+  })().catch(error => {
+    reportQuotaStateFailure()
+    scheduleQuotaMaintenance()
+    recordPerformance({ stage: 'quota-review-unavailable' })
+    throw error
+  })
+  if (cleanup) return work
+  reviewPromise = work.finally(() => { reviewPromise = null })
+  return reviewPromise
 }
 
 // Called from the common event deletion path, before its event row is removed.
@@ -300,7 +387,6 @@ export async function accountDeletedEvent (db, tx, row) {
     await request(store.delete(row.i))
   }
   for (const ref of row.ownerRefs ?? []) ctx.refs.add(ref)
-  ctx.excluded.add(row.i)
 }
 
 export async function putQuotaEvent (db, tx, row, { personalCopy, personalCopyRefs } = {}) {
@@ -322,18 +408,13 @@ export async function putQuotaEvent (db, tx, row, { personalCopy, personalCopyRe
   await request(tx.objectStore(EVENTS_STORE).put(row))
   changeEventTotals(ctx.usage, row, 1, eventQuotaCategory(db, row))
   await setCacheClassification(db, tx, row, ctx.usage)
-  if (foreignPublic(db, row) && !await isOwnerReferenced(db, tx, row)) ctx.admitsCache = true
   for (const ref of row.ownerRefs) ctx.refs.add(ref)
-  ctx.excluded.add(row.i)
 }
 
-async function reconcileChangedReferences (db, tx, ctx, admission, before) {
+async function reconcileChangedReferences (db, tx, ctx) {
   const store = tx.objectStore(EVENTS_STORE)
   const seen = new Set()
-  const promotions = []
   for (const ref of ctx.refs) {
-    // `h:` keys are personal-copy inner references used by the hearsay prune;
-    // they must not participate in public-cache promotion.
     if (!ref.startsWith('e:') && !ref.startsWith('a:')) continue
     let row
     if (ref.startsWith('e:')) row = await request(store.get(ref.slice(2)))
@@ -343,61 +424,42 @@ async function reconcileChangedReferences (db, tx, ctx, admission, before) {
     }
     if (!row || seen.has(row.i) || !foreignPublic(db, row)) continue
     seen.add(row.i)
-    const access = await request(tx.objectStore(CACHE).get(row.i))
-    if (admission && access && !ctx.excluded.has(row.i) && await isOwnerReferenced(db, tx, row)) {
-      // Only pre-existing cache may be sacrificed. Newly admitted/replaced rows
-      // must fit normally, and referrers are reserved before any promotion.
-      promotions.push({ i: row.i, eventBytes: row.eventBytes, lastAccessAt: access.lastAccessAt })
-      ctx.excluded.add(row.i)
-    } else {
-      await setCacheClassification(db, tx, row, ctx.usage)
-    }
-  }
-  if (!admission) return
-  const { totals, limits } = admission
-  const projected = totals.publicBytes + ctx.usage.publicBytes - before.publicBytes
-  let budget = Math.max(limits.publicBytes, totals.publicBytes) - projected
-  if (budget < 0) throw new NostrDbQuotaError('public')
-  promotions.sort((a, b) => b.lastAccessAt - a.lastAccessAt || indexedDB.cmp(a.i, b.i))
-  for (const candidate of promotions) {
-    // Retain only metadata while ranking; fetch one payload at a time in this
-    // same transaction. Other writers cannot change its version or protection.
-    const row = await request(store.get(candidate.i))
-    if (candidate.eventBytes <= budget) {
-      budget -= candidate.eventBytes
-      await setCacheClassification(db, tx, row, ctx.usage)
-    } else {
-      await deleteStoredEvent(db, tx, row)
-    }
+    // Moving an already stored target between budgets is not new admission.
+    // Protection must never discard a target to make room for its referrer.
+    await setCacheClassification(db, tx, row, ctx.usage)
   }
 }
 
 async function mutate (db, callback, admission) {
+  const connection = captureNostrDbConnection(ownerFromDb(db))
+  if (!connection || await connection.resolve() !== db || !connection.isCurrent()) throw unavailable()
   const tx = db.transaction([EVENTS_STORE, DELETIONS_STORE, CACHE, MAINTENANCE], 'readwrite')
   const done = transactionDone(tx)
   try {
     const stateStore = tx.objectStore(MAINTENANCE)
     const usage = await request(stateStore.get(USAGE_KEY))
     if (usage?.phase !== 'ready') throw unavailable()
+    if (!connection.isCurrent()) throw unavailable()
     const before = { ...usage }
-    const ctx = { usage, refs: new Set(), excluded: new Set(), admitsCache: false }
+    const ctx = { usage, refs: new Set() }
     contexts.set(tx, ctx)
     const result = await callback(tx)
-    await reconcileChangedReferences(db, tx, ctx, admission, before)
+    // Capture direct admission before reference-induced category transfers.
+    const delta = Object.fromEntries(quotaTotalKeys.map(key => [key, usage[key] - before[key]]))
+    await reconcileChangedReferences(db, tx, ctx)
     if (admission) {
-      const delta = emptyTotals()
-      for (const key of Object.keys(delta)) delta[key] = usage[key] - before[key]
-      const { totals, limits } = admission
-      if (ctx.admitsCache && ['cacheBytes', 'cacheCount'].some(key => delta[key] > 0 && totals[key] + delta[key] > limits[key])) {
-        throw new NostrDbQuotaError('cache', delta, ctx.excluded)
-      }
-      for (const category of ['public', 'private']) {
-        const key = `${category}Bytes`
-        if (delta[key] > 0 && totals[key] + delta[key] > limits[key]) throw new NostrDbQuotaError(category)
+      for (const category of ['public', 'private', 'cache']) {
+        if (admission[category] && (delta[`${category}Bytes`] > 0 || (category === 'cache' && delta.cacheCount > 0))) {
+          recordPerformance({ stage: 'quota-growth-blocked', category })
+          throw new NostrDbQuotaError(category)
+        }
       }
     }
+    if (!connection.isCurrent()) throw unavailable()
     await request(stateStore.put(usage))
     await done
+    const volume = quotaTotalKeys.filter(key => key.endsWith('Bytes')).reduce((sum, key) => sum + Math.abs(usage[key] - before[key]), 0)
+    scheduleQuotaMaintenance({ count: 1, volume })
     return result
   } catch (error) {
     try { tx.abort() } catch {}
@@ -408,8 +470,8 @@ async function mutate (db, callback, admission) {
   }
 }
 
-function cacheExcess (totals, limits, extra = {}) {
-  return ['cacheBytes', 'cacheCount'].some(key => totals[key] + (extra[key] ?? 0) > limits[key])
+function cacheExcess (totals, limits) {
+  return ['cacheBytes', 'cacheCount'].some(key => totals[key] > limits[key])
 }
 
 async function nextAccess (db, after) {
@@ -419,25 +481,23 @@ async function nextAccess (db, after) {
   return cursor ? { db, key: cursor.key, access: cursor.value } : null
 }
 
-async function evict (dbs, limits, { extra = {}, excludeDb, excluded = new Set(), maxDeleted = 1000, maxExamined = 1000, onStats } = {}) {
+async function evict (dbs, limits, { maxDeleted = 25, maxExamined = 100, onStats } = {}) {
   let totals = await sumUsage(dbs)
-  if (!cacheExcess(totals, limits, extra)) return totals
-  if (['cacheBytes', 'cacheCount'].some(key => (extra[key] ?? 0) > limits[key])) return totals
-  const target = Object.fromEntries(['cacheBytes', 'cacheCount'].map(key => [key, Math.max(Math.floor(limits[key] * 0.9), extra[key] ?? 0)]))
+  if (!cacheExcess(totals, limits)) return totals
+  const target = Object.fromEntries(['cacheBytes', 'cacheCount'].map(key => [key, Math.floor(limits[key] * 0.9)]))
   const heads = (await Promise.all(dbs.map(db => nextAccess(db)))).filter(Boolean)
   let examined = 0
   let deleted = 0
-  while (heads.length && examined < maxExamined && deleted < maxDeleted && cacheExcess(totals, target, extra)) {
+  while (heads.length && examined < maxExamined && deleted < maxDeleted && cacheExcess(totals, target)) {
     const batch = new Map()
     let selected = 0
     const projected = { ...totals }
-    while (heads.length && examined < maxExamined && selected < Math.min(100, maxDeleted - deleted) && cacheExcess(projected, target, extra)) {
+    while (heads.length && examined < maxExamined && selected < Math.min(100, maxDeleted - deleted) && cacheExcess(projected, target)) {
       heads.sort((a, b) => a.access.lastAccessAt - b.access.lastAccessAt || indexedDB.cmp(a.db.name, b.db.name) || indexedDB.cmp(a.access.i, b.access.i))
       const candidate = heads.shift()
       examined++
       const next = candidate.refreshed ? null : await nextAccess(candidate.db, candidate.key)
       if (next) heads.push(next)
-      if (candidate.db.name === excludeDb && excluded.has(candidate.access.i)) continue
       const row = await request(candidate.db.transaction(EVENTS_STORE).objectStore(EVENTS_STORE).get(candidate.access.i))
       if (!row) continue
       projected.cacheBytes -= row.eventBytes
@@ -469,35 +529,31 @@ async function evict (dbs, limits, { extra = {}, excludeDb, excluded = new Set()
     }
     totals = await sumUsage(dbs)
   }
-  onStats?.({ examined, deleted })
+  onStats?.({ examined, deleted, exhausted: heads.length === 0 })
   return totals
 }
 
-export function withQuotaMutation (db, callback, { admission = false, beforeMutation, onTiming } = {}) {
-  return withNostrDbQuotaLock(async () => {
-    assertNostrDbAccess(db.name.slice(NOSTRDB_PREFIX.length))
+export async function withQuotaMutation (db, callback, { admission = false, beforeMutation, onTiming } = {}) {
+  const startedAt = performance.now()
+  const connection = captureNostrDbConnection(ownerFromDb(db))
+  const check = () => {
+    assertNostrDbAccess(ownerFromDb(db))
     beforeMutation?.()
-    if (!admission) {
-      await initializeUsage(db)
-      beforeMutation?.()
-      return mutate(db, callback)
-    }
-    const dbs = await allDatabases()
-    if (!dbs.some(candidate => candidate.name === db.name)) throw unavailable()
-    const limits = getNostrDbQuotaLimits()
-    let totals = await sumUsage(dbs)
+    if (!connection?.isCurrent()) throw Object.assign(new Error('NOSTRDB_RESET'), { code: 'NOSTRDB_RESET' })
+  }
+  try {
+    check()
+    await initializeUsage(db)
+    check()
+    const blocked = admission ? quotaBlocks(readQuotaState()?.totals, getNostrDbQuotaLimits()) : null
+    return await mutate(db, tx => { check(); return callback(tx) }, blocked)
+  } finally {
+    const measure = { stage: 'quota-mutation', elapsedMs: performance.now() - startedAt, category: admission ? 'admission' : 'mutation' }
     try {
-      return await mutate(db, callback, { totals, limits })
-    } catch (error) {
-      if (!(error instanceof NostrDbQuotaError) || error.category !== 'cache') throw error
-      totals = await evict(dbs, limits, { extra: error.delta, excludeDb: db.name, excluded: error.excluded })
-      return mutate(db, callback, { totals, limits })
-    }
-  }, entry => {
-    const measure = { ...entry, category: admission ? 'admission' : 'mutation' }
-    if (onTiming) onTiming(measure)
-    else recordPerformance(measure)
-  }).finally(scheduleQuotaMaintenance)
+      if (onTiming) onTiming(measure)
+      else recordPerformance(measure)
+    } catch {}
+  }
 }
 
 export function queueCacheAccess (owner, events) {
@@ -592,47 +648,49 @@ export async function flushCacheAccess () {
 }
 
 export function maintainNostrDbCache () {
-  return withNostrDbQuotaLock(async () => {
-    const limits = getNostrDbQuotaLimits()
-    const totals = await evict(await allDatabases(), limits, {
-      maxDeleted: 25, maxExamined: 100, onStats: stats => {
-        if (typeof IS_DEVELOPMENT !== 'undefined' && IS_DEVELOPMENT) recordPerformance({ stage: 'cache-maintenance', ...stats })
-      }
-    })
-    return { excess: cacheExcess(totals, limits) }
-  }, entry => recordPerformance({ ...entry, category: 'maintenance' }))
+  return reviewQuotaUsage(true)
 }
 
-function scheduleQuotaMaintenance () {
-  maintenance?.wake()
+export function scheduleQuotaMaintenance (demand) {
+  maintenance?.wake(demand)
 }
 
 export function startGlobalQuotaMaintenance () {
   if (maintenance) return maintenance.stop
-  let timer
-  let stopped = false
-  let running = false
-  let due = Infinity
-  const schedule = delay => {
-    if (stopped || Date.now() + delay >= due) return
-    due = Date.now() + delay
-    clearTimeout(timer)
-    timer = setTimeout(tick, delay)
-    timer.unref?.()
+  reloadQuotaState()
+  if (typeof BroadcastChannel === 'function') {
+    try {
+      channel = new BroadcastChannel('44billion:nostrdb-quota:v1')
+      channel.unref?.()
+      channel.onmessage = ({ data }) => {
+        if (data?.type === 'state') reloadQuotaState()
+        if (data?.type === 'dirty') maintenance?.wake({ remote: true, immediate: data.urgent === true })
+      }
+    } catch { recordPerformance({ stage: 'quota-state-notify-failed' }) }
   }
-  const tick = async () => {
-    if (stopped || running) return
-    running = true
-    due = Infinity
-    let delay = 60000
-    try { if ((await maintainNostrDbCache()).excess) delay = 1000 } catch {} finally { running = false; schedule(delay) }
+  const scheduler = createQuotaScheduler({
+    review: () => reviewQuotaUsage(true, true),
+    notify: urgent => broadcastQuotaMessage({ type: 'dirty', urgent })
+  })
+  const refresh = () => { reloadQuotaState(); scheduler.wake({ immediate: true }) }
+  const onStorage = event => {
+    if (event.key === STATE_KEY) reloadQuotaState()
+    if (event.key === null || event.key === SETTINGS_KEY) refresh()
   }
-  const stop = () => {
-    stopped = true
-    clearTimeout(timer)
-    if (maintenance?.stop === stop) maintenance = null
+  globalThis.addEventListener?.('storage', onStorage)
+  globalThis.addEventListener?.('focus', refresh)
+  globalThis.document?.addEventListener('visibilitychange', refresh)
+  maintenance = {
+    wake: scheduler.wake,
+    stop () {
+      scheduler.stop()
+      globalThis.removeEventListener?.('storage', onStorage)
+      globalThis.removeEventListener?.('focus', refresh)
+      globalThis.document?.removeEventListener('visibilitychange', refresh)
+      channel?.close()
+      channel = maintenance = null
+      resetQuotaStateMemory()
+    }
   }
-  maintenance = { stop, wake: () => { if (!running) schedule(1000) } }
-  schedule(1000)
-  return stop
+  return maintenance.stop
 }

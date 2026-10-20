@@ -15,7 +15,7 @@ import {
 import {
   DEFAULT_NOSTRDB_QUOTAS, getNostrDbQuotaUsage, setNostrDbQuotaLimits,
   maintainNostrDbCache, queueCacheAccess, flushCacheAccess, ownerReferenceKeys,
-  startGlobalQuotaMaintenance, cacheEventLimit, getNostrDbQuotaLimits, withNostrDbQuotaLock
+  startGlobalQuotaMaintenance, cacheEventLimit, getNostrDbQuotaLimits, withNostrDbQuotaLock, readQuotaState
 } from '#services/idb/nostrdb/quotas.js'
 
 globalThis.indexedDB = indexedDB
@@ -57,6 +57,7 @@ async function row (raw, event) {
   return request(raw.transaction('events').objectStore('events').get(eventIdIndexKey(event.id)))
 }
 async function limits (values) {
+  await getNostrDbQuotaUsage()
   return setNostrDbQuotaLimits(values)
 }
 afterEach(async () => {
@@ -76,6 +77,8 @@ it('uses global defaults and charges UTF-8 event bytes across owners', async () 
   assert.equal((await a.db.add(first)).ok, true)
   assert.equal((await b.db.add(second)).ok, true)
   assert.equal((await getNostrDbQuotaUsage()).publicBytes, byteSize(first) + byteSize(second))
+  assert.equal((await a.db.add(signed({}, a.secret))).stored, true, 'one admission can exceed the last reviewed total')
+  await getNostrDbQuotaUsage()
   const refused = await a.db.add(signed({}, a.secret))
   assert.equal(refused.code, 'quota')
   assert.equal(refused.quotaCategory, 'public')
@@ -83,16 +86,91 @@ it('uses global defaults and charges UTF-8 event bytes across owners', async () 
   assert.equal((await a.db.add(first)).code, 'duplicate')
 })
 
-it('serializes competing admissions for the last available global bytes', async () => {
+it('admits concurrent growth then blocks it after a global review', async () => {
   const a = await owner()
   const b = await owner()
   const first = signed({}, a.secret)
   const second = signed({}, b.secret)
   await limits({ publicBytes: Math.max(byteSize(first), byteSize(second)) })
   const results = await Promise.all([a.db.add(first), b.db.add(second)])
-  assert.equal(results.filter(result => result.stored).length, 1)
-  assert.equal(results.filter(result => result.quotaCategory === 'public').length, 1)
+  assert.equal(results.filter(result => result.stored).length, 2)
+  assert.equal((await getNostrDbQuotaUsage()).publicCount, 2)
+  assert.equal((await a.db.add(signed({}, a.secret))).quotaCategory, 'public')
+})
+
+it('writes and deletes across open banks without enumeration or the occupied maintenance lock', async t => {
+  const a = await owner()
+  const b = await owner()
+  const acquired = Promise.withResolvers()
+  const release = Promise.withResolvers()
+  const held = withNostrDbQuotaLock(async () => { acquired.resolve(); await release.promise })
+  await acquired.promise
+  const mock = t.mock.method(indexedDB, 'databases', () => assert.fail('foreground mutation enumerated databases'))
+  const first = signed({}, a.secret)
+  const second = signed({}, b.secret)
+  const operation = async () => {
+    assert.ok((await a.db.add(first)).stored)
+    assert.ok((await b.db.add(second)).stored)
+    assert.equal((await a.db.remove([['e', first.id]])).deleted, 1)
+    assert.equal((await b.db.remove([['e', second.id]])).deleted, 1)
+  }
+  let timeout
+  try {
+    await Promise.race([operation(), new Promise((resolve, reject) => { timeout = setTimeout(() => reject(new Error('mutation waited for maintenance lock')), 2000) })])
+  } finally {
+    clearTimeout(timeout)
+    mock.mock.restore()
+    release.resolve()
+    await held
+  }
+  assert.equal((await getNostrDbQuotaUsage()).publicCount, 0)
+})
+
+it('keeps known gates during review failure and unlocks growth after deletion or a limit increase', async t => {
+  const a = await owner()
+  const own = signed({}, a.secret)
+  await limits({ publicBytes: 1 })
+  assert.equal((await a.db.add(own)).stored, true)
+  await getNostrDbQuotaUsage()
+  const failing = t.mock.method(indexedDB, 'databases', async () => { throw new Error('offline database enumeration') })
+  await assert.rejects(getNostrDbQuotaUsage())
+  assert.equal((await a.db.add(signed({}, a.secret))).quotaCategory, 'public')
+  assert.equal((await a.db.add(signed())).stored, true, 'another category remains available')
+  failing.mock.restore()
+  await a.db.remove([['e', own.id]])
+  await getNostrDbQuotaUsage()
+  assert.equal((await a.db.add(signed({}, a.secret))).stored, true)
+  const usage = await getNostrDbQuotaUsage()
+  await setNostrDbQuotaLimits({ publicBytes: usage.publicBytes * 10 })
+  assert.equal((await a.db.add(signed({}, a.secret))).stored, true, 'configuration reapplies gates immediately')
+})
+
+it('does not fail committed writes or valid reviews when broadcast notifications fail', async t => {
+  const a = await owner()
+  const stop = startGlobalQuotaMaintenance()
+  t.after(stop)
+  const postMessage = BroadcastChannel.prototype.postMessage
+  t.mock.method(BroadcastChannel.prototype, 'postMessage', function (...args) {
+    if (this.name === '44billion:nostrdb-quota:v1') throw new Error('channel unavailable')
+    return postMessage.apply(this, args)
+  })
+  assert.equal((await a.db.add(signed({}, a.secret))).stored, true)
   assert.equal((await getNostrDbQuotaUsage()).publicCount, 1)
+})
+
+it('keeps the last complete aggregate when an existing bank becomes inaccessible', async () => {
+  const a = await owner()
+  const b = await owner()
+  await a.db.add(signed({}, a.secret))
+  await b.db.add(signed({}, b.secret))
+  const previous = await getNostrDbQuotaUsage()
+  const flag = `session_accountByUserPk_${base16ToBase62(b.pubkey, { mode: 'integer', minLength: 43 })}_isReadOnly`
+  settings.set(flag, 'true')
+  try {
+    await assert.rejects(getNostrDbQuotaUsage(), { code: 'READ_ONLY_ACCOUNT' })
+    assert.deepEqual(readQuotaState().totals, previous)
+    assert.equal(readQuotaState().maintenance.failed, true)
+  } finally { settings.delete(flag) }
 })
 
 it('rejects invalid signatures and modified signed content without allocating usage', async () => {
@@ -110,6 +188,7 @@ it('counts replacements by net bytes and rolls back quota-rejected replacements'
   const large = signed({ kind: 30023, tags: [['d', 'article']], content: 'larger' }, a.secret)
   await limits({ publicBytes: byteSize(old) })
   assert.equal((await a.db.add(old)).stored, true)
+  await limits({ publicBytes: byteSize(old) - 1 })
   assert.equal((await a.db.add(large)).quotaCategory, 'public')
   assert.ok(await row(a.raw, old))
   assert.equal(await row(a.raw, large), undefined)
@@ -178,6 +257,7 @@ it('pools every personal-copy author and context in the private quota without ev
   const second = await copy(signed({}, a.secret), 'owner-context')
   await limits({ privateBytes: byteSize(first), publicBytes: 0, cacheBytes: 0 })
   assert.equal((await a.db.add(first)).stored, true)
+  await limits({ privateBytes: byteSize(first) - 1 })
   assert.equal((await a.db.add(second)).quotaCategory, 'private')
   assert.ok(await row(a.raw, first))
   const usage = await getNostrDbQuotaUsage()
@@ -286,15 +366,20 @@ it('backfills legacy rows and references without verifying old signatures', asyn
   assert.equal((await openNostrDb(pubkey)).version, 3)
 })
 
-it('fails closed when database enumeration is unavailable', async t => {
+it('continues local writes during enumeration failure and retains the last valid totals', async t => {
   const a = await owner()
+  const previous = await getNostrDbQuotaUsage()
   const mock = t.mock.method(indexedDB, 'databases', async () => { throw new Error('unavailable enumeration') })
-  assert.equal((await a.db.add(signed())).code, 'unavailable')
+  assert.equal((await a.db.add(signed())).stored, true)
+  await assert.rejects(getNostrDbQuotaUsage())
+  const { readQuotaState } = await import('#services/idb/nostrdb/quotas.js')
+  assert.deepEqual(readQuotaState().totals, previous)
+  assert.equal(readQuotaState().maintenance.failed, true)
   mock.mock.restore()
-  assert.equal((await getNostrDbQuotaUsage()).publicCount, 0)
+  assert.equal((await getNostrDbQuotaUsage()).cacheCount, 1)
 })
 
-it('keeps a pending replacement intact even when cache eviction cannot make it fit', async () => {
+it('keeps a pending replacement intact when cache growth is disabled, without foreground eviction', async () => {
   const a = await owner()
   const b = await owner()
   const old = signed({ kind: 30023, tags: [['d', 'post']], content: 'x'.repeat(200) })
@@ -302,13 +387,13 @@ it('keeps a pending replacement intact even when cache eviction cannot make it f
   const larger = signed({ kind: 30023, tags: [['d', 'post']], content: 'x'.repeat(6000) })
   await a.db.add(old)
   await b.db.add(other)
-  await limits({ cacheBytes: byteSize(larger) - 1 })
+  await limits({ cacheBytes: 0 })
   const result = await a.db.add(larger)
   assert.equal(result.quotaCategory, 'cache')
   assert.ok(await row(a.raw, old))
   assert.equal(await row(a.raw, larger), undefined)
-  assert.equal(await row(b.raw, other), undefined)
-  assert.equal((await getNostrDbQuotaUsage()).cacheBytes, byteSize(old))
+  assert.ok(await row(b.raw, other), 'admission does not perform foreground eviction')
+  assert.equal((await getNostrDbQuotaUsage()).cacheBytes, byteSize(old) + byteSize(other))
 })
 
 it('admits a deletion that demotes protected events and trims the excess later', async () => {
@@ -528,15 +613,16 @@ it('derives cache counts exactly from byte overrides, including old settings and
   assert.equal(Object.hasOwn(JSON.parse(settings.get('44billion:nostrdb-quotas:v1')), 'cacheCount'), false)
 })
 
-it('enforces proportional count during admission and cleans both cache limits after reduction', async () => {
+it('detects proportional count excess asynchronously and cleans both cache limits after reduction', async () => {
   const a = await owner()
   const first = signed()
   const second = signed()
   await limits({ cacheBytes: 3000 }) // one event, though both fit in bytes
   await a.db.add(first)
   assert.equal((await a.db.add(second)).stored, true)
-  assert.equal(await row(a.raw, first), undefined)
-  assert.equal((await getNostrDbQuotaUsage()).cacheCount, 1)
+  assert.ok(await row(a.raw, first))
+  assert.equal((await getNostrDbQuotaUsage()).cacheCount, 2)
+  assert.equal((await a.db.add(signed())).quotaCategory, 'cache')
   await limits({ cacheBytes: 0 })
   await maintainNostrDbCache()
   const usage = await getNostrDbQuotaUsage()
@@ -705,7 +791,7 @@ it('keeps public and cache quotas exclusive and independent in both directions',
   assert.ok(await row(a.raw, own))
 })
 
-it('reserves the referrer globally, ranks promotions by access/ID and skips oversized targets', async () => {
+it('preserves every newly protected target even when their promotion exceeds the public quota', async () => {
   const a = await owner()
   const b = await owner()
   const otherOwner = signed({}, b.secret)
@@ -726,23 +812,20 @@ it('reserves the referrer globally, ranks promotions by access/ID and skips over
   await limits({ publicBytes: budget })
   assert.equal((await a.db.add(ref)).stored, true)
   assert.ok(await row(a.raw, ref))
-  for (const event of [tied[0], small]) {
+  for (const event of [huge, ...tied, small]) {
     assert.ok(await row(a.raw, event))
     assert.equal(await access(a.raw, event), undefined)
   }
-  for (const event of [huge, tied[1]]) assert.equal(await row(a.raw, event), undefined)
-  assert.equal((await getNostrDbQuotaUsage()).publicBytes, budget)
-  assert.equal((await getNostrDbQuotaUsage()).publicCount, 4)
-  assert.equal((await getNostrDbQuotaUsage()).cacheCount, 0)
-  assert.equal((await a.db.add(huge)).quotaCategory, 'public', 'a referenced target cannot return as cache')
-  await a.db.remove([['e', ref.id]])
-  assert.equal((await a.db.add(huge)).stored, true, 'promotion discard created no tombstone')
   const usage = await getNostrDbQuotaUsage()
-  assert.equal(usage.publicBytes, byteSize(otherOwner))
-  assert.equal(usage.cacheCount, 3)
+  assert.equal(usage.publicCount, 6)
+  assert.ok(usage.publicBytes > budget)
+  assert.equal(usage.cacheCount, 0)
+  assert.equal((await a.db.add(signed({}, a.secret))).quotaCategory, 'public')
+  await a.db.remove([['e', ref.id]])
+  assert.equal((await getNostrDbQuotaUsage()).cacheCount, 4)
 })
 
-it('drops only newly protected cache when all public room is reserved for the owner', async () => {
+it('keeps newly protected cache when a referrer uses the remaining public room', async () => {
   const a = await owner()
   const protectedTarget = signed()
   const previousRef = signed({ tags: [['e', protectedTarget.id]] }, a.secret)
@@ -756,17 +839,18 @@ it('drops only newly protected cache when all public room is reserved for the ow
   assert.equal((await a.db.add(ref)).stored, true)
   assert.ok(await row(a.raw, protectedTarget))
   assert.ok(await row(a.raw, previousRef))
-  assert.equal(await row(a.raw, cached), undefined)
-  assert.equal((await getNostrDbQuotaUsage()).publicBytes, usage.publicBytes + byteSize(ref))
+  assert.ok(await row(a.raw, cached))
+  assert.equal(await access(a.raw, cached), undefined)
+  assert.equal((await getNostrDbQuotaUsage()).publicBytes, usage.publicBytes + byteSize(ref) + byteSize(cached))
 })
 
-it('refuses an owner event that itself cannot fit without deleting any cache', async () => {
+it('refuses new public growth with a zero limit without deleting cache', async () => {
   const a = await owner()
   const target = signed()
   await a.db.add(target)
   const ref = signed({ tags: [['x', target.id]] }, a.secret)
   const before = await getNostrDbQuotaUsage()
-  await limits({ publicBytes: byteSize(ref) - 1 })
+  await limits({ publicBytes: 0 })
   assert.equal((await a.db.add(ref)).quotaCategory, 'public')
   assert.equal(await row(a.raw, ref), undefined)
   assert.ok(await row(a.raw, target))
@@ -774,7 +858,7 @@ it('refuses an owner event that itself cannot fit without deleting any cache', a
   assert.deepEqual(await getNostrDbQuotaUsage(), before)
 })
 
-it('uses net replacement room for promotions even with a zero public limit', async () => {
+it('allows reference transfers during a shrinking replacement with a zero public limit', async () => {
   const a = await owner()
   const old = signed({ kind: 30023, tags: [['d', 'ref']], content: 'x'.repeat(5000) }, a.secret)
   const target = signed({ content: 'x'.repeat(2000) })
@@ -814,7 +898,7 @@ it('accounts for demotions before promotions independent of reference iteration 
   assert.ok(await row(a.raw, newTarget))
 })
 
-it('rolls back the owner replacement, promotions, discards and access times together', async t => {
+it('rolls back the owner replacement, promotions and access times together', async t => {
   const a = await owner()
   const old = signed({ kind: 30023, tags: [['d', 'ref']] }, a.secret)
   const hot = signed()
@@ -860,14 +944,15 @@ it('charges personal referrers privately while promoting their external referenc
   const wrapper = finalizeEvent({ ...unsigned, tags: [...unsigned.tags, ['x', target.id]] }, a.secret)
   await limits({ publicBytes: 0, privateBytes: byteSize(wrapper) })
   assert.equal((await a.db.add(wrapper)).stored, true)
-  assert.equal(await row(a.raw, target), undefined)
+  assert.ok(await row(a.raw, target))
+  assert.equal(await access(a.raw, target), undefined)
   const usage = await getNostrDbQuotaUsage()
   assert.equal(usage.privateBytes, byteSize(wrapper))
-  assert.equal(usage.publicBytes, 0)
+  assert.equal(usage.publicBytes, byteSize(target))
   assert.equal(usage.cacheBytes, 0)
 })
 
-it('removes old deletion contributions when a cached kind 5 cannot be promoted', async () => {
+it('preserves deletion contributions when a cached kind 5 is promoted above quota', async () => {
   const a = await owner()
   const target = signed()
   const deletion = signed({ kind: 5, tags: [['e', target.id]] })
@@ -878,11 +963,11 @@ it('removes old deletion contributions when a cached kind 5 cannot be promoted',
   const ref = signed({ tags: [['x', deletion.id]] }, a.secret)
   await limits({ publicBytes: byteSize(ref) })
   assert.equal((await a.db.add(ref)).stored, true)
-  assert.equal(await row(a.raw, deletion), undefined)
-  assert.equal(await request(a.raw.transaction('deletions').objectStore('deletions').count()), 0)
-  assert.equal((await a.db.add(target)).stored, true)
-  assert.equal((await getNostrDbQuotaUsage()).publicBytes, byteSize(ref))
-  assert.equal((await getNostrDbQuotaUsage()).cacheBytes, byteSize(target))
+  assert.ok(await row(a.raw, deletion))
+  assert.equal(await request(a.raw.transaction('deletions').objectStore('deletions').count()), 1)
+  assert.equal((await a.db.add(target)).code, 'blocked')
+  assert.equal((await getNostrDbQuotaUsage()).publicBytes, byteSize(ref) + byteSize(deletion))
+  assert.equal((await getNostrDbQuotaUsage()).cacheBytes, 0)
 })
 
 it('does not discard newly arriving referenced events or already preserved versions to fit admission', async () => {
@@ -891,12 +976,13 @@ it('does not discard newly arriving referenced events or already preserved versi
   const newer = signed({ kind: 30023, tags: [['d', 'protected']], content: 'larger' })
   const ref = signed({ tags: [['a', `30023:${old.pubkey}:protected`]] }, a.secret)
   await a.db.add(ref)
-  await limits({ publicBytes: byteSize(ref) })
+  await limits({ publicBytes: 0 })
   assert.equal((await a.db.add(old)).quotaCategory, 'public')
   assert.equal(await row(a.raw, old), undefined)
   await limits({ publicBytes: byteSize(ref) + byteSize(old) })
   assert.equal((await a.db.add(old)).stored, true)
   const before = await getNostrDbQuotaUsage()
+  await limits({ publicBytes: before.publicBytes - 1 })
   assert.equal((await a.db.add(newer)).quotaCategory, 'public')
   assert.ok(await row(a.raw, old))
   assert.equal(await row(a.raw, newer), undefined)
@@ -1203,7 +1289,7 @@ it('rolls back a private deletion when the envelope admission fails', async () =
     }
   })
 
-  await limits({ privateBytes: byteSize(target) })
+  await limits({ privateBytes: 0 })
   const refused = await a.db.add(deletion)
   assert.equal(refused.code, 'quota')
   assert.equal(refused.quotaCategory, 'private')

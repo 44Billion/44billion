@@ -150,6 +150,9 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   `src/services/local-dev/install.js`. Do not duplicate storage schemas in
   consumer projects. Fixtures and generated keys belong only to disposable
   browser profiles. Development classification is documented separately below.
+- CDP frame metadata is scoped by target session as well as frame ID. Select
+  app contexts only after their document URL is known; never evaluate app
+  assertions in same-origin bridge or file-download iframes (`/~~` routes).
 - The default Chrome helper denies external traffic through a local proxy,
   including WebSockets/CONNECT. Network fixtures may supply controlled responses;
   injected APIs, the vault, and permissions stay real. `externalNetwork: true`
@@ -428,10 +431,17 @@ publish the same archive manually. No local dependency references are committed.
   each transaction and issue conditional updates from their success handlers;
   retain the transaction-completion barrier and all existence/generation checks.
 - Ready counters use readonly maintenance reads. Periodic eviction is limited to
-  100 examinations/25 deletions per lock round; admission's existing bounds and
-  atomic checks remain unchanged. Revalidate LRU timestamps/eligibility in the
-  deletion transaction and reselect changed candidates. Keep cross-owner sums,
-  schema and legacy reconstruction; no global persisted total/cache is added.
+  100 examinations/25 deletions per lock round; ordinary admission performs no
+  eviction or global sums. Revalidate LRU timestamps/eligibility in the deletion transaction and reselect changed candidates.
+- Event mutations atomically maintain existing per-owner counters without taking
+  the global quota lock. Background review publishes the versioned advisory
+  `44billion:nostrdb-quota-state:v1` summary under that lock, which still coordinates
+  configuration and DB creation/removal. Preserve legacy reconstruction and schema.
+  Permit temporary excess; block positive net admission only on known exceeded
+  categories (zero limits immediately). Reference-induced transfers never discard
+  protected targets or block removals. Keep last usable gates during maintenance
+  failure; unknown positive budgets remain available. Preserve shared scheduler
+  coalescing/volume thresholds, cross-tab revisions and root-owned UI subscription.
 
 ## Send scheduling and preparation
 

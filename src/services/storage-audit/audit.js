@@ -1,7 +1,9 @@
+import { isQuotaState } from '#services/idb/nostrdb/quota-state.js'
 import { DEFAULT_PERSONA_ID, isPersonaEligible } from '#services/personas/model.js'
 import { base62ToBase16 } from 'libp2r2p/base62'
 import {
   NOSTRDB_PENDING_DELETIONS_KEY,
+  NOSTRDB_QUOTA_STATE_KEY,
   NOSTRDB_ACCOUNT_COVERAGE_PREFIX,
   NOSTRDB_ACCOUNT_COVERAGE_REGISTRY,
   ACCOUNT_SUFFIXES,
@@ -449,6 +451,13 @@ export function auditPersistedState (localStorageArea, sessionStorageArea, {
     const item = toIssue(code, message, details)
     if (!actionable) item.actionable = false
     issues.push(item)
+  }
+
+  // This is an advisory aggregate, never the durable per-account accounting.
+  // Report malformed state without deleting a previously known growth gate.
+  const quotaState = getValue(local, NOSTRDB_QUOTA_STATE_KEY)
+  if (isInvalid(local, NOSTRDB_QUOTA_STATE_KEY) || (quotaState != null && !isQuotaState(quotaState))) {
+    issue('invalid-nostrdb-quota-state', 'NostrDB quota summary requires background reconstruction', undefined, false)
   }
 
   const pendingDeletions = getValue(local, NOSTRDB_PENDING_DELETIONS_KEY)

@@ -71,9 +71,8 @@ An unchanged duplicate does not update usage, timestamps, cache classification,
 references or subscriber notifications. Its readonly observation is the operation's
 linearization point; a later independent deletion remains authoritative.
 
-Global quota coordination still precedes readwrite transaction creation. These
-optimizations shorten readers and writers and remove no-change admissions; they
-do not introduce quota reservations, another lock hierarchy or relaxed accounting.
+Event mutations update exact per-owner counters in their own write transaction.
+Global quota review is asynchronous; see the advisory quota contract below.
 Development-only bounded diagnostics add `query-planning` (`probes`,
 `keysExamined`, candidate `examined`, `earlyDecision`, `budgetExhausted` and time;
 `count` remains a probe-count alias),
@@ -131,7 +130,7 @@ when `maintenanceOptions.signEvent` is supplied.
 
 | Routine | Default schedule | Work and limits per execution |
 | --- | --- | --- |
-| `maintainNostrDbCache` | First check after 1 second; excess pages 1 second apart; otherwise every minute | Initializes missing quota summaries, then removes at most 100 globally oldest cache events, examining at most 1,000 candidates. |
+| `maintainNostrDbCache` | Commit requests coalesce at 1 second; volume can expedite; excess pages 1 second apart; otherwise every minute | Initializes missing quota summaries, then removes at most 25 globally oldest cache events, examining at most 100 candidates. |
 | `purgeExpired` | Immediately, then every hour | Finds expired events and removes them and their deletion contributions. No batch cap; selected deletions share one write transaction. |
 | Unclaimed-data scheduler / `purgeUnclaimedAppData` | Checks after 1 second; pauses 1 second between pages; new sweep 24 hours after the last completion | Each page scans up to 1,000 records and deletes up to 100 unclaimed app-trackable events received at least 30 days ago. Progress and completion time survive reloads. |
 | `maintainDeletionRequests` | Immediately, then every hour, with a signer | Runs one compaction, then pruning, for the selected author (the owner by default). Compaction combines compatible kind 5 requests into a signed event with up to 100 target tags, and — when vault encryption and a signer are available — merges owner-authored, non-expiring private deletion envelopes from the same context into a rewritten wrapper; third-party and expiring envelopes are left for pruning/purge. Pruning targets a total of 1,000 requests (public plus envelopes), removing at most 100 per run after a 30-day receipt grace period. |
@@ -204,10 +203,11 @@ Compaction preserves address cutoffs by grouping compatible timestamps.
 ## Concurrency
 
 44billion supports simultaneous app windows within one launcher tab; opening
-another browser tab is not necessary for that workflow. Maintenance has no
-leader election covering a complete routine across tabs. Quota mutations use the
-global Web Lock `44billion:nostrdb-quota:v1`, including database creation/removal,
-event admission, deletion, reclassification and quota settings changes.
+another browser tab is not necessary for that workflow. Quota reviews, settings and database lifecycle use the existing global Web Lock
+`44billion:nostrdb-quota:v1`. Ordinary event admission, deletion and reclassification
+never acquire it or enumerate other owner databases. Their local accounting stays
+atomic through IndexedDB transactions. Reviews are single-flight per context and
+serialize across tabs; other chunk maintenance retains its existing coordination.
 
 `maintenanceStops` prevents duplicate automatic schedulers on one NostrDB
 instance. Each scheduler's `running` flag and chained timer prevent that
@@ -301,52 +301,59 @@ cleanup retain protected third-party events. Unreferenced cache remains eligible
 for other cleanup routines. Removing references may increase cache usage without
 allocating storage; removal commits and background maintenance trims the excess.
 
-### Admission and coordination
+### Admission and asynchronous coordination
 
-When owner references newly protect existing cache, reserve room for the referrer
-and other mandatory transaction changes first. Reconcile against the final set of
-stored owner references, deduplicating targets by stored ID. Public promotion room
-is `max(publicLimit, previousGlobalPublicBytes) - projectedGlobalPublicBytes`, with
-the projection excluding these promotions but including demotions/replacements.
-A negative budget rejects the entire operation with public `quota`.
+Each mutation updates the events, deletion contributions, reference classification
+and per-owner usage in one readwrite transaction. Aborts roll back all of them.
+There is no delta journal and no new IndexedDB schema. Ordinary mutations only
+initialize their own legacy counters; they never sum usage or wait for the global
+quota lock. Access and the connection generation are rechecked before mutation.
 
-Promote candidates in descending persisted `lastAccessAt` order, breaking ties by
-stored ID (IndexedDB ordering). Skip and locally delete candidates that do not fit,
-continuing to smaller candidates later in that order. Only pre-existing cache is
-eligible: already preserved events and newly admitted/replaced records are not
-sacrificed. Look up affected IDs/addresses and access records through existing
-keys/indexes; retain only candidate metadata while sorting, never scan global LRU
-for promotion selection. Ordinary global cache eviction keeps its existing bounds.
+Admission consults the last known global usage and current configured limits.
+Positive net byte growth is refused in blocked categories; cache count growth is
+also checked. Zero limits disable new growth immediately. For positive limits,
+a category becomes blocked after a review observes usage *above* its limit.
+Concurrent admissions can exceed it before that review. Duplicates, removals and
+net non-growing replacements remain possible. Transfers of already stored targets
+between public and cache happen after direct admission deltas are determined:
+they do not block a referrer or removal. Every protected target is retained; no
+promotion candidate is discarded to accommodate its referrer.
 
-The referrer and all promotion/discard operations commit atomically, using the
-common deletion path (including removal of old kind 5 contributions and post-commit
-chunk/blob reconciliation). Aborts roll everything back; discards create no new
-tombstones. References to discarded targets remain stored. A later arrival still
-referenced must fit public quota; it cannot fall back to cache. Losing the last
-reference transfers usage from public to cache without blocking removals, even
-when cache exceeds its limit; maintenance trims that excess later.
+The shared maintenance sums only small ready `maintenance.quotaUsage` records.
+Its snapshot is advisory: different owners may be observed at different moments.
+It never publishes a partial sum on failed enumeration, initialization or access.
+Failure preserves the previous usable totals/gates. Without usable prior totals,
+positive budgets remain available; zero budgets remain disabled. Real transaction
+and browser storage failures are still reported. A rejected quota mutation returns
+the existing `quota`/`quotaCategory` result and rolls back atomically.
 
-Under the global quota lock, enumerate all NostrDBs and sum their small persisted
-`maintenance.quotaUsage` records. There is no separately persisted global total.
-Signing/preparation precedes the lock. Transactions await only IndexedDB requests;
-chunk staging, compensation and reconciliation remain outside them and retain
-their existing separate lock. Unavailable enumeration/coordination refuses
-admission as `unavailable`, without assuming zero usage.
+Committed changes request a review after one second without moving an earlier
+deadline. At 64 mutations or 4 MiB of absolute byte changes per context, request
+an expedited review. Scheduled global starts are at least 250ms apart. Demands
+arriving during a run cause a subsequent run. Idle checks happen each minute;
+remaining cache excess causes another round after one second. Failures retry with
+1–30s exponential backoff; fresh demands do not bypass that backoff. Startup,
+focus/visibility, settings and database lifecycle also request review.
 
-Admission checks the net change after replacements, consumed deletion requests,
-provenance reconciliation and reference changes. Duplicates without growth,
-deletions, and replacements that do not increase an already-exceeded category
-remain allowed. A quota failure aborts the whole attempted mutation and reports
-`quotaCategory`, without revealing another account's events or identity.
+Reviews/configuration publish `44billion:nostrdb-quota-state:v1` under the existing
+exclusive lock, with increasing revision, last successful check time, totals,
+limits, category gates and maintenance status. Persist before notifying readers.
+Local callbacks, storage events and BroadcastChannel share state/demand; delayed
+notifications cannot replace a newer revision. Resume reloads the persisted state.
+Failed persistence does not undo event commits. It preserves the usable state,
+reports a development diagnostic and retries. No account/event identities appear
+in the global snapshot. Configuration immediately reapplies the known totals to
+new limits, then requests fresh aggregation. In-flight writes can finish under
+the previous gate. There is no strict bound on excess during delays or failures.
+Broadcast notifications are best-effort hints: failures cannot turn a committed
+mutation or a valid persisted review into an operation failure. Storage events,
+resume reloads and periodic review remain available when that channel is denied.
 
-When cache admission exceeds a ceiling, merge the oldest index candidate from
-each DB, ordered by `lastAccessAt`, DB name and ID. Read candidates incrementally,
-revalidate existence/protection and the selected access timestamp on deletion, exclude versions needed by the
-pending replacement, delete in transactions of at most 100, and examine at most
-1,000 candidates per admission. Aim for 90% of both cache limits, but admit if the
-hard limits fit even when that margin cannot be reached. Already committed cache
-evictions survive a later admission failure; a rejected replacement itself never
-partially commits. Public/private limits never authorize deleting preserved data.
+Only maintenance evicts cache. Each round merges global LRU heads, examines at
+most 100 candidates and deletes at most 25, aiming for 90% of byte and count limits.
+Deletion revalidates timestamp, existence and protection inside its transaction,
+since foreground writes no longer share the global lock. Referenced data cannot
+be removed by cache pressure. Public/private excess never deletes retained events.
 
 ### Approximate LRU
 
@@ -381,10 +388,9 @@ Ready quota counters are confirmed through a readonly `maintenance` transaction,
 without a broad write transaction on unrelated event/access stores. Periodic cache
 maintenance examines at most 100 candidates and deletes at most 25 per round,
 releasing the global lock before scheduling a remaining round (one-second delay
-while excess remains, otherwise the existing minute interval). Admission retains
-its 1,000-candidate / 100-record transaction limits and atomic global checks.
-Development diagnostics distinguish admission/mutation/maintenance lock wait and
-execution from the separate access transaction wait/execution and round counts.
+while excess remains, otherwise the existing minute interval). Admission performs no eviction. Development diagnostics distinguish local mutation
+duration, review/maintenance work and the separate access transaction wait and
+execution. Only background/configuration/lifecycle operations have quota-lock waits.
 
 Existing databases initialize in two resumable passes, at most 1,000 rows per
 transaction: fill event sizes/references, then classify cache and build counters.
@@ -402,9 +408,14 @@ count ceiling is derived with exact integer arithmetic:
 this proportion; schema 3 is unchanged. Zero bytes means zero cache events.
 Reducing public/private limits blocks growth only; reducing cache schedules
 trimming. Configuration and global usage remain launcher-only.
-The screen preserves drafts until Save, updates usage every five seconds while
-visible and on focus, and observes configuration changes across tabs without
-overwriting dirty fields. Its donut shows public outside cache, cache, and private
+The screen preserves drafts until Save and subscribes to the root-owned shared
+quota state, without per-component polling. It observes changes across tabs without
+overwriting dirty fields. It shows the check time, stale/error status, actual
+percentage and excess bytes; bars remain capped at 100%. Zero limits display a
+disabled category instead of an infinite percentage. Retained-category excess
+marks the toolbar, Settings menu entry and Event storage row; cache only demands
+attention if cleanup fails or exhausts candidates while excess remains. Opening
+the menu does not dismiss the indicator. Its donut shows public outside cache, cache, and private
 bytes directly; the center sums all three exclusive categories.
 Storage audit preserves the global configuration; repair uses the ordinary app
 cleanup and owner removal paths, maintaining usage and deleting all owner-local
@@ -422,7 +433,7 @@ permission requests as `{ kind: 5, tags: targets }`, without signing that descri
 See [the API contract](../APP_API.md#local-event-removal) for validation and scope.
 It resolves IDs exactly and addresses to their current version inside a single
 non-admission `withQuotaMutation`, calling `deleteStoredEvent` for each distinct
-match. Persona access is checked again under the quota lock, before opening that
+match. Persona access and connection generation are checked again before opening that
 transaction. Aborts roll back every deletion and usage/reference/cache transition.
 
 The common deletion path removes existing kind 5 contributions and runs the same

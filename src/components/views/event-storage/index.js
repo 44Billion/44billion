@@ -1,3 +1,4 @@
+import { useQuotaState } from '#hooks/use-quota-state.js'
 import { f, useStore, useTask } from '#f'
 import { cssVars, jsVars } from '#assets/styles/theme.js'
 import { getT, getEffectiveLocale } from '#i18n/index.js'
@@ -5,7 +6,6 @@ import '#shared/back-btn.js'
 import '#shared/icons/icon-database.js'
 import '#shared/icons/icon-server-bolt.js'
 import '#shared/icons/icon-shield-lock.js'
-import { NOSTRDB_QUOTA_SETTINGS_KEY } from '#constants/storage-schema.js'
 import {
   DEFAULT_NOSTRDB_QUOTAS, cacheEventLimit, getNostrDbQuotaLimits,
   getNostrDbQuotaUsage, setNostrDbQuotaLimits
@@ -28,6 +28,7 @@ const bytes = value => value > 0 && value < 0.005 * MIB
   : `${number(value / (value >= 1024 * MIB ? 1024 * MIB : MIB))} ${value >= 1024 * MIB ? 'GiB' : 'MiB'}`
 
 f('event-storage', ({ h, s }) => {
+  const quotaState$ = useQuotaState()
   const state = useStore(() => {
     const limits = getNostrDbQuotaLimits()
     return {
@@ -111,26 +112,17 @@ f('event-storage', ({ h, s }) => {
     }
   }, { shouldCache: false })
   useTask(({ cleanup }) => {
-    const refresh = () => { state.refresh() }
-    const onStorage = event => {
-      if (event.storageArea === localStorage && (event.key === NOSTRDB_QUOTA_SETTINGS_KEY || event.key === null)) {
-        state.syncLimits(true)
-        refresh()
-      }
-    }
-    refresh()
-    const interval = setInterval(refresh, 5000)
-    window.addEventListener('focus', refresh)
-    document.addEventListener('visibilitychange', refresh)
-    window.addEventListener('storage', onStorage)
-    cleanup(() => {
-      state.disposed = true
-      clearInterval(interval)
-      window.removeEventListener('focus', refresh)
-      document.removeEventListener('visibilitychange', refresh)
-      window.removeEventListener('storage', onStorage)
-    })
+    state.refresh()
+    cleanup(() => { state.disposed = true })
   })
+  useTask(({ track }) => {
+    const snapshot = track(() => quotaState$())
+    state.syncLimits(true)
+    if (snapshot?.totals) state.usage$(snapshot.totals)
+    if (snapshot?.maintenance.failed) state.error$('usage')
+    else if (state.error$() === 'usage') state.error$('')
+  })
+
   const usage = state.usage$()
   const total = usage ? usage.publicBytes + usage.cacheBytes + usage.privateBytes : 0
   const segments = usage ? usageSegments(usage) : [0, 0, 0]
@@ -201,6 +193,8 @@ f('event-storage', ({ h, s }) => {
             <div class="legend-row"><span class="swatch" style=${`background: ${colors[i]}`}></span><span class="legend-name">${t(segmentTitles[i])}</span><strong>${usage ? bytes(value) : '—'}</strong></div>
           `)}</div>
         </div>
+        <p>${t('Usage is refreshed in the background. Temporary excess is possible.')}</p>
+        ${quotaState$()?.checkedAt ? h`<p class="muted">${t('Last checked')}: ${new Date(quotaState$().checkedAt).toLocaleString(getEffectiveLocale())}</p>` : ''}
         <p>${t('Limits are shared across all accounts. Only event data is counted; app files and chunk payloads have separate budgets.')}</p>
         ${quotaFields.map((key, i) => {
           const preview = state.dirty$()[key] ? parseQuotaMiB(state.draft$()[key]) : limits[key]
@@ -208,6 +202,8 @@ f('event-storage', ({ h, s }) => {
           const countKey = key.replace('Bytes', 'Count')
           const isCache = key === 'cacheBytes'
           const over = usage && (used > limits[key] || (isCache && usage.cacheCount > limits.cacheCount))
+          const percentage = limits[key] && (!isCache || limits.cacheCount) ? `${number(used / limits[key] * 100)}%` : t('Limit disabled')
+          const details = `${bytes(used)} / ${bytes(limits[key])}; ${percentage}`
           const reduction = preview !== null && preview < limits[key]
           const iconProps = { size: '22px', color: colors[i], weight: 'regular' }
           const icon = i === 0
@@ -219,7 +215,8 @@ f('event-storage', ({ h, s }) => {
             <h2 id=${`${key}-title`}><span class="category-icon" aria-hidden="true">${icon}</span><span>${t(titles[i])}</span></h2>
             <p>${t(descriptions[i])}</p>
             <div class="usage"><strong>${usage ? `${bytes(used)} / ${bytes(limits[key])}` : t('Calculating…')}</strong><span>${usage ? number(usage[countKey]) : '—'}${isCache ? ` / ${number(limits.cacheCount)}` : ''} ${t('events')}</span></div>
-            <div class="track" role="progressbar" aria-label=${t(titles[i])} aria-valuemin="0" aria-valuemax="100" aria-valuenow=${occupancy(used, limits[key])} aria-valuetext=${usage ? `${bytes(used)} / ${bytes(limits[key])}` : t('Calculating…')}><div class="fill" style=${`width: ${occupancy(used, limits[key])}%; background: ${colors[i]}`}></div></div>
+            <div class="track" role="progressbar" aria-label=${t(titles[i])} aria-valuemin="0" aria-valuemax="100" aria-valuenow=${occupancy(used, limits[key])} aria-valuetext=${usage ? details : t('Calculating…')}><div class="fill" style=${`width: ${occupancy(used, limits[key])}%; background: ${colors[i]}`}></div></div>
+            <p class="muted">${usage ? percentage : '—'}${usage && used > limits[key] ? ` · ${t('Over by')} ${bytes(used - limits[key])}` : ''}</p>
             ${over ? h`<p class="notice">${t('Above limit')}: ${t(isCache ? 'Automatic cache cleanup is scheduled.' : 'Events are kept. Growth is blocked while above the limit.')}</p>` : ''}
             <label for=${`${key}-input`}>${t('Limit in MiB')}<input id=${`${key}-input`} type="text" inputmode="decimal" value=${state.draft$()[key]} disabled=${state.saving$()} aria-invalid=${preview === null} aria-describedby=${`${key}-hint`} oninput=${event => state.edit(key, event.target.value)} /></label>
             <p id=${`${key}-hint`} class=${preview === null ? 'error' : 'muted'}>${preview === null ? t('Enter a non-negative MiB value within the supported range.') : isCache ? `${number(cacheEventLimit(preview))} ${t('events')}` : ''}</p>

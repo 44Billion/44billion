@@ -47,6 +47,17 @@ ephemeral and intentionally not persisted; they do not belong here or in
   `{ publicBytes, privateBytes, cacheBytes }`, non-negative safe integers. Defaults
   are 512 MiB, 1 GiB and 128 MiB respectively; cache also has a proportional event
   ceiling. Account/app cleanup preserves this configuration.
+- `44billion:nostrdb-quota-state:v1` — advisory aggregate, version 1: increasing
+  `revision`, `checkedAt` (last successful aggregation), `totals` (six exclusive
+  byte/count values, or null when unknown), the corresponding `limits`, category
+  `blocked` flags and `maintenance: { startedAt, failed, cacheAttention, failureCount, retryAt }`.
+  The failure count/backoff deadline coalesce retries across execution contexts.
+  Published under the existing quota lock before notifying local/cross-tab readers.
+  Contains no owner/event identifiers. Failure preserves the last usable state;
+  settings changes recompute gates and schedule a fresh review. Storage audit
+  reports malformed summaries without destructive repair; maintenance reconstructs
+  them from exact local counters. Account/app removal preserves the summary and
+  schedules reevaluation. Full environment reset removes it with launcher storage.
 - `44billion:app-asset-budget:v1` — per-app cached byte budgets.
 - `local_embeddedOnlyRetentionAdmissions` — embedded-only retention admissions.
 - `local_nostrDbPendingDeletions` — `{ [ownerHexPubkey]: token }`, a durable
@@ -292,8 +303,9 @@ cacheCount }`. Public, private and cache bytes/counts are mutually exclusive:
 `publicBytes`/`publicCount` exclude cache. `phase` is `records`, `classify` or `ready`; `after` checkpoints the
 last primary key, or is null at each pass boundary. Two resumable passes of up
 to 1,000 rows backfill sizes/references and then classification/totals. All event
-mutations atomically maintain these local totals; a global Web Lock coordinates
-summation across every existing owner DB. No global counter is persisted.
+mutations atomically maintain these local totals without a global lock. Background
+review sums existing owner counters and persists an advisory summary; the summary
+is not an independently incremented global counter. No IndexedDB migration occurs.
 The storage audit inspects launcher state rather than internal NostrDB records;
 its app cleanup preserves the checkpoints and maintains quota usage. Owner-database removal deletes them and cache access rows
 with the other stores. No localStorage/sessionStorage repair key is needed.

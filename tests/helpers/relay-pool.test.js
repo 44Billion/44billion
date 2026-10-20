@@ -857,8 +857,10 @@ describe('unified relay pool', () => {
     assert.equal(sockets[0].sent.some(message => message[0] === 'REQ' && message[1].includes('b')), true)
   })
 
-  it('closes an idle NEG session with a synthetic NEG-ERR and keeps a tombstone', async () => {
+  it('closes an idle NEG session with a synthetic NEG-ERR and keeps a tombstone', async t => {
+    t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 10000 })
     const { pool, sockets } = createPool({ negSessionIdleMs: 50, negTombstoneMs: 500 })
+    t.after(() => pool.closeAll())
     const alice = generateSecretKey()
     const received = []
     const { memberB } = await setupTwoAuthBucketsWithNeg({
@@ -867,7 +869,11 @@ describe('unified relay pool', () => {
       alice,
       handlersB: { onMessage: raw => received.push(JSON.parse(raw)) }
     })
-    await new Promise(resolve => setTimeout(resolve, 70))
+    t.mock.timers.tick(49)
+    await tick()
+    assert.equal(received.some(message => message[0] === 'NEG-ERR' && message[1] === 'negB'), false)
+    t.mock.timers.tick(1)
+    await tick()
     assert.equal(received.some(message => message[0] === 'NEG-ERR' && message[1] === 'negB' && String(message[2]).startsWith('closed:')), true)
     assert.equal(pool.snapshot().consolidations, 1)
     received.length = 0

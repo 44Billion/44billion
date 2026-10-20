@@ -34,6 +34,7 @@ export const GLOBAL_LOCAL_KEYS = [
   '44billion:vault-accepted-message-queue:v1',
   '44billion:app-asset-budget:v1',
   '44billion:nostrdb-quotas:v1',
+  '44billion:nostrdb-quota-state:v1', // Last successful aggregate and per-category growth gates.
   'local_embeddedOnlyRetentionAdmissions',
   'local_pendingStorageRepairPlan',
   'local_nostrDbPendingDeletions', // Owner -> deletion token; blocks reopening until cleanup commits.
@@ -133,6 +134,7 @@ export const NOSTRDB_UNCLAIMED_APP_DATA_KEY = 'unclaimedAppData'
 export const NOSTRDB_CACHE_ACCESS_STORE = 'cacheAccess'
 export const NOSTRDB_QUOTA_USAGE_KEY = 'quotaUsage'
 export const NOSTRDB_QUOTA_SETTINGS_KEY = '44billion:nostrdb-quotas:v1'
+export const NOSTRDB_QUOTA_STATE_KEY = '44billion:nostrdb-quota-state:v1'
 
 // Per-owner NostrDB maintenance records; no injected eventStore API.
 // Registry: { key, version: 1, generation, kinds }; coverage records:
