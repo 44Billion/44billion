@@ -236,16 +236,16 @@
   </div>
 
   <script>
-    document.body.style.visibility = 'hidden';
+    document.body.style.visibility = 'hidden'
 
     if (window.parent !== window.top) {
-      document.querySelector('.loader-container').style.display = 'none';
-      const pulseBg = document.getElementById('pulse-background');
-      pulseBg.classList.add('pulsing');
-      document.body.style.visibility = 'visible';
+      document.querySelector('.loader-container').style.display = 'none'
+      const pulseBg = document.getElementById('pulse-background')
+      pulseBg.classList.add('pulsing')
+      document.body.style.visibility = 'visible'
       document.addEventListener('DOMContentLoaded', () => {
-        napp.addEventListener('progress', () => {
-          maybeReload(napp.progress)
+        window.napp.addEventListener('progress', () => {
+          maybeReload(window.napp.progress)
         })
       })
       function maybeReload (progress) {
@@ -253,7 +253,7 @@
         window.location.reload()
       }
     } else {
-      document.body.style.visibility = 'visible';
+      document.body.style.visibility = 'visible'
       document.addEventListener('DOMContentLoaded', () => {
         const napp = window.napp || new EventTarget()
 
@@ -298,7 +298,7 @@
 
             img.addEventListener('transitionend', e => {
               if (e.propertyName === 'opacity' && isBlob) {
-                try { URL.revokeObjectURL(img.src) } catch (e) { /* ignore */ }
+                try { URL.revokeObjectURL(img.src) } catch { /* ignore */ }
               }
             }, { once: true })
 

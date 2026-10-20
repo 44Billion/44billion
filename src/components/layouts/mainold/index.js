@@ -25,4 +25,4 @@ f('mainLayout', function () {
       <div>App 2</div>
     </div>
   </div>`
-}
+})

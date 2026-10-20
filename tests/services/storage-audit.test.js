@@ -72,13 +72,15 @@ describe('storage audit', () => {
     const orphan = validState({ local: { session_accountByUserPk_missing_supportsContentKeyMethods: true } })
     assert.equal(auditPersistedState(orphan.local, orphan.session).plan.local.session_accountByUserPk_missing_supportsContentKeyMethods, null)
     // The missing field is an orphan criterion only without a valid workspace.
-    const retained = validState({ local: {
-      session_accountUserPks: ['user', 'other'],
-      session_accountByUserPk_other_isReadOnly: false,
-      session_accountByUserPk_other_isLocked: true,
-      session_accountByUserPk_other_profile: {},
-      session_accountByUserPk_other_relays: {}
-    } })
+    const retained = validState({
+      local: {
+        session_accountUserPks: ['user', 'other'],
+        session_accountByUserPk_other_isReadOnly: false,
+        session_accountByUserPk_other_isLocked: true,
+        session_accountByUserPk_other_profile: {},
+        session_accountByUserPk_other_relays: {}
+      }
+    })
     assert.deepEqual(auditPersistedState(retained.local, retained.session).plan.removeAccounts.map(account => account.userPk), ['other'])
     for (const value of [true, false]) {
       retained.local.setItem('session_accountByUserPk_other_supportsContentKeyMethods', JSON.stringify(value))

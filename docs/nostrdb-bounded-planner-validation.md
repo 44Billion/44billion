@@ -129,13 +129,51 @@ history loaded and older loading finished. Thus the fixed opening-size check
 depends on observation timing even in the old runtime. No production consumer
 or tracked consumer test was changed, and no assertions were weakened to claim
 a pass. Native pagination/result checks above pass; visual opening/anchoring
-stability remains a separate limitation.
+stability was not established by that initial validation. The fixture corrections
+are described in the follow-up below.
 
-Lint passed for every changed JavaScript file. Repository-wide lint still fails
-in the existing `.history` HTML processor with
+During that initial validation, lint passed for every changed JavaScript file,
+but repository-wide lint failed in the existing `.history` HTML processor with
 `TypeError: config.getRuleDefinition is not a function`; no unrelated lint changes
-are included. Storage schema registration and audit/repair invariants were
+were included. Storage schema registration and audit/repair invariants were
 reviewed and remain unchanged.
 
 Normal production builds for the launcher, vault and consuming messenger passed.
-Manifests and lockfiles remain unchanged; there is no package publication.
+
+## Validation tooling follow-up
+
+Repository-wide lint now imports global exclusions from `.gitignore` using
+neostandard's existing helper. The HTML processor failure also affected a tracked
+loader template; upgrading the development-only HTML plugin to 8.2.1 fixes its
+flat-config compatibility without excluding that template. Existing syntax and
+style errors exposed by the full run were corrected. Configuration tests verify
+both global ignores and continued rule execution on tracked HTML scripts. The
+complete launcher Node suite passed 1,214 tests, and repository-wide lint passed.
+
+The consuming messenger's history fixture now isolates the initial 25-copy page
+from automatic viewport pagination. It holds UI page requests at the account
+boundary, confirms an actual reading position away from the bottom, waits for
+stable geometry, then captures the viewport controller's first readable row and
+releases exactly one real page. The original signer, permissions and event store
+remain in use. Timestamp ties, 235 unique messages, the three-pixel anchor bound,
+draft retention and deletion/recovery assertions remain in place. Both diagnostic
+modes exercise the same assertions; the optional measurement is no longer needed
+as an accidental delay before measuring the anchor.
+
+The broader text/scroll fixture now checks the documented optimistic-send
+contract through real permission denial and retry, preserving event identity and
+a newer draft. It drains the previous native permission modal before revocation,
+and compares internal widths when asserting the absence of horizontal overflow;
+border width is not overflow. The terminal scoped-state assertion includes the
+current nullable capability and provisional-identity fields.
+Only the HTML lint development dependency and its lockfile entries changed in
+this follow-up; there is no runtime dependency update or package publication.
+
+Protected sequential Chrome runs passed the final history fixture both with and
+without the measurement phase. Anchor drift was 0.046875 and 0.34375 pixels,
+respectively, with cgroup peaks of 2,818 and 2,683 MiB. The full text/scroll group
+also passed at 2,100 MiB. All used the unchanged 3 GiB guard with swap disabled.
+The complete private-chat group, including terminal scoped-state revocation,
+passed at 1,942 MiB. The consuming messenger's complete Node suite also passed.
+Normal production builds for the launcher, vault and consuming messenger passed
+again after these tooling changes.

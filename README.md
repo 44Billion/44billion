@@ -70,6 +70,9 @@ owned runtime cleanup and removes owned mappings; esbuild's 8080 stays internal.
 
 ## Validation
 
+`npx eslint .` checks JavaScript and inline HTML scripts, using `.gitignore` as
+global exclusions (including `.history`).
+
 `npm test` runs the Node suite; `npm run test:browser` runs the launcher's existing
 Chrome regressions. `CHROME_BIN` selects a Chrome executable. Consumer apps can use
 `tests/browser/runtime/` to install local, unpublished builds with the production

@@ -65,6 +65,11 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
 
 ## Testing
 
+- Repository-wide lint (`npx eslint .`) imports global exclusions from
+  `.gitignore` through neostandard; keep ignored/generated files out of lint
+  without excluding tracked HTML inline scripts. The HTML plugin must remain
+  compatible with the installed ESLint flat config.
+
 - Run `npm test` (Node built-in test runner) and keep the theme test
   (`tests/helpers/theme.test.js`) green — it enforces token format, WCAG contrast
   pairs, and the absence of authored color literals outside `theme.js`.

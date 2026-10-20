@@ -28,7 +28,6 @@ test('spacious widgets preserve the existing hit expansion', () => {
   }), { top: -10, right: -10, bottom: -10, left: -10 })
 })
 
-
 test('the persona control and caret reserve their full area near a resize node', () => {
   const base = { width: 80, height: 80 }
   const avatar = getWidgetResizeHitInsets({ ...base, controls: [{ left: 6, top: 6, width: 26, height: 26 }] })

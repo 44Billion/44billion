@@ -32,7 +32,7 @@ export default async function checkSignerCapabilities ({ evaluate, until, cdp })
   assert.deepEqual((await query()).contentMethods.owner, supported)
   await evaluate(`fixture.storage.local_personas$({capabilities:{userPks:[fixture.userPk,fixture.toBase62(${JSON.stringify(b)}),fixture.toBase62(${JSON.stringify(legacy)})],createdAt:1}});
     fixture.setAppPersonaSelection({localStorageArea:localStorage,wsKey:'ws',appId:fixture.appId,personaId:'capabilities'})`)
-  await until(`fixture.storage.local_appPersonaSelections$()?.ws?.[fixture.appId]==='capabilities'`, 'cached persona selected')
+  await until('fixture.storage.local_appPersonaSelections$()?.ws?.[fixture.appId]===\'capabilities\'', 'cached persona selected')
   await until('!!document.querySelector("app-window iframe")', 'app frame ready')
   const before = await query()
   assert.deepEqual(before.contentMethods.scoped, [supported, unsupported, supported])
