@@ -551,13 +551,28 @@ export async function flushCacheAccess () {
           tx = db.transaction(CACHE, 'readwrite')
           done = transactionDone(tx)
           const store = tx.objectStore(CACHE)
+          const updates = []
           for (const item of chunk) {
             if (item.connection.generation !== connection.generation) continue
-            const access = await request(store.get(item.i))
-            if (diagnostic && executingAt === undefined) executingAt = performance.now()
-            if (!access || item.time - access.lastAccessAt < 60000) continue
-            await request(store.put({ ...access, lastAccessAt: item.time }))
+            updates.push(new Promise((resolve, reject) => {
+              const read = store.get(item.i)
+              read.onerror = () => reject(read.error)
+              read.onsuccess = () => {
+                if (diagnostic && executingAt === undefined) executingAt = performance.now()
+                const access = read.result
+                if (!access || item.time - access.lastAccessAt < 60000) {
+                  resolve()
+                  return
+                }
+                const update = store.put({ ...access, lastAccessAt: item.time })
+                update.onerror = () => reject(update.error)
+                update.onsuccess = () => resolve()
+              }
+            }))
           }
+          // Keep all reads in flight inside this transaction. Dependent writes
+          // start from each success handler before JavaScript can yield.
+          await Promise.all(updates)
           await done
         } catch (error) {
           try { tx?.abort() } catch {}

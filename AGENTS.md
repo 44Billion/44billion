@@ -424,7 +424,9 @@ publish the same archive manually. No local dependency references are committed.
   connection generations, revalidating access before a transaction. Never open
   databases for statistics, recreate removed access rows or touch a replacement
   generation. Keep 2,048 queued IDs, 100 per flush, 25 per transaction and minute
-  per-record throttling, with yields between transactions.
+  per-record throttling, with yields between transactions. Pipeline the reads in
+  each transaction and issue conditional updates from their success handlers;
+  retain the transaction-completion barrier and all existence/generation checks.
 - Ready counters use readonly maintenance reads. Periodic eviction is limited to
   100 examinations/25 deletions per lock round; admission's existing bounds and
   atomic checks remain unchanged. Revalidate LRU timestamps/eligibility in the

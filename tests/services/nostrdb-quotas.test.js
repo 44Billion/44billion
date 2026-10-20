@@ -1286,6 +1286,41 @@ it('flushes access statistics while the origin quota lock is held and uses trans
   assert.equal((await b.db.add(signed({}, b.secret))).stored, true)
 })
 
+it('pipelines cache-access reads before issuing dependent updates', async t => {
+  const a = await owner()
+  const events = Array.from({ length: 61 }, () => signed())
+  for (const event of events) await a.db.add(event)
+  const before = (await access(a.raw, events[0])).lastAccessAt
+  t.mock.method(Date, 'now', () => before + 61000)
+  const transactions = []
+  const original = a.raw.transaction.bind(a.raw)
+  t.mock.method(a.raw, 'transaction', (...args) => {
+    const tx = original(...args)
+    if (args[0] === 'cacheAccess' && args[1] === 'readwrite') {
+      const store = tx.objectStore('cacheAccess')
+      const get = store.get.bind(store)
+      const batch = { gets: 0, getsAtFirstResponse: null }
+      transactions.push(batch)
+      store.get = key => {
+        const read = get(key)
+        batch.gets++
+        if (batch.gets === 1) {
+          read.addEventListener('success', () => { batch.getsAtFirstResponse = batch.gets })
+        }
+        return read
+      }
+    }
+    return tx
+  })
+
+  queueCacheAccess(a.pubkey, events)
+  await flushCacheAccess()
+
+  assert.deepEqual(transactions.map(batch => batch.gets), [25, 25, 11])
+  assert.deepEqual(transactions.map(batch => batch.getsAtFirstResponse), [25, 25, 11])
+  assert.equal((await access(a.raw, events[0])).lastAccessAt, before + 61000)
+})
+
 it('drops touches from deleted generations without touching replacement rows or opening databases', async t => {
   const a = await owner(); const event = signed()
   await a.db.add(event)

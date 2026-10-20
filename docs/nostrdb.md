@@ -362,6 +362,9 @@ The execution-context queue deduplicates IDs and retains at most 2,048 pending
 touches, dropping the oldest when full. Flush after 250 ms in batches of 100;
 check the stored timestamp to persist at most once per event per minute across
 tabs. Each batch uses transactions of at most 25 records, yielding between them.
+Reads in a transaction are submitted together; each dependent update starts from
+its read success handler, while the transaction completion barrier still waits
+for every update.
 Touches bypass the origin quota lock: they change neither bytes nor counts. Each
 queued touch captures the already-cached connection's in-memory generation; access
 and generation are rechecked before its transaction. Closed, replaced, removed or
