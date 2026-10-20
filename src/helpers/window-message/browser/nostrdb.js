@@ -440,7 +440,9 @@ export async function runNostrDbMethod ({
       if (explicitPersonalKinds !== null) await requestPersonalKinds(explicitPersonalKinds, permissionContext)
     }
 
-    const payload = await db.query(...nostrDbReadParamsWithAppId(args, { appId, deferCacheAccess }))
+    const readArgs = nostrDbReadParamsWithAppId(args, { appId, deferCacheAccess })
+    if (onTiming) readArgs[1] = { ...plainOptions(readArgs[1]), onTiming }
+    const payload = await db.query(...readArgs)
     if (explicitKinds !== null && explicitPersonalKinds === null) {
       await requestPermissionsForQueryResult(payload, permissionContext, { explicitKinds })
     }
@@ -454,7 +456,9 @@ export async function runNostrDbMethod ({
 
     if (explicitPersonalKinds !== null) await requestPersonalKinds(explicitPersonalKinds, permissionContext)
     else if (mayIncludePersonalCopies(explicitKinds)) await requestPersonalKinds([BROAD_EVENT_KIND], permissionContext)
-    return db.count(...args)
+    const readArgs = [...args]
+    if (onTiming) readArgs[1] = { ...plainOptions(readArgs[1]), onTiming }
+    return db.count(...readArgs)
   }
 
   return db[method](...args)

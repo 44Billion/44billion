@@ -3,6 +3,7 @@ import { afterEach, it } from 'node:test'
 import { indexedDB, IDBKeyRange } from 'fake-indexeddb'
 import { finalizeEvent } from 'libp2r2p/event'
 import { getPublicKey } from 'libp2r2p/key'
+import { base16ToBase62 } from 'libp2r2p/base62'
 import { encryptBytes, decryptBytes } from 'libp2r2p/nip44-v3'
 import { createLocalPersonalCopy } from '#services/idb/nostrdb/personal-copy.js'
 import { runNostrDbMethod } from '#helpers/window-message/browser/nostrdb.js'
@@ -931,6 +932,131 @@ function localCopyFixture (account) {
   account.db.personalCopyObfuscate = obfuscate
   return { calls, encrypt, obfuscate, signEvent, ownerPubkey: account.pubkey }
 }
+
+it('returns unchanged public duplicates without requesting the occupied quota lock or writing metadata', async t => {
+  const a = await owner()
+  const event = signed({ kind: 0 }, a.secret)
+  await a.db.add(event)
+  const before = await row(a.raw, event)
+  const usage = await getNostrDbQuotaUsage()
+  const entered = Promise.withResolvers()
+  const release = Promise.withResolvers()
+  const holding = withNostrDbQuotaLock(async () => { entered.resolve(); await release.promise })
+  await entered.promise
+  const original = a.raw.transaction.bind(a.raw)
+  let writes = 0
+  const spy = t.mock.method(a.raw, 'transaction', (...args) => { if (args[1] === 'readwrite') writes++; return original(...args) })
+  let timeout
+  try {
+    const result = await Promise.race([
+      a.db.add(event),
+      new Promise((resolve, reject) => { timeout = setTimeout(() => reject(new Error('duplicate waited for quota lock')), 2000) })
+    ])
+    assert.equal(result.code, 'duplicate')
+    assert.equal(result.stored, false)
+    assert.equal(writes, 0)
+  } finally { clearTimeout(timeout); release.resolve(); await holding; spy.mock.restore() }
+  assert.deepEqual(await row(a.raw, event), before)
+  assert.deepEqual(await getNostrDbQuotaUsage(), usage)
+})
+
+it('rechecks app-reference changes under admission and then permits readonly duplicates', async () => {
+  const a = await owner()
+  const event = signed({ kind: 40000 })
+  await a.db.add(event)
+  assert.equal((await a.db.add(event, { appId: APP })).stored, true)
+  assert.ok((await row(a.raw, event)).ap?.length)
+  assert.equal((await a.db.add(event, { appId: APP })).stored, false)
+  assert.equal((await getNostrDbQuotaUsage()).cacheCount, 1)
+})
+
+it('does not bypass legacy quota reconstruction when a duplicate exists', async () => {
+  const a = await owner()
+  const event = signed({}, a.secret)
+  await a.db.add(event)
+  const { initialQuotaUsage } = await import('#services/idb/nostrdb/quotas.js')
+  await request(a.raw.transaction('maintenance', 'readwrite').objectStore('maintenance').put(initialQuotaUsage()))
+  assert.equal((await a.db.add(event)).code, 'duplicate')
+  const usage = await request(a.raw.transaction('maintenance').objectStore('maintenance').get('quotaUsage'))
+  assert.equal(usage.phase, 'ready')
+  assert.equal(usage.publicCount, 1)
+})
+
+for (const change of ['readonly', 'replacement']) {
+  it(`rejects a duplicate result when ${change} invalidates its read transaction`, async t => {
+    const a = await owner()
+    const event = signed({ kind: 0 }, a.secret)
+    await a.db.add(event)
+    const flag = `session_accountByUserPk_${base16ToBase62(a.pubkey, { mode: 'integer', minLength: 43 })}_isReadOnly`
+    const original = a.raw.transaction.bind(a.raw)
+    let changed = false
+    t.mock.method(a.raw, 'transaction', (...args) => {
+      const tx = original(...args)
+      if (!changed && args[1] === 'readonly' && args[0].includes('events')) {
+        tx.addEventListener('complete', () => {
+          changed = true
+          if (change === 'readonly') settings.set(flag, 'true')
+          else a.raw.onversionchange()
+        }, { once: true })
+      }
+      return tx
+    })
+    try { await assert.rejects(a.db.add(event), { code: change === 'readonly' ? 'READ_ONLY_ACCOUNT' : 'NOSTRDB_RESET' }) } finally { settings.delete(flag) }
+    assert.equal(changed, true)
+  })
+}
+
+it('resolves ordinary personal-copy provenance once inside each transaction and serializes competing copies', async t => {
+  const a = await owner()
+  const fixture = localCopyFixture(a)
+  const originalEvent = { kind: 9, created_at: 123, tags: [], content: 'same identity' }
+  const copies = await Promise.all(Array.from({ length: 2 }, () => createLocalPersonalCopy({ ...fixture, originalEvent, context: 'self' })))
+  const prepare = a.db.preparePersonalCopyProvenance.bind(a.db)
+  let calls = 0
+  t.mock.method(a.db, 'preparePersonalCopyProvenance', (...args) => {
+    calls++
+    assert.equal(args[2].tx.mode, 'readwrite')
+    return prepare(...args)
+  })
+  const results = await Promise.all(copies.map(copy => a.db.add(copy)))
+  assert.ok(results.every(result => result.ok))
+  assert.equal(calls, 2)
+  const { results: stored } = await a.db.query({ kinds: [1006] })
+  assert.equal(stored.length, 1)
+  assert.ok(copies.some(copy => copy.id === stored[0].id))
+  assert.equal((await getNostrDbQuotaUsage()).privateCount, 1)
+})
+
+it('matches reference results for selective OR/AND, search, count, expiration and combined filters', async t => {
+  const a = await owner()
+  const { ParsedFilter } = await import('#services/idb/nostrdb/index.js')
+  let now = 100000
+  t.mock.method(Date, 'now', () => now)
+  const events = Array.from({ length: 12 }, (_, i) => signed({
+    created_at: 10 + i, content: i % 2 ? 'needle' : 'hay',
+    tags: [['t', 'shared'], ['o', `id-${i}`], ...(i % 2 ? [['t', 'odd']] : []), ...(i === 5 ? [['expiration', '110']] : [])]
+  }))
+  for (const event of events) assert.equal((await a.db.add(event)).ok, true)
+  now = 120000
+  for (const raw of [
+    { '#t': ['shared'], '#o': ['id-3', 'id-5', 'id-7'] },
+    { '#t': ['shared'], '&o': ['id-7'] },
+    { '&t': ['shared', 'odd'], limit: 3 },
+    { '#t': ['shared'], '#o': ['id-3', 'id-7'], '!ids': [events[3].id], ids_only: true },
+    { '#t': ['shared'], '&t': ['odd'], search: 'needle' },
+    { '#t': ['shared'], '#o': ['id-3', 'id-7'], search: 'sort:asc' },
+    [{ '#t': ['odd'], '#o': ['id-3'] }, { '#t': ['shared'], '#o': ['id-2', 'id-7'] }]
+  ]) {
+    const filters = (Array.isArray(raw) ? raw : [raw]).map(value => new ParsedFilter(value))
+    const first = Array.isArray(raw) ? raw[0] : raw
+    const expected = events.filter(event => event !== events[5] && filters.some(filter => filter.matches(event)))
+      .sort((a, b) => first.search === 'sort:asc' ? a.created_at - b.created_at : b.created_at - a.created_at)
+      .slice(0, first.limit ?? Infinity)
+    const actual = await a.db.query(raw)
+    assert.deepEqual(actual.results.map(value => typeof value === 'string' ? value : value.id), expected.map(event => event.id))
+    assert.equal(await a.db.count(raw), expected.length)
+  }
+})
 
 it('local personal-copy ingest avoids decryption and repeated obfuscation with real signatures and ciphertext', async () => {
   const a = await owner()

@@ -19,8 +19,8 @@ const SIG_RE = /^[0-9a-f]{128}$/i
 // encrypted inner event or rumor. Plaintext k identifies the inner kind, c is
 // the obfuscated context, v records provenance, and domain-separated o tags
 // mirror the source ID, effective author, and original one-letter tags. imkc
-// carries the content-key proof. Generated wrappers omit d; a manual outer d
-// receives ordinary NostrDB replacement behavior.
+// carries the content-key proof. Coordinate inner events get a derived outer d;
+// their wrappers retain NostrDB coordinate replacement and merge behavior.
 
 // Object identity is an internal, one-use capability. Serialized app options,
 // copies of the wrapper and events received through sync cannot populate it.

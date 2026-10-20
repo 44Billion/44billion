@@ -18,6 +18,66 @@ Kind 34601 chunk events store metadata in NostrDB and externalize their content
 into the shared `44billion_browser` chunk stores. Those are separate databases;
 an IndexedDB transaction cannot update both together.
 
+## Selective lookup and ingestion
+
+Tag queries estimate access paths with `byTag.count(range)` before loading event
+payloads. Each OR group is one complete candidate; each mandatory AND value can
+independently seed the scan. The smallest estimated entry count wins, with the
+existing plan preferred on ties. Every fetched candidate still passes the entire
+filter, including author/kind, other tags, exclusions, expiration and search.
+Counts are estimates, not a cached result or authorization decision.
+
+Planning has an all-or-nothing budget of sixteen distinct index intervals per
+filter. Larger candidate sets use the existing plan without partial probes.
+Counts are shared only within one planning operation. Direct ID/coordinate and
+sync-anchor plans remain unchanged. Planning inside an existing transaction uses
+that transaction; other planning uses a short readonly transaction. No new store,
+index, counter, persistent cache or app-specific rule is involved.
+
+This matters for personal-copy provenance and recovery records. A context or
+inner-kind predicate can match thousands of wrappers while a source/record-ID
+mirror matches only the relevant copies. Selecting that mirror avoids loading
+unrelated ciphertext. AND filters must choose a mandatory value rather than
+scanning the union of all their values; OR alternatives cannot be omitted.
+
+For validated personal copies without an outer coordinate and with a non-deletion
+inner event, provenance candidates are read once inside the quota write
+transaction. Winner selection, loser removal, references and usage commit
+together. Coordinate/merge and deletion paths retain their external preparation
+and transactional snapshot revalidation, using the same selective planner. No
+vault, network or timer work runs in the write transaction.
+
+Ordinary validated public duplicates can finish in a readonly `events` +
+`maintenance` transaction before quota admission. This requires an existing ID,
+ready usage counters and no app-reference change. Personal copies, chunks,
+deletions and operations with merge/deletion side effects are excluded. Misses,
+uninitialized counters and changes follow the original write path and recheck
+their state there. Access and connection-generation checks fence late results.
+An unchanged duplicate does not update usage, timestamps, cache classification,
+references or subscriber notifications. Its readonly observation is the operation's
+linearization point; a later independent deletion remains authoritative.
+
+Global quota coordination still precedes readwrite transaction creation. These
+optimizations shorten readers and writers and remove no-change admissions; they
+do not introduce quota reservations, another lock hierarchy or relaxed accounting.
+Development-only bounded diagnostics add `query-planning` (probe count and time),
+`query-candidates` (materialized tag entries), `provenance-query` and
+`duplicate-read`, correlated through existing bridge request IDs. They contain no
+tag values, event contents, keys or ciphertext.
+
+The protected `tests/browser/nostrdb-contention.js` fixture exercises three owner
+databases, 15,000 synthetic auxiliary-history rows, 104 repeated profile writes,
+two-tab provenance races and readonly duplicates while quota is held. Synthetic
+history is a cardinality fixture, not an imported cryptographically validated
+history; new writes use real signatures and encryption. Its optional
+`--baseline-index=/absolute/path/index.js` and `--output=/absolute/path/results.json`
+support comparisons with a saved prior source snapshot. Report sample sizes and
+separate foreground timings from profile/background distributions; do not infer
+production latency guarantees from this controlled workload.
+
+The [validation record](nostrdb-contention-validation.md) includes the measured
+before/after distributions, remaining IndexedDB contention and known test limits.
+
 Personal-copy creation sends the inner JSON as UTF-8 bytes in an `ArrayBuffer`
 to the vault's NIP-44 v3 signer. Both internal personal-copy readers decode
 the returned buffer directly with `TextDecoder`. App-facing NIP-44 v3 methods,

@@ -292,6 +292,9 @@ WebSocket or injected app API contract.
 NostrDB keeps global quota admission atomic while batching auxiliary cache-access
 updates outside that lock. Periodic eviction releases it after at most 100
 candidate examinations and 25 deletions; see [NostrDB internals](docs/nostrdb.md).
+Bounded index-count planning selects narrower tag lookups, ordinary no-change
+duplicates bypass write admission, and eligible personal-copy provenance resolves
+once in its write transaction. Existing schemas and quota guarantees are retained.
 
 Private publication scheduling and bounded bridge ACK preference are documented
 in [relay-pool.md](docs/relay-pool.md). Personal-copy preparation overlaps up to

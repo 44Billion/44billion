@@ -1,3 +1,5 @@
+import { recordPerformance } from '#services/performance-diagnostics.js'
+import { selectTagQueryPlan } from './query-plan.js'
 import { assertNostrDbAccess, isNostrDbAccessError, watchNostrDbAccess } from './access.js'
 import { NOSTRDB_CAPABILITIES } from './capabilities.js'
 import { normalizeLocalRemovalTargets, localRemovalResult } from './local-removal.js'
@@ -11,7 +13,8 @@ import { eventKinds } from '#constants/event.js'
 import {
   NOSTRDB_MAINTENANCE_STORE,
   NOSTRDB_CACHE_ACCESS_STORE,
-  NOSTRDB_UNCLAIMED_APP_DATA_KEY
+  NOSTRDB_UNCLAIMED_APP_DATA_KEY,
+  NOSTRDB_QUOTA_USAGE_KEY
 } from '#constants/storage-schema.js'
 import {
   CACHE_ACCESS_INDEX,
@@ -530,10 +533,10 @@ export class NostrDb {
     }
 
     for (let attempt = 0; attempt < PERSONAL_COPY_PROVENANCE_ATTEMPTS; attempt++) {
-      const resolution = personalCopy
-        ? await this.preparePersonalCopyProvenance(event, personalCopy)
+      const resolution = personalCopy && !transactionalProvenance(event, personalCopy)
+        ? await this.preparePersonalCopyProvenance(event, personalCopy, { onTiming })
         : null
-      if (personalCopy && resolution === null) {
+      if (personalCopy && !transactionalProvenance(event, personalCopy) && resolution === null) {
         return this.reportAddResult('add', event, addResult('invalid'))
       }
 
@@ -566,7 +569,7 @@ export class NostrDb {
         if (mergedPersonalCopy) {
           eventToStore = mergedPersonalCopy.event
           personalCopyToStore = mergedPersonalCopy.personalCopy
-          resolutionToStore = await this.preparePersonalCopyProvenance(eventToStore, personalCopyToStore)
+          resolutionToStore = await this.preparePersonalCopyProvenance(eventToStore, personalCopyToStore, { onTiming })
           if (resolutionToStore === null) {
             return this.reportAddResult('add', event, addResult('invalid'))
           }
@@ -651,7 +654,7 @@ export class NostrDb {
     return null
   }
 
-  async preparePersonalCopyProvenance (event, personalCopy) {
+  async preparePersonalCopyProvenance (event, personalCopy, { db, tx, onTiming } = {}) {
     if (!personalCopy) return null
 
     const filter = {
@@ -661,7 +664,7 @@ export class NostrDb {
       '#o': [personalCopy.sourceMirror]
     }
     this.assertAccess()
-    const db = await openNostrDb(this.ownerPubkey)
+    db ??= await openNostrDb(this.ownerPubkey)
     if (!db) {
       return {
         incomingWins: true,
@@ -671,14 +674,18 @@ export class NostrDb {
       }
     }
 
+    const startedAt = performance.now()
     let storedEvents
     try {
       storedEvents = await queryRecords(db, filter, {
         countOnly: false,
-        ignoreLimit: true
+        ignoreLimit: true, tx, onTiming
       })
-    } catch {
+    } catch (error) {
+      if (tx) throw error
       return null
+    } finally {
+      reportStorageTiming(onTiming, { stage: 'provenance-query', count: 1, elapsedMs: performance.now() - startedAt })
     }
 
     const candidates = storedEvents
@@ -696,7 +703,7 @@ export class NostrDb {
       loserIds: candidates
         .filter(candidate => candidate.event.id !== winner.event.id)
         .map(candidate => candidate.event.id),
-      snapshot: personalCopyProvenanceSnapshot(filter, storedEvents),
+      snapshot: tx ? null : personalCopyProvenanceSnapshot(filter, storedEvents),
       winnerId: winner.event.id
     }
   }
@@ -962,10 +969,10 @@ export class NostrDb {
       ) {
         return this.reportAddResult('addEvent', event, addResult('ignored'), { log })
       }
-      if (!personalCopyResolution) {
-        personalCopyResolution = await this.preparePersonalCopyProvenance(event, personalCopy)
+      if (!personalCopyResolution && !transactionalProvenance(event, personalCopy)) {
+        personalCopyResolution = await this.preparePersonalCopyProvenance(event, personalCopy, { onTiming })
       }
-      if (!personalCopyResolution) {
+      if (!personalCopyResolution && !transactionalProvenance(event, personalCopy)) {
         return this.reportAddResult('addEvent', event, addResult('invalid'), { log })
       }
       forceCoordinateReplace = personalCopy.mergedCoordinate === true
@@ -1002,6 +1009,32 @@ export class NostrDb {
     const db = await openNostrDb(this.ownerPubkey)
     if (!db) return this.reportAddResult('addEvent', event, addResult('unavailable'), { log })
 
+    // Only the existing duplicate-ID branch with no side effects can bypass
+    // admission. Misses and app-reference changes are rechecked under the lock.
+    if (!personalCopy && event.kind !== 34601 && event.kind !== 5 && !forceCoordinateReplace && consumeDeletionRequestIds.length === 0) {
+      try {
+        const startedAt = performance.now()
+        const connection = captureNostrDbConnection(this.ownerPubkey)
+        if (!connection || await connection.resolve() !== db) throw Object.assign(new Error('NOSTRDB_RESET'), { code: 'NOSTRDB_RESET' })
+        const tx = db.transaction([EVENTS_STORE, NOSTRDB_MAINTENANCE_STORE], 'readonly')
+        const done = txDone(tx)
+        const [existing, usage] = await Promise.all([
+          run('get', [eventIdIndexKey(event.id)], EVENTS_STORE, null, { db, tx }).then(value => value.result),
+          run('get', [NOSTRDB_QUOTA_USAGE_KEY], NOSTRDB_MAINTENANCE_STORE, null, { db, tx }).then(value => value.result),
+          done
+        ])
+        this.assertAccess()
+        if (!connection?.isCurrent()) throw Object.assign(new Error('NOSTRDB_RESET'), { code: 'NOSTRDB_RESET' })
+        if (usage?.phase === 'ready' && existing && (!appRef || !isAppTrackableKind(existing.event.kind) || hasAppRef(existing.ap, appRef))) {
+          reportStorageTiming(onTiming, { stage: 'duplicate-read', count: 1, elapsedMs: performance.now() - startedAt })
+          return addResult('duplicate')
+        }
+      } catch (error) {
+        if (isNostrDbAccessError(error)) throw error
+        return this.reportAddResult('addEvent', event, addResult('error'), { log, error })
+      }
+    }
+
     // Obfuscation calls are external (vault) awaits, so they must happen before
     // the write transaction opens; the transaction below only performs
     // IndexedDB work with the prepared targets.
@@ -1034,7 +1067,11 @@ export class NostrDb {
     try {
       result = await withQuotaMutation(db, async tx => {
         let replaced = false
-        await validatePersonalCopyProvenanceSnapshot(db, tx, personalCopyResolution?.snapshot)
+        if (transactionalProvenance(event, personalCopy)) {
+          personalCopyResolution = await this.preparePersonalCopyProvenance(event, personalCopy, { db, tx, onTiming })
+        } else {
+          await validatePersonalCopyProvenanceSnapshot(db, tx, personalCopyResolution?.snapshot, onTiming)
+        }
 
         if (personalCopyResolution && !personalCopyResolution.incomingWins) {
           const changed = await retainExistingPersonalCopyWinner(
@@ -1933,7 +1970,8 @@ export class NostrDb {
       const results = await queryParsedFilters(db, filters, {
         countOnly: false,
         ignoreLimit: false,
-        decryptPersonalCopyContent: this.personalCopyDecrypt
+        decryptPersonalCopyContent: this.personalCopyDecrypt,
+        onTiming: options.onTiming
       })
       await hydrateChunkResults(this.ownerPubkey, results)
       this.queueAppClaimsFromResults(results, appRef)
@@ -1955,7 +1993,8 @@ export class NostrDb {
       return await queryParsedFilters(db, filters, {
         countOnly: true,
         ignoreLimit: false,
-        decryptPersonalCopyContent: this.personalCopyDecrypt
+        decryptPersonalCopyContent: this.personalCopyDecrypt,
+        onTiming: options.onTiming
       })
     } catch (error) {
       logNostrDbIssue('count', { ownerPubkey: this.ownerPubkey }, error)
@@ -3029,31 +3068,31 @@ function normalizeOptionalLimit (value) {
   return Number.isInteger(value) && value >= 0 ? value : undefined
 }
 
-async function queryRecords (db, rawFilter, { countOnly, ignoreLimit, tx } = {}) {
+async function queryRecords (db, rawFilter, { countOnly, ignoreLimit, tx, onTiming } = {}) {
   const filters = parseFilterInput(rawFilter)
   if (tx && filters.length === 1) {
-    return queryParsedFilterRecords(db, filters[0], { countOnly, ignoreLimit, tx })
+    return queryParsedFilterRecords(db, filters[0], { countOnly, ignoreLimit, tx, onTiming })
   }
-  return queryParsedFilters(db, filters, { countOnly, ignoreLimit })
+  return queryParsedFilters(db, filters, { countOnly, ignoreLimit, onTiming })
 }
 
-async function queryParsedFilters (db, filters, { countOnly, ignoreLimit, decryptPersonalCopyContent } = {}) {
+async function queryParsedFilters (db, filters, { countOnly, ignoreLimit, decryptPersonalCopyContent, onTiming } = {}) {
   const liveFilters = filters.filter(filter => !filter.neverMatch)
   if (liveFilters.length === 0) return countOnly ? 0 : []
   if (liveFilters.length === 1) {
-    return queryParsedFilterRecords(db, liveFilters[0], { countOnly, ignoreLimit, decryptPersonalCopyContent })
+    return queryParsedFilterRecords(db, liveFilters[0], { countOnly, ignoreLimit, decryptPersonalCopyContent, onTiming })
   }
 
-  return queryMultipleParsedFilters(db, liveFilters, { countOnly, ignoreLimit, decryptPersonalCopyContent })
+  return queryMultipleParsedFilters(db, liveFilters, { countOnly, ignoreLimit, decryptPersonalCopyContent, onTiming })
 }
 
-async function queryParsedFilterRecords (db, filter, { countOnly, ignoreLimit, decryptPersonalCopyContent, tx }) {
+async function queryParsedFilterRecords (db, filter, { countOnly, ignoreLimit, decryptPersonalCopyContent, tx, onTiming }) {
   if (filter.neverMatch) return countOnly ? 0 : []
 
   const limit = ignoreLimit ? Infinity : Math.min(countOnly ? Infinity : MAX_LIMIT, filter.limit)
   if (limit <= 0) return countOnly ? 0 : []
 
-  const plan = planQuery(filter)
+  const plan = await selectQueryPlan(db, filter, { tx, onTiming })
   const direction = queryDirection(filter)
   const now = currentUnixTime()
 
@@ -3062,7 +3101,7 @@ async function queryParsedFilterRecords (db, filter, { countOnly, ignoreLimit, d
       countOnly,
       limit,
       now,
-      decryptPersonalCopyContent
+      decryptPersonalCopyContent, onTiming
     })
 
     if (countOnly) return Number.isFinite(limit) ? Math.min(candidates.length, limit) : candidates.length
@@ -3113,7 +3152,7 @@ async function queryParsedFilterRecords (db, filter, { countOnly, ignoreLimit, d
       let matchedInCursor = 0
 
       await scanCursor(db, EVENTS_STORE, cursor.indexName, cursor.range, {
-        tx,
+        tx, onTiming,
         direction,
         onItem: stored => {
           if (!matches(stored)) return true
@@ -3134,16 +3173,16 @@ async function queryParsedFilterRecords (db, filter, { countOnly, ignoreLimit, d
   return projectQueryResults(Number.isFinite(limit) ? results.slice(0, limit) : results, filter, scoreById)
 }
 
-async function queryMultipleParsedFilters (db, filters, { countOnly, ignoreLimit, decryptPersonalCopyContent }) {
+async function queryMultipleParsedFilters (db, filters, { countOnly, ignoreLimit, decryptPersonalCopyContent, onTiming }) {
   const limit = ignoreLimit ? Infinity : Math.min(countOnly ? Infinity : MAX_LIMIT, filters[0].limit)
   if (limit <= 0) return countOnly ? 0 : []
 
   if (filters[0].searchText) {
-    return queryMultipleSearchFilters(db, filters, { countOnly, limit, decryptPersonalCopyContent })
+    return queryMultipleSearchFilters(db, filters, { countOnly, limit, decryptPersonalCopyContent, onTiming })
   }
 
   if (!countOnly && filters[0].idsOnly && filters.every(filter => canUseKeyOnlyCursor(planQuery(filter), filter))) {
-    return queryMultipleIdsWithKeyCursor(db, filters, { limit })
+    return queryMultipleIdsWithKeyCursor(db, filters, { limit, onTiming })
   }
 
   const now = currentUnixTime()
@@ -3168,7 +3207,7 @@ async function queryMultipleParsedFilters (db, filters, { countOnly, ignoreLimit
   }
 
   for (const filter of filters) {
-    const keepGoing = await scanParsedFilterEvents(db, filter, { now, limit, countOnly, onEvent: emit, decryptPersonalCopyContent })
+    const keepGoing = await scanParsedFilterEvents(db, filter, { now, limit, countOnly, onEvent: emit, decryptPersonalCopyContent, onTiming })
     if (!keepGoing || (countOnly && seen.size >= limit)) break
   }
 
@@ -3178,14 +3217,14 @@ async function queryMultipleParsedFilters (db, filters, { countOnly, ignoreLimit
   return projectQueryResults(Number.isFinite(limit) ? results.slice(0, limit) : results, filters[0], scoreById)
 }
 
-async function queryMultipleIdsWithKeyCursor (db, filters, { limit }) {
+async function queryMultipleIdsWithKeyCursor (db, filters, { limit, onTiming }) {
   const now = currentUnixTime()
   const seen = new Set()
   const results = []
   const compare = compareScoredResults(filters[0])
 
   for (const filter of filters) {
-    const plan = planQuery(filter)
+    const plan = await selectQueryPlan(db, filter, { onTiming })
     const direction = queryDirection(filter)
     const candidates = await collectKeyGateCandidates(db, plan, filter, direction, { limit, now })
 
@@ -3206,18 +3245,18 @@ async function queryMultipleIdsWithKeyCursor (db, filters, { limit }) {
   return withQueryScores(selected.map(result => result.id), selected.map(result => result.score))
 }
 
-async function queryMultipleSearchFilters (db, filters, { countOnly, limit, decryptPersonalCopyContent }) {
+async function queryMultipleSearchFilters (db, filters, { countOnly, limit, decryptPersonalCopyContent, onTiming }) {
   const now = currentUnixTime()
   const candidatesById = new Map()
 
   for (const filter of filters) {
-    const plan = planQuery(filter)
+    const plan = await selectQueryPlan(db, filter, { onTiming })
     const direction = queryDirection(filter)
     const candidates = await collectSearchCandidates(db, plan, filter, direction, {
       countOnly,
       limit,
       now,
-      decryptPersonalCopyContent
+      decryptPersonalCopyContent, onTiming
     })
 
     for (const candidate of candidates) {
@@ -3237,8 +3276,8 @@ async function queryMultipleSearchFilters (db, filters, { countOnly, limit, decr
   return projectQueryResults(events, filters[0], scoreByCandidateId(ranked))
 }
 
-async function scanParsedFilterEvents (db, filter, { now, limit, countOnly, onEvent, decryptPersonalCopyContent }) {
-  const plan = planQuery(filter)
+async function scanParsedFilterEvents (db, filter, { now, limit, countOnly, onEvent, decryptPersonalCopyContent, onTiming }) {
+  const plan = await selectQueryPlan(db, filter, { onTiming })
   const direction = queryDirection(filter)
   const seen = new Set()
 
@@ -3255,7 +3294,7 @@ async function scanParsedFilterEvents (db, filter, { now, limit, countOnly, onEv
       countOnly,
       limit,
       now,
-      decryptPersonalCopyContent
+      decryptPersonalCopyContent, onTiming
     })
     const events = countOnly
       ? candidates.map(candidate => candidate.event)
@@ -3283,7 +3322,7 @@ async function scanParsedFilterEvents (db, filter, { now, limit, countOnly, onEv
     let stopped = false
 
     await scanCursor(db, EVENTS_STORE, cursor.indexName, cursor.range, {
-      direction,
+      direction, onTiming,
       onItem: stored => {
         if (emit(stored) === false) {
           stopped = true
@@ -3544,8 +3583,8 @@ async function getStoredRecordsByIdKeys (db, idKeys) {
   })
 }
 
-function scanCursor (db, storeName, indexName, range, { tx, direction = 'next', onItem }) {
-  return scanIdbCursor(db, storeName, indexName, range, { tx, direction, onItem, keyOnly: false })
+function scanCursor (db, storeName, indexName, range, { tx, direction = 'next', onItem, onTiming }) {
+  return scanIdbCursor(db, storeName, indexName, range, { tx, direction, onItem, keyOnly: false, onTiming })
 }
 
 function scanKeyCursor (db, storeName, indexName, range, { tx, direction = 'next', onItem }) {
@@ -3554,7 +3593,10 @@ function scanKeyCursor (db, storeName, indexName, range, { tx, direction = 'next
 
 // Keep cursor continuation inside the IDB success callback. Yielding a live
 // cursor across unrelated awaits can let the transaction auto-commit first.
-function scanIdbCursor (db, storeName, indexName, range, { tx, direction, onItem, keyOnly }) {
+function scanIdbCursor (db, storeName, indexName, range, { tx, direction, onItem, keyOnly, onTiming }) {
+  const diagnostic = typeof IS_DEVELOPMENT !== 'undefined' && IS_DEVELOPMENT
+  const startedAt = diagnostic ? performance.now() : 0
+  let count = 0
   return new Promise((resolve, reject) => {
     let storeOrIndex
 
@@ -3572,6 +3614,7 @@ function scanIdbCursor (db, storeName, indexName, range, { tx, direction, onItem
         }
 
         try {
+          if (diagnostic) count++
           const item = keyOnly
             ? { key: cursor.key, primaryKey: cursor.primaryKey }
             : cursor.value
@@ -3594,6 +3637,8 @@ function scanIdbCursor (db, storeName, indexName, range, { tx, direction, onItem
     } catch (error) {
       reject(error)
     }
+  }).finally(() => {
+    if (diagnostic && !keyOnly && indexName === INDEX.tag) reportStorageTiming(onTiming, { stage: 'query-candidates', count, elapsedMs: performance.now() - startedAt })
   })
 }
 
@@ -3664,7 +3709,7 @@ function canUseAsyncSearchText (filter, decryptPersonalCopyContent) {
     (!filter.kinds || filter.kinds.includes(PERSONAL_COPY_KIND))
 }
 
-async function collectAsyncSearchCandidates (db, plan, filter, direction, { countOnly, limit, now, decryptPersonalCopyContent }) {
+async function collectAsyncSearchCandidates (db, plan, filter, direction, { countOnly, limit, now, decryptPersonalCopyContent, onTiming }) {
   const rawCandidates = []
   const seen = new Set()
   const matchTarget = searchMatchTarget(countOnly, limit)
@@ -3693,7 +3738,7 @@ async function collectAsyncSearchCandidates (db, plan, filter, direction, { coun
   } else {
     for (const cursor of plan.cursors) {
       await scanCursor(db, EVENTS_STORE, cursor.indexName, cursor.range, {
-        direction,
+        direction, onTiming,
         onItem: stored => collect(stored)
       })
       if (rawCandidates.length >= SEARCH_MAX_CANDIDATES) break
@@ -3719,13 +3764,13 @@ async function collectAsyncSearchCandidates (db, plan, filter, direction, { coun
 }
 
 // IDB scanning stays here because it knows about plans, stores, cursors, and caps.
-async function collectSearchCandidates (db, plan, filter, direction, { countOnly, limit, now, decryptPersonalCopyContent }) {
+async function collectSearchCandidates (db, plan, filter, direction, { countOnly, limit, now, decryptPersonalCopyContent, onTiming }) {
   if (canUseAsyncSearchText(filter, decryptPersonalCopyContent)) {
     return collectAsyncSearchCandidates(db, plan, filter, direction, {
       countOnly,
       limit,
       now,
-      decryptPersonalCopyContent
+      decryptPersonalCopyContent, onTiming
     })
   }
 
@@ -3781,7 +3826,7 @@ async function collectSearchCandidates (db, plan, filter, direction, { countOnly
 
   for (const cursor of plan.cursors) {
     await scanCursor(db, EVENTS_STORE, cursor.indexName, cursor.range, {
-      direction,
+      direction, onTiming,
       onItem: stored => {
         if (stop || scanned >= SEARCH_MAX_CANDIDATES || batchCount >= SEARCH_MAX_BATCHES) return false
 
@@ -3826,6 +3871,22 @@ function shouldStopSearch (countOnly, batchCount, matchCount, matchTarget) {
   if (countOnly) return matchCount >= matchTarget
 
   return batchCount >= SEARCH_MIN_BATCHES && matchCount >= matchTarget
+}
+
+function reportStorageTiming (onTiming, entry) {
+  if (typeof IS_DEVELOPMENT === 'undefined' || !IS_DEVELOPMENT) return
+  try { if (onTiming) onTiming(entry); else recordPerformance(entry) } catch {}
+}
+
+async function selectQueryPlan (db, filter, { tx, onTiming } = {}) {
+  return selectTagQueryPlan(db, filter, planQuery(filter), {
+    tx, tagValueKey: tagValueIndexKey,
+    onTiming: entry => reportStorageTiming(onTiming, entry)
+  })
+}
+
+function transactionalProvenance (event, personalCopy) {
+  return !!personalCopy && getCoordinate(event) === null && personalCopy.inner?.kind !== eventKinds.DELETION
 }
 
 export function planQuery (filter) {
@@ -4271,16 +4332,18 @@ function personalCopyProvenanceSnapshot (filter, events) {
   }
 }
 
-async function validatePersonalCopyProvenanceSnapshot (db, tx, snapshot) {
+async function validatePersonalCopyProvenanceSnapshot (db, tx, snapshot, onTiming) {
   if (!snapshot) return
 
   // The candidate read happens before the transaction; verify it again before
   // deleting losers so concurrent adds cannot make the decision stale.
+  const startedAt = performance.now()
   const events = await queryRecords(db, snapshot.filter, {
     countOnly: false,
     ignoreLimit: true,
-    tx
+    tx, onTiming
   })
+  reportStorageTiming(onTiming, { stage: 'provenance-query', count: 1, elapsedMs: performance.now() - startedAt })
   if (!sameStringArrays(sortedUniqueEventIds(events), snapshot.ids)) {
     throw new StalePersonalCopyProvenanceError()
   }

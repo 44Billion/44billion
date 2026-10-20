@@ -2097,11 +2097,11 @@ describe('nostrdb', () => {
     assert.deepEqual(stored.map(event => event.id), [direct.id])
   })
 
-  it('retries once when the same-context candidate snapshot changes before commit', async () => {
+  it('retries once when the coordinate candidate snapshot changes before commit', async () => {
     const owner = hexId(30510)
     const plaintexts = new Map()
     const db = personalCopyDb(owner, plaintexts)
-    const inner = personalCopyRumor({ created_at: 100 })
+    const inner = personalCopyRumor({ kind: 30078, created_at: 100, tags: [['d', 'snapshot']] })
     const first = await personalCopyWrapper({
       id: hexId(30511),
       owner,
@@ -5240,6 +5240,10 @@ class FakeIndex {
     this.store = store
     this.index = index
     this.tx = tx
+  }
+
+  count (range) {
+    return request(() => this.entries().filter(entry => !range || range.includes(entry.key)).length, this.tx)
   }
 
   getKey (key) {
