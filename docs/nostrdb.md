@@ -20,19 +20,33 @@ an IndexedDB transaction cannot update both together.
 
 ## Selective lookup and ingestion
 
-Tag queries estimate access paths with `byTag.count(range)` before loading event
-payloads. Each OR group is one complete candidate; each mandatory AND value can
-independently seed the scan. The smallest estimated entry count wins, with the
-existing plan preferred on ties. Every fetched candidate still passes the entire
-filter, including author/kind, other tags, exclusions, expiration and search.
-Counts are estimates, not a cached result or authorization decision.
+Tag planning probes `byTag.getAllKeys(range, limit)` without loading event
+payloads. It never counts a complete index range. The existing plan is probed
+first; a completely observed candidate of at most 64 entries is accepted
+immediately. Otherwise, try mandatory AND values, OR `o` mirrors for exclusively
+kind-1006 queries, then remaining OR groups in original order. Use the first
+small complete candidate, or retain the existing plan if none is found.
+
+Each OR group remains a complete candidate; a mandatory AND value can
+independently seed the scan. A short sample is exact only when it contains fewer
+keys than requested. A full sample is inconclusive, even if the remaining budget
+allowed fewer than 65 keys. Candidate sizes conservatively sum OR intervals;
+overlapping values may overestimate size, never authorize missing alternatives.
+Every fetched event still passes the entire filter, including author/kind,
+other tags, exclusions, expiration and search. Even an empty probe only selects
+an access path: the actual query still runs, observing later committed changes.
 
 Planning has an all-or-nothing budget of sixteen distinct index intervals per
 filter. Larger candidate sets use the existing plan without partial probes.
-Counts are shared only within one planning operation. Direct ID/coordinate and
-sync-anchor plans remain unchanged. Planning inside an existing transaction uses
-that transaction; other planning uses a short readonly transaction. No new store,
-index, counter, persistent cache or app-specific rule is involved.
+Each request returns at most 65 primary keys and the entire planning operation
+returns at most 256, across one request at a time. Observations are shared only
+within that operation. Early decisions do not start unused probes. These bounds
+limit requested work, not waiting time behind other IndexedDB transactions.
+Direct ID/coordinate and sync-anchor plans remain unchanged. Planning inside an
+existing transaction uses that transaction; otherwise it uses a short readonly
+transaction. Failed probes remain errors; only an owned transaction is aborted
+by the planner. No vault/network/timer awaits occur within the live transaction.
+No new store, index, counter, persistent cache or app-specific rule is involved.
 
 This matters for personal-copy provenance and recovery records. A context or
 inner-kind predicate can match thousands of wrappers while a source/record-ID
@@ -60,7 +74,9 @@ linearization point; a later independent deletion remains authoritative.
 Global quota coordination still precedes readwrite transaction creation. These
 optimizations shorten readers and writers and remove no-change admissions; they
 do not introduce quota reservations, another lock hierarchy or relaxed accounting.
-Development-only bounded diagnostics add `query-planning` (probe count and time),
+Development-only bounded diagnostics add `query-planning` (`probes`,
+`keysExamined`, candidate `examined`, `earlyDecision`, `budgetExhausted` and time;
+`count` remains a probe-count alias),
 `query-candidates` (materialized tag entries), `provenance-query` and
 `duplicate-read`, correlated through existing bridge request IDs. They contain no
 tag values, event contents, keys or ciphertext.
@@ -77,6 +93,13 @@ production latency guarantees from this controlled workload.
 
 The [validation record](nostrdb-contention-validation.md) includes the measured
 before/after distributions, remaining IndexedDB contention and known test limits.
+It describes the original exact-count implementation. The
+[bounded-planner correction](nostrdb-bounded-planner-validation.md) documents its
+regression on already-selective bursts and the replacement's validation.
+`tests/browser/nostrdb-query-planning.js` adds empty/small concurrent queries,
+paginated fifty-message history and coverage maintenance in three accounts;
+`--planner-source=/absolute/path/query-plan.js` compares a saved planner with the
+same workload. Run it sequentially through the protected browser harness.
 
 Personal-copy creation sends the inner JSON as UTF-8 bytes in an `ArrayBuffer`
 to the vault's NIP-44 v3 signer. Both internal personal-copy readers decode

@@ -1027,6 +1027,27 @@ it('resolves ordinary personal-copy provenance once inside each transaction and 
   assert.equal((await getNostrDbQuotaUsage()).privateCount, 1)
 })
 
+it('executes the actual query after an empty planning probe, observing a queued insertion', async t => {
+  const development = globalThis.IS_DEVELOPMENT
+  globalThis.IS_DEVELOPMENT = true
+  t.after(() => { if (development === undefined) delete globalThis.IS_DEVELOPMENT; else globalThis.IS_DEVELOPMENT = development })
+  const a = await owner()
+  const event = signed({ tags: [['k', 'new'], ['c', 'conversation']] })
+  let inserted
+  const result = await a.db.query({ '#k': ['new'], '#c': ['conversation'] }, {
+    onTiming: measure => {
+      if (measure.stage !== 'query-planning' || inserted) return
+      assert.equal(measure.keysExamined, 0)
+      // Queue a real writer before the result cursor. This isolates planning
+      // estimates from the later read; quota accounting is tested separately.
+      inserted = request(a.raw.transaction('events', 'readwrite').objectStore('events').put(toStoredRecord(event)))
+    }
+  })
+  assert.ok(inserted)
+  await inserted
+  assert.deepEqual(result.results.map(event => event.id), [event.id])
+})
+
 it('matches reference results for selective OR/AND, search, count, expiration and combined filters', async t => {
   const a = await owner()
   const { ParsedFilter } = await import('#services/idb/nostrdb/index.js')

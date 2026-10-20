@@ -7,15 +7,17 @@ import { launchChrome } from './runtime/chrome.js'
 
 const root = fileURLToPath(new URL('../../', import.meta.url))
 const baselinePath = process.argv.find(value => value.startsWith('--baseline-index='))?.slice('--baseline-index='.length)
+const plannerPath = process.argv.find(value => value.startsWith('--planner-source='))?.slice('--planner-source='.length)
 const output = process.argv.find(value => value.startsWith('--output='))?.slice('--output='.length)
 const bundle = await build({
   absWorkingDir: root, bundle: true, write: false, format: 'esm', platform: 'browser',
   define: { IS_DEVELOPMENT: 'true', IS_PRODUCTION: 'false' },
   entryPoints: ['tests/browser/fixtures/nostrdb-contention.js'],
-  plugins: baselinePath
+  plugins: baselinePath || plannerPath
     ? [{
         name: 'comparison-source', setup (builder) {
-          builder.onLoad({ filter: /services\/idb\/nostrdb\/index\.js$/ }, async () => ({ contents: await readFile(baselinePath, 'utf8'), loader: 'js' }))
+          if (baselinePath) builder.onLoad({ filter: /services\/idb\/nostrdb\/index\.js$/ }, async () => ({ contents: await readFile(baselinePath, 'utf8'), loader: 'js' }))
+          if (plannerPath) builder.onLoad({ filter: /services\/idb\/nostrdb\/query-plan\.js$/ }, async () => ({ contents: await readFile(plannerPath, 'utf8'), loader: 'js' }))
         }
       }]
     : []
@@ -63,7 +65,7 @@ try {
     const sorted = [...values].sort((a, b) => a - b)
     return { median: sorted[Math.floor(sorted.length / 2)], p95: sorted[Math.ceil(sorted.length * 0.95) - 1] }
   }
-  const result = { baseline: !!baselinePath, samples: rows.length, foregroundMs: summary(rows.map(row => row.foregroundMs)), foregroundQuotaWaitMs: summary(rows.map(row => row.foregroundQuotaWaitMs)), foregroundQuotaHeldMs: summary(rows.map(row => row.foregroundQuotaHeldMs)), quotaWaitMs: summary(rows.flatMap(row => row.quotaWaitMs)), quotaHeldMs: summary(rows.flatMap(row => row.quotaHeldMs)), planningMs: summary(rows.map(row => row.planningMs)), rows }
+  const result = { baseline: !!baselinePath, comparisonPlanner: !!plannerPath, samples: rows.length, foregroundMs: summary(rows.map(row => row.foregroundMs)), foregroundQuotaWaitMs: summary(rows.map(row => row.foregroundQuotaWaitMs)), foregroundQuotaHeldMs: summary(rows.map(row => row.foregroundQuotaHeldMs)), quotaWaitMs: summary(rows.flatMap(row => row.quotaWaitMs)), quotaHeldMs: summary(rows.flatMap(row => row.quotaHeldMs)), planningMs: summary(rows.map(row => row.planningMs)), rows }
   if (output) await writeFile(output, JSON.stringify(result, null, 2))
   console.log('NOSTRDB-CONTENTION-SUMMARY', JSON.stringify({ ...result, rows: undefined }))
   console.log('Native contention and concurrent provenance checks passed')

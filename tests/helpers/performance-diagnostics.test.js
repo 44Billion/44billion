@@ -21,6 +21,8 @@ test('development diagnostics bound history and retain only identifiers and nume
     assert.deepEqual(performanceSnapshot().at(-1), { stage: 'vault-dispatch', seedRecordId, publicationId: 'envelope' })
     snapshot[0].stage = 'changed'
     assert.equal(performanceSnapshot()[0].stage, 'vault-dispatch')
+    recordPerformance({ stage: 'query-planning', probes: 2, keysExamined: 66, earlyDecision: true, budgetExhausted: false, keys: ['private'], ranges: ['private'] })
+    assert.deepEqual(performanceSnapshot().at(-1), { stage: 'query-planning', probes: 2, keysExamined: 66, earlyDecision: true, budgetExhausted: false })
   } finally {
     console.debug = previousDebug
     if (previous === undefined) delete globalThis.IS_DEVELOPMENT

@@ -5246,6 +5246,13 @@ class FakeIndex {
     return request(() => this.entries().filter(entry => !range || range.includes(entry.key)).length, this.tx)
   }
 
+  getAllKeys (range, limit = Infinity) {
+    return request(() => this.entries()
+      .filter(entry => !range || range.includes(entry.key))
+      .sort((a, b) => compareKeys(a.key, b.key) || compareKeys(a.primaryKey, b.primaryKey))
+      .slice(0, limit).map(entry => entry.primaryKey), this.tx)
+  }
+
   getKey (key) {
     return request(() => this.entries().find(entry => compareKeys(entry.key, key) === 0)?.primaryKey, this.tx)
   }

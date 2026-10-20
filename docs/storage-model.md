@@ -298,8 +298,10 @@ The storage audit inspects launcher state rather than internal NostrDB records;
 its app cleanup preserves the checkpoints and maintains quota usage. Owner-database removal deletes them and cache access rows
 with the other stores. No localStorage/sessionStorage repair key is needed.
 
-Selective tag planning keeps up to sixteen interval counts only for the current
-query. Ordinary public duplicates with ready counters and no app-reference change
+Selective tag planning uses at most sixteen intervals, 65 primary keys per probe
+and 256 returned keys per query, sharing observations only within that planning
+operation. It makes early decisions and never persists planning statistics.
+Ordinary public duplicates with ready counters and no app-reference change
 can complete through a generation-fenced readonly lookup. Eligible personal-copy
 provenance is resolved in the quota write transaction. These optimizations retain
 schema 3, all registered stores/keys and audit/repair invariants; they introduce no

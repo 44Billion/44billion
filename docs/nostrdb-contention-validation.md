@@ -1,5 +1,10 @@
 # NostrDB contention validation — 2026-10-19
 
+Historical results for the original exact-count planner. Production subsequently
+exposed a regression on bursts of queries that were already selective; this
+workload did not cover that case. See the
+[2026-10-20 correction and validation](nostrdb-bounded-planner-validation.md).
+
 This change preserves schema 3, existing stores/indexes, quota limits, event
 formats and the lock-before-write-transaction order. See
 [the planner and ingestion notes](nostrdb.md#selective-lookup-and-ingestion).

@@ -106,3 +106,5 @@ globalThis.fixture = {
   async publicCount () { return (await getNostrDbQuotaUsage()).cacheCount },
   async has (id) { return !!await request(raw.transaction('events').objectStore('events').get(eventIdIndexKey(id))) }
 }
+
+export { copy, db }
