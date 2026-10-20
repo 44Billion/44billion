@@ -1,10 +1,17 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { IDBObjectStore } from 'fake-indexeddb'
 import { mergeCoverage, missingCoverage } from '../../src/services/account-event-coverage.js'
+import {
+  NOSTRDB_ACCOUNT_COVERAGE_PREFIX,
+  NOSTRDB_ACCOUNT_COVERAGE_REGISTRY
+} from '../../src/constants/storage-schema.js'
 
 import { coverageFixture } from '../fixtures/account-coverage.js'
 
 const relay = 'wss://relay.example'
+const kinds = Array.from({ length: 30 }, (_, index) => index + 1)
+const coverageKey = key => typeof key === 'string' && key.startsWith(NOSTRDB_ACCOUNT_COVERAGE_PREFIX) && key !== NOSTRDB_ACCOUNT_COVERAGE_REGISTRY
 
 test('merges adjacent inclusive ranges and enumerates only missing windows newest first', () => {
   assert.deepEqual(mergeCoverage([[9, 10], [1, 3], [4, 8], [20, 30]]), [[1, 10], [20, 30]])
@@ -63,5 +70,87 @@ test('aborted checkpoint leaves coverage unchanged', async t => {
   const operation = coverage.mark(rows, 0, 100, controller.signal)
   controller.abort()
   await assert.rejects(operation)
+  assert.deepEqual((await coverage.read(relay, [1]))[0].intervals, [])
+})
+
+test('coverage pipelines record reads and skips repeated checkpoint writes', async t => {
+  const { coverage } = await coverageFixture(t)
+  await coverage.reconcile(kinds)
+
+  let gets = 0
+  let getsAtFirstResponse
+  const originalGet = IDBObjectStore.prototype.get
+  const getMock = t.mock.method(IDBObjectStore.prototype, 'get', function (key) {
+    const read = originalGet.call(this, key)
+    if (coverageKey(key)) {
+      gets++
+      if (gets === 1) read.addEventListener('success', () => { getsAtFirstResponse = gets })
+    }
+    return read
+  })
+  const rows = await coverage.read(relay, kinds)
+  assert.equal(gets, kinds.length)
+  assert.equal(getsAtFirstResponse, kinds.length)
+  getMock.mock.restore()
+
+  let writes = 0
+  const originalPut = IDBObjectStore.prototype.put
+  const putMock = t.mock.method(IDBObjectStore.prototype, 'put', function (value, ...args) {
+    if (coverageKey(value?.key)) writes++
+    return originalPut.call(this, value, ...args)
+  })
+  gets = 0
+  getsAtFirstResponse = undefined
+  t.mock.method(IDBObjectStore.prototype, 'get', function (key) {
+    const read = originalGet.call(this, key)
+    if (coverageKey(key)) {
+      gets++
+      if (gets === 1) read.addEventListener('success', () => { getsAtFirstResponse = gets })
+    }
+    return read
+  })
+
+  await coverage.mark(rows, 0, 100)
+  assert.equal(gets, kinds.length)
+  assert.equal(getsAtFirstResponse, kinds.length)
+  assert.equal(writes, kinds.length)
+
+  gets = 0
+  getsAtFirstResponse = undefined
+  writes = 0
+  await coverage.mark(rows, 0, 100)
+  assert.equal(gets, kinds.length)
+  assert.equal(getsAtFirstResponse, kinds.length)
+  assert.equal(writes, 0)
+  putMock.mock.restore()
+})
+
+test('coverage read and write failures abort the whole checkpoint', async t => {
+  const { coverage } = await coverageFixture(t)
+  await coverage.reconcile([1])
+  const rows = await coverage.read(relay, [1])
+
+  let failGet = true
+  const originalGet = IDBObjectStore.prototype.get
+  const getMock = t.mock.method(IDBObjectStore.prototype, 'get', function (key) {
+    if (failGet && coverageKey(key)) {
+      failGet = false
+      const failed = { onsuccess: null, onerror: null, error: new Error('coverage get failed') }
+      queueMicrotask(() => failed.onerror())
+      return failed
+    }
+    return originalGet.call(this, key)
+  })
+  await assert.rejects(coverage.mark(rows, 0, 100), /coverage get failed/)
+  getMock.mock.restore()
+  assert.deepEqual((await coverage.read(relay, [1]))[0].intervals, [])
+
+  const originalPut = IDBObjectStore.prototype.put
+  const putMock = t.mock.method(IDBObjectStore.prototype, 'put', function (value, ...args) {
+    if (coverageKey(value?.key)) throw new Error('coverage put failed')
+    return originalPut.call(this, value, ...args)
+  })
+  await assert.rejects(coverage.mark(rows, 0, 100), /coverage put failed/)
+  putMock.mock.restore()
   assert.deepEqual((await coverage.read(relay, [1]))[0].intervals, [])
 })

@@ -11,6 +11,27 @@ const request = req => new Promise((resolve, reject) => {
   req.onsuccess = () => resolve(req.result)
   req.onerror = () => reject(req.error)
 })
+const updateRecord = (store, key, update) => new Promise((resolve, reject) => {
+  const read = store.get(key)
+  read.onerror = () => reject(read.error)
+  read.onsuccess = () => {
+    try {
+      const current = read.result
+      const next = update(current)
+      if (next === undefined) {
+        resolve(current)
+        return
+      }
+      const write = store.put(next)
+      write.onerror = () => reject(write.error)
+      write.onsuccess = () => resolve(next)
+    } catch (error) {
+      reject(error)
+    }
+  }
+})
+const sameCoverage = (left, right) => Array.isArray(left) && left.length === right.length &&
+  left.every((interval, index) => interval[0] === right[index][0] && interval[1] === right[index][1])
 const keyFor = (relay, kind) => PREFIX + JSON.stringify([relay, kind])
 const invalidated = () => Object.assign(new Error('Account event coverage was reset'), { code: 'ACCOUNT_COVERAGE_RESET' })
 
@@ -91,18 +112,16 @@ export function createAccountEventCoverage (owner, { open = () => openNostrDb(ow
       relay = normalizeRelayUrl(relay)
       return transaction(async store => {
         const row = await registry(store)
-        const results = []
         for (const kind of kinds) {
           if (!row.kinds.includes(kind)) throw invalidated()
-          const key = keyFor(relay, kind)
-          let record = await request(store.get(key))
-          if (!record || invalidAccountCoverageKeys([record], row).length) {
-            record = { key, version: 1, generation: row.generation, relay, kind, intervals: [] }
-            store.put(record)
-          }
-          results.push(record)
         }
-        return results
+        return Promise.all(kinds.map(kind => {
+          const key = keyFor(relay, kind)
+          return updateRecord(store, key, current => {
+            if (current && !invalidAccountCoverageKeys([current], row).length) return undefined
+            return { key, version: 1, generation: row.generation, relay, kind, intervals: [] }
+          })
+        }))
       }, signal)
     },
     async mark (records, since, until, signal) {
@@ -113,10 +132,15 @@ export function createAccountEventCoverage (owner, { open = () => openNostrDb(ow
         const row = await request(store.get(REGISTRY))
         for (const record of records) {
           if (!row || row.generation !== record.generation || !row.kinds.includes(record.kind)) throw invalidated()
-          const current = await request(store.get(record.key))
-          if (!current || current.generation !== record.generation) throw invalidated()
-          store.put({ ...current, intervals: mergeCoverage([...current.intervals, [since, until]]) })
         }
+        await Promise.all(records.map(record => updateRecord(store, record.key, current => {
+          if (!current || current.generation !== record.generation) throw invalidated()
+          const intervals = mergeCoverage([...current.intervals, [since, until]])
+          // Repeated page rectangles can arrive after another page already
+          // covered the same range. Keep the transaction atomic, but avoid
+          // rewriting unchanged metadata.
+          return sameCoverage(intervals, current.intervals) ? undefined : { ...current, intervals }
+        })))
       }, signal)
     }
   }

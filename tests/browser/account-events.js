@@ -13,9 +13,11 @@ const bundle = await build({
     import { createAccountEventTracker, accountKinds } from './src/services/account-events.js';
     import { createAccountEventCoverage } from './src/services/account-event-coverage.js';
     import { getNostrDb } from './src/services/idb/nostrdb/index.js';
+    import { createLocalPersonalCopy } from './src/services/idb/nostrdb/personal-copy.js';
     import { accountRelayFixture } from './tests/fixtures/account-relay.js';
     import { finalizeEvent } from 'libp2r2p/event';
     import { getPublicKey } from 'libp2r2p/key';
+    import { encryptBytes } from 'libp2r2p/nip44-v3';
     const baseline = Number(localStorage.fixtureAccountTime) || Math.floor(Date.now()/1000);
     localStorage.fixtureAccountTime = baseline;
     const relay = 'wss://relay.example';
@@ -40,6 +42,68 @@ const bundle = await build({
       baseline, accounts, transport, tracker, errors, warnings,
       start:()=>tracker.setAccounts(accounts),
       stop:async()=>{controller.abort();await tracker.settled();await transport.pool.disconnectAll()},
+      pipeline:async()=>{
+        const identitySecret=new Uint8Array(32).fill(31);
+        const contentSecret=new Uint8Array(32).fill(32);
+        const owner=getPublicKey(identitySecret);
+        const contentPubkey=getPublicKey(contentSecret);
+        const obfuscate=async(value,kind,scope)=>kind+':'+scope+':'+value;
+        const encrypt=async(kind,plaintext)=>encryptBytes(identitySecret,owner,kind,new Uint8Array(),new TextEncoder().encode(plaintext));
+        const signEvent=async template=>{
+          const proofless={...template,tags:template.tags.map(tag=>tag[0]==='imkc'?['imkc',contentPubkey]:tag)};
+          const proof=finalizeEvent(proofless,contentSecret);
+          return finalizeEvent({...template,tags:template.tags.map(tag=>tag[0]==='imkc'?['imkc',contentPubkey,proof.sig]:tag)},identitySecret);
+        };
+        const copy=originalEvent=>createLocalPersonalCopy({originalEvent,context:'dm:'+owner,ownerPubkey:owner,obfuscate,encrypt,signEvent});
+        const db=getNostrDb(owner,{maintenance:false,personalCopyObfuscate:obfuscate});
+        const coverage=createAccountEventCoverage(owner);
+        await coverage.reconcile(accountKinds);
+        const rows=await coverage.read(relay,accountKinds);
+        const event=await copy({kind:9,created_at:baseline+1,tags:[],content:'coverage contention'});
+        const prefix='accountEventCoverage:';
+        let gets=0;
+        let getsAtFirstResponse=null;
+        let writes=0;
+        const coverageKey=key=>typeof key==='string'&&key.startsWith(prefix)&&key!==prefix+'registry';
+        const originalGet=IDBObjectStore.prototype.get;
+        const originalPut=IDBObjectStore.prototype.put;
+        IDBObjectStore.prototype.get=function(key){
+          const read=originalGet.call(this,key);
+          if(coverageKey(key)){
+            gets++;
+            if(gets===1)read.addEventListener('success',()=>{getsAtFirstResponse=gets});
+          }
+          return read;
+        };
+        IDBObjectStore.prototype.put=function(value,...args){
+          if(coverageKey(value?.key))writes++;
+          return originalPut.call(this,value,...args);
+        };
+        try{
+          const started=performance.now();
+          const mark=coverage.mark(rows,0,100);
+          const save=db.add(event);
+          const [marked,saved]=await Promise.all([mark,save]);
+          const elapsedMs=performance.now()-started;
+          const writesAfterFirst=writes;
+          await coverage.mark(rows,0,100);
+          const duplicateWrites=writes-writesAfterFirst;
+          const current=await coverage.read(relay,accountKinds);
+          return {
+            getsAtFirstResponse,
+            expectedGets:accountKinds.length,
+            writesAfterFirst,
+            duplicateWrites,
+            saved:saved.ok===true,
+            marked:marked===undefined,
+            intervalsCurrent:current.every(row=>JSON.stringify(row.intervals)==='[[0,100]]'),
+            elapsedMs
+          };
+        }finally{
+          IDBObjectStore.prototype.get=originalGet;
+          IDBObjectStore.prototype.put=originalPut;
+        }
+      },
       startRetries:()=>{
         const state={errors:[],metadata:[],seedAttempts:[],profileAttempts:[],retryAt:null};
         const secret=new Uint8Array(32).fill(1);
@@ -121,6 +185,14 @@ try {
   assert.equal(await evaluate('fixture.accounts[0].coverage.read("wss://relay.example",[1]).then(rows=>rows[0].intervals.at(-1)[1]>=fixture.baseline+55)'), true)
   await evaluate('fixture.stop()')
   assert.equal(await evaluate('fixture.transport.subscriptions.filter(sub=>!sub.closed).length'), 0)
+  const pipeline = await evaluate('fixture.pipeline()')
+  assert.equal(pipeline.getsAtFirstResponse, pipeline.expectedGets)
+  assert.equal(pipeline.writesAfterFirst, pipeline.expectedGets)
+  assert.equal(pipeline.duplicateWrites, 0)
+  assert.equal(pipeline.saved, true)
+  assert.equal(pipeline.marked, true)
+  assert.equal(pipeline.intervalsCurrent, true)
+  console.log('Account coverage contention:', JSON.stringify(pipeline))
 
   await browser.send('Page.reload', {}, context.sessionId)
   await browser.until(() => ![...browser.contexts.values()].some(value => value.id === context.id && value.sessionId === context.sessionId), 'old account context gone')

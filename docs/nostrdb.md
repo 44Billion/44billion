@@ -100,6 +100,15 @@ paginated fifty-message history and coverage maintenance in three accounts;
 `--planner-source=/absolute/path/query-plan.js` compares a saved planner with the
 same workload. Run it sequentially through the protected browser harness.
 
+Account-event coverage checkpoints are grouped by relay and eligible kind in the
+maintenance store. The registry is read first, then all per-kind reads are
+submitted within the same readwrite transaction. Missing records and changed
+coverage are written from their read success handlers; unchanged ranges are not
+rewritten. Generation validation, abort handling and the completion barrier keep
+event commits and checkpoint commits separately ordered. The protected
+`tests/browser/account-events.js` fixture verifies the pipeline alongside a real
+personal-copy write.
+
 Personal-copy creation sends the inner JSON as UTF-8 bytes in an `ArrayBuffer`
 to the vault's NIP-44 v3 signer. Both internal personal-copy readers decode
 the returned buffer directly with `TextDecoder`. App-facing NIP-44 v3 methods,
