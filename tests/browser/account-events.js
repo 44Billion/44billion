@@ -88,15 +88,29 @@ const bundle = await build({
           const writesAfterFirst=writes;
           await coverage.mark(rows,0,100);
           const duplicateWrites=writes-writesAfterFirst;
+          gets=0;
+          writes=0;
+          getsAtFirstResponse=null;
+          await coverage.markBatch([
+            {records:rows,since:101,until:200},
+            {records:rows,since:201,until:300},
+            {records:rows,since:150,until:250}
+          ]);
+          const batchGets=gets;
+          const batchGetsAtFirstResponse=getsAtFirstResponse;
+          const batchWrites=writes;
           const current=await coverage.read(relay,accountKinds);
           return {
             getsAtFirstResponse,
             expectedGets:accountKinds.length,
             writesAfterFirst,
             duplicateWrites,
+            batchGets,
+            batchGetsAtFirstResponse,
+            batchWrites,
             saved:saved.ok===true,
             marked:marked===undefined,
-            intervalsCurrent:current.every(row=>JSON.stringify(row.intervals)==='[[0,100]]'),
+            intervalsCurrent:current.every(row=>JSON.stringify(row.intervals)==='[[0,300]]'),
             elapsedMs
           };
         }finally{
@@ -189,6 +203,9 @@ try {
   assert.equal(pipeline.getsAtFirstResponse, pipeline.expectedGets)
   assert.equal(pipeline.writesAfterFirst, pipeline.expectedGets)
   assert.equal(pipeline.duplicateWrites, 0)
+  assert.equal(pipeline.batchGets, pipeline.expectedGets)
+  assert.equal(pipeline.batchGetsAtFirstResponse, pipeline.expectedGets)
+  assert.equal(pipeline.batchWrites, pipeline.expectedGets)
   assert.equal(pipeline.saved, true)
   assert.equal(pipeline.marked, true)
   assert.equal(pipeline.intervalsCurrent, true)

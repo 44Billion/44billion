@@ -215,10 +215,13 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   relay coverage, and fence checkpoints against database resets. Event commits
   precede checkpoint commits. Maintenance readwrite transactions serialize tabs;
   invalid coverage resets safely without touching unrelated maintenance records.
-  Pipeline all per-relay/kind reads inside a checkpoint transaction and issue
-  conditional writes from their success handlers. Repeated coverage must not
-  rewrite unchanged rows; retain generation validation, abort behavior and the
-  transaction-completion barrier.
+  Coalesce completed pages for 50 ms per coverage database, merge their ranges
+  in memory, then use one `markBatch` transaction for all available relays and
+  kinds. Pipeline all per-relay/kind reads and issue conditional writes from
+  their success handlers. Flush at scan completion and before propagating its
+  result; abandoned signals may repeat a page. Repeated coverage must not rewrite
+  unchanged rows; retain generation validation, whole-batch abort behavior and
+  the transaction-completion barrier.
 - Grouped recent snapshots and resumptions use ten minutes of overlap;
   historical queries combine only matching bounds. Saturated pages subdivide
   time, then authors/kinds. The explicit single-author/kind/second saturation

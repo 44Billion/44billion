@@ -105,9 +105,14 @@ maintenance store. The registry is read first, then all per-kind reads are
 submitted within the same readwrite transaction. Missing records and changed
 coverage are written from their read success handlers; unchanged ranges are not
 rewritten. Generation validation, abort handling and the completion barrier keep
-event commits and checkpoint commits separately ordered. The protected
-`tests/browser/account-events.js` fixture verifies the pipeline alongside a real
-personal-copy write.
+event commits and checkpoint commits separately ordered. The account tracker
+collects completed page rectangles for 50 ms per coverage database, merges all
+available relays/kinds, and flushes one `markBatch` transaction. Scan completion
+awaits the checkpoint barrier; a crash before the window flushes can repeat a
+page but cannot advance coverage without its events. Cancelled requests are
+discarded, while a generation or storage failure aborts the whole batch. The
+protected `tests/browser/account-events.js` fixture verifies the pipeline and
+single-transaction batching alongside a real personal-copy write.
 
 Personal-copy creation sends the inner JSON as UTF-8 bytes in an `ArrayBuffer`
 to the vault's NIP-44 v3 signer. Both internal personal-copy readers decode

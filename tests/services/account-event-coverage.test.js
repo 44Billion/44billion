@@ -125,6 +125,35 @@ test('coverage pipelines record reads and skips repeated checkpoint writes', asy
   putMock.mock.restore()
 })
 
+test('coverage batches concurrent ranges into one transaction per database', async t => {
+  const { coverage, db } = await coverageFixture(t)
+  await coverage.reconcile(kinds)
+  const rows = await coverage.read(relay, kinds)
+  let transactions = 0
+  const originalTransaction = db.transaction.bind(db)
+  t.mock.method(db, 'transaction', (...args) => {
+    if (args[0] === 'maintenance' && args[1] === 'readwrite') transactions++
+    return originalTransaction(...args)
+  })
+
+  let gets = 0
+  const originalGet = IDBObjectStore.prototype.get
+  t.mock.method(IDBObjectStore.prototype, 'get', function (key) {
+    if (coverageKey(key)) gets++
+    return originalGet.call(this, key)
+  })
+
+  await coverage.markBatch([
+    { records: rows, since: 0, until: 100 },
+    { records: rows, since: 101, until: 200 },
+    { records: rows, since: 50, until: 150 }
+  ])
+  assert.equal(transactions, 1)
+  assert.equal(gets, kinds.length)
+  assert.ok((await coverage.read(relay, kinds)).every(row =>
+    row.intervals.length === 1 && row.intervals[0][0] === 0 && row.intervals[0][1] === 200))
+})
+
 test('coverage read and write failures abort the whole checkpoint', async t => {
   const { coverage } = await coverageFixture(t)
   await coverage.reconcile([1])

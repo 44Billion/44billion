@@ -95,6 +95,44 @@ export function createAccountEventCoverage (owner, { open = () => openNostrDb(ow
     }
     return row
   }
+  function validateRange (since, until) {
+    if (!Number.isSafeInteger(since) || !Number.isSafeInteger(until) || since < 0 || until < since) throw new Error('Invalid account coverage interval')
+  }
+  async function markBatch (requests, signal) {
+    if (!Array.isArray(requests)) throw new Error('Invalid account coverage batch')
+    signal?.throwIfAborted()
+    const active = requests.filter(request => {
+      if (!request || !Array.isArray(request.records)) throw new Error('Invalid account coverage batch')
+      validateRange(request.since, request.until)
+      return !request.signal?.aborted
+    })
+    if (!active.length) return
+    return transaction(async store => {
+      // Do not recreate a missing registry here: a reset invalidates work that
+      // committed its events in the old database.
+      const row = await request(store.get(REGISTRY))
+      const changes = new Map()
+      for (const entry of active) {
+        for (const record of entry.records) {
+          if (!row || row.generation !== record.generation || !row.kinds.includes(record.kind)) throw invalidated()
+          const change = changes.get(record.key)
+          if (!change) changes.set(record.key, { generation: record.generation, ranges: [[entry.since, entry.until]] })
+          else {
+            if (change.generation !== record.generation) throw invalidated()
+            change.ranges.push([entry.since, entry.until])
+          }
+        }
+      }
+      await Promise.all([...changes].map(([key, change]) => updateRecord(store, key, current => {
+        if (!current || current.generation !== change.generation) throw invalidated()
+        const intervals = mergeCoverage([...current.intervals, ...change.ranges])
+        // Repeated page rectangles can arrive after another page already
+        // covered the same range. Keep the transaction atomic, but avoid
+        // rewriting unchanged metadata.
+        return sameCoverage(intervals, current.intervals) ? undefined : { ...current, intervals }
+      })))
+    }, signal)
+  }
   return {
     async reconcile (kinds, signal) {
       selectedKinds = [...new Set(kinds)].sort((a, b) => a - b)
@@ -124,24 +162,10 @@ export function createAccountEventCoverage (owner, { open = () => openNostrDb(ow
         }))
       }, signal)
     },
-    async mark (records, since, until, signal) {
-      if (!Number.isSafeInteger(since) || !Number.isSafeInteger(until) || since < 0 || until < since) throw new Error('Invalid account coverage interval')
-      return transaction(async store => {
-        // Do not recreate a missing registry here: a reset invalidates work that
-        // committed its events in the old database.
-        const row = await request(store.get(REGISTRY))
-        for (const record of records) {
-          if (!row || row.generation !== record.generation || !row.kinds.includes(record.kind)) throw invalidated()
-        }
-        await Promise.all(records.map(record => updateRecord(store, record.key, current => {
-          if (!current || current.generation !== record.generation) throw invalidated()
-          const intervals = mergeCoverage([...current.intervals, [since, until]])
-          // Repeated page rectangles can arrive after another page already
-          // covered the same range. Keep the transaction atomic, but avoid
-          // rewriting unchanged metadata.
-          return sameCoverage(intervals, current.intervals) ? undefined : { ...current, intervals }
-        })))
-      }, signal)
+    markBatch,
+    mark (records, since, until, signal) {
+      validateRange(since, until)
+      return markBatch([{ records, since, until, signal }], signal)
     }
   }
 }

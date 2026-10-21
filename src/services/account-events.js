@@ -1,5 +1,6 @@
 import { accountEventPages, assertHistoryReport, ACCOUNT_PAGE_SIZE } from './account-event-pages.js'
 import { missingCoverage } from './account-event-coverage.js'
+import { createAccountCoverageCheckpointQueue } from './account-coverage-checkpoints.js'
 import { createAccountEventRetry } from './account-event-retry.js'
 import { isEphemeralEvent, isValidEvent } from 'libp2r2p/event'
 import {
@@ -63,6 +64,7 @@ export function createAccountEventTracker ({ pool, seeds, signal, reportError = 
   const tasks = new Set()
   const failures = new WeakMap()
   const retry = createAccountEventRetry({ signal, random, checkOnline: _isOnline, watchOnline: _onOnline })
+  const checkpoints = createAccountCoverageCheckpointQueue({ signal })
   let reconcileQueued = false
   const spawn = promise => { tasks.add(promise); promise.finally(() => tasks.delete(promise)).catch(() => {}) }
   const report = (error, entry, phase) => {
@@ -172,21 +174,39 @@ export function createAccountEventTracker ({ pool, seeds, signal, reportError = 
     }
     return records
   }
-  async function mark (entry, records, filter) {
+  function checkpoint (entry, records, filter) {
     entry.signal.throwIfAborted()
     for (const [account, rows] of records) {
       if (!account.active || !filter.authors.includes(account.pubkey)) continue
-      await storage(() => account.coverage.mark(rows.filter(row => filter.kinds.includes(row.kind)), filter.since, filter.until, entry.signal))
+      checkpoints.queue(account.coverage, {
+        records: rows.filter(row => filter.kinds.includes(row.kind)),
+        since: filter.since,
+        until: filter.until,
+        signal: entry.signal
+      })
     }
   }
+  async function flushCheckpoints () {
+    try { await checkpoints.flush() } catch (error) { throw trackFailure(error, 'storage') }
+  }
   async function scan (entry, filter, records, firstPage) {
+    let failure
     try {
       for await (const complete of accountEventPages({ pool: readPool, relay: entry.relay, filter, signal: entry.signal, firstPage, persist: (event, filter) => persist(entry, event, filter), assertReport: assertReadReport, warn })) {
-        await mark(entry, records, complete)
+        checkpoint(entry, records, complete)
       }
     } catch (error) {
-      throw trackFailure(error, undefined, filter)
+      failure = trackFailure(error, undefined, filter)
     }
+    try {
+      await flushCheckpoints()
+    } catch (error) {
+      if (!failure) failure = error
+      else if (failure.cause === undefined) {
+        try { Object.defineProperty(failure, 'cause', { value: error, configurable: true }) } catch {}
+      }
+    }
+    if (failure) throw failure
   }
 
   // Historical jobs combine only identical bounds and compatible author/kind
@@ -282,7 +302,8 @@ export function createAccountEventTracker ({ pool, seeds, signal, reportError = 
               (liveEpoch !== undefined && liveEpoch !== item.epoch)) throw new Error('Invalid account live progress')
           liveEpoch = item.epoch
           if (item.until > liveUntil) {
-            await mark(entry, records, { authors: entry.authors, kinds: entry.kinds, since: item.since, until: item.until })
+            checkpoint(entry, records, { authors: entry.authors, kinds: entry.kinds, since: item.since, until: item.until })
+            await flushCheckpoints()
             liveUntil = item.until
           }
         }
@@ -386,6 +407,7 @@ export function createAccountEventTracker ({ pool, seeds, signal, reportError = 
   }
 
   signal.addEventListener('abort', () => {
+    checkpoints.stop()
     for (const account of accounts.values()) account.active = false
     for (const entry of entries.values()) retire(entry)
     entries.clear()
@@ -425,6 +447,9 @@ export function createAccountEventTracker ({ pool, seeds, signal, reportError = 
       }
       scheduleReconcile()
     },
-    async settled () { await Promise.allSettled([...tasks]) }
+    async settled () {
+      await Promise.allSettled([...tasks])
+      await flushCheckpoints()
+    }
   }
 }
