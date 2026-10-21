@@ -10,7 +10,7 @@ import { runNostrDbMethod } from '#helpers/window-message/browser/nostrdb.js'
 import { buildPersonalCopyUnsignedEvent, personalCopySourceId } from '#helpers/personal-copy.js'
 import {
   getNostrDb, openNostrDb, deleteNostrDb, deletionEventRef, eventIdIndexKey,
-  NOSTRDB_PREFIX, toStoredRecord
+  NOSTRDB_PREFIX, NOSTRDB_VERSION, toStoredRecord
 } from '#services/idb/nostrdb/index.js'
 import {
   DEFAULT_NOSTRDB_QUOTAS, getNostrDbQuotaUsage, setNostrDbQuotaLimits,
@@ -363,7 +363,7 @@ it('backfills legacy rows and references without verifying old signatures', asyn
   const usage = await getNostrDbQuotaUsage()
   assert.equal(usage.publicCount, 2)
   assert.equal(usage.cacheCount, 0)
-  assert.equal((await openNostrDb(pubkey)).version, 3)
+  assert.equal((await openNostrDb(pubkey)).version, NOSTRDB_VERSION)
 })
 
 it('continues local writes during enumeration failure and retains the last valid totals', async t => {

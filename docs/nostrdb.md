@@ -9,10 +9,11 @@ aligned with changes to maintenance defaults and transaction boundaries.
 ## Ownership and storage
 
 Each owner has a `44billion_nostrdb:<ownerPubkey>` database containing `events`,
-`deletions`, `kindRegistry`, `maintenance`, and `cacheAccess` (schema version 3). The owner identifies the database, not necessarily
-the author of every event in it. Event records carry local app references (`ap`),
-receipt time (`ra`, milliseconds), and a sync anchor (`sa`). Cleanup grace periods
-use receipt time rather than the event's authored timestamp where noted below.
+`deletions`, `kindRegistry`, `maintenance`, `accountCoverage`, and `cacheAccess`
+(schema version 4). The owner identifies the database, not necessarily the author
+of every event in it. Event records carry local app references (`ap`), receipt
+time (`ra`, milliseconds), and a sync anchor (`sa`). Cleanup grace periods use
+receipt time rather than the event's authored timestamp where noted below.
 
 Kind 34601 chunk events store metadata in NostrDB and externalize their content
 into the shared `44billion_browser` chunk stores. Those are separate databases;
@@ -101,17 +102,22 @@ paginated fifty-message history and coverage maintenance in three accounts;
 same workload. Run it sequentially through the protected browser harness.
 
 Account-event coverage checkpoints are grouped by relay and eligible kind in the
-maintenance store. The registry is read first, then all per-kind reads are
-submitted within the same readwrite transaction. Missing records and changed
-coverage are written from their read success handlers; unchanged ranges are not
-rewritten. Generation validation, abort handling and the completion barrier keep
-event commits and checkpoint commits separately ordered. The account tracker
-collects completed page rectangles for 50 ms per coverage database, merges all
-available relays/kinds, and flushes one `markBatch` transaction. Scan completion
-awaits the checkpoint barrier; a crash before the window flushes can repeat a
-page but cannot advance coverage without its events. Cancelled requests are
-discarded, while a generation or storage failure aborts the whole batch. The
-protected `tests/browser/account-events.js` fixture verifies the pipeline and
+`accountCoverage` store. Schema 4 moves legacy rows out of `maintenance` in the
+version-change transaction without changing their record format or touching
+quota, unclaimed-data or unknown keys. The registry is read first, then all
+per-kind reads are submitted within the same readwrite transaction. Missing
+records and changed coverage are written from their read success handlers;
+unchanged ranges are not rewritten. The coordinator opens this transaction only
+through the `maintenance` write scheduler with the `accountCoverage` scope, so it
+can overlap event/quota transactions on disjoint stores. Generation validation,
+abort handling and the completion barrier keep event commits and checkpoint
+commits separately ordered. The account tracker collects completed page rectangles
+for 50 ms per coverage database, merges all available relays/kinds, and flushes
+one `markBatch` transaction. Scan completion awaits the checkpoint barrier; a
+crash before the window flushes can repeat a page but cannot advance coverage
+without its events. Cancelled requests are discarded, while a generation or
+storage failure aborts the whole batch. The protected
+`tests/browser/account-events.js` fixture verifies the pipeline and
 single-transaction batching alongside a real personal-copy write.
 
 Personal-copy creation sends the inner JSON as UTF-8 bytes in an `ArrayBuffer`
@@ -152,7 +158,7 @@ when `maintenanceOptions.signEvent` is supplied.
 | Routine | Default schedule | Work and limits per execution |
 | --- | --- | --- |
 | `maintainNostrDbCache` | Commit requests coalesce at 1 second; volume can expedite; excess pages 1 second apart; otherwise every minute | Initializes missing quota summaries, then removes at most 25 globally oldest cache events, examining at most 100 candidates. |
-| `purgeExpired` | Immediately, then every hour | Finds expired events and removes them and their deletion contributions. No batch cap; selected deletions share one write transaction. |
+| `purgeExpired` | Immediately, then every hour | Finds expired events and removes them and their deletion contributions in `maintenance` transactions of at most 100 events, yielding between batches. |
 | Unclaimed-data scheduler / `purgeUnclaimedAppData` | Checks after 1 second; pauses 1 second between pages; new sweep 24 hours after the last completion | Each page scans up to 1,000 records and deletes up to 100 unclaimed app-trackable events received at least 30 days ago. Progress and completion time survive reloads. |
 | `maintainDeletionRequests` | Immediately, then every hour, with a signer | Runs one compaction, then pruning, for the selected author (the owner by default). Compaction combines compatible kind 5 requests into a signed event with up to 100 target tags, and — when vault encryption and a signer are available — merges owner-authored, non-expiring private deletion envelopes from the same context into a rewritten wrapper; third-party and expiring envelopes are left for pruning/purge. Pruning targets a total of 1,000 requests (public plus envelopes), removing at most 100 per run after a 30-day receipt grace period. |
 | Unreferenced-hearsay prune (`pruneUnreferencedHearsays`) | Immediately, then every 10 minutes | Scans personal copies with `v=2`, keeps those referenced by another copy in the same context, and removes at most 100 unreferenced hearsays older than 10 minutes per run. Needs no signer. |
@@ -211,12 +217,14 @@ Compaction preserves address cutoffs by grouping compatible timestamps.
   the app reference, deletes rows with no remaining app references, and retains
   shared rows and third-party rows still referenced by the owner. Retained rows
   lose the uninstalled app association even when no other app remains.
-- Database opening synchronizes `kindRegistry`. When previously unknown kinds
-  become app-neutral, their app references are removed before the new registry
-  is saved. Custom app-data kinds retain their app ownership semantics.
+- Database opening synchronizes `kindRegistry` through `maintenance` scheduled
+  writes. When previously unknown kinds become app-neutral, their app references
+  are removed before the new registry is saved. Custom app-data kinds retain
+  their app ownership semantics.
 - App claims from reads/subscriptions are queued in memory and flushed after
-  250 ms, or triggered at 100 queued IDs. Writes preserve `ra` and `sa`; pending
-  claims can be lost on page termination.
+  250 ms, or triggered at 100 queued IDs. The `events`-only transaction is
+  scheduled as `background`. Writes preserve `ra` and `sa`; pending claims can
+  be lost on page termination.
 - Chunk ingestion under quota pressure calls `purgeChunkRoot(..., { force: true })`
   for unreferenced roots, bypassing the 10-minute grace period. Referenced roots
   are excluded by the reference check.
@@ -236,6 +244,27 @@ scheduler from overlapping itself. The global chunk scheduler is also a singleto
 only within the current module context. These guards do not serialize direct
 method calls, separately created schedulers/instances, or another tab. Global
 and per-owner chunk maintenance can overlap even within one tab.
+
+The in-memory write scheduler runs one logical scheduler per owner/database. It
+schedules live readwrite transactions only; queries, counts and subscriptions
+continue directly through IndexedDB readonly concurrency. Every job declares its
+store scope and a launcher-owned class: `foreground`, `normal`, `background` or
+`maintenance`. Transactions with disjoint stores may start together; intersecting
+stores remain serialized. Higher classes run first, with bounded starvation
+protection for lower classes and round-robin app lanes inside each class. `system`
+has its own lane. There is deliberately no pending-job cap per app and no
+queue-full error.
+
+The app bridge derives class from the authenticated app and normalized event
+kind, never from app-provided scheduling fields. Kinds 9, 1063, 3560, 26300,
+26400 and 34601 and explicit removals are foreground. Other app writes are
+normal. A structurally valid recovery archive carrying the internal `recovery`
+claim becomes background; an invalid claim remains normal. Account ingestion is
+background. Coverage, quota/cache maintenance, kind-registry repair, expiration,
+unclaimed cleanup and other upkeep are maintenance. The scheduler holds no slot
+while crypto, signer, network, Web Lock or timer work is pending. Aborts remove
+queued work, and every start revalidates access and the cached connection
+generation before opening a transaction.
 
 The shared cache uses the Web Lock `44billion:chunk-cache:v1` around selected
 cache operations. Without Web Locks, its fallback promise queue is local to the
@@ -262,12 +291,12 @@ association changes alone do not change byte accounting.
 
 | Operation | Transaction boundary |
 | --- | --- |
-| Expiration purge | Selected event removals, deletion contributions, cache classification and usage in one quota transaction; candidate discovery happens earlier. |
+| Expiration purge | Candidate discovery happens earlier; up to 100 selected event removals, deletion contributions, cache classification and usage share each quota transaction. |
 | Unclaimed-data purge | Checkpoint read, bounded scan, revalidated deletions and checkpoint write share one quota transaction. |
 | Deletion compaction | Selection and signing precede the write. The new request, its tombstones and removal of consumed requests share one transaction. Notification follows commit. |
 | Deletion pruning / app cleanup | Each deletion batch is atomic; the entire scan and all batches are not. |
 | Chunk maintenance | Multiple transactions across two databases, including cache updates triggered after NostrDB commit. No global rollback. |
-| Kind-registry synchronization | Event-reference cleanup and saving the registry are separate transactions. |
+| Kind-registry synchronization | Event-reference cleanup and saving the registry are separate scheduled maintenance transactions. |
 
 After interruption, completed batches remain and unfinished work may be revisited
 on a later run; there is no general durable job queue. Unclaimed-data cleanup and
@@ -426,7 +455,8 @@ Launcher-only exports `getNostrDbQuotaLimits`, `setNostrDbQuotaLimits` and
 Only three byte overrides persist under `44billion:nostrdb-quotas:v1`. The cache
 count ceiling is derived with exact integer arithmetic:
 `floor(cacheBytes × 50,000 / 134,217,728)`. Existing overrides automatically use
-this proportion; schema 3 is unchanged. Zero bytes means zero cache events.
+this proportion; the schema-3 quota record remains unchanged in schema 4. Zero
+bytes means zero cache events.
 Reducing public/private limits blocks growth only; reducing cache schedules
 trimming. Configuration and global usage remain launcher-only.
 The screen preserves drafts until Save and subscribes to the root-owned shared

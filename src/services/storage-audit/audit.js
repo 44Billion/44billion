@@ -950,8 +950,8 @@ function hasAnySubdomainForApp (local, appId) {
   return false
 }
 
-// Pure maintenance-record audit, called by account ingestion inside its owner
-// transaction. Unrelated maintenance keys are preserved. Invalid coverage is
+// Pure coverage-record audit, called by account ingestion inside its owner
+// transaction. Unrelated coverage records are preserved. Invalid coverage is
 // disposable: deleting it causes another read, never skipped history.
 export function invalidAccountCoverageKeys (records, { generation, kinds }) {
   return records.filter(record => {

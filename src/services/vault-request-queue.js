@@ -4,6 +4,10 @@ const priorityKinds = new Set([9, 1063, 3560, 26300, 26400, 34601])
 const cryptoMethods = new Set(['nip44v3Encrypt', 'nip44v3Decrypt', 'nip44v3EncryptDoubleDH', 'nip44v3DecryptDoubleDH'])
 const kindNumber = value => (typeof value === 'number' || (typeof value === 'string' && /^\d+$/.test(value))) ? Number(value) : null
 
+export function isPriorityEventKind (value) {
+  return priorityKinds.has(kindNumber(value))
+}
+
 export function classifyVaultRequest (message) {
   const { method, params = [] } = message?.payload ?? {}
   if (message?.code !== 'NIP07') return { priority: false, chunk: false, archive: false }

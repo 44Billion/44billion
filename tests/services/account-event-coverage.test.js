@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { IDBObjectStore } from 'fake-indexeddb'
 import { mergeCoverage, missingCoverage } from '../../src/services/account-event-coverage.js'
 import {
+  NOSTRDB_ACCOUNT_COVERAGE_STORE,
   NOSTRDB_ACCOUNT_COVERAGE_PREFIX,
   NOSTRDB_ACCOUNT_COVERAGE_REGISTRY
 } from '../../src/constants/storage-schema.js'
@@ -46,19 +47,28 @@ test('reset between events and checkpoint fences old work and malformed ranges r
   const { coverage, db } = await coverageFixture(t)
   await coverage.reconcile([1])
   const rows = await coverage.read(relay, [1])
-  await new Promise(resolve => { const tx = db.transaction('maintenance', 'readwrite'); tx.objectStore('maintenance').clear(); tx.oncomplete = resolve })
+  await new Promise(resolve => {
+    const tx = db.transaction(NOSTRDB_ACCOUNT_COVERAGE_STORE, 'readwrite')
+    tx.objectStore(NOSTRDB_ACCOUNT_COVERAGE_STORE).clear()
+    tx.oncomplete = resolve
+  })
   await assert.rejects(coverage.mark(rows, 0, 100), { code: 'ACCOUNT_COVERAGE_RESET' })
   const current = await coverage.read(relay, [1])
   assert.notEqual(current[0].generation, rows[0].generation)
   await new Promise(resolve => {
-    const tx = db.transaction('maintenance', 'readwrite')
-    tx.objectStore('maintenance').put({ ...current[0], intervals: [[100, 0]] })
-    tx.objectStore('maintenance').put({ key: 'unrelated', value: 42 })
+    const tx = db.transaction(NOSTRDB_ACCOUNT_COVERAGE_STORE, 'readwrite')
+    tx.objectStore(NOSTRDB_ACCOUNT_COVERAGE_STORE).put({ ...current[0], intervals: [[100, 0]] })
+    tx.objectStore(NOSTRDB_ACCOUNT_COVERAGE_STORE).put({ key: 'unrelated', value: 42 })
     tx.oncomplete = resolve
   })
   await coverage.reconcile([1])
   assert.deepEqual((await coverage.read(relay, [1]))[0].intervals, [])
-  const unknown = await new Promise(resolve => { db.transaction('maintenance').objectStore('maintenance').get('unrelated').onsuccess = event => resolve(event.target.result) })
+  const unknown = await new Promise(resolve => {
+    db.transaction(NOSTRDB_ACCOUNT_COVERAGE_STORE)
+      .objectStore(NOSTRDB_ACCOUNT_COVERAGE_STORE)
+      .get('unrelated')
+      .onsuccess = event => resolve(event.target.result)
+  })
   assert.equal(unknown.value, 42)
 })
 
@@ -132,7 +142,7 @@ test('coverage batches concurrent ranges into one transaction per database', asy
   let transactions = 0
   const originalTransaction = db.transaction.bind(db)
   t.mock.method(db, 'transaction', (...args) => {
-    if (args[0] === 'maintenance' && args[1] === 'readwrite') transactions++
+    if (args[0] === NOSTRDB_ACCOUNT_COVERAGE_STORE && args[1] === 'readwrite') transactions++
     return originalTransaction(...args)
   })
 

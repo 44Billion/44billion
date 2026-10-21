@@ -217,10 +217,11 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   500 authors. Retiring groups stop and drain accepted events; account removal
   discards that account's pending delivery. Preserve unchanged groups.
 - Account ingestion persists inclusive owner/normalized-relay/kind coverage in
-  NostrDB's maintenance store. Reconcile eligible kinds at startup, retain retired
+  NostrDB's `accountCoverage` store. Reconcile eligible kinds at startup, retain retired
   relay coverage, and fence checkpoints against database resets. Event commits
-  precede checkpoint commits. Maintenance readwrite transactions serialize tabs;
-  invalid coverage resets safely without touching unrelated maintenance records.
+  precede checkpoint commits. The coverage writer is `maintenance` work but its
+  store is disjoint from event and quota writes; invalid coverage resets safely
+  without touching unrelated stores.
   Coalesce completed pages for 50 ms per coverage database, merge their ranges
   in memory, then use one `markBatch` transaction for all available relays and
   kinds. Pipeline all per-relay/kind reads and issue conditional writes from
@@ -475,3 +476,26 @@ order. Vault outgoing policy parity is tested.
 Personal-copy primitives overlap at most four; sign after dependencies. Stable
 context/author mirrors have bounded generation-fenced in-memory reuse after
 guards, never app scopes or shared callback mutation. No storage schema changes.
+
+## NostrDB write scheduling
+
+- Schedule live readwrite transactions once per owner database. Queries, counts
+  and subscriptions remain direct readonly IndexedDB work. Declare the exact
+  stores touched so transactions with disjoint stores may overlap.
+- Classes are launcher-owned: app `add`/`addPersonalCopy` of kinds
+  9/1063/3560/26300/26400/34601 and `remove` are `foreground`; other app writes
+  are `normal`; structurally validated recovery archives and account ingestion
+  are `background`; quota, coverage, cache-access and other upkeep are
+  `maintenance`. Unknown or malformed kinds are `normal`.
+- Derive class and `appId` at the authenticated bridge boundary. Never trust
+  `scheduling`, `schedulerClass` or priority fields from app options. The
+  internal `recovery: true` hint may lower a structurally valid recovery archive
+  to `background`; it never raises priority.
+- Round-robin application lanes within each class and give `system` its own lane.
+  Give lower classes a bounded turn after foreground/normal traffic. Do not add
+  an app queue cap or a queue-full error. Serialize intersecting stores; allow a
+  lower-class job with disjoint stores to pass a blocked higher-class job.
+- Cancel queued jobs on close, account removal, reset or abort, revalidate access
+  and connection generation before opening, and release the slot after every
+  transaction failure/abort. Never hold a scheduler slot across crypto, network,
+  signer, Web Lock or timer waits.

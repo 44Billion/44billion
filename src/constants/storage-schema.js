@@ -124,7 +124,7 @@ export const APP_ORIGIN_SESSION_KEYS = ['44billion:subdomain-assignment']
 export const PRIVATE_MESSENGER_PENDING_DECRYPTION_DATABASE = 'libp2r2p:private-messenger:<pubkey>:pending-decryption:idb-queue'
 export const PRIVATE_MESSENGER_PENDING_DECRYPTION_STORES = ['items', 'state']
 
-// Per-owner 44billion_nostrdb:<ownerPubkey>, schema version 2.
+// Per-owner 44billion_nostrdb:<ownerPubkey>, schema version 4.
 // The checkpoint is committed with the corresponding events/deletions batch.
 export const NOSTRDB_MAINTENANCE_STORE = 'maintenance'
 // { key, after: event ID index key | null, completedAt: milliseconds | null }
@@ -141,5 +141,6 @@ export const NOSTRDB_QUOTA_STATE_KEY = '44billion:nostrdb-quota-state:v1'
 // { key, version: 1, generation, relay, kind, intervals: [[since, until]] }.
 export const NOSTRDB_ACCOUNT_COVERAGE_PREFIX = 'accountEventCoverage:'
 export const NOSTRDB_ACCOUNT_COVERAGE_REGISTRY = 'accountEventCoverage:registry'
+export const NOSTRDB_ACCOUNT_COVERAGE_STORE = 'accountCoverage'
 
 export const NOSTRDB_PENDING_DELETIONS_KEY = 'local_nostrDbPendingDeletions'

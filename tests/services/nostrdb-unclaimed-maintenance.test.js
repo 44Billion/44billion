@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { afterEach, it } from 'node:test'
 import { indexedDB, IDBKeyRange } from 'fake-indexeddb'
 import {
+  NOSTRDB_ACCOUNT_COVERAGE_PREFIX,
+  NOSTRDB_ACCOUNT_COVERAGE_STORE,
   NOSTRDB_MAINTENANCE_STORE as MAINTENANCE,
   NOSTRDB_UNCLAIMED_APP_DATA_KEY as CHECKPOINT
 } from '#constants/storage-schema.js'
@@ -128,6 +130,26 @@ it('keeps the default deletion page bounded to 100 candidates', async () => {
   assert.equal(await db.purgeUnclaimedAppData({ now: NOW / 1000 }), 5)
   assert.equal(await countRows(raw), 0)
   assert.equal((await readState(raw)).after, null)
+})
+
+it('purges expired events in transactions of at most 100 rows', async t => {
+  const { db, raw, rows } = await fixture(205)
+  for (const row of rows) {
+    row.event.tags = [['expiration', '100']]
+    row.ex = 100
+  }
+  await writeRows(raw, rows)
+
+  let writeTransactions = 0
+  const original = raw.transaction.bind(raw)
+  t.mock.method(raw, 'transaction', (...args) => {
+    if (args[1] === 'readwrite' && Array.isArray(args[0]) && args[0].includes('events')) writeTransactions++
+    return original(...args)
+  })
+
+  assert.equal(await db.purgeExpired({ now: 101 }), 205)
+  assert.equal(writeTransactions, 3)
+  assert.equal(await countRows(raw), 0)
 })
 
 it('revisits insertions before the checkpoint and newly eligible rows in the next sweep', async () => {
@@ -275,7 +297,58 @@ it('upgrades an existing version 1 database without removing its records', async
   connections.push(upgraded)
   assert.equal(upgraded.version, NOSTRDB_VERSION)
   assert.ok(upgraded.objectStoreNames.contains(MAINTENANCE))
+  assert.ok(upgraded.objectStoreNames.contains(NOSTRDB_ACCOUNT_COVERAGE_STORE))
   assert.equal(await countRows(upgraded), 1)
   assert.deepEqual(await requestResult(upgraded.transaction('deletions').objectStore('deletions').get('legacy-tombstone')), { ref: 'legacy-tombstone' })
   assert.equal(await readState(upgraded), undefined)
+})
+
+it('migrates legacy coverage records atomically from maintenance to schema 4', async () => {
+  const owner = (++ownerCounter).toString(16).padStart(64, '0')
+  const legacyCoverage = {
+    key: `${NOSTRDB_ACCOUNT_COVERAGE_PREFIX}${JSON.stringify(['wss://relay.example/', 1])}`,
+    version: 1,
+    generation: 'generation',
+    relay: 'wss://relay.example/',
+    kind: 1,
+    intervals: [[0, 99]]
+  }
+  const request = indexedDB.open(`${NOSTRDB_PREFIX}${owner}`, 3)
+  request.onupgradeneeded = () => {
+    request.result.createObjectStore('events', { keyPath: 'i' })
+    request.result.createObjectStore('deletions', { keyPath: 'ref' })
+    request.result.createObjectStore('kindRegistry', { keyPath: 'key' })
+    const maintenance = request.result.createObjectStore(MAINTENANCE, { keyPath: 'key' })
+    maintenance.put(legacyCoverage)
+    maintenance.put({ key: 'quotaUsage', phase: 'ready', publicBytes: 1 })
+    maintenance.put({ key: CHECKPOINT, after: 'cursor', completedAt: null })
+    maintenance.put({ key: 'unknownMaintenanceKey', value: 42 })
+    const cacheAccess = request.result.createObjectStore('cacheAccess', { keyPath: 'i' })
+    cacheAccess.createIndex('byLastAccess', ['lastAccessAt', 'i'])
+  }
+  const old = await requestResult(request)
+  old.close()
+
+  const upgraded = await openNostrDb(owner, { maintenance: false })
+  connections.push(upgraded)
+  assert.equal(upgraded.version, NOSTRDB_VERSION)
+  assert.deepEqual(
+    await requestResult(upgraded.transaction(NOSTRDB_ACCOUNT_COVERAGE_STORE).objectStore(NOSTRDB_ACCOUNT_COVERAGE_STORE).get(legacyCoverage.key)),
+    legacyCoverage
+  )
+  assert.equal(
+    await requestResult(upgraded.transaction(MAINTENANCE).objectStore(MAINTENANCE).get(legacyCoverage.key)),
+    undefined
+  )
+  assert.equal((await requestResult(upgraded.transaction(MAINTENANCE).objectStore(MAINTENANCE).get('quotaUsage'))).phase, 'ready')
+  assert.deepEqual(await readState(upgraded), { key: CHECKPOINT, after: 'cursor', completedAt: null })
+  assert.equal((await requestResult(upgraded.transaction(MAINTENANCE).objectStore(MAINTENANCE).get('unknownMaintenanceKey'))).value, 42)
+
+  upgraded.onversionchange()
+  const reopened = await openNostrDb(owner, { maintenance: false })
+  connections.push(reopened)
+  assert.deepEqual(
+    await requestResult(reopened.transaction(NOSTRDB_ACCOUNT_COVERAGE_STORE).objectStore(NOSTRDB_ACCOUNT_COVERAGE_STORE).get(legacyCoverage.key)),
+    legacyCoverage
+  )
 })

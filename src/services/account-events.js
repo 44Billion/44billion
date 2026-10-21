@@ -152,7 +152,7 @@ export function createAccountEventTracker ({ pool, seeds, signal, reportError = 
     if (!account?.active || signal.aborted) return
     if (!filter.kinds.includes(event.kind) || !filter.authors.includes(event.pubkey) || !shouldStoreAccountEvent(event)) return
     if ((filter.since !== undefined && event.created_at < filter.since) || (filter.until !== undefined && event.created_at > filter.until)) return
-    const result = account.isReadOnly ? { ok: true } : await storage(() => account.db.add(event))
+    const result = account.isReadOnly ? { ok: true } : await storage(() => account.db.add(event, { schedulerClass: 'background' }))
     // Duplicate, older replaceable versions and locally deleted originals are
     // already durably resolved. Other refusals must not advance coverage.
     if (!result.ok && !['duplicate', 'superseded', 'ignored', 'blocked'].includes(result.code)) {
@@ -436,7 +436,7 @@ export function createAccountEventTracker ({ pool, seeds, signal, reportError = 
             for (const event of cached) {
               signal.throwIfAborted()
               if (!account.active) return
-              const result = await account.db.add(event)
+              const result = await account.db.add(event, { schedulerClass: 'background' })
               if (!result.ok && !['duplicate', 'superseded', 'ignored', 'blocked'].includes(result.code)) throw new Error(`Cached account metadata storage failed: ${result.code}`)
             }
           })().catch(error => { initialized = null; throw trackFailure(error, 'storage') })

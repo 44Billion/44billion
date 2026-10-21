@@ -14,6 +14,7 @@ import {
 import {
   NOSTRDB_MAINTENANCE_CONTEXT,
   NOSTRDB_MERGE_CONTEXT,
+  classifyNostrDbWrite,
   nostrDbMaintenanceOptions,
   nostrDbSignMethodForTemplate,
   runNostrDbMethod
@@ -235,10 +236,14 @@ export async function runTrustedVaultNostrDbMethod ({
   if (method === 'add') {
     const [event, options] = Array.isArray(params) ? params : []
     const normalizedOptions = isPlainObject(options) ? options : {}
+    const safeOptions = { ...normalizedOptions }
+    delete safeOptions.scheduling
+    delete safeOptions.recovery
     return db.add(event, {
-      ...normalizedOptions,
+      ...safeOptions,
       appId: undefined,
       mergeSource: normalizedOptions.mergeSource === 'sync' ? 'sync' : 'local',
+      schedulerClass: classifyNostrDbWrite(method, [event, normalizedOptions]),
       signEvent
     })
   }
@@ -279,6 +284,7 @@ export async function runTrustedVaultNostrDbMethod ({
       const result = await db.add(event, {
         appId,
         mergeSource: 'sync',
+        schedulerClass: 'background',
         signEvent
       })
       if (result?.ok === false) {

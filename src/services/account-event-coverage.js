@@ -1,8 +1,9 @@
 import { normalizeRelayUrl } from 'libp2r2p/url'
 import { openNostrDb } from '#services/idb/nostrdb/index.js'
+import { scheduleNostrDbWrite } from '#services/idb/nostrdb/write-scheduler.js'
 import { invalidAccountCoverageKeys } from '#services/storage-audit/audit.js'
 import {
-  NOSTRDB_MAINTENANCE_STORE as STORE,
+  NOSTRDB_ACCOUNT_COVERAGE_STORE as STORE,
   NOSTRDB_ACCOUNT_COVERAGE_PREFIX as PREFIX,
   NOSTRDB_ACCOUNT_COVERAGE_REGISTRY as REGISTRY
 } from '#constants/storage-schema.js'
@@ -67,25 +68,34 @@ export function createAccountEventCoverage (owner, { open = () => openNostrDb(ow
     const db = await open()
     if (!db) throw new Error('Account event storage unavailable')
     signal?.throwIfAborted()
-    const tx = db.transaction(STORE, 'readwrite')
-    const done = new Promise((resolve, reject) => {
-      tx.oncomplete = resolve
-      tx.onabort = () => reject(tx.error ?? new Error('Account coverage transaction aborted'))
-      tx.onerror = () => {} // onabort owns the rejection
-    })
-    done.catch(() => {})
-    const abort = () => { try { tx.abort() } catch {} }
-    signal?.addEventListener('abort', abort, { once: true })
-    try {
-      const value = await work(tx.objectStore(STORE))
+    return scheduleNostrDbWrite({
+      owner,
+      stores: [STORE],
+      schedulerClass: 'maintenance',
+      appId: 'system',
+      signal
+    }, async () => {
       signal?.throwIfAborted()
-      await done
-      return value
-    } catch (error) {
-      abort()
-      await done.catch(() => {})
-      throw error
-    } finally { signal?.removeEventListener('abort', abort) }
+      const tx = db.transaction(STORE, 'readwrite')
+      const done = new Promise((resolve, reject) => {
+        tx.oncomplete = resolve
+        tx.onabort = () => reject(tx.error ?? new Error('Account coverage transaction aborted'))
+        tx.onerror = () => {} // onabort owns the rejection
+      })
+      done.catch(() => {})
+      const abort = () => { try { tx.abort() } catch {} }
+      signal?.addEventListener('abort', abort, { once: true })
+      try {
+        const value = await work(tx.objectStore(STORE))
+        signal?.throwIfAborted()
+        await done
+        return value
+      } catch (error) {
+        abort()
+        await done.catch(() => {})
+        throw error
+      } finally { signal?.removeEventListener('abort', abort) }
+    })
   }
   async function registry (store) {
     let row = await request(store.get(REGISTRY))

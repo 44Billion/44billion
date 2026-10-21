@@ -14,6 +14,7 @@ import {
   createNostrDbPersonalCopyObfuscateMany,
   createNostrDbSignEvent,
   createNostrDbSubscriptionAuthorizer,
+  isRecoveryArchiveEvent,
   nostrDbMaintenanceOptions,
   nostrDbReadParamsWithAppId,
   nostrDbSignMethodForTemplate,
@@ -37,6 +38,7 @@ export function createAppEventStoreBridge ({
   reportError = console.error
 }) {
   const subscriptions = new Map()
+  const operations = new Map()
   let disposed = false
   const stopAccessWatch = watchNostrDbAccess(revalidateSubscriptions)
 
@@ -103,12 +105,18 @@ export function createAppEventStoreBridge ({
     for (const [id, subscription] of subscriptions) {
       try { subscription.scope.assertAvailable() } catch (error) { stop(id, error) }
     }
+    for (const [controller, assertAvailable] of operations) {
+      try { assertAvailable() } catch (error) { controller.abort(error) }
+    }
   }
 
   function dispose () {
     disposed = true
     stopAccessWatch()
     for (const id of subscriptions.keys()) stop(id)
+    const error = Object.assign(new Error('NOSTRDB_REQUEST_CANCELLED'), { code: 'NOSTRDB_REQUEST_CANCELLED' })
+    for (const controller of operations.keys()) controller.abort(error)
+    operations.clear()
   }
 
   // Recheck access after asynchronous permissions, reads, and each streamed item.
@@ -117,11 +125,19 @@ export function createAppEventStoreBridge ({
     const payload = event.data.payload ?? {}
     const { method, params = [], subscriptionId } = payload
     let subscription
+    let operationController
     const active = () => !disposed && !subscription?.cancelled
     try {
       const scope = resolveScope(payload)
       if (method === 'supports') { reply(event, { payload: [...NOSTRDB_CAPABILITIES] }); return }
       scope.assertAvailable()
+      operationController = new AbortController()
+      operations.set(operationController, () => {
+        if (disposed || subscription?.cancelled) {
+          throw Object.assign(new Error('NOSTRDB_REQUEST_CANCELLED'), { code: 'NOSTRDB_REQUEST_CANCELLED' })
+        }
+        scope.assertAvailable()
+      })
       if (method === 'subscribe') {
         if (!subscriptionId) throw new Error('NOSTRDB_SUBSCRIPTION_ID_REQUIRED')
         if (subscriptions.has(subscriptionId)) throw new Error('NOSTRDB_SUBSCRIPTION_EXISTS')
@@ -173,7 +189,8 @@ export function createAppEventStoreBridge ({
       const inherited = method === 'addPersonalCopy'
         ? classifyVaultRequest({ code: 'NIP07', payload: { method: 'signEvent', params: [params[0]] } })
         : undefined
-      const archiveRequest = method === 'addPersonalCopy' && params[1]?.recovery === true
+      const archiveRequest = method === 'addPersonalCopy' &&
+        isRecoveryArchiveEvent(params[0], params[1]?.recovery === true)
       if (inherited && archiveRequest) inherited.archive = true
       const requestVault = (message, options) => askVault(withRequestDiagnostics(message, { reqId: event.data.reqId, eventId, seedRecordId }), { ...options, ...(inherited ? { scheduling: inherited } : {}) })
       const localSignerOptions = { ...signerOptions, askVault: requestVault, cacheObfuscation: true, diagnostics: { requestId: event.data.reqId, eventId, seedRecordId } }
@@ -192,6 +209,7 @@ export function createAppEventStoreBridge ({
         db, method, params, appId, signEvent, requestPermission: scope.permission,
         onTiming: typeof IS_DEVELOPMENT !== 'undefined' && IS_DEVELOPMENT ? entry => recordPerformance({ ...entry, eventId, seedRecordId, requestId: event.data.reqId, archive: archiveRequest }) : undefined,
         app, personalCopyEncrypt: isDefaultUser ? null : createNostrDbPersonalCopyEncrypt(localSignerOptions), personalCopyObfuscate: isDefaultUser ? null : createNostrDbPersonalCopyObfuscate(localSignerOptions), personalCopyObfuscateMany: isDefaultUser ? null : createNostrDbPersonalCopyObfuscateMany(localSignerOptions), deferCacheAccess: true,
+        signal: operationController.signal,
         assertAccess: () => {
           scope.assertAvailable()
           if (!active()) throw new Error('NOSTRDB_REQUEST_CANCELLED')
@@ -206,6 +224,7 @@ export function createAppEventStoreBridge ({
     } catch (error) {
       if (active()) reply(event, { error, ...(method === 'subscribe' ? { isLast: true } : {}) })
     } finally {
+      if (operationController) operations.delete(operationController)
       if (subscription && subscriptions.get(subscriptionId) === subscription) subscriptions.delete(subscriptionId)
     }
   }

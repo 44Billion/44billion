@@ -1,6 +1,7 @@
 import { createQuotaScheduler, quotaBlocks, quotaTotalKeys, readQuotaState, reloadQuotaState, publishQuotaState, resetQuotaStateMemory, reportQuotaStateFailure } from './quota-state.js'
 export { readQuotaState, subscribeQuotaState, quotaNeedsAttention } from './quota-state.js'
 import { recordPerformance } from '#services/performance-diagnostics.js'
+import { scheduleNostrDbWrite } from './write-scheduler.js'
 import { assertNostrDbAccess, isNostrDbAccessError } from './access.js'
 import {
   NOSTRDB_CACHE_ACCESS_STORE as CACHE,
@@ -249,31 +250,44 @@ async function initializeUsage (db) {
   }
   while (true) {
     check()
-    const tx = db.transaction([EVENTS_STORE, CACHE, MAINTENANCE], 'readwrite')
-    const done = transactionDone(tx)
-    try {
-      const stateStore = tx.objectStore(MAINTENANCE)
-      const usage = await request(stateStore.get(USAGE_KEY)) ?? initialQuotaUsage()
-      if (usage.phase === 'ready') { await done; return usage }
-      const phase = usage.phase
-      usage.after = await forPage(tx, usage.after, async row => {
-        if (phase === 'records') {
-          prepareRecord(db, row)
-          await request(tx.objectStore(EVENTS_STORE).put(row))
-        } else {
-          changeEventTotals(usage, row, 1, eventQuotaCategory(db, row))
-          await setCacheClassification(db, tx, row, usage, { initial: true })
+    const usage = await scheduleNostrDbWrite({
+      owner: ownerFromDb(db),
+      stores: [EVENTS_STORE, CACHE, MAINTENANCE],
+      schedulerClass: 'maintenance',
+      appId: 'system',
+      assertCurrent: check
+    }, async () => {
+      check()
+      const tx = db.transaction([EVENTS_STORE, CACHE, MAINTENANCE], 'readwrite')
+      const done = transactionDone(tx)
+      try {
+        const stateStore = tx.objectStore(MAINTENANCE)
+        const current = await request(stateStore.get(USAGE_KEY)) ?? initialQuotaUsage()
+        if (current.phase === 'ready') {
+          await done
+          return current
         }
-      })
-      if (usage.after === null) usage.phase = phase === 'records' ? 'classify' : 'ready'
-      await request(stateStore.put(usage))
-      await done
-      if (usage.phase === 'ready') return usage
-    } catch (error) {
-      try { tx.abort() } catch {}
-      await done.catch(() => {})
-      throw error
-    }
+        const phase = current.phase
+        current.after = await forPage(tx, current.after, async row => {
+          if (phase === 'records') {
+            prepareRecord(db, row)
+            await request(tx.objectStore(EVENTS_STORE).put(row))
+          } else {
+            changeEventTotals(current, row, 1, eventQuotaCategory(db, row))
+            await setCacheClassification(db, tx, row, current, { initial: true })
+          }
+        })
+        if (current.after === null) current.phase = phase === 'records' ? 'classify' : 'ready'
+        await request(stateStore.put(current))
+        await done
+        return current
+      } catch (error) {
+        try { tx.abort() } catch {}
+        await done.catch(() => {})
+        throw error
+      }
+    })
+    if (usage.phase === 'ready') return usage
     await new Promise(resolve => setTimeout(resolve, 0))
   }
 }
@@ -430,44 +444,73 @@ async function reconcileChangedReferences (db, tx, ctx) {
   }
 }
 
-async function mutate (db, callback, admission) {
-  const connection = captureNostrDbConnection(ownerFromDb(db))
+async function mutate (db, callback, {
+  admission = false,
+  beforeMutation,
+  schedulerClass = 'normal',
+  appId = 'system',
+  signal
+} = {}) {
+  const owner = ownerFromDb(db)
+  const connection = captureNostrDbConnection(owner)
   if (!connection || await connection.resolve() !== db || !connection.isCurrent()) throw unavailable()
-  const tx = db.transaction([EVENTS_STORE, DELETIONS_STORE, CACHE, MAINTENANCE], 'readwrite')
-  const done = transactionDone(tx)
-  try {
-    const stateStore = tx.objectStore(MAINTENANCE)
-    const usage = await request(stateStore.get(USAGE_KEY))
-    if (usage?.phase !== 'ready') throw unavailable()
+  const check = () => {
+    assertNostrDbAccess(owner)
+    beforeMutation?.()
     if (!connection.isCurrent()) throw unavailable()
-    const before = { ...usage }
-    const ctx = { usage, refs: new Set() }
-    contexts.set(tx, ctx)
-    const result = await callback(tx)
-    // Capture direct admission before reference-induced category transfers.
-    const delta = Object.fromEntries(quotaTotalKeys.map(key => [key, usage[key] - before[key]]))
-    await reconcileChangedReferences(db, tx, ctx)
-    if (admission) {
-      for (const category of ['public', 'private', 'cache']) {
-        if (admission[category] && (delta[`${category}Bytes`] > 0 || (category === 'cache' && delta.cacheCount > 0))) {
-          recordPerformance({ stage: 'quota-growth-blocked', category })
-          throw new NostrDbQuotaError(category)
+  }
+  return scheduleNostrDbWrite({
+    owner,
+    stores: [EVENTS_STORE, DELETIONS_STORE, CACHE, MAINTENANCE],
+    schedulerClass,
+    appId,
+    signal,
+    assertCurrent: check
+  }, async () => {
+    signal?.throwIfAborted()
+    check()
+    const blocked = admission
+      ? quotaBlocks(readQuotaState()?.totals, getNostrDbQuotaLimits())
+      : null
+    const tx = db.transaction([EVENTS_STORE, DELETIONS_STORE, CACHE, MAINTENANCE], 'readwrite')
+    const done = transactionDone(tx)
+    const abort = () => { try { tx.abort() } catch {} }
+    signal?.addEventListener('abort', abort, { once: true })
+    try {
+      const stateStore = tx.objectStore(MAINTENANCE)
+      const usage = await request(stateStore.get(USAGE_KEY))
+      if (usage?.phase !== 'ready') throw unavailable()
+      if (!connection.isCurrent()) throw unavailable()
+      const before = { ...usage }
+      const ctx = { usage, refs: new Set() }
+      contexts.set(tx, ctx)
+      const result = await callback(tx)
+      // Capture direct admission before reference-induced category transfers.
+      const delta = Object.fromEntries(quotaTotalKeys.map(key => [key, usage[key] - before[key]]))
+      await reconcileChangedReferences(db, tx, ctx)
+      if (blocked) {
+        for (const category of ['public', 'private', 'cache']) {
+          if (blocked[category] && (delta[`${category}Bytes`] > 0 || (category === 'cache' && delta.cacheCount > 0))) {
+            recordPerformance({ stage: 'quota-growth-blocked', category })
+            throw new NostrDbQuotaError(category)
+          }
         }
       }
+      if (!connection.isCurrent()) throw unavailable()
+      await request(stateStore.put(usage))
+      await done
+      const volume = quotaTotalKeys.filter(key => key.endsWith('Bytes')).reduce((sum, key) => sum + Math.abs(usage[key] - before[key]), 0)
+      scheduleQuotaMaintenance({ count: 1, volume })
+      return result
+    } catch (error) {
+      abort()
+      await done.catch(() => {})
+      throw error
+    } finally {
+      contexts.delete(tx)
+      signal?.removeEventListener('abort', abort)
     }
-    if (!connection.isCurrent()) throw unavailable()
-    await request(stateStore.put(usage))
-    await done
-    const volume = quotaTotalKeys.filter(key => key.endsWith('Bytes')).reduce((sum, key) => sum + Math.abs(usage[key] - before[key]), 0)
-    scheduleQuotaMaintenance({ count: 1, volume })
-    return result
-  } catch (error) {
-    try { tx.abort() } catch {}
-    await done.catch(() => {})
-    throw error
-  } finally {
-    contexts.delete(tx)
-  }
+  })
 }
 
 function cacheExcess (totals, limits) {
@@ -525,7 +568,7 @@ async function evict (dbs, limits, { maxDeleted = 25, maxExamined = 100, onStats
           count++
         }
         return count
-      })
+      }, { schedulerClass: 'maintenance' })
     }
     totals = await sumUsage(dbs)
   }
@@ -533,20 +576,31 @@ async function evict (dbs, limits, { maxDeleted = 25, maxExamined = 100, onStats
   return totals
 }
 
-export async function withQuotaMutation (db, callback, { admission = false, beforeMutation, onTiming } = {}) {
+export async function withQuotaMutation (db, callback, {
+  admission = false,
+  beforeMutation,
+  onTiming,
+  schedulerClass = 'normal',
+  appId = 'system',
+  signal
+} = {}) {
+  const owner = ownerFromDb(db)
   const startedAt = performance.now()
-  const connection = captureNostrDbConnection(ownerFromDb(db))
-  const check = () => {
-    assertNostrDbAccess(ownerFromDb(db))
-    beforeMutation?.()
-    if (!connection?.isCurrent()) throw Object.assign(new Error('NOSTRDB_RESET'), { code: 'NOSTRDB_RESET' })
-  }
   try {
-    check()
+    signal?.throwIfAborted()
+    assertNostrDbAccess(owner)
+    beforeMutation?.()
+    signal?.throwIfAborted()
     await initializeUsage(db)
-    check()
-    const blocked = admission ? quotaBlocks(readQuotaState()?.totals, getNostrDbQuotaLimits()) : null
-    return await mutate(db, tx => { check(); return callback(tx) }, blocked)
+    signal?.throwIfAborted()
+    assertNostrDbAccess(owner)
+    return await mutate(db, callback, {
+      admission,
+      beforeMutation,
+      schedulerClass,
+      appId,
+      signal
+    })
   } finally {
     const measure = { stage: 'quota-mutation', elapsedMs: performance.now() - startedAt, category: admission ? 'admission' : 'mutation' }
     try {
@@ -604,32 +658,43 @@ export async function flushCacheAccess () {
         try {
           const db = await connection.resolve()
           if (!db || !connection.isCurrent()) continue
-          tx = db.transaction(CACHE, 'readwrite')
-          done = transactionDone(tx)
-          const store = tx.objectStore(CACHE)
-          const updates = []
-          for (const item of chunk) {
-            if (item.connection.generation !== connection.generation) continue
-            updates.push(new Promise((resolve, reject) => {
-              const read = store.get(item.i)
-              read.onerror = () => reject(read.error)
-              read.onsuccess = () => {
-                if (diagnostic && executingAt === undefined) executingAt = performance.now()
-                const access = read.result
-                if (!access || item.time - access.lastAccessAt < 60000) {
-                  resolve()
-                  return
+          await scheduleNostrDbWrite({
+            owner: chunk[0].owner,
+            stores: [CACHE],
+            schedulerClass: 'maintenance',
+            appId: 'system',
+            assertCurrent: () => {
+              if (!connection.isCurrent()) throw Object.assign(new Error('NOSTRDB_RESET'), { code: 'NOSTRDB_RESET' })
+            }
+          }, async () => {
+            if (!connection.isCurrent()) throw Object.assign(new Error('NOSTRDB_RESET'), { code: 'NOSTRDB_RESET' })
+            tx = db.transaction(CACHE, 'readwrite')
+            done = transactionDone(tx)
+            const store = tx.objectStore(CACHE)
+            const updates = []
+            for (const item of chunk) {
+              if (item.connection.generation !== connection.generation) continue
+              updates.push(new Promise((resolve, reject) => {
+                const read = store.get(item.i)
+                read.onerror = () => reject(read.error)
+                read.onsuccess = () => {
+                  if (diagnostic && executingAt === undefined) executingAt = performance.now()
+                  const access = read.result
+                  if (!access || item.time - access.lastAccessAt < 60000) {
+                    resolve()
+                    return
+                  }
+                  const update = store.put({ ...access, lastAccessAt: item.time })
+                  update.onerror = () => reject(update.error)
+                  update.onsuccess = () => resolve()
                 }
-                const update = store.put({ ...access, lastAccessAt: item.time })
-                update.onerror = () => reject(update.error)
-                update.onsuccess = () => resolve()
-              }
-            }))
-          }
-          // Keep all reads in flight inside this transaction. Dependent writes
-          // start from each success handler before JavaScript can yield.
-          await Promise.all(updates)
-          await done
+              }))
+            }
+            // Keep all reads in flight inside this transaction. Dependent writes
+            // start from each success handler before JavaScript can yield.
+            await Promise.all(updates)
+            await done
+          })
         } catch (error) {
           try { tx?.abort() } catch {}
           await done?.catch(() => {})

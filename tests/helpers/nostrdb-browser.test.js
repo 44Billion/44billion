@@ -12,6 +12,7 @@ import {
 import {
   buildNostrDbAddOptions,
   buildNostrDbReadOptions,
+  classifyNostrDbWrite,
   createNostrDbMaintenanceSignEvent,
   createNostrDbPersonalCopyDecrypt,
   createNostrDbPersonalCopyEncrypt,
@@ -20,6 +21,7 @@ import {
   createNostrDbSignEvent,
   createNostrDbSubscriptionAuthorizer,
   explicitFilterKinds,
+  isRecoveryArchiveEvent,
   NOSTRDB_PERSONAL_COPY_CONTEXT,
   NOSTRDB_MAINTENANCE_CONTEXT,
   NIP07_BATCH_CODE,
@@ -55,7 +57,9 @@ describe('nostrdb browser bridge helpers', () => {
         appId: 'evil-app',
         mergeSource: 'sync',
         signEvent: async () => ({ id: 'evil' }),
-        mergeReplaceable: false
+        mergeReplaceable: false,
+        schedulerClass: 'foreground',
+        scheduling: { priority: true }
       }],
       appId: 'real-app',
       signEvent: forcedSignEvent,
@@ -69,6 +73,36 @@ describe('nostrdb browser bridge helpers', () => {
     assert.equal(seen.options.mergeSource, 'local')
     assert.equal(seen.options.signEvent, forcedSignEvent)
     assert.equal(seen.options.mergeReplaceable, false)
+    assert.equal(seen.options.schedulerClass, 'normal')
+    assert.equal('scheduling' in seen.options, false)
+  })
+
+  it('derives write classes from trusted event shape and ignores payload scheduling', () => {
+    const recoverySeed = {
+      kind: 30078,
+      content: '',
+      tags: [['d', `libp2r2p:recovery:seed:${'a'.repeat(64)}`]]
+    }
+    const recoveryDelete = {
+      kind: 5,
+      content: '',
+      tags: [
+        ['a', `30078:${'b'.repeat(64)}:libp2r2p:recovery:grant:${'c'.repeat(64)}`],
+        ['k', '30078'],
+        ['expiration', '2000000000']
+      ]
+    }
+
+    assert.equal(classifyNostrDbWrite('remove', []), 'foreground')
+    assert.equal(classifyNostrDbWrite('add', [{ kind: 9, tags: [] }]), 'foreground')
+    assert.equal(classifyNostrDbWrite('add', [{ kind: 1, tags: [] }]), 'normal')
+    assert.equal(classifyNostrDbWrite('add', [{ kind: 'invalid', tags: [] }]), 'normal')
+    assert.equal(classifyNostrDbWrite('addPersonalCopy', [{ kind: 9 }, { schedulerClass: 'foreground' }]), 'foreground')
+    assert.equal(classifyNostrDbWrite('addPersonalCopy', [{ kind: 1 }, { recovery: true }]), 'normal')
+    assert.equal(isRecoveryArchiveEvent(recoverySeed, true), true)
+    assert.equal(isRecoveryArchiveEvent(recoveryDelete, true), true)
+    assert.equal(classifyNostrDbWrite('addPersonalCopy', [recoverySeed, { recovery: true }]), 'background')
+    assert.equal(classifyNostrDbWrite('addPersonalCopy', [recoveryDelete, { recovery: true }]), 'background')
   })
 
   it('uses deletion target permissions for nostrdb add', async () => {

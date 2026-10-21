@@ -183,6 +183,30 @@ describe('persona event store bridge', () => {
     assert.equal(f.streams[0].iterator.closed, true)
   })
 
+  it('aborts an event-store mutation waiting behind storage when the bridge closes', async () => {
+    const entered = Promise.withResolvers()
+    const release = Promise.withResolvers()
+    let signal
+    const f = fixture({
+      getNostrDb: pubkey => ({
+        ownerPubkey: pubkey,
+        add: async (_event, options) => {
+          signal = options.signal
+          entered.resolve()
+          await release.promise
+          return { ok: true }
+        }
+      })
+    })
+    const running = f.request({ method: 'add', params: [{ kind: 1, tags: [], created_at: 1, content: '' }] })
+    await entered.promise
+    f.bridge.dispose()
+    assert.equal(signal.aborted, true)
+    release.resolve()
+    await running
+    assert.deepEqual(f.replies, [])
+  })
+
   it('cancels pending starts and isolates subscription IDs between documents', async () => {
     const permission = Promise.withResolvers()
     const waiting = fixture({ requestPermission: () => permission.promise })
@@ -271,7 +295,10 @@ it('inherits personal-copy scheduling per request without changing cached databa
     ownerPubkey: identity, readPersonaPublicKeys: () => [identity], askNip07, askVault: baseAsk,
     getNostrDb: (pubkey, options) => { cached.push(options); return { ownerPubkey: pubkey, add: async () => ({ ok: true }) } }
   })
-  const send = (kind, options = {}) => f.request({ method: 'addPersonalCopy', params: [{ kind, created_at: 1, tags: [], content: 'private' }, options] })
+  const send = (kind, options = {}, tags = []) => f.request({
+    method: 'addPersonalCopy',
+    params: [{ kind, created_at: 1, tags, content: kind === 30078 ? '' : 'private' }, options]
+  })
   await send(9)
   assert.ok(calls.length >= 3)
   assert.ok(calls.every(call => call.options.scheduling.priority === true))
@@ -282,6 +309,10 @@ it('inherits personal-copy scheduling per request without changing cached databa
   assert.ok(calls.every(call => call.options.scheduling.priority === false))
   calls.length = 0
   await send(9, { recovery: true })
+  assert.ok(calls.every(call => call.options.scheduling.archive === false))
+  calls.length = 0
+  await send(30078, { recovery: true }, [['d', `libp2r2p:recovery:seed:${'a'.repeat(64)}`]])
+  assert.ok(calls.length > 0)
   assert.ok(calls.every(call => call.options.scheduling.archive === true))
   calls.length = 0
   await cached[0].personalCopyObfuscate('value', 1006, '.id')

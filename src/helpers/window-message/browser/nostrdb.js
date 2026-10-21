@@ -1,6 +1,8 @@
 import { cachedPersonalCopyObfuscation, cachedPersonalCopyObfuscations } from '#services/personal-copy-cache.js'
 import { createLocalPersonalCopy } from '#services/idb/nostrdb/personal-copy.js'
 import { normalizeLocalRemovalTargets, localRemovalResult } from '#services/idb/nostrdb/local-removal.js'
+import { isPriorityEventKind } from '#services/vault-request-queue.js'
+import { eventKinds } from '#constants/event.js'
 import {
   BROAD_EVENT_KIND,
   eventAccessPermissionRequestsForEvent,
@@ -27,6 +29,8 @@ const PUBLIC_CHUNK_KIND = 34601
 const MAX_PERSONAL_COPY_OBFUSCATIONS = 64
 const MAX_PERSONAL_COPY_OBFUSCATION_BYTES = 256 * 1024
 const personalCopyEncoder = new TextEncoder()
+const RECOVERY_COORDINATE_RE = /^libp2r2p:recovery:(?:seed|grant):[a-f0-9]{64}$/
+const RECOVERY_TARGET_RE = /^30078:[0-9a-f]{64}:libp2r2p:recovery:(?:seed|grant):[a-f0-9]{64}$/
 
 export function nostrDbSignMethodForTemplate (event) {
   return event?.tags?.some(tag => Array.isArray(tag) && tag[0] === 'imkc')
@@ -34,15 +38,19 @@ export function nostrDbSignMethodForTemplate (event) {
     : 'sign_event'
 }
 
-export function buildNostrDbAddOptions (options, { appId, signEvent, onTiming }) {
-  const safeOptions = withoutRecoveryOption(options)
-  return {
-    ...safeOptions,
+export function buildNostrDbAddOptions (options, { appId, signEvent, onTiming, schedulerClass, signal }) {
+  const safeOptions = {
+    ...withoutRecoveryOption(options),
     appId,
     mergeSource: 'local',
     ...(onTiming ? { onTiming } : {}),
     signEvent
   }
+  delete safeOptions.scheduling
+  delete safeOptions.schedulerClass
+  if (schedulerClass) safeOptions.schedulerClass = schedulerClass
+  if (signal) safeOptions.signal = signal
+  return safeOptions
 }
 
 function plainOptions (options) {
@@ -53,6 +61,47 @@ function withoutRecoveryOption (options) {
   const safe = { ...plainOptions(options) }
   delete safe.recovery
   return safe
+}
+
+function normalizedPersonalCopyKind (event) {
+  const kind = normalizeEventKind(event?.kind)
+  if (kind === PERSONAL_COPY_KIND && Array.isArray(event?.tags)) {
+    const hinted = event.tags
+      .filter(tag => Array.isArray(tag) && tag[0] === 'k')
+      .map(tag => normalizeEventKind(tag[1]))
+      .find(hintedKind => hintedKind !== null && isPriorityEventKind(hintedKind))
+    return hinted ?? kind
+  }
+  return kind
+}
+
+export function isRecoveryArchiveEvent (event, recoveryHint) {
+  if (recoveryHint !== true || !event || typeof event !== 'object' || !Array.isArray(event.tags)) return false
+  if (event.content !== '') return false
+  const kind = normalizeEventKind(event.kind)
+  if (kind === eventKinds.CUSTOM_APP_DATA) {
+    const coordinate = event.tags.find(tag => Array.isArray(tag) && tag[0] === 'd')?.[1]
+    return typeof coordinate === 'string' && RECOVERY_COORDINATE_RE.test(coordinate)
+  }
+  if (kind !== eventKinds.DELETION) return false
+  const innerKinds = event.tags
+    .filter(tag => Array.isArray(tag) && tag[0] === 'k')
+    .map(tag => normalizeEventKind(tag[1]))
+  const targets = event.tags
+    .filter(tag => Array.isArray(tag) && tag[0] === 'a')
+    .map(tag => typeof tag[1] === 'string' ? tag[1] : '')
+  return innerKinds.includes(eventKinds.CUSTOM_APP_DATA) &&
+    targets.some(target => RECOVERY_TARGET_RE.test(target))
+}
+
+export function classifyNostrDbWrite (method, params = []) {
+  const args = Array.isArray(params) ? params : []
+  if (method === 'remove') return 'foreground'
+  if (method !== 'add' && method !== 'addPersonalCopy') return 'normal'
+  const event = args[0]
+  const options = plainOptions(args[1])
+  if (isRecoveryArchiveEvent(event, options.recovery === true)) return 'background'
+  return isPriorityEventKind(normalizedPersonalCopyKind(event)) ? 'foreground' : 'normal'
 }
 
 export function buildNostrDbReadOptions (options, { appId, deferCacheAccess }) {
@@ -453,7 +502,8 @@ export async function runNostrDbMethod ({
   personalCopyObfuscateMany,
   deferCacheAccess = false,
   onTiming,
-  assertAccess
+  assertAccess,
+  signal
 }) {
   if (!NOSTRDB_ONE_SHOT_METHODS.includes(method)) throw new Error(`Unknown nostrdb method ${method}`)
   const args = Array.isArray(params) ? params : []
@@ -464,7 +514,7 @@ export async function runNostrDbMethod ({
     if (!targets) return localRemovalResult('invalid')
     await requestPermissions(eventAccessPermissionRequestsForEvent({ kind: 5, tags: targets }), permissionContext)
     assertAccess?.()
-    return db.remove(targets, { assertAccess })
+    return db.remove(targets, { assertAccess, appId, schedulerClass: 'foreground', signal })
   }
 
   if (method === 'add') {
@@ -475,7 +525,13 @@ export async function runNostrDbMethod ({
     } else {
       await requestPermissions(eventAccessPermissionRequestsForEvent(event), permissionContext)
     }
-    return db.add(event, buildNostrDbAddOptions(options, { appId, signEvent, onTiming }))
+    return db.add(event, buildNostrDbAddOptions(options, {
+      appId,
+      signEvent,
+      onTiming,
+      schedulerClass: classifyNostrDbWrite(method, args),
+      signal
+    }))
   }
 
   if (method === 'addPersonalCopy') {
@@ -497,7 +553,9 @@ export async function runNostrDbMethod ({
       obfuscate: personalCopyObfuscate,
       ...(personalCopyObfuscateMany ? { obfuscateMany: personalCopyObfuscateMany } : {})
     })
-    const result = await db.add(event, buildNostrDbAddOptions(addOptions, { appId, signEvent, onTiming }))
+    const schedulerClass = classifyNostrDbWrite(method, [originalEvent, options])
+    signal?.throwIfAborted()
+    const result = await db.add(event, buildNostrDbAddOptions(addOptions, { appId, signEvent, onTiming, schedulerClass, signal }))
     return { event: result?.storedEvent ?? event, result }
   }
 

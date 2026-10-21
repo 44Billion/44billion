@@ -12,7 +12,7 @@ const bundle = await build({
     resolveDir: root, contents: `
     import { createAccountEventTracker, accountKinds } from './src/services/account-events.js';
     import { createAccountEventCoverage } from './src/services/account-event-coverage.js';
-    import { getNostrDb } from './src/services/idb/nostrdb/index.js';
+    import { getNostrDb, openNostrDb } from './src/services/idb/nostrdb/index.js';
     import { createLocalPersonalCopy } from './src/services/idb/nostrdb/personal-copy.js';
     import { accountRelayFixture } from './tests/fixtures/account-relay.js';
     import { finalizeEvent } from 'libp2r2p/event';
@@ -56,6 +56,7 @@ const bundle = await build({
         };
         const copy=originalEvent=>createLocalPersonalCopy({originalEvent,context:'dm:'+owner,ownerPubkey:owner,obfuscate,encrypt,signEvent});
         const db=getNostrDb(owner,{maintenance:false,personalCopyObfuscate:obfuscate});
+        const raw=await openNostrDb(owner);
         const coverage=createAccountEventCoverage(owner);
         await coverage.reconcile(accountKinds);
         const rows=await coverage.read(relay,accountKinds);
@@ -67,6 +68,23 @@ const bundle = await build({
         const coverageKey=key=>typeof key==='string'&&key.startsWith(prefix)&&key!==prefix+'registry';
         const originalGet=IDBObjectStore.prototype.get;
         const originalPut=IDBObjectStore.prototype.put;
+        const originalTransaction=raw.transaction.bind(raw);
+        const activeWriteScopes=new Set();
+        let coverageEventOverlap=false;
+        raw.transaction=function(stores,mode,...args){
+          const tx=originalTransaction(stores,mode,...args);
+          if(mode==='readwrite'){
+            const scope=new Set(Array.isArray(stores)?stores:[stores]);
+            for(const active of activeWriteScopes){
+              if((scope.has('accountCoverage')&&active.has('events'))||(scope.has('events')&&active.has('accountCoverage')))coverageEventOverlap=true;
+            }
+            activeWriteScopes.add(scope);
+            const finish=()=>activeWriteScopes.delete(scope);
+            tx.addEventListener('complete',finish,{once:true});
+            tx.addEventListener('abort',finish,{once:true});
+          }
+          return tx;
+        };
         IDBObjectStore.prototype.get=function(key){
           const read=originalGet.call(this,key);
           if(coverageKey(key)){
@@ -111,11 +129,14 @@ const bundle = await build({
             saved:saved.ok===true,
             marked:marked===undefined,
             intervalsCurrent:current.every(row=>JSON.stringify(row.intervals)==='[[0,300]]'),
+            schemaV4:raw.objectStoreNames.contains('accountCoverage'),
+            coverageEventOverlap,
             elapsedMs
           };
         }finally{
           IDBObjectStore.prototype.get=originalGet;
           IDBObjectStore.prototype.put=originalPut;
+          raw.transaction=originalTransaction;
         }
       },
       startRetries:()=>{
@@ -209,6 +230,8 @@ try {
   assert.equal(pipeline.saved, true)
   assert.equal(pipeline.marked, true)
   assert.equal(pipeline.intervalsCurrent, true)
+  assert.equal(pipeline.schemaV4, true)
+  assert.equal(pipeline.coverageEventOverlap, true)
   console.log('Account coverage contention:', JSON.stringify(pipeline))
 
   await browser.send('Page.reload', {}, context.sessionId)

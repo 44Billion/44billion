@@ -233,8 +233,10 @@ feeds but never event stores or progress. Retired groups drain accepted events;
 account removal/root unmount cancels pending delivery. Only kinds 0/10002 also
 update vault metadata. Subscription membership is in memory; coverage is durable.
 
-`maintenance` now also contains internal account-ingestion records (no DB-version
-change and no injected API):
+Schema 4 adds the `accountCoverage` object store for internal account-ingestion
+records (no injected API). The version upgrade atomically moves legacy coverage
+rows out of `maintenance`; quota, unclaimed-data and unknown maintenance records
+remain there.
 
 - `accountEventCoverage:registry`: `{ key, version: 1, generation, kinds }`.
   The generation is a random per-database fence, regenerated after database reset.
@@ -246,15 +248,17 @@ change and no injected API):
   are created when read. Removing a relay retains its rows for a later return.
 
 Coverage records commit only after the events in the completed window have
-committed. They share one IDB readwrite transaction for each read-modify-write,
-so tabs merge checkpoints without overwriting each other. An interruption between
-event/checkpoint commits repeats the window. Checkpoint generation prevents work
-from an erased DB advancing coverage in its replacement. No separate localStorage
-cursor survives owner cleanup or full reset. App cleanup preserves account coverage.
+committed. They share one `accountCoverage` readwrite transaction for each
+read-modify-write, so tabs merge checkpoints without overwriting each other. The
+launcher write scheduler treats coverage as `maintenance` work, but its store is
+disjoint from event and quota stores. An interruption between event/checkpoint
+commits repeats the window. Checkpoint generation prevents work from an erased DB
+advancing coverage in its replacement. No separate localStorage cursor survives
+owner cleanup or full reset. App cleanup preserves account coverage.
 
 The pure storage-audit helper validates these records during ingestion startup
-and reads; invalid/obsolete rows are deleted in that maintenance transaction and
-subsequently queried again. Unrelated maintenance keys remain untouched. The
+and reads; invalid/obsolete rows are deleted in that coverage transaction and
+subsequently queried again. Unrelated coverage and maintenance records remain untouched. The
 launcher-wide audit does not scan internal IDB rows or trigger a repair reload for
 invalid coverage; owner removal uses the existing whole-database repair path.
 
@@ -296,6 +300,10 @@ are outside this deletion scope.
   last full sweep completion in milliseconds (or `null` before the first one).
   Each page commits its deletions and checkpoint together. A visit resumes
   pending work; completed sweeps remain on cooldown for 24 hours across reloads.
+- `accountCoverage` — schema 4: internal account-ingestion registry and
+  per-relay/kind checkpoint rows, primary key `key`. Schema 4 migrates legacy
+  `accountEventCoverage:*` rows from `maintenance` in the version-change
+  transaction.
 
 Schema 3 also adds `maintenance.quotaUsage`: `{ key: 'quotaUsage', version: 1,
 phase, after, publicBytes, publicCount, privateBytes, privateCount, cacheBytes,
@@ -316,7 +324,7 @@ operation. It makes early decisions and never persists planning statistics.
 Ordinary public duplicates with ready counters and no app-reference change
 can complete through a generation-fenced readonly lookup. Eligible personal-copy
 provenance is resolved in the quota write transaction. These optimizations retain
-schema 3, all registered stores/keys and audit/repair invariants; they introduce no
+schema 4, all registered stores/keys and audit/repair invariants; they introduce no
 persistent planning statistics or migration. See [NostrDB internals](nostrdb.md).
 
 ## Cleanup invariants
@@ -485,8 +493,9 @@ access without echoing those cached events back to the vault.
 The event-storage settings screen (`/event-storage`) edits only the three existing
 NostrDB byte overrides. No separate count override is stored: the cache ceiling
 is `floor(cacheBytes × 50,000 / 134,217,728)`, computed with integer arithmetic
-(128 MiB → 50,000 events). Drafts and UI status are memory-only. Schema 3 remains
-unchanged. Public/private reductions preserve data; cache reductions schedule LRU.
+(128 MiB → 50,000 events). Drafts and UI status are memory-only. Schema 4 keeps
+the schema-3 quota record unchanged. Public/private reductions preserve data;
+cache reductions schedule LRU.
 
 `eventStore.remove` uses the common NostrDB deletion transaction and updates
 `events`, `deletions`, `cacheAccess`, and `maintenance.quotaUsage` together. It

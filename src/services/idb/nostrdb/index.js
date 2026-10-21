@@ -1,6 +1,7 @@
 import { recordPerformance } from '#services/performance-diagnostics.js'
 import { selectTagQueryPlan } from './query-plan.js'
 import { assertNostrDbAccess, isNostrDbAccessError, watchNostrDbAccess } from './access.js'
+import { cancelNostrDbWrites, scheduleNostrDbWrite } from './write-scheduler.js'
 import { NOSTRDB_CAPABILITIES } from './capabilities.js'
 import { normalizeLocalRemovalTargets, localRemovalResult } from './local-removal.js'
 import { withInitialResults } from './initial-subscription.js'
@@ -11,6 +12,8 @@ import { base64UrlToBytes, bytesToBase64Url } from 'libp2r2p/base64'
 
 import { eventKinds } from '#constants/event.js'
 import {
+  NOSTRDB_ACCOUNT_COVERAGE_PREFIX,
+  NOSTRDB_ACCOUNT_COVERAGE_STORE,
   NOSTRDB_MAINTENANCE_STORE,
   NOSTRDB_CACHE_ACCESS_STORE,
   NOSTRDB_UNCLAIMED_APP_DATA_KEY,
@@ -100,7 +103,7 @@ import { classifyEvent, isValidEvent } from 'libp2r2p/event'
 import { isAddressableKind as isAddressableKindRange, isEphemeralKind as isEphemeralKindRange, isReplaceableKind } from 'libp2r2p/kind'
 import { verifyEventSignature } from './verification.js'
 
-export const NOSTRDB_VERSION = 3
+export const NOSTRDB_VERSION = 4
 const SNAPSHOT_READ = Symbol('subscription snapshot read')
 
 export const NOSTRDB_PREFIX = '44billion_nostrdb:'
@@ -170,7 +173,10 @@ maintenance, keyPath "key"
   after       last examined event id index key, or null after a full sweep
   completedAt last full sweep completion in milliseconds, or null
   quotaUsage  separate record: initialization phase/after + local public/private/cache totals
-  accountEventCoverage:* internal account-import registry/generation and per-relay/kind intervals
+
+accountCoverage, keyPath "key"
+  accountEventCoverage:registry internal account-import kind registry/generation
+  accountEventCoverage:<JSON [relay, kind]> per-relay/kind inclusive intervals
 
 cacheAccess, keyPath "i"
   i            event id key, only for current cache events
@@ -217,6 +223,7 @@ const CHUNK_PURGE_BATCH_SIZE = 256
 const HEARSAY_PRUNE_GRACE_MS = 10 * 60 * 1000
 const HEARSAY_PRUNE_INTERVAL_MS = 10 * 60 * 1000
 const HEARSAY_PRUNE_BATCH_SIZE = 100
+const EXPIRATION_PURGE_BATCH_SIZE = 100
 const textEncoder = new TextEncoder()
 const textDecoder = new TextDecoder()
 const dbCache = new Map()
@@ -421,7 +428,9 @@ export class NostrDb {
     tagIdentity,
     tombstoneGraceSeconds,
     maxTombstoneTags,
-    tombstoneTagName
+    tombstoneTagName,
+    schedulerClass = 'normal',
+    signal
   } = {}) {
     const inputEvent = event
     if (!isVerifiedEvent(event)) {
@@ -586,7 +595,10 @@ export class NostrDb {
         onTiming,
         chunkData,
         blobRefs,
-        log: false
+        log: false,
+        appId,
+        schedulerClass,
+        signal
       })
       if (result[PERSONAL_COPY_PROVENANCE_STALE] && attempt + 1 < PERSONAL_COPY_PROVENANCE_ATTEMPTS) continue
 
@@ -943,7 +955,9 @@ export class NostrDb {
     personalCopyResolution,
     chunkData,
     blobRefs,
-    log = true
+    log = true,
+    schedulerClass = 'normal',
+    signal
   } = {}) {
     if (!isVerifiedEvent(event)) {
       return this.reportAddResult('addEvent', event, addResult('invalid'), { log })
@@ -1186,7 +1200,7 @@ export class NostrDb {
         event,
         chunkData,
         protectedRoot: chunkStage?.protectedRoot
-      })
+      }, { schedulerClass, appId, onTiming, signal })
       scheduleBlobReferenceReconciliation(this.ownerPubkey, record.br)
     } else {
       await abortChunkPayloadStage(chunkStage)
@@ -1304,7 +1318,7 @@ export class NostrDb {
       return compactResult()
     }
 
-    const saved = await this.addEvent(signed, { consumeDeletionRequestIds: consumed })
+    const saved = await this.addEvent(signed, { consumeDeletionRequestIds: consumed, schedulerClass: 'maintenance' })
     if (!saved.stored) return compactResult()
 
     this.publish(signed, true)
@@ -1441,7 +1455,7 @@ export class NostrDb {
     })
     if (!signedCopy || signedCopy.inner.kind !== eventKinds.DELETION) return compactResult()
 
-    const saved = await this.addEvent(signed, { consumeDeletionRequestIds: consumed })
+    const saved = await this.addEvent(signed, { consumeDeletionRequestIds: consumed, schedulerClass: 'maintenance' })
     if (!saved.stored) return compactResult()
 
     this.publish(signed, true, saved[STORED_RECORD])
@@ -1643,26 +1657,33 @@ export class NostrDb {
     const db = await openNostrDb(this.ownerPubkey, { create: false })
     if (!db) return 0
 
+    let removed = 0
     try {
       const expiredIdKeys = await getExpiredIdKeys(db, cutoff)
-      let removed = 0
 
       if (expiredIdKeys.length === 0) return 0
 
-      return await withQuotaMutation(db, async tx => {
-        for (const idKey of expiredIdKeys) {
-          const stored = await run('get', [idKey], EVENTS_STORE, null, { db, tx })
-            .then(v => v.result)
-          if (!stored || isStoredRecordLive(stored, cutoff)) continue
+      for (let offset = 0; offset < expiredIdKeys.length; offset += EXPIRATION_PURGE_BATCH_SIZE) {
+        const batch = expiredIdKeys.slice(offset, offset + EXPIRATION_PURGE_BATCH_SIZE)
+        removed += await withQuotaMutation(db, async tx => {
+          let deleted = 0
+          for (const idKey of batch) {
+            const stored = await run('get', [idKey], EVENTS_STORE, null, { db, tx })
+              .then(v => v.result)
+            if (!stored || isStoredRecordLive(stored, cutoff)) continue
 
-          await deleteStoredEvent(db, tx, stored)
-          removed++
+            await deleteStoredEvent(db, tx, stored)
+            deleted++
+          }
+          return deleted
+        }, { schedulerClass: 'maintenance' })
+        if (offset + EXPIRATION_PURGE_BATCH_SIZE < expiredIdKeys.length) {
+          await new Promise(resolve => setTimeout(resolve, 0))
         }
-
-        return removed
-      })
+      }
+      return removed
     } catch {
-      return 0
+      return removed
     }
   }
 
@@ -1720,7 +1741,7 @@ export class NostrDb {
           if (!current) return false
           await deleteStoredEvent(db, tx, current)
           return true
-        })
+        }, { schedulerClass: 'maintenance' })
         if (deleted) removed++
       } catch { /* keep trying the remaining candidates */ }
     }
@@ -1803,7 +1824,7 @@ export class NostrDb {
             count++
           }
           return count
-        })
+        }, { schedulerClass: 'maintenance' })
       } catch {
         failed = true
         break
@@ -2007,7 +2028,12 @@ export class NostrDb {
     return [...NOSTRDB_CAPABILITIES]
   }
 
-  async remove (targets, { assertAccess } = {}) {
+  async remove (targets, {
+    assertAccess,
+    appId,
+    schedulerClass = 'normal',
+    signal
+  } = {}) {
     const normalized = normalizeLocalRemovalTargets(targets)
     if (!normalized) return localRemovalResult('invalid')
     let accessError
@@ -2036,7 +2062,7 @@ export class NostrDb {
         for (const { stored } of matches.values()) await deleteStoredEvent(db, tx, stored)
         checkAccess()
         return [...matches].map(([id, { targets }]) => ({ id, targets }))
-      }, { beforeMutation: checkAccess })
+      }, { beforeMutation: checkAccess, schedulerClass, appId, signal })
       return localRemovalResult(removed.length ? 'deleted' : 'noop', removed)
     } catch (error) {
       if (accessError === error) throw error
@@ -2424,7 +2450,7 @@ async function deleteInvalidChunkRecord (db, stored) {
     await withQuotaMutation(db, async tx => {
       const current = await run('get', [stored.i], EVENTS_STORE, null, { db, tx }).then(value => value.result)
       if (current?.k === 34601) await deleteStoredEvent(db, tx, current)
-    })
+    }, { schedulerClass: 'maintenance' })
   } catch { return }
   await removeChunkCopy(stored.event?.pubkey, stored.cr, stored.ci).catch(() => {})
 }
@@ -2686,6 +2712,7 @@ export async function deleteNostrDb (ownerPubkey) {
   try {
     deleted = await withNostrDbQuotaLock(async () => {
       const dbName = `${NOSTRDB_PREFIX}${ownerPubkey}`
+      cancelNostrDbWrites(ownerPubkey)
       const store = storeCache.get(ownerPubkey)
       store?.invalidate()
       store?.bc?.close()
@@ -2726,7 +2753,9 @@ function initNostrDb (dbName) {
   req.onsuccess = () => {
     const db = req.result
     db.onversionchange = () => {
-      storeCache.get(dbName.slice(NOSTRDB_PREFIX.length))?.invalidate()
+      const owner = dbName.slice(NOSTRDB_PREFIX.length)
+      cancelNostrDbWrites(owner)
+      storeCache.get(owner)?.invalidate()
       db.close()
       dbCache.delete(dbName)
     }
@@ -2758,11 +2787,27 @@ function initNostrDb (dbName) {
     createObjectStoreIfMissing(db, tx, KIND_REGISTRY_STORE, { keyPath: 'key' })
     store = createObjectStoreIfMissing(db, tx, NOSTRDB_MAINTENANCE_STORE, { keyPath: 'key' })
     if (fresh) store.put(initialQuotaUsage(true))
+    createObjectStoreIfMissing(db, tx, NOSTRDB_ACCOUNT_COVERAGE_STORE, { keyPath: 'key' })
+    migrateLegacyCoverage(tx)
     store = createObjectStoreIfMissing(db, tx, NOSTRDB_CACHE_ACCESS_STORE, { keyPath: 'i' })
     createIndexIfMissing(store, CACHE_ACCESS_INDEX, ['lastAccessAt', 'i'])
   }
 
   return p.promise
+}
+
+function migrateLegacyCoverage (tx) {
+  const legacy = tx.objectStore(NOSTRDB_MAINTENANCE_STORE)
+  const coverage = tx.objectStore(NOSTRDB_ACCOUNT_COVERAGE_STORE)
+  const range = IDBKeyRange.bound(NOSTRDB_ACCOUNT_COVERAGE_PREFIX, `${NOSTRDB_ACCOUNT_COVERAGE_PREFIX}\uffff`)
+  const cursor = legacy.openCursor(range)
+  cursor.onsuccess = () => {
+    const entry = cursor.result
+    if (!entry) return
+    coverage.put(entry.value)
+    entry.delete()
+    entry.continue()
+  }
 }
 
 function createObjectStoreIfMissing (db, tx, name, options) {
@@ -2798,10 +2843,12 @@ async function syncAppNeutralKindRegistry (db) {
       }
     }
 
-    const writeTx = db.transaction([KIND_REGISTRY_STORE], 'readwrite')
-    const writeDone = txDone(writeTx)
-    await run('put', [current], KIND_REGISTRY_STORE, null, { db, tx: writeTx })
-    await writeDone
+    await scheduleNostrDbTransaction(db, [KIND_REGISTRY_STORE], async () => {
+      const writeTx = db.transaction([KIND_REGISTRY_STORE], 'readwrite')
+      const writeDone = txDone(writeTx)
+      await run('put', [current], KIND_REGISTRY_STORE, null, { db, tx: writeTx })
+      await writeDone
+    })
   } catch {
   }
 }
@@ -2823,20 +2870,22 @@ async function removeAppRefsFromKinds (db, kinds) {
 
   if (idKeys.length === 0) return
 
-  const tx = db.transaction([EVENTS_STORE], 'readwrite')
-  const done = txDone(tx)
-  const cleanupKinds = new Set(kinds)
+  await scheduleNostrDbTransaction(db, [EVENTS_STORE], async () => {
+    const tx = db.transaction([EVENTS_STORE], 'readwrite')
+    const done = txDone(tx)
+    const cleanupKinds = new Set(kinds)
 
-  for (const idKey of idKeys) {
-    const stored = await run('get', [idKey], EVENTS_STORE, null, { db, tx })
-      .then(v => v.result)
-    if (!stored?.ap || !cleanupKinds.has(stored.k) || isCustomAppDataKind(stored.k)) continue
+    for (const idKey of idKeys) {
+      const stored = await run('get', [idKey], EVENTS_STORE, null, { db, tx })
+        .then(v => v.result)
+      if (!stored?.ap || !cleanupKinds.has(stored.k) || isCustomAppDataKind(stored.k)) continue
 
-    delete stored.ap
-    await run('put', [stored], EVENTS_STORE, null, { db, tx })
-  }
+      delete stored.ap
+      await run('put', [stored], EVENTS_STORE, null, { db, tx })
+    }
 
-  await done
+    await done
+  })
 }
 
 async function collectAppEventIdKeyBatch (db, appRef, {
@@ -2882,30 +2931,32 @@ async function writeAppClaimQueues (ownerPubkey, queues) {
   const db = await openNostrDb(ownerPubkey, { create: false })
   if (!db || queues.size === 0) return 0
 
-  const tx = db.transaction([EVENTS_STORE], 'readwrite')
-  const done = txDone(tx)
-  let changedCount = 0
+  return scheduleNostrDbTransaction(db, [EVENTS_STORE], async () => {
+    const tx = db.transaction([EVENTS_STORE], 'readwrite')
+    const done = txDone(tx)
+    let changedCount = 0
 
-  for (const { appRef, idKeys } of queues.values()) {
-    for (const idKey of idKeys) {
-      const stored = await run('get', [idKey], EVENTS_STORE, null, { db, tx })
-        .then(v => v.result)
-      if (!stored) continue
+    for (const { appRef, idKeys } of queues.values()) {
+      for (const idKey of idKeys) {
+        const stored = await run('get', [idKey], EVENTS_STORE, null, { db, tx })
+          .then(v => v.result)
+        if (!stored) continue
 
-      const beforeSa = stored.sa
-      const beforeRa = stored.ra
-      const changed = mergeAppRef(stored, appRef)
-      if (!changed) continue
+        const beforeSa = stored.sa
+        const beforeRa = stored.ra
+        const changed = mergeAppRef(stored, appRef)
+        if (!changed) continue
 
-      stored.sa = beforeSa
-      stored.ra = beforeRa
-      await run('put', [stored], EVENTS_STORE, null, { db, tx })
-      changedCount++
+        stored.sa = beforeSa
+        stored.ra = beforeRa
+        await run('put', [stored], EVENTS_STORE, null, { db, tx })
+        changedCount++
+      }
     }
-  }
 
-  await done
-  return changedCount
+    await done
+    return changedCount
+  }, { schedulerClass: 'background' })
 }
 
 function isUnclaimedAppDataCleanupCandidate (stored, cutoffMs) {
@@ -2971,7 +3022,7 @@ async function purgeUnclaimedAppDataPage (ownerPubkey, {
       completedAt: hasMore ? completedAt : finishedAt
     }], NOSTRDB_MAINTENANCE_STORE, null, { db, tx })
     return { deleted, hasMore, nextRunAt: hasMore ? null : finishedAt + intervalMs }
-  })
+  }, { schedulerClass: 'maintenance' })
 }
 
 async function deleteAppEventBatch (db, appRef, idKeys) {
@@ -2994,7 +3045,7 @@ async function deleteAppEventBatch (db, appRef, idKeys) {
     }
 
     return deleted
-  })
+  }, { schedulerClass: 'maintenance' })
 }
 
 function kindRegistryRecord (kinds = appNeutralKindList()) {
@@ -5334,7 +5385,7 @@ async function deleteDeletionRequestIdsInBatches (db, ids, author, { batchSize, 
         if (await deleteStoredDeletionRequestById(db, tx, id, author)) removed.push(id)
       }
       return removed
-    })
+    }, { schedulerClass: 'maintenance', signal })
     deleted.push(...committed)
   }
 }
@@ -5649,6 +5700,32 @@ function compactResult ({
 
 function deletionPruneResult ({ deleted = [] } = {}) {
   return { pruned: deleted.length > 0, deleted }
+}
+
+function scheduleNostrDbTransaction (db, stores, operation, {
+  schedulerClass = 'maintenance',
+  appId = 'system',
+  signal
+} = {}) {
+  const owner = db.name.slice(NOSTRDB_PREFIX.length)
+  const connection = captureNostrDbConnection(owner)
+  const assertCurrent = () => {
+    assertNostrDbAccess(owner)
+    if (!connection || !connection.isCurrent()) {
+      throw Object.assign(new Error('NOSTRDB_RESET'), { code: 'NOSTRDB_RESET' })
+    }
+  }
+  return scheduleNostrDbWrite({
+    owner,
+    stores,
+    schedulerClass,
+    appId,
+    signal,
+    assertCurrent
+  }, () => {
+    assertCurrent()
+    return operation()
+  })
 }
 
 function throwIfAborted (signal) {
