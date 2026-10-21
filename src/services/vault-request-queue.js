@@ -6,7 +6,7 @@ const kindNumber = value => (typeof value === 'number' || (typeof value === 'str
 
 export function classifyVaultRequest (message) {
   const { method, params = [] } = message?.payload ?? {}
-  if (message?.code !== 'NIP07') return { priority: false, chunk: false }
+  if (message?.code !== 'NIP07') return { priority: false, chunk: false, archive: false }
   const name = normalizeMethodName(method)
   const args = Array.isArray(params) ? params : []
   let kind; let chunk = false
@@ -20,7 +20,7 @@ export function classifyVaultRequest (message) {
     kind = kindNumber(args[1])
     chunk = kind === 34601
   }
-  return { priority: priorityKinds.has(kind) || (name === 'obfuscate' && kind === 1006), chunk: Boolean(chunk) }
+  return { priority: priorityKinds.has(kind) || (name === 'obfuscate' && kind === 1006), chunk: Boolean(chunk), archive: false }
 }
 
 // The inherited classification is launcher-owned and never read from app payloads.
@@ -31,7 +31,7 @@ export function createVaultRequestQueue ({ send, beforeSend = () => {}, onDebug,
   const failure = (msg, error) => ({ code: msg.code, payload: null, error })
   const snapshot = () => ({ waiting: waiting[0].length + waiting[1].length, running: running.size })
   const debug = (job, stage) => {
-    try { onDebug?.({ stage, requestId: job.msg.diagnostics?.requestId, parentId: job.msg.diagnostics?.parentId, eventId: job.msg.diagnostics?.eventId, seedRecordId: job.msg.diagnostics?.seedRecordId, priority: job.priority, chunk: job.chunk, elapsedMs: now() - job.queuedAt, ...snapshot() }) } catch {}
+    try { onDebug?.({ stage, requestId: job.msg.diagnostics?.requestId, parentId: job.msg.diagnostics?.parentId, eventId: job.msg.diagnostics?.eventId, seedRecordId: job.msg.diagnostics?.seedRecordId, priority: job.priority, chunk: job.chunk, archive: job.archive, elapsedMs: now() - job.queuedAt, ...snapshot() }) } catch {}
   }
   function finish (job, result) {
     if (job.done) return
@@ -42,7 +42,7 @@ export function createVaultRequestQueue ({ send, beforeSend = () => {}, onDebug,
     const index = queue.indexOf(job)
     if (index !== -1) queue.splice(index, 1)
     if (job.startedAt != null) {
-      try { onDebug?.({ stage: 'vault-execution', requestId: job.msg.diagnostics?.requestId, parentId: job.msg.diagnostics?.parentId, eventId: job.msg.diagnostics?.eventId, seedRecordId: job.msg.diagnostics?.seedRecordId, elapsedMs: now() - job.startedAt, ...(Number.isFinite(result?.diagnostics?.vaultDurationMs) ? { durationMs: result.diagnostics.vaultDurationMs } : {}) }) } catch {}
+      try { onDebug?.({ stage: 'vault-execution', requestId: job.msg.diagnostics?.requestId, parentId: job.msg.diagnostics?.parentId, eventId: job.msg.diagnostics?.eventId, seedRecordId: job.msg.diagnostics?.seedRecordId, archive: job.archive, elapsedMs: now() - job.startedAt, ...(Number.isFinite(result?.diagnostics?.vaultDurationMs) ? { durationMs: result.diagnostics.vaultDurationMs } : {}) }) } catch {}
     }
     debug(job, 'vault-complete')
     job.resolve(result)
@@ -55,7 +55,8 @@ export function createVaultRequestQueue ({ send, beforeSend = () => {}, onDebug,
       while (running.size < 5) {
         const active = [...running]
         const chunks = active.filter(job => job.chunk).length
-        const eligible = job => !job.chunk || chunks < 2
+        const archives = active.filter(job => job.archive).length
+        const eligible = job => (!job.chunk || chunks < 2) && (!job.archive || archives < 2)
         const normal = active.filter(job => !job.priority).length < 4 ? waiting[0].find(eligible) : undefined
         const priority = waiting[1].find(eligible)
         const job = normal && (!priority || preferred >= 3) ? normal : priority || normal
@@ -96,7 +97,7 @@ export function createVaultRequestQueue ({ send, beforeSend = () => {}, onDebug,
       const queuedAt = now()
       const classification = scheduling ?? classifyVaultRequest(msg)
       return new Promise(resolve => {
-        const job = { msg, resolve, ...classification, queuedAt, deadline: timeout == null ? null : queuedAt + timeout }
+        const job = { msg, resolve, ...classification, archive: Boolean(classification.archive), queuedAt, deadline: timeout == null ? null : queuedAt + timeout }
         waiting[Number(Boolean(job.priority))].push(job)
         if (job.deadline !== null) {
           job.timer = setTimer(() => finish(job, failure(msg, new Error('Vault request timed out'))), Math.max(0, timeout))

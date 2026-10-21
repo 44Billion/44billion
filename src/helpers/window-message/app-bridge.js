@@ -797,6 +797,12 @@ function createAppPageMessageListener ({
           reply(e, msg, { to: appPagePort })
           break
         }
+        case 'NIP07_BATCH': {
+          reply(e, {
+            error: Object.assign(new Error('UNSUPPORTED_METHOD'), { code: 'UNSUPPORTED_METHOD' })
+          }, { to: appPagePort })
+          break
+        }
         case 'APP_ROUTE_CHANGED': {
           const href = e.data.payload?.href
           if (

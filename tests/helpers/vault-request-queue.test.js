@@ -61,6 +61,21 @@ test('serves normal work after three priority dispatches', async () => {
   queue.close(); await Promise.all(pending)
 })
 
+test('caps recovery archives at two jobs without consuming foreground priority', async () => {
+  const { queue, sent } = fixture()
+  const scheduling = { priority: false, chunk: false, archive: true }
+  const archives = Array.from({ length: 3 }, (_, id) => queue.ask(request(3, `archive-${id}`), { scheduling }))
+  queue.setPort({})
+  assert.deepEqual(sent.map(value => value.msg.id), ['archive-0', 'archive-1'])
+  const text = queue.ask(request(9, 'text'))
+  assert.equal(sent.at(-1).msg.id, 'text')
+  assert.equal(sent.filter(value => String(value.msg.id).startsWith('archive')).length, 2)
+  sent[0].resolve({ payload: true })
+  await tick()
+  assert.equal(sent.at(-1).msg.id, 'archive-2')
+  queue.close(); await Promise.all([...archives, text])
+})
+
 test('times out while disconnected and ignores old-port completions', async () => {
   const { queue, sent } = fixture()
   const expired = await queue.ask(request(9), { timeout: 5 })

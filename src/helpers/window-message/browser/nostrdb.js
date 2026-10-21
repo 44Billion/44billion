@@ -1,4 +1,4 @@
-import { cachedPersonalCopyObfuscation } from '#services/personal-copy-cache.js'
+import { cachedPersonalCopyObfuscation, cachedPersonalCopyObfuscations } from '#services/personal-copy-cache.js'
 import { createLocalPersonalCopy } from '#services/idb/nostrdb/personal-copy.js'
 import { normalizeLocalRemovalTargets, localRemovalResult } from '#services/idb/nostrdb/local-removal.js'
 import {
@@ -20,9 +20,13 @@ import {
 export const NOSTRDB_MERGE_CONTEXT = 'nostrdb_merge'
 export const NOSTRDB_MAINTENANCE_CONTEXT = 'nostrdb_maintenance'
 export const NOSTRDB_PERSONAL_COPY_CONTEXT = 'nostrdb_personal_copy'
+export const NIP07_BATCH_CODE = 'NIP07_BATCH'
 
 const textDecoder = new TextDecoder()
 const PUBLIC_CHUNK_KIND = 34601
+const MAX_PERSONAL_COPY_OBFUSCATIONS = 64
+const MAX_PERSONAL_COPY_OBFUSCATION_BYTES = 256 * 1024
+const personalCopyEncoder = new TextEncoder()
 
 export function nostrDbSignMethodForTemplate (event) {
   return event?.tags?.some(tag => Array.isArray(tag) && tag[0] === 'imkc')
@@ -31,8 +35,9 @@ export function nostrDbSignMethodForTemplate (event) {
 }
 
 export function buildNostrDbAddOptions (options, { appId, signEvent, onTiming }) {
+  const safeOptions = withoutRecoveryOption(options)
   return {
-    ...(options && typeof options === 'object' && !Array.isArray(options) ? options : {}),
+    ...safeOptions,
     appId,
     mergeSource: 'local',
     ...(onTiming ? { onTiming } : {}),
@@ -42,6 +47,12 @@ export function buildNostrDbAddOptions (options, { appId, signEvent, onTiming })
 
 function plainOptions (options) {
   return options && typeof options === 'object' && !Array.isArray(options) ? options : {}
+}
+
+function withoutRecoveryOption (options) {
+  const safe = { ...plainOptions(options) }
+  delete safe.recovery
+  return safe
 }
 
 export function buildNostrDbReadOptions (options, { appId, deferCacheAccess }) {
@@ -152,27 +163,84 @@ export function createNostrDbPersonalCopyEncrypt ({ askVault, pubkey, guard }) {
 export function createNostrDbPersonalCopyObfuscate ({ askVault, pubkey, guard, cacheObfuscation = false, diagnostics }) {
   return async (value, kind, scope) => {
     const params = [value, String(kind), scope]
-    guard?.({ method: 'obfuscate', params })
-    const operation = async () => {
-      const { payload, error } = await askVault({
-        code: 'NIP07',
-        payload: {
-          pubkey,
-          ns: [''],
-          method: 'obfuscate',
-          params,
-          context: NOSTRDB_PERSONAL_COPY_CONTEXT
-        }
-      }, { timeout: 120000 })
-      if (error) throw error
-      return payload
-    }
+    const operation = async () => askPersonalCopyObfuscation({ askVault, pubkey, guard, params })
     const result = cacheObfuscation
       ? await cachedPersonalCopyObfuscation(pubkey, value, String(kind), scope, operation, diagnostics)
       : await operation()
     guard?.({ method: 'obfuscate', params })
     return result
   }
+}
+
+export function createNostrDbPersonalCopyObfuscateMany ({ askVault, pubkey, guard, diagnostics }) {
+  return async operations => cachedPersonalCopyObfuscations(pubkey, operations, async pending => {
+    const params = pending.map(({ value, kind, scope }) => [value, String(kind), scope])
+    validatePersonalCopyObfuscationBatch(params)
+    for (const operation of params) guard?.({ method: 'obfuscate', params: operation })
+    try {
+      const { payload, error } = await askVault({
+        code: NIP07_BATCH_CODE,
+        payload: {
+          pubkey,
+          method: 'obfuscateMany',
+          operations: params,
+          context: NOSTRDB_PERSONAL_COPY_CONTEXT
+        }
+      }, { timeout: 120000 })
+      if (error) throw error
+      if (!Array.isArray(payload) || payload.length !== pending.length || payload.some(value => typeof value !== 'string')) {
+        throw new Error('PERSONAL_COPY_OBFUSCATE_BATCH_INVALID_RESULT')
+      }
+      return payload
+    } catch (error) {
+      if (error?.code !== 'UNSUPPORTED_METHOD') throw error
+      return runLimited(params, 4, operation => askPersonalCopyObfuscation({ askVault, pubkey, guard, params: operation }))
+    }
+  }, diagnostics)
+}
+
+async function askPersonalCopyObfuscation ({ askVault, pubkey, guard, params }) {
+  guard?.({ method: 'obfuscate', params })
+  const { payload, error } = await askVault({
+    code: 'NIP07',
+    payload: {
+      pubkey,
+      ns: [''],
+      method: 'obfuscate',
+      params,
+      context: NOSTRDB_PERSONAL_COPY_CONTEXT
+    }
+  }, { timeout: 120000 })
+  if (error) throw error
+  return payload
+}
+
+async function runLimited (values, limit, operation) {
+  const results = new Array(values.length)
+  let index = 0
+  const workers = Array.from({ length: Math.min(limit, values.length) }, async () => {
+    while (index < values.length) {
+      const current = index++
+      results[current] = await operation(values[current])
+    }
+  })
+  await Promise.all(workers)
+  return results
+}
+
+export function validatePersonalCopyObfuscationBatch (params) {
+  if (!Array.isArray(params) || !params.length || params.length > MAX_PERSONAL_COPY_OBFUSCATIONS) {
+    throw new Error('INVALID_PERSONAL_COPY_OBFUSCATION_BATCH')
+  }
+  let bytes = 0
+  for (const operation of params) {
+    if (!Array.isArray(operation) || operation.length !== 3 || typeof operation[0] !== 'string' || typeof operation[2] !== 'string') {
+      throw new Error('INVALID_PERSONAL_COPY_OBFUSCATION_BATCH')
+    }
+    bytes += personalCopyEncoder.encode(operation[0]).byteLength + personalCopyEncoder.encode(operation[2]).byteLength
+    if (bytes > MAX_PERSONAL_COPY_OBFUSCATION_BYTES) throw new Error('PERSONAL_COPY_OBFUSCATION_BATCH_TOO_LARGE')
+  }
+  return params
 }
 
 export function nostrDbMaintenanceOptions (signEvent) {
@@ -382,6 +450,7 @@ export async function runNostrDbMethod ({
   app,
   personalCopyEncrypt,
   personalCopyObfuscate,
+  personalCopyObfuscateMany,
   deferCacheAccess = false,
   onTiming,
   assertAccess
@@ -416,7 +485,8 @@ export async function runNostrDbMethod ({
     await requestPersonalKinds([innerKind], permissionContext)
 
     const normalizedOptions = plainOptions(options)
-    const { context = '', hearsay = false, ...addOptions } = normalizedOptions
+    const { context = '', hearsay = false, ...restOptions } = normalizedOptions
+    const addOptions = withoutRecoveryOption(restOptions)
     const event = await createLocalPersonalCopy({
       signEvent,
       originalEvent,
@@ -424,7 +494,8 @@ export async function runNostrDbMethod ({
       context,
       hearsay,
       encrypt: personalCopyEncrypt,
-      obfuscate: personalCopyObfuscate
+      obfuscate: personalCopyObfuscate,
+      ...(personalCopyObfuscateMany ? { obfuscateMany: personalCopyObfuscateMany } : {})
     })
     const result = await db.add(event, buildNostrDbAddOptions(addOptions, { appId, signEvent, onTiming }))
     return { event: result?.storedEvent ?? event, result }

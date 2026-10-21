@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { preparePersonalCopyUnsignedEvent } from '#helpers/personal-copy.js'
-import { cachedPersonalCopyObfuscation, clearPersonalCopyCache } from '#services/personal-copy-cache.js'
+import { cachedPersonalCopyObfuscation, cachedPersonalCopyObfuscations, clearPersonalCopyCache } from '#services/personal-copy-cache.js'
 
 const owner = 'a'.repeat(64)
 test('personal-copy independent operations overlap at most four and preserve mirror order', async () => {
@@ -21,6 +21,29 @@ test('personal-copy independent operations overlap at most four and preserve mir
   assert.equal(result.event.tags[1][1], ':dm')
   assert.equal(result.event.content, 'ciphertext')
   assert.deepEqual(result.event.tags.at(-1), ['imkc'])
+})
+
+test('personal copies batch mirror and coordinate obfuscations into two vault requests', async () => {
+  const batches = []
+  let encryptions = 0
+  const inner = { kind: 30078, created_at: 1, content: '', tags: [['d', 'seed'], ['t', 'topic'], ['c', 'owner']] }
+  const result = await preparePersonalCopyUnsignedEvent({
+    originalEvent: inner,
+    ownerPubkey: owner,
+    context: 'dm',
+    encrypt: async () => { encryptions++; return 'ciphertext' },
+    obfuscate: async () => assert.fail('individual obfuscation should not run'),
+    obfuscateMany: async operations => {
+      batches.push(operations)
+      return operations.map(operation => `${operation.scope}:${operation.value}`)
+    }
+  })
+  assert.equal(encryptions, 1)
+  assert.equal(batches.length, 2)
+  assert.equal(batches[0].length, 6)
+  assert.deepEqual(batches[1].map(operation => operation.scope), ['.coordinate'])
+  assert.equal(result.event.content, 'ciphertext')
+  assert.equal(result.event.tags.filter(tag => tag[0] === 'o').length, 5)
 })
 
 test('stable obfuscation reuse is isolated, bounded, expires and fences stale connections', async t => {
@@ -43,4 +66,31 @@ test('stable obfuscation reuse is isolated, bounded, expires and fences stale co
   const stale = cachedPersonalCopyObfuscation(owner, 'stale', '1006', '', () => gate.promise)
   clearPersonalCopyCache(); gate.resolve('stale-result'); await stale
   assert.notEqual(await query(owner, 'stale'), 'stale-result')
+})
+
+test('batched personal-copy obfuscation preserves order, deduplicates and caches stable values', async t => {
+  clearPersonalCopyCache(); t.after(clearPersonalCopyCache)
+  let calls = 0
+  const operations = [
+    { value: 'topic', kind: '1006', scope: '#t' },
+    { value: owner, kind: '1006', scope: '.pubkey' },
+    { value: 'topic', kind: '1006', scope: '#t' },
+    { value: 'context', kind: '1006', scope: '' }
+  ]
+  const batch = async pending => {
+    calls++
+    assert.deepEqual(pending.map(operation => [operation.scope, operation.value]), [['#t', 'topic'], ['.pubkey', owner], ['', 'context']])
+    return pending.map(operation => `${operation.scope}:${operation.value}`)
+  }
+  assert.deepEqual(await cachedPersonalCopyObfuscations(owner, operations, batch), [
+    '#t:topic', `.pubkey:${owner}`, '#t:topic', ':context'
+  ])
+  assert.equal(calls, 1)
+  assert.deepEqual(await cachedPersonalCopyObfuscations(owner, operations.slice(1, 2), batch), [`.pubkey:${owner}`])
+  assert.equal(calls, 1)
+  assert.deepEqual(await cachedPersonalCopyObfuscations(owner, operations.slice(0, 1), async pending => {
+    calls++
+    return pending.map(operation => `${operation.scope}:${operation.value}`)
+  }), ['#t:topic'])
+  assert.equal(calls, 2)
 })

@@ -5,6 +5,9 @@ Normal work may occupy four slots, reserving capacity for messaging. With both
 classes eligible, service three priority requests then one normal request.
 Identifiable chunks may occupy two slots; a blocked chunk does not block later
 eligible work. This policy changes scheduling only, never permissions or crypto.
+Requests explicitly marked as recovery archives are normal-priority work with a
+global ceiling of two running jobs. The hint is launcher-owned and cannot be
+supplied through the public app NIP-07 surface.
 
 Classify signEvent/doubleSignEvent and NIP44v3 (including Double DH) by existing
 kind arguments: 9, 1063, 3560, 26300, 26400 and 34601 are priority. Personal-copy
@@ -37,10 +40,17 @@ the derived personal-copy hash and its internal signer requests. This extraction
 is diagnostic-only, validates the coordinate shape and never changes priority.
 
 Personal-copy preparation overlaps encryption and independent mirrors, with four
-outstanding primitives per preparation. Signing follows complete preparation;
-original mirror/tag order is retained. Request-local callbacks keep inherited
-priority. The launcher reuses only context/author obfuscations after existing
-guards: per-account/connection-generation/kind/scope/value keys, 64/account,
-256/realm, 60-second idle lifetime. Disconnect and committed account changes
-clear the cache and fence late results. No IDs, arbitrary tags, callbacks or key
-material are cached. No grouped preparation RPC or app API was added.
+outstanding fallback primitives per preparation. Signing follows complete
+preparation; original mirror/tag order is retained. The launcher sends mirror,
+source, author and context obfuscations through one internal
+`NIP07_BATCH / obfuscateMany` call, followed by the context-dependent coordinate
+call. The vault bounds batches to 64 operations and 256 KiB, deduplicates exact
+operations and returns results in input order. Unsupported vaults fall back to
+individual calls; timeouts do not fall back. App NIP-07 cannot invoke the batch
+code and batch params/results are never written to the activity log.
+
+Request-local callbacks keep inherited priority. The launcher reuses only
+context/author obfuscations after existing guards: per-account/
+connection-generation/kind/scope/value keys, 64/account, 256/realm, 60-second
+idle lifetime. Disconnect and committed account changes clear the cache and
+fence late results. No IDs, arbitrary tags, callbacks or key material are cached.

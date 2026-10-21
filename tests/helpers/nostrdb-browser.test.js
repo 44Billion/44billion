@@ -16,11 +16,13 @@ import {
   createNostrDbPersonalCopyDecrypt,
   createNostrDbPersonalCopyEncrypt,
   createNostrDbPersonalCopyObfuscate,
+  createNostrDbPersonalCopyObfuscateMany,
   createNostrDbSignEvent,
   createNostrDbSubscriptionAuthorizer,
   explicitFilterKinds,
   NOSTRDB_PERSONAL_COPY_CONTEXT,
   NOSTRDB_MAINTENANCE_CONTEXT,
+  NIP07_BATCH_CODE,
   nostrDbSignMethodForTemplate,
   runNostrDbMethod
 } from '../../src/helpers/window-message/browser/nostrdb.js'
@@ -185,7 +187,7 @@ describe('nostrdb browser bridge helpers', () => {
     await runNostrDbMethod({
       db,
       method: 'addPersonalCopy',
-      params: [original, { context: 'dm:alice', hearsay: true }],
+      params: [original, { context: 'dm:alice', hearsay: true, recovery: true }],
       appId: 'real-app',
       signEvent: async template => ({ ...template, id: 'e'.repeat(64), pubkey: owner, sig: '1'.repeat(128) }),
       personalCopyEncrypt: async (kind, plaintext) => {
@@ -205,6 +207,7 @@ describe('nostrdb browser bridge helpers', () => {
     assert.equal(added.event.tags.some(tag => tag[0] === 'hearsay'), false)
     assert.equal(added.event.tags.some(tag => tag[1] === `obf:1006:.id:${personalCopySourceId(original)}`), true)
     assert.equal('hearsay' in added.options, false)
+    assert.equal('recovery' in added.options, false)
   })
 
   it('rejects hearsay for signed or identityless inner events', async () => {
@@ -768,6 +771,56 @@ describe('nostrdb browser bridge helpers', () => {
     assert.deepEqual(calls[0].message.payload.params, [pubkey, '1', '', new TextEncoder().encode('{"kind":1}').buffer])
     assert.deepEqual(calls[1].message.payload.params, ['topicexample', '1006', '#t'])
     assert.equal(calls.every(call => call.message.payload.context === NOSTRDB_PERSONAL_COPY_CONTEXT), true)
+  })
+
+  it('batches personal-copy obfuscation and falls back only for unsupported vaults', async () => {
+    const calls = []
+    const pubkey = 'f'.repeat(64)
+    const operations = [
+      { value: 'topic-batch', kind: 1006, scope: '#t' },
+      { value: 'author-batch', kind: 1006, scope: '#p' }
+    ]
+    const batch = createNostrDbPersonalCopyObfuscateMany({
+      pubkey,
+      askVault: async (message, options) => {
+        calls.push({ message, options })
+        return { payload: message.payload.operations.map(operation => `batch:${operation[2]}:${operation[0]}`) }
+      }
+    })
+    assert.deepEqual(await batch(operations), ['batch:#t:topic-batch', 'batch:#p:author-batch'])
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].message.code, NIP07_BATCH_CODE)
+    assert.equal(calls[0].message.payload.method, 'obfuscateMany')
+    assert.deepEqual(calls[0].message.payload.operations, [
+      ['topic-batch', '1006', '#t'],
+      ['author-batch', '1006', '#p']
+    ])
+
+    const fallbackCalls = []
+    const fallback = createNostrDbPersonalCopyObfuscateMany({
+      pubkey,
+      askVault: async message => {
+        fallbackCalls.push(message)
+        if (message.code === NIP07_BATCH_CODE) return { error: Object.assign(new Error('unsupported'), { code: 'UNSUPPORTED_METHOD' }) }
+        return { payload: `individual:${message.payload.params[2]}:${message.payload.params[0]}` }
+      }
+    })
+    assert.deepEqual(await fallback([
+      { value: 'fallback-topic', kind: 1006, scope: '#t' },
+      { value: 'fallback-author', kind: 1006, scope: '#p' }
+    ]), ['individual:#t:fallback-topic', 'individual:#p:fallback-author'])
+    assert.deepEqual(fallbackCalls.map(message => message.code), [NIP07_BATCH_CODE, 'NIP07', 'NIP07'])
+
+    const timeoutCalls = []
+    const timeout = createNostrDbPersonalCopyObfuscateMany({
+      pubkey,
+      askVault: async message => {
+        timeoutCalls.push(message.code)
+        return { error: Object.assign(new Error('timeout'), { code: 'timeout' }) }
+      }
+    })
+    await assert.rejects(timeout([{ value: 'timeout-only', kind: 1006, scope: '#t' }]), /timeout/)
+    assert.deepEqual(timeoutCalls, [NIP07_BATCH_CODE])
   })
 
   it('personal-copy plaintext round-trips through the real NIP-44 v3 signer with query strings and Unicode', async () => {

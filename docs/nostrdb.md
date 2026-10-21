@@ -135,6 +135,13 @@ received wrappers use ordinary full validation; app options cannot grant this
 trust. Normal quotas, provenance resolution, subscriptions and chunk staging
 still run. Preparation is memory-only and adds no persisted fields or schema.
 
+Personal-copy mirrors use `NIP07_BATCH / obfuscateMany` between the launcher and
+vault. A typical recovery seed therefore performs one mirror batch, one
+coordinate obfuscation, one encryption and one signature rather than one vault
+request per mirror. Batch inputs are bounded and deduplicated by the vault;
+unknown/oversized requests fail before crypto. The internal `recovery` add option
+is scheduling metadata only and is removed before NostrDB sees the add options.
+
 ## Scheduled routines
 
 `getNostrDb(owner)` caches one instance per owner in the current module context

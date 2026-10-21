@@ -41,6 +41,12 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
 - Document identity scope, permissions, handshake timing, errors, and subscription
   cleanup. Persona-scoped access must be checked in the launcher on every request
   and revoked for live subscriptions when membership changes.
+- Personal-copy mirror preparation uses an internal, launcher-only
+  `NIP07_BATCH / obfuscateMany` protocol. Bound it to 64 operations and 256 KiB,
+  deduplicate exact operations in the vault, preserve output order and log only
+  counts/timing. Apps cannot send the batch code through the NIP-07 bridge.
+  Recovery archives inherit the original request priority/classification, carry
+  an internal `recovery` scheduling hint and share a global two-job vault cap.
 
 ## Styling Rules
 

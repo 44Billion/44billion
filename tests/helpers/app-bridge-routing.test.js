@@ -37,5 +37,9 @@ describe('app bridge routing marker', () => {
 
     // Dialog falls back to the stored app name instead of only "App Download".
     assert.match(host, /session_appById_\$\{currentState\.appId\}_name/)
+
+    // Internal batched signer work cannot be requested by an app frame.
+    assert.match(appBridge, /case 'NIP07_BATCH'/)
+    assert.match(appBridge, /UNSUPPORTED_METHOD/)
   })
 })

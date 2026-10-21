@@ -11,6 +11,7 @@ import {
   createNostrDbPersonalCopyDecrypt,
   createNostrDbPersonalCopyEncrypt,
   createNostrDbPersonalCopyObfuscate,
+  createNostrDbPersonalCopyObfuscateMany,
   createNostrDbSignEvent,
   createNostrDbSubscriptionAuthorizer,
   nostrDbMaintenanceOptions,
@@ -172,6 +173,8 @@ export function createAppEventStoreBridge ({
       const inherited = method === 'addPersonalCopy'
         ? classifyVaultRequest({ code: 'NIP07', payload: { method: 'signEvent', params: [params[0]] } })
         : undefined
+      const archiveRequest = method === 'addPersonalCopy' && params[1]?.recovery === true
+      if (inherited && archiveRequest) inherited.archive = true
       const requestVault = (message, options) => askVault(withRequestDiagnostics(message, { reqId: event.data.reqId, eventId, seedRecordId }), { ...options, ...(inherited ? { scheduling: inherited } : {}) })
       const localSignerOptions = { ...signerOptions, askVault: requestVault, cacheObfuscation: true, diagnostics: { requestId: event.data.reqId, eventId, seedRecordId } }
       const startedAt = performance.now()
@@ -187,14 +190,14 @@ export function createAppEventStoreBridge ({
       }
       const result = await runNostrDbMethod({
         db, method, params, appId, signEvent, requestPermission: scope.permission,
-        onTiming: typeof IS_DEVELOPMENT !== 'undefined' && IS_DEVELOPMENT ? entry => recordPerformance({ ...entry, eventId, seedRecordId, requestId: event.data.reqId }) : undefined,
-        app, personalCopyEncrypt: isDefaultUser ? null : createNostrDbPersonalCopyEncrypt(localSignerOptions), personalCopyObfuscate: isDefaultUser ? null : createNostrDbPersonalCopyObfuscate(localSignerOptions), deferCacheAccess: true,
+        onTiming: typeof IS_DEVELOPMENT !== 'undefined' && IS_DEVELOPMENT ? entry => recordPerformance({ ...entry, eventId, seedRecordId, requestId: event.data.reqId, archive: archiveRequest }) : undefined,
+        app, personalCopyEncrypt: isDefaultUser ? null : createNostrDbPersonalCopyEncrypt(localSignerOptions), personalCopyObfuscate: isDefaultUser ? null : createNostrDbPersonalCopyObfuscate(localSignerOptions), personalCopyObfuscateMany: isDefaultUser ? null : createNostrDbPersonalCopyObfuscateMany(localSignerOptions), deferCacheAccess: true,
         assertAccess: () => {
           scope.assertAvailable()
           if (!active()) throw new Error('NOSTRDB_REQUEST_CANCELLED')
         }
       })
-      recordPerformance({ stage: 'event-store', eventId, seedRecordId, requestId: event.data.reqId, elapsedMs: performance.now() - startedAt })
+      recordPerformance({ stage: 'event-store', eventId, seedRecordId, requestId: event.data.reqId, archive: archiveRequest, elapsedMs: performance.now() - startedAt })
       scope.assertAvailable()
       if (active()) {
         reply(event, { payload: result })

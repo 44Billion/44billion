@@ -144,12 +144,14 @@ export async function preparePersonalCopyUnsignedEvent ({
   context = '',
   hearsay = false,
   encrypt,
-  obfuscate
+  obfuscate,
+  obfuscateMany
 }) {
   if (!HEX64_RE.test(ownerPubkey || '')) throw new Error('PERSONAL_COPY_OWNER_REQUIRED')
   if (typeof hearsay !== 'boolean') throw new Error('INVALID_PERSONAL_COPY_HEARSAY')
   if (typeof encrypt !== 'function') throw new Error('PERSONAL_COPY_ENCRYPT_REQUIRED')
   if (typeof obfuscate !== 'function') throw new Error('PERSONAL_COPY_OBFUSCATE_REQUIRED')
+  if (obfuscateMany != null && typeof obfuscateMany !== 'function') throw new Error('PERSONAL_COPY_OBFUSCATE_MANY_REQUIRED')
 
   const prepared = preparePersonalCopyInner(structuredClone(originalEvent), ownerPubkey, hearsay)
   if (!prepared) throw new Error('INVALID_PERSONAL_COPY_INNER_EVENT')
@@ -163,19 +165,41 @@ export async function preparePersonalCopyUnsignedEvent ({
       : PERSONAL_COPY_PROVENANCE.DIRECT_RUMOR
   const plaintext = JSON.stringify(prepared.inner)
   const run = limitPreparation(4)
-  const limitedObfuscate = (...args) => run(() => obfuscate(...args))
-  const [content, mirrors, contextValue] = await Promise.all([
-    run(() => encrypt(prepared.inner.kind, plaintext)),
-    buildMirrorDataFromDescription(prepared, limitedObfuscate),
-    limitedObfuscate(String(context ?? ''), PERSONAL_COPY_KIND, '')
-  ])
+  let content, mirrors, contextValue
+  if (obfuscateMany) {
+    const mirrorOperations = personalCopyMirrorOperations(prepared)
+    const contextOperation = personalCopyOperation(String(context ?? ''), PERSONAL_COPY_KIND, '')
+    const [encrypted, obfuscated] = await Promise.all([
+      run(() => encrypt(prepared.inner.kind, plaintext)),
+      obfuscateMany([...mirrorOperations, contextOperation])
+    ])
+    if (!Array.isArray(obfuscated) || obfuscated.length !== mirrorOperations.length + 1 || obfuscated.some(value => typeof value !== 'string')) {
+      throw new Error('PERSONAL_COPY_OBFUSCATE_MANY_INVALID_RESULT')
+    }
+    content = encrypted
+    mirrors = mirrorDataFromValues(prepared, obfuscated.slice(0, mirrorOperations.length))
+    contextValue = obfuscated.at(-1)
+  } else {
+    const limitedObfuscate = (...args) => run(() => obfuscate(...args))
+    ;[content, mirrors, contextValue] = await Promise.all([
+      run(() => encrypt(prepared.inner.kind, plaintext)),
+      buildMirrorDataFromDescription(prepared, limitedObfuscate),
+      limitedObfuscate(String(context ?? ''), PERSONAL_COPY_KIND, '')
+    ])
+  }
   // The address includes the context: the same inner coordinate in two
   // contexts is two independent copies.
   const addressTag = await personalCopyCoordinateTag({
     innerEvent: prepared.inner,
     wrapperPubkey: ownerPubkey,
     contextValue,
-    obfuscate
+    obfuscate: obfuscateMany
+      ? async (...args) => {
+        const [value] = await obfuscateMany([personalCopyOperation(...args)])
+        if (typeof value !== 'string') throw new Error('PERSONAL_COPY_OBFUSCATE_MANY_INVALID_RESULT')
+        return value
+      }
+      : obfuscate
   })
   const expirationTag = personalCopyExpirationTag(prepared.inner)
   const tags = [
@@ -311,23 +335,36 @@ export async function buildPersonalCopyMirrorData ({ innerEvent, wrapperPubkey, 
   return buildMirrorDataFromDescription(description, (...args) => run(() => obfuscate(...args)))
 }
 
-async function buildMirrorDataFromDescription (description, obfuscate) {
-  const inputs = description.inner.tags.filter(tag => tag[0].length === 1 && typeof tag[1] === 'string')
-  const results = await Promise.all([
-    ...inputs.map(tag => obfuscate(tag[1], PERSONAL_COPY_KIND, `#${tag[0]}`)),
-    obfuscate(description.sourceId, PERSONAL_COPY_KIND, '.id'),
-    obfuscate(description.effectivePubkey, PERSONAL_COPY_KIND, '.pubkey')
-  ])
-  const sourceMirror = results[inputs.length]
-  const authorMirror = results[inputs.length + 1]
-  const tags = results.map(value => ['o', value])
+function personalCopyOperation (value, kind, scope) {
+  return { value, kind, scope }
+}
 
+function personalCopyMirrorOperations (description) {
+  const inputs = description.inner.tags.filter(tag => tag[0].length === 1 && typeof tag[1] === 'string')
+  return [
+    ...inputs.map(tag => personalCopyOperation(tag[1], PERSONAL_COPY_KIND, `#${tag[0]}`)),
+    personalCopyOperation(description.sourceId, PERSONAL_COPY_KIND, '.id'),
+    personalCopyOperation(description.effectivePubkey, PERSONAL_COPY_KIND, '.pubkey')
+  ]
+}
+
+function mirrorDataFromValues (description, values) {
+  const inputs = description.inner.tags.filter(tag => tag[0].length === 1 && typeof tag[1] === 'string')
+  const tags = values.map(value => ['o', value])
   return {
     tags,
     sourceId: description.sourceId,
-    sourceMirror,
-    authorMirror
+    sourceMirror: values[inputs.length],
+    authorMirror: values[inputs.length + 1]
   }
+}
+
+async function buildMirrorDataFromDescription (description, obfuscate) {
+  const operations = personalCopyMirrorOperations(description)
+  const results = await Promise.all([
+    ...operations.map(operation => obfuscate(operation.value, operation.kind, operation.scope))
+  ])
+  return mirrorDataFromValues(description, results)
 }
 
 export function isPersonalCopyDerivedTag (tag) {
