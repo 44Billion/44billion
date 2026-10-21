@@ -16,6 +16,7 @@ import {
   NOSTRDB_ACCOUNT_COVERAGE_STORE,
   NOSTRDB_MAINTENANCE_STORE,
   NOSTRDB_CACHE_ACCESS_STORE,
+  NOSTRDB_QUOTA_STORE,
   NOSTRDB_UNCLAIMED_APP_DATA_KEY,
   NOSTRDB_QUOTA_USAGE_KEY
 } from '#constants/storage-schema.js'
@@ -172,7 +173,9 @@ maintenance, keyPath "key"
   key         "unclaimedAppData"
   after       last examined event id index key, or null after a full sweep
   completedAt last full sweep completion in milliseconds, or null
-  quotaUsage  separate record: initialization phase/after + local public/private/cache totals
+
+quota, keyPath "key"
+  quotaUsage initialization phase/after + local public/private/cache totals
 
 accountCoverage, keyPath "key"
   accountEventCoverage:registry internal account-import kind registry/generation
@@ -1031,11 +1034,11 @@ export class NostrDb {
         const startedAt = performance.now()
         const connection = captureNostrDbConnection(this.ownerPubkey)
         if (!connection || await connection.resolve() !== db) throw Object.assign(new Error('NOSTRDB_RESET'), { code: 'NOSTRDB_RESET' })
-        const tx = db.transaction([EVENTS_STORE, NOSTRDB_MAINTENANCE_STORE], 'readonly')
+        const tx = db.transaction([EVENTS_STORE, NOSTRDB_QUOTA_STORE], 'readonly')
         const done = txDone(tx)
         const [existing, usage] = await Promise.all([
           run('get', [eventIdIndexKey(event.id)], EVENTS_STORE, null, { db, tx }).then(value => value.result),
-          run('get', [NOSTRDB_QUOTA_USAGE_KEY], NOSTRDB_MAINTENANCE_STORE, null, { db, tx }).then(value => value.result),
+          run('get', [NOSTRDB_QUOTA_USAGE_KEY], NOSTRDB_QUOTA_STORE, null, { db, tx }).then(value => value.result),
           done
         ])
         this.assertAccess()
@@ -2785,10 +2788,11 @@ function initNostrDb (dbName) {
     createIndexIfMissing(store, DELETION_INDEX.request, 'c', { multiEntry: true })
 
     createObjectStoreIfMissing(db, tx, KIND_REGISTRY_STORE, { keyPath: 'key' })
-    store = createObjectStoreIfMissing(db, tx, NOSTRDB_MAINTENANCE_STORE, { keyPath: 'key' })
+    createObjectStoreIfMissing(db, tx, NOSTRDB_MAINTENANCE_STORE, { keyPath: 'key' })
+    store = createObjectStoreIfMissing(db, tx, NOSTRDB_QUOTA_STORE, { keyPath: 'key' })
     if (fresh) store.put(initialQuotaUsage(true))
     createObjectStoreIfMissing(db, tx, NOSTRDB_ACCOUNT_COVERAGE_STORE, { keyPath: 'key' })
-    migrateLegacyCoverage(tx)
+    migrateLegacyStores(tx)
     store = createObjectStoreIfMissing(db, tx, NOSTRDB_CACHE_ACCESS_STORE, { keyPath: 'i' })
     createIndexIfMissing(store, CACHE_ACCESS_INDEX, ['lastAccessAt', 'i'])
   }
@@ -2796,9 +2800,16 @@ function initNostrDb (dbName) {
   return p.promise
 }
 
-function migrateLegacyCoverage (tx) {
+function migrateLegacyStores (tx) {
   const legacy = tx.objectStore(NOSTRDB_MAINTENANCE_STORE)
+  const quota = tx.objectStore(NOSTRDB_QUOTA_STORE)
   const coverage = tx.objectStore(NOSTRDB_ACCOUNT_COVERAGE_STORE)
+  const quotaRecord = legacy.get(NOSTRDB_QUOTA_USAGE_KEY)
+  quotaRecord.onsuccess = () => {
+    if (!quotaRecord.result) return
+    quota.put(quotaRecord.result)
+    legacy.delete(NOSTRDB_QUOTA_USAGE_KEY)
+  }
   const range = IDBKeyRange.bound(NOSTRDB_ACCOUNT_COVERAGE_PREFIX, `${NOSTRDB_ACCOUNT_COVERAGE_PREFIX}\uffff`)
   const cursor = legacy.openCursor(range)
   cursor.onsuccess = () => {
@@ -3022,7 +3033,10 @@ async function purgeUnclaimedAppDataPage (ownerPubkey, {
       completedAt: hasMore ? completedAt : finishedAt
     }], NOSTRDB_MAINTENANCE_STORE, null, { db, tx })
     return { deleted, hasMore, nextRunAt: hasMore ? null : finishedAt + intervalMs }
-  }, { schedulerClass: 'maintenance' })
+  }, {
+    schedulerClass: 'maintenance',
+    extraStores: [NOSTRDB_MAINTENANCE_STORE]
+  })
 }
 
 async function deleteAppEventBatch (db, appRef, idKeys) {

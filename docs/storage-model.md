@@ -233,10 +233,10 @@ feeds but never event stores or progress. Retired groups drain accepted events;
 account removal/root unmount cancels pending delivery. Only kinds 0/10002 also
 update vault metadata. Subscription membership is in memory; coverage is durable.
 
-Schema 4 adds the `accountCoverage` object store for internal account-ingestion
-records (no injected API). The version upgrade atomically moves legacy coverage
-rows out of `maintenance`; quota, unclaimed-data and unknown maintenance records
-remain there.
+Schema 4 adds separate `accountCoverage` and `quota` object stores (no injected
+API). The version upgrade atomically moves legacy coverage rows and
+`maintenance.quotaUsage` into those stores. The unclaimed-data checkpoint and
+unknown maintenance records remain in `maintenance`.
 
 - `accountEventCoverage:registry`: `{ key, version: 1, generation, kinds }`.
   The generation is a random per-database fence, regenerated after database reset.
@@ -304,8 +304,12 @@ are outside this deletion scope.
   per-relay/kind checkpoint rows, primary key `key`. Schema 4 migrates legacy
   `accountEventCoverage:*` rows from `maintenance` in the version-change
   transaction.
+- `quota` — schema 4: the existing resumable `quotaUsage` record, primary key
+  `key`. Schema 4 migrates it from `maintenance` in the same version-change
+  transaction. Event mutations update it atomically with the event stores.
 
-Schema 3 also adds `maintenance.quotaUsage`: `{ key: 'quotaUsage', version: 1,
+Schema 3 introduced the quota record now stored as `quota.quotaUsage`:
+`{ key: 'quotaUsage', version: 1,
 phase, after, publicBytes, publicCount, privateBytes, privateCount, cacheBytes,
 cacheCount }`. Public, private and cache bytes/counts are mutually exclusive:
 `publicBytes`/`publicCount` exclude cache. `phase` is `records`, `classify` or `ready`; `after` checkpoints the
@@ -313,7 +317,9 @@ last primary key, or is null at each pass boundary. Two resumable passes of up
 to 1,000 rows backfill sizes/references and then classification/totals. All event
 mutations atomically maintain these local totals without a global lock. Background
 review sums existing owner counters and persists an advisory summary; the summary
-is not an independently incremented global counter. No IndexedDB migration occurs.
+is not an independently incremented global counter. Schema 4 moves this record
+unchanged into `quota`; no counter format or migration logic changes beyond the
+object-store relocation.
 The storage audit inspects launcher state rather than internal NostrDB records;
 its app cleanup preserves the checkpoints and maintains quota usage. Owner-database removal deletes them and cache access rows
 with the other stores. No localStorage/sessionStorage repair key is needed.
@@ -498,7 +504,7 @@ the schema-3 quota record unchanged. Public/private reductions preserve data;
 cache reductions schedule LRU.
 
 `eventStore.remove` uses the common NostrDB deletion transaction and updates
-`events`, `deletions`, `cacheAccess`, and `maintenance.quotaUsage` together. It
+`events`, `deletions`, `cacheAccess`, and `quota.quotaUsage` together. It
 removes old tombstone contributions without creating new ones; external chunk
 cleanup/reconciliation remains post-commit. Audit/repair preserve the registered
 global configuration key; app cleanup and owner DB deletion still use existing

@@ -130,8 +130,9 @@ export const NOSTRDB_MAINTENANCE_STORE = 'maintenance'
 // { key, after: event ID index key | null, completedAt: milliseconds | null }
 export const NOSTRDB_UNCLAIMED_APP_DATA_KEY = 'unclaimedAppData'
 
-// NostrDB v3: exclusive public/private/cache accounting, resumable initialization and cache LRU.
+// NostrDB v3 accounting/LRU; schema 4 moves quotaUsage to its dedicated store.
 export const NOSTRDB_CACHE_ACCESS_STORE = 'cacheAccess'
+export const NOSTRDB_QUOTA_STORE = 'quota'
 export const NOSTRDB_QUOTA_USAGE_KEY = 'quotaUsage'
 export const NOSTRDB_QUOTA_SETTINGS_KEY = '44billion:nostrdb-quotas:v1'
 export const NOSTRDB_QUOTA_STATE_KEY = '44billion:nostrdb-quota-state:v1'

@@ -5,6 +5,7 @@ import {
   NOSTRDB_ACCOUNT_COVERAGE_PREFIX,
   NOSTRDB_ACCOUNT_COVERAGE_STORE,
   NOSTRDB_MAINTENANCE_STORE as MAINTENANCE,
+  NOSTRDB_QUOTA_STORE as QUOTA,
   NOSTRDB_UNCLAIMED_APP_DATA_KEY as CHECKPOINT
 } from '#constants/storage-schema.js'
 import {
@@ -130,6 +131,22 @@ it('keeps the default deletion page bounded to 100 candidates', async () => {
   assert.equal(await db.purgeUnclaimedAppData({ now: NOW / 1000 }), 5)
   assert.equal(await countRows(raw), 0)
   assert.equal((await readState(raw)).after, null)
+})
+
+it('declares quota and maintenance atomically for an unclaimed cleanup page', async t => {
+  const { db, raw, rows } = await fixture(1)
+  await writeRows(raw, rows)
+  const scopes = []
+  const original = raw.transaction.bind(raw)
+  t.mock.method(raw, 'transaction', (...args) => {
+    if (args[1] === 'readwrite') scopes.push(args[0])
+    return original(...args)
+  })
+
+  assert.equal(await db.purgeUnclaimedAppData({ now: NOW / 1000 }), 1)
+  assert.equal(scopes.some(stores =>
+    Array.isArray(stores) && stores.includes(QUOTA) && stores.includes(MAINTENANCE)
+  ), true)
 })
 
 it('purges expired events in transactions of at most 100 rows', async t => {
@@ -297,13 +314,14 @@ it('upgrades an existing version 1 database without removing its records', async
   connections.push(upgraded)
   assert.equal(upgraded.version, NOSTRDB_VERSION)
   assert.ok(upgraded.objectStoreNames.contains(MAINTENANCE))
+  assert.ok(upgraded.objectStoreNames.contains(QUOTA))
   assert.ok(upgraded.objectStoreNames.contains(NOSTRDB_ACCOUNT_COVERAGE_STORE))
   assert.equal(await countRows(upgraded), 1)
   assert.deepEqual(await requestResult(upgraded.transaction('deletions').objectStore('deletions').get('legacy-tombstone')), { ref: 'legacy-tombstone' })
   assert.equal(await readState(upgraded), undefined)
 })
 
-it('migrates legacy coverage records atomically from maintenance to schema 4', async () => {
+it('migrates legacy coverage and quota records atomically to schema 4', async () => {
   const owner = (++ownerCounter).toString(16).padStart(64, '0')
   const legacyCoverage = {
     key: `${NOSTRDB_ACCOUNT_COVERAGE_PREFIX}${JSON.stringify(['wss://relay.example/', 1])}`,
@@ -340,7 +358,10 @@ it('migrates legacy coverage records atomically from maintenance to schema 4', a
     await requestResult(upgraded.transaction(MAINTENANCE).objectStore(MAINTENANCE).get(legacyCoverage.key)),
     undefined
   )
-  assert.equal((await requestResult(upgraded.transaction(MAINTENANCE).objectStore(MAINTENANCE).get('quotaUsage'))).phase, 'ready')
+  const migratedUsage = await requestResult(upgraded.transaction(QUOTA).objectStore(QUOTA).get('quotaUsage'))
+  assert.equal(migratedUsage.phase, 'ready')
+  assert.equal(migratedUsage.publicBytes, 1)
+  assert.equal(await requestResult(upgraded.transaction(MAINTENANCE).objectStore(MAINTENANCE).get('quotaUsage')), undefined)
   assert.deepEqual(await readState(upgraded), { key: CHECKPOINT, after: 'cursor', completedAt: null })
   assert.equal((await requestResult(upgraded.transaction(MAINTENANCE).objectStore(MAINTENANCE).get('unknownMaintenanceKey'))).value, 42)
 
@@ -351,4 +372,5 @@ it('migrates legacy coverage records atomically from maintenance to schema 4', a
     await requestResult(reopened.transaction(NOSTRDB_ACCOUNT_COVERAGE_STORE).objectStore(NOSTRDB_ACCOUNT_COVERAGE_STORE).get(legacyCoverage.key)),
     legacyCoverage
   )
+  assert.equal((await requestResult(reopened.transaction(QUOTA).objectStore(QUOTA).get('quotaUsage'))).phase, 'ready')
 })

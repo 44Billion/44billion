@@ -41,7 +41,7 @@ for (const [name, overlay] of [...(baseline ? [['baseline', baseline]] : []), ['
           db.personalCopyDecrypt=async event=>event.content;
           db.personalCopyObfuscate=async(value,kind,scope)=>scope+':'+value;
           const template=finalizeEvent({kind:1006,created_at:1,tags:[['k','30078'],['c','recovery']],content:'x'.repeat(512)},secret);
-          const tx=raw.transaction(['events','maintenance'],'readwrite');
+          const tx=raw.transaction(['events','quota'],'readwrite');
           const done=new Promise((resolve,reject)=>{tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error)});
           const usage=quotas.initialQuotaUsage(true);
           for(let i=0;i<5000;i++) {
@@ -49,7 +49,7 @@ for (const [name, overlay] of [...(baseline ? [['baseline', baseline]] : []), ['
             const row=toStoredRecord(event);row.eventBytes=new TextEncoder().encode(JSON.stringify(event)).length;row.ownerRefs=[];
             tx.objectStore('events').put(row);usage.privateBytes+=row.eventBytes;usage.privateCount++;
           }
-          tx.objectStore('maintenance').put(usage);await done;
+          tx.objectStore('quota').put(usage);await done;
           const copies=[];
           for(let i=0;i<40;i++) copies.push(finalizeEvent(await buildPersonalCopyUnsignedEvent({
             originalEvent:{kind:9,created_at:100+i,tags:[],content:'message '+i},ownerPubkey:owner,context:'chat',
@@ -84,7 +84,7 @@ for (const [name, overlay] of [...(baseline ? [['baseline', baseline]] : []), ['
         }
         indexedDB.databases=original;
         for(const account of accounts) {
-          const usage=await request(account.raw.transaction('maintenance').objectStore('maintenance').get('quotaUsage'));
+          const usage=await request(account.raw.transaction('quota').objectStore('quota').get('quotaUsage'));
           if(usage.privateCount!==(account===accounts[0]?5036:5000))throw new Error('incorrect local counter');
         }
         return result;

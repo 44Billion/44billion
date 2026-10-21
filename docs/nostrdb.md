@@ -9,11 +9,16 @@ aligned with changes to maintenance defaults and transaction boundaries.
 ## Ownership and storage
 
 Each owner has a `44billion_nostrdb:<ownerPubkey>` database containing `events`,
-`deletions`, `kindRegistry`, `maintenance`, `accountCoverage`, and `cacheAccess`
-(schema version 4). The owner identifies the database, not necessarily the author
-of every event in it. Event records carry local app references (`ap`), receipt
-time (`ra`, milliseconds), and a sync anchor (`sa`). Cleanup grace periods use
-receipt time rather than the event's authored timestamp where noted below.
+`deletions`, `kindRegistry`, `maintenance`, `accountCoverage`, `quota`, and
+`cacheAccess` (schema version 4). The owner identifies the database, not
+necessarily the author of every event in it. Event records carry local app
+references (`ap`), receipt time (`ra`, milliseconds), and a sync anchor (`sa`).
+Cleanup grace periods use receipt time rather than the event's authored timestamp
+where noted below.
+
+`maintenance` is reserved for the unclaimed-data checkpoint and preserved unknown
+records. Quota accounting uses `quota`; account-ingestion coverage uses
+`accountCoverage`.
 
 Kind 34601 chunk events store metadata in NostrDB and externalize their content
 into the shared `44billion_browser` chunk stores. Those are separate databases;
@@ -62,8 +67,8 @@ together. Coordinate/merge and deletion paths retain their external preparation
 and transactional snapshot revalidation, using the same selective planner. No
 vault, network or timer work runs in the write transaction.
 
-Ordinary validated public duplicates can finish in a readonly `events` +
-`maintenance` transaction before quota admission. This requires an existing ID,
+Ordinary validated public duplicates can finish in a readonly `events` + `quota`
+transaction before quota admission. This requires an existing ID,
 ready usage counters and no app-reference change. Personal copies, chunks,
 deletions and operations with merge/deletion side effects are excluded. Misses,
 uninitialized counters and changes follow the original write path and recheck
@@ -102,9 +107,10 @@ paginated fifty-message history and coverage maintenance in three accounts;
 same workload. Run it sequentially through the protected browser harness.
 
 Account-event coverage checkpoints are grouped by relay and eligible kind in the
-`accountCoverage` store. Schema 4 moves legacy rows out of `maintenance` in the
-version-change transaction without changing their record format or touching
-quota, unclaimed-data or unknown keys. The registry is read first, then all
+`accountCoverage` store. The same schema-4 version-change transaction moves
+legacy coverage rows out of `maintenance` and moves its `quotaUsage` record into
+the separate `quota` store, without changing either format or touching
+unclaimed-data and unknown maintenance keys. The registry is read first, then all
 per-kind reads are submitted within the same readwrite transaction. Missing
 records and changed coverage are written from their read success handlers;
 unchanged ranges are not rewritten. The coordinator opens this transaction only
@@ -158,7 +164,7 @@ when `maintenanceOptions.signEvent` is supplied.
 | Routine | Default schedule | Work and limits per execution |
 | --- | --- | --- |
 | `maintainNostrDbCache` | Commit requests coalesce at 1 second; volume can expedite; excess pages 1 second apart; otherwise every minute | Initializes missing quota summaries, then removes at most 25 globally oldest cache events, examining at most 100 candidates. |
-| `purgeExpired` | Immediately, then every hour | Finds expired events and removes them and their deletion contributions in `maintenance` transactions of at most 100 events, yielding between batches. |
+| `purgeExpired` | Immediately, then every hour | Finds expired events and removes them and their deletion contributions in maintenance-class quota transactions of at most 100 events, yielding between batches. |
 | Unclaimed-data scheduler / `purgeUnclaimedAppData` | Checks after 1 second; pauses 1 second between pages; new sweep 24 hours after the last completion | Each page scans up to 1,000 records and deletes up to 100 unclaimed app-trackable events received at least 30 days ago. Progress and completion time survive reloads. |
 | `maintainDeletionRequests` | Immediately, then every hour, with a signer | Runs one compaction, then pruning, for the selected author (the owner by default). Compaction combines compatible kind 5 requests into a signed event with up to 100 target tags, and — when vault encryption and a signer are available — merges owner-authored, non-expiring private deletion envelopes from the same context into a rewritten wrapper; third-party and expiring envelopes are left for pruning/purge. Pruning targets a total of 1,000 requests (public plus envelopes), removing at most 100 per run after a 30-day receipt grace period. |
 | Unreferenced-hearsay prune (`pruneUnreferencedHearsays`) | Immediately, then every 10 minutes | Scans personal copies with `v=2`, keeps those referenced by another copy in the same context, and removes at most 100 unreferenced hearsays older than 10 minutes per run. Needs no signer. |
@@ -196,6 +202,11 @@ one final empty page to detect the end. Completion clears `after` and saves
 persisted deadline rather than restarting a 24-hour timer. Insertions before the
 current position and records that become eligible after being visited are
 reconsidered in the next sweep, which starts at the beginning.
+
+This cleanup is the exceptional quota mutation that also declares
+`maintenance`: its transaction includes `events`, `deletions`, `cacheAccess`,
+`quota`, and the unclaimed checkpoint in `maintenance`. Ordinary event mutations
+do not include `maintenance`.
 
 A failed page is retried after 1 minute without advancing the checkpoint. The
 stop function cancels future scheduling; an in-flight page can still commit.
@@ -285,7 +296,7 @@ flight. Stopping and restarting therefore does not establish an execution barrie
 
 Atomicity applies to each IndexedDB transaction, not to an entire maintenance
 cycle. A transaction commits its changes together or aborts them together. Every event
-mutation includes `events`, `deletions`, `cacheAccess` and `maintenance`; references,
+mutation includes `events`, `deletions`, `cacheAccess` and `quota`; references,
 LRU membership, tombstones and local usage commit or roll back together. App
 association changes alone do not change byte accounting.
 
@@ -355,9 +366,10 @@ allocating storage; removal commits and background maintenance trims the excess.
 
 Each mutation updates the events, deletion contributions, reference classification
 and per-owner usage in one readwrite transaction. Aborts roll back all of them.
-There is no delta journal and no new IndexedDB schema. Ordinary mutations only
-initialize their own legacy counters; they never sum usage or wait for the global
-quota lock. Access and the connection generation are rechecked before mutation.
+There is no delta journal. Schema 4 relocates the same usage record to `quota`
+without changing its format. Ordinary mutations only initialize their own legacy
+counters; they never sum usage or wait for the global quota lock. Access and the
+connection generation are rechecked before mutation.
 
 Admission consults the last known global usage and current configured limits.
 Positive net byte growth is refused in blocked categories; cache count growth is
@@ -369,7 +381,7 @@ between public and cache happen after direct admission deltas are determined:
 they do not block a referrer or removal. Every protected target is retained; no
 promotion candidate is discarded to accommodate its referrer.
 
-The shared maintenance sums only small ready `maintenance.quotaUsage` records.
+The shared maintenance sums only small ready `quota.quotaUsage` records.
 Its snapshot is advisory: different owners may be observed at different moments.
 It never publishes a partial sum on failed enumeration, initialization or access.
 Failure preserves the previous usable totals/gates. Without usable prior totals,
@@ -434,7 +446,7 @@ not event integrity. Synthetic app reads can still influence approximate LRU.
 
 ### Initialization, settings and repair
 
-Ready quota counters are confirmed through a readonly `maintenance` transaction,
+Ready quota counters are confirmed through a readonly `quota` transaction,
 without a broad write transaction on unrelated event/access stores. Periodic cache
 maintenance examines at most 100 candidates and deletes at most 25 per round,
 releasing the global lock before scheduling a remaining round (one-second delay
@@ -444,7 +456,7 @@ execution. Only background/configuration/lifecycle operations have quota-lock wa
 
 Existing databases initialize in two resumable passes, at most 1,000 rows per
 transaction: fill event sizes/references, then classify cache and build counters.
-`quotaUsage.phase` and `after` advance with each page's writes. The event loop is
+`quota.quotaUsage.phase` and `after` advance with each page's writes. The event loop is
 released between pages; reads remain available, and admission waits for complete
 summaries. Initialization does not delete excess public/private data. Cache
 maintenance subsequently trims excess in bounded pages. Failure preserves the

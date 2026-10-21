@@ -103,7 +103,7 @@ describe('normalized global chunk cache', () => {
     assert.equal(stored.ci, 0)
     assert.equal(stored.cb, 4)
     assert.equal(stored.eventBytes, new TextEncoder().encode(JSON.stringify(stored.event)).length)
-    const usage = await requestResult(rawDb.transaction('maintenance').objectStore('maintenance').get('quotaUsage'))
+    const usage = await requestResult(rawDb.transaction('quota').objectStore('quota').get('quotaUsage'))
     assert.equal(usage.publicBytes, stored.eventBytes)
     assert.equal(usage.cacheCount, 0)
 

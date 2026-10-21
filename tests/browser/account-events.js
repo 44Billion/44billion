@@ -129,7 +129,7 @@ const bundle = await build({
             saved:saved.ok===true,
             marked:marked===undefined,
             intervalsCurrent:current.every(row=>JSON.stringify(row.intervals)==='[[0,300]]'),
-            schemaV4:raw.objectStoreNames.contains('accountCoverage'),
+            schemaV4:raw.objectStoreNames.contains('accountCoverage')&&raw.objectStoreNames.contains('quota'),
             coverageEventOverlap,
             elapsedMs
           };

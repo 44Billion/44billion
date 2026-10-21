@@ -12,6 +12,7 @@ import {
   getNostrDb, openNostrDb, deleteNostrDb, deletionEventRef, eventIdIndexKey,
   NOSTRDB_PREFIX, NOSTRDB_VERSION, toStoredRecord
 } from '#services/idb/nostrdb/index.js'
+import { NOSTRDB_QUOTA_STORE as QUOTA } from '#constants/storage-schema.js'
 import {
   DEFAULT_NOSTRDB_QUOTAS, getNostrDbQuotaUsage, setNostrDbQuotaLimits,
   maintainNostrDbCache, queueCacheAccess, flushCacheAccess, ownerReferenceKeys,
@@ -84,6 +85,20 @@ it('uses global defaults and charges UTF-8 event bytes across owners', async () 
   assert.equal(refused.quotaCategory, 'public')
   assert.equal((await row(a.raw, first)).eventBytes, byteSize(first))
   assert.equal((await a.db.add(first)).code, 'duplicate')
+})
+
+it('keeps ordinary event mutations out of the maintenance store scope', async t => {
+  const a = await owner()
+  const scopes = []
+  const original = a.raw.transaction.bind(a.raw)
+  t.mock.method(a.raw, 'transaction', (...args) => {
+    if (args[1] === 'readwrite') scopes.push(args[0])
+    return original(...args)
+  })
+
+  assert.equal((await a.db.add(signed({}, a.secret))).stored, true)
+  assert.equal(scopes.some(stores => Array.isArray(stores) && stores.includes(QUOTA)), true)
+  assert.equal(scopes.every(stores => !Array.isArray(stores) || !stores.includes('maintenance')), true)
 })
 
 it('admits concurrent growth then blocks it after a global review', async () => {
@@ -326,7 +341,7 @@ it('aborts event and usage writes together on a late transaction failure', async
   const mock = t.mock.method(a.raw, 'transaction', (...args) => {
     const tx = original(...args)
     if (args[1] === 'readwrite' && Array.isArray(args[0]) && args[0].includes('deletions')) {
-      const store = tx.objectStore('maintenance')
+      const store = tx.objectStore(QUOTA)
       const put = store.put.bind(store)
       store.put = value => {
         const req = put(value)
@@ -415,7 +430,7 @@ it('rolls back deletion, tombstones, replacement and both reference transitions'
   const a = await owner()
   const target = signed({ kind: 30023, tags: [['d', 'target']] })
   await a.db.add(target)
-  const snapshot = async () => Object.fromEntries(await Promise.all(['events', 'cacheAccess', 'deletions', 'maintenance'].map(async store => [store,
+  const snapshot = async () => Object.fromEntries(await Promise.all(['events', 'cacheAccess', 'deletions', QUOTA, 'maintenance'].map(async store => [store,
     await request(a.raw.transaction(store).objectStore(store).getAll())
   ])))
   const abortAdmission = async event => {
@@ -424,7 +439,7 @@ it('rolls back deletion, tombstones, replacement and both reference transitions'
     const mocked = t.mock.method(a.raw, 'transaction', (...args) => {
       const tx = original(...args)
       if (args[1] === 'readwrite' && Array.isArray(args[0]) && args[0].includes('deletions')) {
-        const store = tx.objectStore('maintenance')
+        const store = tx.objectStore(QUOTA)
         const put = store.put.bind(store)
         store.put = value => {
           const req = put(value)
@@ -452,16 +467,16 @@ it('resumes interrupted migration pages in either pass without duplicating count
     const a = await owner()
     const template = signed()
     const rows = Array.from({ length: 1002 }, (_, i) => toStoredRecord({ ...template, id: (i + 1).toString(16).padStart(64, '0') }))
-    const tx = a.raw.transaction(['events', 'maintenance'], 'readwrite')
+    const tx = a.raw.transaction(['events', QUOTA], 'readwrite')
     const done = new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onabort = () => reject(tx.error) })
     for (const row of rows) tx.objectStore('events').put(row)
-    tx.objectStore('maintenance').delete('quotaUsage')
+    tx.objectStore(QUOTA).delete('quotaUsage')
     await done
     const original = a.raw.transaction.bind(a.raw)
     const mocked = t.mock.method(a.raw, 'transaction', (...args) => {
       const tx = original(...args)
-      if (args[1] === 'readwrite' && args[0].includes('maintenance')) {
-        const store = tx.objectStore('maintenance')
+      if (args[1] === 'readwrite' && args[0].includes(QUOTA)) {
+        const store = tx.objectStore(QUOTA)
         const put = store.put.bind(store)
         store.put = value => {
           const req = put(value)
@@ -476,7 +491,7 @@ it('resumes interrupted migration pages in either pass without duplicating count
     await assert.rejects(getNostrDbQuotaUsage())
     mocked.mock.restore()
     assert.equal(await request(a.raw.transaction('cacheAccess').objectStore('cacheAccess').count()), phase === 'classify' ? 1000 : 0)
-    const checkpoint = await request(a.raw.transaction('maintenance').objectStore('maintenance').get('quotaUsage'))
+    const checkpoint = await request(a.raw.transaction(QUOTA).objectStore(QUOTA).get('quotaUsage'))
     assert.equal(checkpoint.phase, phase)
     assert.ok(checkpoint.after)
     const usage = await getNostrDbQuotaUsage()
@@ -700,7 +715,7 @@ it('rolls back every local removal and reference transition if its transaction a
   const mock = t.mock.method(a.raw, 'transaction', (...args) => {
     const tx = original(...args)
     if (args[1] === 'readwrite' && Array.isArray(args[0]) && args[0].includes('deletions')) {
-      const store = tx.objectStore('maintenance')
+      const store = tx.objectStore(QUOTA)
       const put = store.put.bind(store)
       store.put = value => {
         const req = put(value)
@@ -912,7 +927,7 @@ it('rolls back the owner replacement, promotions and access times together', asy
   const mock = t.mock.method(a.raw, 'transaction', (...args) => {
     const tx = original(...args)
     if (args[1] === 'readwrite' && Array.isArray(args[0]) && args[0].includes('deletions')) {
-      const store = tx.objectStore('maintenance')
+      const store = tx.objectStore(QUOTA)
       const put = store.put.bind(store)
       store.put = value => {
         const req = put(value)
@@ -1061,9 +1076,9 @@ it('does not bypass legacy quota reconstruction when a duplicate exists', async 
   const event = signed({}, a.secret)
   await a.db.add(event)
   const { initialQuotaUsage } = await import('#services/idb/nostrdb/quotas.js')
-  await request(a.raw.transaction('maintenance', 'readwrite').objectStore('maintenance').put(initialQuotaUsage()))
+  await request(a.raw.transaction(QUOTA, 'readwrite').objectStore(QUOTA).put(initialQuotaUsage()))
   assert.equal((await a.db.add(event)).code, 'duplicate')
-  const usage = await request(a.raw.transaction('maintenance').objectStore('maintenance').get('quotaUsage'))
+  const usage = await request(a.raw.transaction(QUOTA).objectStore(QUOTA).get('quotaUsage'))
   assert.equal(usage.phase, 'ready')
   assert.equal(usage.publicCount, 1)
 })

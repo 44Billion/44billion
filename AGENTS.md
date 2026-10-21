@@ -446,13 +446,14 @@ publish the same archive manually. No local dependency references are committed.
   per-record throttling, with yields between transactions. Pipeline the reads in
   each transaction and issue conditional updates from their success handlers;
   retain the transaction-completion barrier and all existence/generation checks.
-- Ready counters use readonly maintenance reads. Periodic eviction is limited to
+- Ready counters use readonly `quota` reads. Periodic eviction is limited to
   100 examinations/25 deletions per lock round; ordinary admission performs no
   eviction or global sums. Revalidate LRU timestamps/eligibility in the deletion transaction and reselect changed candidates.
 - Event mutations atomically maintain existing per-owner counters without taking
   the global quota lock. Background review publishes the versioned advisory
   `44billion:nostrdb-quota-state:v1` summary under that lock, which still coordinates
-  configuration and DB creation/removal. Preserve legacy reconstruction and schema.
+  configuration and DB creation/removal. Preserve legacy reconstruction and the
+  schema-4 relocation of the unchanged quota record into `quota`.
   Permit temporary excess; block positive net admission only on known exceeded
   categories (zero limits immediately). Reference-induced transfers never discard
   protected targets or block removals. Keep last usable gates during maintenance
@@ -482,6 +483,10 @@ guards, never app scopes or shared callback mutation. No storage schema changes.
 - Schedule live readwrite transactions once per owner database. Queries, counts
   and subscriptions remain direct readonly IndexedDB work. Declare the exact
   stores touched so transactions with disjoint stores may overlap.
+- Schema 4 keeps hot quota counters in `quota` and coverage in
+  `accountCoverage`. Ordinary event mutations include `quota` but not
+  `maintenance`; unclaimed cleanup explicitly adds `maintenance` for its
+  checkpoint while retaining the atomic quota/event scope.
 - Classes are launcher-owned: app `add`/`addPersonalCopy` of kinds
   9/1063/3560/26300/26400/34601 and `remove` are `foreground`; other app writes
   are `normal`; structurally validated recovery archives and account ingestion

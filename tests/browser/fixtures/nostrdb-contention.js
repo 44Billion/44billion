@@ -39,10 +39,10 @@ globalThis.fixture = {
   async seed (count = 15000) {
     const template = await copy({ kind: 30078, created_at: 1, tags: [['d', 'template'], ['t', 'seed']], content: '' })
     for (let offset = 0; offset < count; offset += 500) {
-      const tx = raw.transaction(['events', 'maintenance'], 'readwrite')
+      const tx = raw.transaction(['events', 'quota'], 'readwrite')
       const finished = done(tx)
       const store = tx.objectStore('events')
-      const usage = await request(tx.objectStore('maintenance').get('quotaUsage'))
+      const usage = await request(tx.objectStore('quota').get('quotaUsage'))
       for (let i = offset; i < Math.min(count, offset + 500); i++) {
         // Synthetic cardinality fixtures: old rows are inserted directly, not
         // advertised as protocol-validated history. New writes use real crypto.
@@ -52,7 +52,7 @@ globalThis.fixture = {
         row.ownerRefs = []; row.sa = 1000 + i
         store.put(row); usage.privateBytes += row.eventBytes; usage.privateCount++
       }
-      tx.objectStore('maintenance').put(usage)
+      tx.objectStore('quota').put(usage)
       await finished
     }
     for (const profile of profiles) {

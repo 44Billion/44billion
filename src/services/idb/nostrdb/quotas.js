@@ -5,7 +5,7 @@ import { scheduleNostrDbWrite } from './write-scheduler.js'
 import { assertNostrDbAccess, isNostrDbAccessError } from './access.js'
 import {
   NOSTRDB_CACHE_ACCESS_STORE as CACHE,
-  NOSTRDB_MAINTENANCE_STORE as MAINTENANCE,
+  NOSTRDB_QUOTA_STORE as QUOTA,
   NOSTRDB_QUOTA_USAGE_KEY as USAGE_KEY,
   NOSTRDB_QUOTA_SETTINGS_KEY as SETTINGS_KEY,
   NOSTRDB_QUOTA_STATE_KEY as STATE_KEY
@@ -238,10 +238,10 @@ async function initializeUsage (db) {
   check()
   // Most databases are already initialized. This narrow readonly transaction
   // neither waits for nor blocks cacheAccess writes on the other store.
-  const readyTx = db.transaction(MAINTENANCE)
+  const readyTx = db.transaction(QUOTA)
   const readyDone = transactionDone(readyTx)
   try {
-    const ready = await request(readyTx.objectStore(MAINTENANCE).get(USAGE_KEY))
+    const ready = await request(readyTx.objectStore(QUOTA).get(USAGE_KEY))
     await readyDone
     if (ready?.phase === 'ready') return ready
   } catch (error) {
@@ -252,16 +252,16 @@ async function initializeUsage (db) {
     check()
     const usage = await scheduleNostrDbWrite({
       owner: ownerFromDb(db),
-      stores: [EVENTS_STORE, CACHE, MAINTENANCE],
+      stores: [EVENTS_STORE, CACHE, QUOTA],
       schedulerClass: 'maintenance',
       appId: 'system',
       assertCurrent: check
     }, async () => {
       check()
-      const tx = db.transaction([EVENTS_STORE, CACHE, MAINTENANCE], 'readwrite')
+      const tx = db.transaction([EVENTS_STORE, CACHE, QUOTA], 'readwrite')
       const done = transactionDone(tx)
       try {
-        const stateStore = tx.objectStore(MAINTENANCE)
+        const stateStore = tx.objectStore(QUOTA)
         const current = await request(stateStore.get(USAGE_KEY)) ?? initialQuotaUsage()
         if (current.phase === 'ready') {
           await done
@@ -313,7 +313,7 @@ async function allDatabases () {
 async function sumUsage (dbs) {
   const totals = emptyTotals()
   for (const db of dbs) {
-    const usage = await request(db.transaction(MAINTENANCE).objectStore(MAINTENANCE).get(USAGE_KEY))
+    const usage = await request(db.transaction(QUOTA).objectStore(QUOTA).get(USAGE_KEY))
     if (usage?.phase !== 'ready') throw unavailable()
     for (const key of Object.keys(totals)) totals[key] += usage[key]
   }
@@ -449,7 +449,8 @@ async function mutate (db, callback, {
   beforeMutation,
   schedulerClass = 'normal',
   appId = 'system',
-  signal
+  signal,
+  extraStores = []
 } = {}) {
   const owner = ownerFromDb(db)
   const connection = captureNostrDbConnection(owner)
@@ -459,9 +460,10 @@ async function mutate (db, callback, {
     beforeMutation?.()
     if (!connection.isCurrent()) throw unavailable()
   }
+  const stores = [...new Set([EVENTS_STORE, DELETIONS_STORE, CACHE, QUOTA, ...extraStores])]
   return scheduleNostrDbWrite({
     owner,
-    stores: [EVENTS_STORE, DELETIONS_STORE, CACHE, MAINTENANCE],
+    stores,
     schedulerClass,
     appId,
     signal,
@@ -472,12 +474,12 @@ async function mutate (db, callback, {
     const blocked = admission
       ? quotaBlocks(readQuotaState()?.totals, getNostrDbQuotaLimits())
       : null
-    const tx = db.transaction([EVENTS_STORE, DELETIONS_STORE, CACHE, MAINTENANCE], 'readwrite')
+    const tx = db.transaction(stores, 'readwrite')
     const done = transactionDone(tx)
     const abort = () => { try { tx.abort() } catch {} }
     signal?.addEventListener('abort', abort, { once: true })
     try {
-      const stateStore = tx.objectStore(MAINTENANCE)
+      const stateStore = tx.objectStore(QUOTA)
       const usage = await request(stateStore.get(USAGE_KEY))
       if (usage?.phase !== 'ready') throw unavailable()
       if (!connection.isCurrent()) throw unavailable()
@@ -582,7 +584,8 @@ export async function withQuotaMutation (db, callback, {
   onTiming,
   schedulerClass = 'normal',
   appId = 'system',
-  signal
+  signal,
+  extraStores
 } = {}) {
   const owner = ownerFromDb(db)
   const startedAt = performance.now()
@@ -599,7 +602,8 @@ export async function withQuotaMutation (db, callback, {
       beforeMutation,
       schedulerClass,
       appId,
-      signal
+      signal,
+      extraStores
     })
   } finally {
     const measure = { stage: 'quota-mutation', elapsedMs: performance.now() - startedAt, category: admission ? 'admission' : 'mutation' }
