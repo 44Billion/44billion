@@ -1,7 +1,7 @@
 import { recordPerformance } from '#services/performance-diagnostics.js'
 import { selectTagQueryPlan } from './query-plan.js'
 import { assertNostrDbAccess, isNostrDbAccessError, watchNostrDbAccess } from './access.js'
-import { cancelNostrDbWrites, scheduleNostrDbWrite } from './write-scheduler.js'
+import { cancelNostrDbAccesses, scheduleNostrDbRead, scheduleNostrDbWrite } from './access-scheduler.js'
 import { NOSTRDB_CAPABILITIES } from './capabilities.js'
 import { normalizeLocalRemovalTargets, localRemovalResult } from './local-removal.js'
 import { withInitialResults } from './initial-subscription.js'
@@ -1990,13 +1990,33 @@ export class NostrDb {
     this.assertAccess()
     const db = await openNostrDb(this.ownerPubkey)
     if (!db) throw new Error('IndexedDB is unavailable')
+    const schedulerClass = ['background', 'maintenance'].includes(options.schedulerClass)
+      ? options.schedulerClass
+      : null
+    let scheduleRead
+    if (schedulerClass) {
+      const connection = captureNostrDbConnection(this.ownerPubkey)
+      const assertCurrent = () => {
+        this.assertAccess()
+        if (!connection || !connection.isCurrent()) throw Object.assign(new Error('NOSTRDB_RESET'), { code: 'NOSTRDB_RESET' })
+      }
+      scheduleRead = operation => scheduleNostrDbRead({
+        owner: this.ownerPubkey,
+        stores: [EVENTS_STORE],
+        schedulerClass,
+        appId: options.appId || 'system',
+        signal: options.signal,
+        assertCurrent
+      }, operation)
+    }
 
     try {
       const results = await queryParsedFilters(db, filters, {
         countOnly: false,
         ignoreLimit: false,
         decryptPersonalCopyContent: this.personalCopyDecrypt,
-        onTiming: options.onTiming
+        onTiming: options.onTiming,
+        scheduleRead
       })
       await hydrateChunkResults(this.ownerPubkey, results)
       this.queueAppClaimsFromResults(results, appRef)
@@ -2715,7 +2735,7 @@ export async function deleteNostrDb (ownerPubkey) {
   try {
     deleted = await withNostrDbQuotaLock(async () => {
       const dbName = `${NOSTRDB_PREFIX}${ownerPubkey}`
-      cancelNostrDbWrites(ownerPubkey)
+      cancelNostrDbAccesses(ownerPubkey)
       const store = storeCache.get(ownerPubkey)
       store?.invalidate()
       store?.bc?.close()
@@ -2757,7 +2777,7 @@ function initNostrDb (dbName) {
     const db = req.result
     db.onversionchange = () => {
       const owner = dbName.slice(NOSTRDB_PREFIX.length)
-      cancelNostrDbWrites(owner)
+      cancelNostrDbAccesses(owner)
       storeCache.get(owner)?.invalidate()
       db.close()
       dbCache.delete(dbName)
@@ -3147,23 +3167,23 @@ async function queryRecords (db, rawFilter, { countOnly, ignoreLimit, tx, onTimi
   return queryParsedFilters(db, filters, { countOnly, ignoreLimit, onTiming })
 }
 
-async function queryParsedFilters (db, filters, { countOnly, ignoreLimit, decryptPersonalCopyContent, onTiming } = {}) {
+async function queryParsedFilters (db, filters, { countOnly, ignoreLimit, decryptPersonalCopyContent, onTiming, scheduleRead } = {}) {
   const liveFilters = filters.filter(filter => !filter.neverMatch)
   if (liveFilters.length === 0) return countOnly ? 0 : []
   if (liveFilters.length === 1) {
-    return queryParsedFilterRecords(db, liveFilters[0], { countOnly, ignoreLimit, decryptPersonalCopyContent, onTiming })
+    return queryParsedFilterRecords(db, liveFilters[0], { countOnly, ignoreLimit, decryptPersonalCopyContent, onTiming, scheduleRead })
   }
 
-  return queryMultipleParsedFilters(db, liveFilters, { countOnly, ignoreLimit, decryptPersonalCopyContent, onTiming })
+  return queryMultipleParsedFilters(db, liveFilters, { countOnly, ignoreLimit, decryptPersonalCopyContent, onTiming, scheduleRead })
 }
 
-async function queryParsedFilterRecords (db, filter, { countOnly, ignoreLimit, decryptPersonalCopyContent, tx, onTiming }) {
+async function queryParsedFilterRecords (db, filter, { countOnly, ignoreLimit, decryptPersonalCopyContent, tx, onTiming, scheduleRead }) {
   if (filter.neverMatch) return countOnly ? 0 : []
 
   const limit = ignoreLimit ? Infinity : Math.min(countOnly ? Infinity : MAX_LIMIT, filter.limit)
   if (limit <= 0) return countOnly ? 0 : []
 
-  const plan = await selectQueryPlan(db, filter, { tx, onTiming })
+  const plan = await selectQueryPlan(db, filter, { tx, onTiming, scheduleRead })
   const direction = queryDirection(filter)
   const now = currentUnixTime()
 
@@ -3223,7 +3243,7 @@ async function queryParsedFilterRecords (db, filter, { countOnly, ignoreLimit, d
       let matchedInCursor = 0
 
       await scanCursor(db, EVENTS_STORE, cursor.indexName, cursor.range, {
-        tx, onTiming,
+        tx, onTiming, scheduleRead,
         direction,
         onItem: stored => {
           if (!matches(stored)) return true
@@ -3244,12 +3264,12 @@ async function queryParsedFilterRecords (db, filter, { countOnly, ignoreLimit, d
   return projectQueryResults(Number.isFinite(limit) ? results.slice(0, limit) : results, filter, scoreById)
 }
 
-async function queryMultipleParsedFilters (db, filters, { countOnly, ignoreLimit, decryptPersonalCopyContent, onTiming }) {
+async function queryMultipleParsedFilters (db, filters, { countOnly, ignoreLimit, decryptPersonalCopyContent, onTiming, scheduleRead }) {
   const limit = ignoreLimit ? Infinity : Math.min(countOnly ? Infinity : MAX_LIMIT, filters[0].limit)
   if (limit <= 0) return countOnly ? 0 : []
 
   if (filters[0].searchText) {
-    return queryMultipleSearchFilters(db, filters, { countOnly, limit, decryptPersonalCopyContent, onTiming })
+    return queryMultipleSearchFilters(db, filters, { countOnly, limit, decryptPersonalCopyContent, onTiming, scheduleRead })
   }
 
   if (!countOnly && filters[0].idsOnly && filters.every(filter => canUseKeyOnlyCursor(planQuery(filter), filter))) {
@@ -3278,7 +3298,7 @@ async function queryMultipleParsedFilters (db, filters, { countOnly, ignoreLimit
   }
 
   for (const filter of filters) {
-    const keepGoing = await scanParsedFilterEvents(db, filter, { now, limit, countOnly, onEvent: emit, decryptPersonalCopyContent, onTiming })
+    const keepGoing = await scanParsedFilterEvents(db, filter, { now, limit, countOnly, onEvent: emit, decryptPersonalCopyContent, onTiming, scheduleRead })
     if (!keepGoing || (countOnly && seen.size >= limit)) break
   }
 
@@ -3316,12 +3336,12 @@ async function queryMultipleIdsWithKeyCursor (db, filters, { limit, onTiming }) 
   return withQueryScores(selected.map(result => result.id), selected.map(result => result.score))
 }
 
-async function queryMultipleSearchFilters (db, filters, { countOnly, limit, decryptPersonalCopyContent, onTiming }) {
+async function queryMultipleSearchFilters (db, filters, { countOnly, limit, decryptPersonalCopyContent, onTiming, scheduleRead }) {
   const now = currentUnixTime()
   const candidatesById = new Map()
 
   for (const filter of filters) {
-    const plan = await selectQueryPlan(db, filter, { onTiming })
+    const plan = await selectQueryPlan(db, filter, { onTiming, scheduleRead })
     const direction = queryDirection(filter)
     const candidates = await collectSearchCandidates(db, plan, filter, direction, {
       countOnly,
@@ -3347,8 +3367,8 @@ async function queryMultipleSearchFilters (db, filters, { countOnly, limit, decr
   return projectQueryResults(events, filters[0], scoreByCandidateId(ranked))
 }
 
-async function scanParsedFilterEvents (db, filter, { now, limit, countOnly, onEvent, decryptPersonalCopyContent, onTiming }) {
-  const plan = await selectQueryPlan(db, filter, { onTiming })
+async function scanParsedFilterEvents (db, filter, { now, limit, countOnly, onEvent, decryptPersonalCopyContent, onTiming, scheduleRead }) {
+  const plan = await selectQueryPlan(db, filter, { onTiming, scheduleRead })
   const direction = queryDirection(filter)
   const seen = new Set()
 
@@ -3393,7 +3413,7 @@ async function scanParsedFilterEvents (db, filter, { now, limit, countOnly, onEv
     let stopped = false
 
     await scanCursor(db, EVENTS_STORE, cursor.indexName, cursor.range, {
-      direction, onTiming,
+      direction, onTiming, scheduleRead,
       onItem: stored => {
         if (emit(stored) === false) {
           stopped = true
@@ -3654,8 +3674,8 @@ async function getStoredRecordsByIdKeys (db, idKeys) {
   })
 }
 
-function scanCursor (db, storeName, indexName, range, { tx, direction = 'next', onItem, onTiming }) {
-  return scanIdbCursor(db, storeName, indexName, range, { tx, direction, onItem, keyOnly: false, onTiming })
+function scanCursor (db, storeName, indexName, range, { tx, direction = 'next', onItem, onTiming, scheduleRead }) {
+  return scanIdbCursor(db, storeName, indexName, range, { tx, direction, onItem, keyOnly: false, onTiming, scheduleRead })
 }
 
 function scanKeyCursor (db, storeName, indexName, range, { tx, direction = 'next', onItem }) {
@@ -3664,7 +3684,17 @@ function scanKeyCursor (db, storeName, indexName, range, { tx, direction = 'next
 
 // Keep cursor continuation inside the IDB success callback. Yielding a live
 // cursor across unrelated awaits can let the transaction auto-commit first.
-function scanIdbCursor (db, storeName, indexName, range, { tx, direction, onItem, keyOnly, onTiming }) {
+function scanIdbCursor (db, storeName, indexName, range, { tx, direction, onItem, keyOnly, onTiming, scheduleRead }) {
+  if (!tx && scheduleRead) {
+    return scheduleRead(() => scanIdbCursor(db, storeName, indexName, range, {
+      tx: db.transaction([storeName], 'readonly'),
+      direction,
+      onItem,
+      keyOnly,
+      onTiming,
+      scheduleRead
+    }))
+  }
   const diagnostic = typeof IS_DEVELOPMENT !== 'undefined' && IS_DEVELOPMENT
   const startedAt = diagnostic ? performance.now() : 0
   let count = 0
@@ -3949,9 +3979,9 @@ function reportStorageTiming (onTiming, entry) {
   try { if (onTiming) onTiming(entry); else recordPerformance(entry) } catch {}
 }
 
-async function selectQueryPlan (db, filter, { tx, onTiming } = {}) {
+async function selectQueryPlan (db, filter, { tx, onTiming, scheduleRead } = {}) {
   return selectTagQueryPlan(db, filter, planQuery(filter), {
-    tx, tagValueKey: tagValueIndexKey,
+    tx, tagValueKey: tagValueIndexKey, scheduleRead,
     onTiming: entry => reportStorageTiming(onTiming, entry)
   })
 }

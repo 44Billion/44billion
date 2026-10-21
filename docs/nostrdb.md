@@ -256,18 +256,20 @@ only within the current module context. These guards do not serialize direct
 method calls, separately created schedulers/instances, or another tab. Global
 and per-owner chunk maintenance can overlap even within one tab.
 
-The in-memory write scheduler runs one logical scheduler per owner/database. It
-schedules live readwrite transactions only; queries, counts and subscriptions
-continue directly through IndexedDB readonly concurrency. Every job declares its
-store scope and a launcher-owned class: `foreground`, `normal`, `background` or
-`maintenance`. Transactions with disjoint stores may start together; intersecting
-stores remain serialized. Higher classes run first, with bounded starvation
-protection for lower classes and round-robin app lanes inside each class. `system`
-has its own lane. There is deliberately no pending-job cap per app and no
-queue-full error.
+The in-memory access scheduler runs one logical scheduler per owner/database. It
+schedules live readwrite transactions and explicitly marked background or
+maintenance readonly transactions. Normal app queries, counts and subscriptions
+continue directly through IndexedDB readonly concurrency. Every job declares
+mode, store scope and a launcher-owned class: `foreground`, `normal`, `background`
+or `maintenance`. Transactions with disjoint stores may start together;
+intersecting stores remain serialized. Higher classes run first, with bounded
+starvation protection for lower classes and round-robin app lanes inside each
+class. `system` has its own lane. There is deliberately no pending-job cap per app
+and no queue-full error.
 
-The app bridge derives class from the authenticated app and normalized event
-kind, never from app-provided scheduling fields. Kinds 9, 1063, 3560, 26300,
+The app bridge derives class from the authenticated app, normalized event kind
+and structurally validated recovery shape, never from app-provided scheduling
+fields. Kinds 9, 1063, 3560, 26300,
 26400 and 34601 and explicit removals are foreground. Other app writes are
 normal. A structurally valid recovery archive carrying the internal `recovery`
 claim becomes background; an invalid claim remains normal. Account ingestion is
@@ -276,6 +278,14 @@ unclaimed cleanup and other upkeep are maintenance. The scheduler holds no slot
 while crypto, signer, network, Web Lock or timer work is pending. Aborts remove
 queued work, and every start revalidates access and the cached connection
 generation before opening a transaction.
+
+Recovery pages pass the internal `recovery: true` query hint. The launcher accepts
+it only for one structurally valid kind-1006 personal-copy filter, strips it
+before calling NostrDB, and admits the planner and cursor transactions as
+background. Invalid hints, ordinary app filters and attempts to request a higher
+class remain direct normal reads. Because intersecting background reads serialize,
+up to four recovery pagers no longer open overlapping event-store transactions;
+an already active read still completes without preemption.
 
 The shared cache uses the Web Lock `44billion:chunk-cache:v1` around selected
 cache operations. Without Web Locks, its fallback promise queue is local to the
@@ -446,8 +456,11 @@ not event integrity. Synthetic app reads can still influence approximate LRU.
 
 ### Initialization, settings and repair
 
-Ready quota counters are confirmed through a readonly `quota` transaction,
-without a broad write transaction on unrelated event/access stores. Periodic cache
+The first mutation on a raw connection may confirm quota readiness through a
+readonly `quota` transaction. Subsequent hot-path mutations skip that preflight;
+their write transaction validates `quotaUsage`, and a missing/stale record forces
+one fresh initialization and retry. Explicit reviews force readiness again.
+Periodic cache
 maintenance examines at most 100 candidates and deletes at most 25 per round,
 releasing the global lock before scheduling a remaining round (one-second delay
 while excess remains, otherwise the existing minute interval). Admission performs no eviction. Development diagnostics distinguish local mutation

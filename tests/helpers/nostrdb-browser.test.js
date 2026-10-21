@@ -12,6 +12,7 @@ import {
 import {
   buildNostrDbAddOptions,
   buildNostrDbReadOptions,
+  classifyNostrDbRead,
   classifyNostrDbWrite,
   createNostrDbMaintenanceSignEvent,
   createNostrDbPersonalCopyDecrypt,
@@ -22,6 +23,7 @@ import {
   createNostrDbSubscriptionAuthorizer,
   explicitFilterKinds,
   isRecoveryArchiveEvent,
+  isRecoveryReadQuery,
   NOSTRDB_PERSONAL_COPY_CONTEXT,
   NOSTRDB_MAINTENANCE_CONTEXT,
   NIP07_BATCH_CODE,
@@ -103,6 +105,42 @@ describe('nostrdb browser bridge helpers', () => {
     assert.equal(isRecoveryArchiveEvent(recoveryDelete, true), true)
     assert.equal(classifyNostrDbWrite('addPersonalCopy', [recoverySeed, { recovery: true }]), 'background')
     assert.equal(classifyNostrDbWrite('addPersonalCopy', [recoveryDelete, { recovery: true }]), 'background')
+  })
+
+  it('recognizes only structurally valid recovery reads and strips untrusted scheduling', () => {
+    const owner = 'a'.repeat(64)
+    const recovery = {
+      kinds: [1006],
+      authors: [owner],
+      '#k': ['30078'],
+      '#c': ['context'],
+      '#v': ['0', '1'],
+      '&o': ['mirror'],
+      limit: 128
+    }
+    const exact = { kinds: [1006], authors: [owner], '&o': ['mirror'], limit: 128 }
+    assert.equal(isRecoveryReadQuery([recovery]), true)
+    assert.equal(isRecoveryReadQuery([exact]), true)
+    assert.equal(isRecoveryReadQuery([[recovery, exact]]), false)
+    assert.equal(classifyNostrDbRead('query', [recovery, { recovery: true }]), 'background')
+    assert.equal(classifyNostrDbRead('query', [recovery]), undefined)
+    assert.equal(classifyNostrDbRead('query', [{ kinds: [1], authors: [owner] }, { recovery: true }]), undefined)
+    assert.equal(classifyNostrDbRead('count', [recovery, { recovery: true }]), undefined)
+
+    const signal = new AbortController().signal
+    assert.deepEqual(buildNostrDbReadOptions({
+      appId: 'evil',
+      schedulerClass: 'foreground',
+      scheduling: { priority: true },
+      recovery: true,
+      signal: null,
+      limit: 10
+    }, { appId: 'real', schedulerClass: 'background', signal }), {
+      appId: 'real',
+      limit: 10,
+      schedulerClass: 'background',
+      signal
+    })
   })
 
   it('uses deletion target permissions for nostrdb add', async () => {
@@ -471,6 +509,36 @@ describe('nostrdb browser bridge helpers', () => {
       ['count', [{ authors: ['a'.repeat(64)] }]],
       ['supports', []]
     ])
+  })
+
+  it('schedules a validated recovery query as background and removes the hint', async () => {
+    const owner = 'a'.repeat(64)
+    let seen
+    const db = {
+      async query (filter, options) {
+        seen = { filter, options }
+        return { results: [], meta: {} }
+      }
+    }
+    await runNostrDbMethod({
+      db,
+      method: 'query',
+      params: [{
+        kinds: [1006],
+        authors: [owner],
+        '#k': ['30078'],
+        '#c': ['context'],
+        '#v': ['0', '1'],
+        '&o': ['mirror'],
+        limit: 128
+      }, { recovery: true }],
+      appId: 'real-app',
+      requestPermission: async () => {},
+      app: { id: 'app' }
+    })
+    assert.equal(seen.options.schedulerClass, 'background')
+    assert.equal(seen.options.appId, 'real-app')
+    assert.equal('recovery' in seen.options, false)
   })
 
   it('allows only explicitly chunk-limited reads without permission', async () => {

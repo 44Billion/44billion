@@ -94,6 +94,25 @@ export function isRecoveryArchiveEvent (event, recoveryHint) {
     targets.some(target => RECOVERY_TARGET_RE.test(target))
 }
 
+export function isRecoveryReadQuery (params = []) {
+  const args = Array.isArray(params) ? params : []
+  const filters = Array.isArray(args[0]) ? args[0] : [args[0]]
+  if (filters.length !== 1 || !filters[0] || typeof filters[0] !== 'object' || Array.isArray(filters[0])) return false
+  const filter = filters[0]
+  const kinds = Array.isArray(filter.kinds) ? filter.kinds.map(normalizeEventKind) : []
+  const authors = Array.isArray(filter.authors) ? filter.authors : []
+  if (kinds.length !== 1 || kinds[0] !== PERSONAL_COPY_KIND || authors.length !== 1 || !/^[0-9a-f]{64}$/i.test(authors[0] || '')) return false
+  const tagNames = Object.keys(filter).filter(key => key.startsWith('#') || key.startsWith('&')).map(key => key.slice(1))
+  const hasRecordMirror = tagNames.includes('o')
+  const kindsAreRecovery = Array.isArray(filter['#k']) &&
+    filter['#k'].length > 0 &&
+    filter['#k'].every(kind => String(kind) === String(eventKinds.CUSTOM_APP_DATA))
+  const allowedTags = new Set(['k', 'c', 'v', 'o', 'D'])
+  if (tagNames.some(name => !allowedTags.has(name))) return false
+  if (kindsAreRecovery) return tagNames.some(name => ['c', 'v', 'o'].includes(name))
+  return hasRecordMirror && !tagNames.includes('k') && !tagNames.includes('c') && !tagNames.includes('v')
+}
+
 export function classifyNostrDbWrite (method, params = []) {
   const args = Array.isArray(params) ? params : []
   if (method === 'remove') return 'foreground'
@@ -104,21 +123,34 @@ export function classifyNostrDbWrite (method, params = []) {
   return isPriorityEventKind(normalizedPersonalCopyKind(event)) ? 'foreground' : 'normal'
 }
 
-export function buildNostrDbReadOptions (options, { appId, deferCacheAccess }) {
-  return {
+export function classifyNostrDbRead (method, params = []) {
+  const args = Array.isArray(params) ? params : []
+  if (method !== 'query') return undefined
+  return plainOptions(args[1]).recovery === true && isRecoveryReadQuery(args) ? 'background' : undefined
+}
+
+export function buildNostrDbReadOptions (options, { appId, deferCacheAccess, schedulerClass, signal }) {
+  const safeOptions = {
     ...(options && typeof options === 'object' && !Array.isArray(options) ? options : {}),
     ...(appId === undefined ? {} : { appId }),
     ...(deferCacheAccess ? { deferCacheAccess: true } : {})
   }
+  delete safeOptions.scheduling
+  delete safeOptions.schedulerClass
+  delete safeOptions.signal
+  delete safeOptions.recovery
+  if (schedulerClass) safeOptions.schedulerClass = schedulerClass
+  if (signal) safeOptions.signal = signal
+  return safeOptions
 }
 
-export function nostrDbReadParamsWithAppId (params = [], { appId, deferCacheAccess } = {}) {
+export function nostrDbReadParamsWithAppId (params = [], { appId, deferCacheAccess, schedulerClass, signal } = {}) {
   const args = Array.isArray(params) ? [...params] : []
-  if (appId === undefined) return args
+  if (appId === undefined && !schedulerClass && !signal) return args
 
   return [
     args[0],
-    buildNostrDbReadOptions(args[1], { appId, deferCacheAccess })
+    buildNostrDbReadOptions(args[1], { appId, deferCacheAccess, schedulerClass, signal })
   ]
 }
 
@@ -569,7 +601,8 @@ export async function runNostrDbMethod ({
       if (explicitPersonalKinds !== null) await requestPersonalKinds(explicitPersonalKinds, permissionContext)
     }
 
-    const readArgs = nostrDbReadParamsWithAppId(args, { appId, deferCacheAccess })
+    const schedulerClass = classifyNostrDbRead(method, args)
+    const readArgs = nostrDbReadParamsWithAppId(args, { appId, deferCacheAccess, schedulerClass, signal })
     if (onTiming) readArgs[1] = { ...plainOptions(readArgs[1]), onTiming }
     const payload = await db.query(...readArgs)
     if (explicitKinds !== null && explicitPersonalKinds === null) {

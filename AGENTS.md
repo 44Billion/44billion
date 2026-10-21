@@ -478,11 +478,12 @@ Personal-copy primitives overlap at most four; sign after dependencies. Stable
 context/author mirrors have bounded generation-fenced in-memory reuse after
 guards, never app scopes or shared callback mutation. No storage schema changes.
 
-## NostrDB write scheduling
+## NostrDB access scheduling
 
-- Schedule live readwrite transactions once per owner database. Queries, counts
-  and subscriptions remain direct readonly IndexedDB work. Declare the exact
-  stores touched so transactions with disjoint stores may overlap.
+- Schedule live readwrite transactions and explicitly background/maintenance
+  readonly transactions once per owner database. Normal app queries, counts and
+  subscriptions remain direct readonly IndexedDB work. Declare the exact stores
+  touched so transactions with disjoint stores may overlap.
 - Schema 4 keeps hot quota counters in `quota` and coverage in
   `accountCoverage`. Ordinary event mutations include `quota` but not
   `maintenance`; unclaimed cleanup explicitly adds `maintenance` for its
@@ -495,7 +496,13 @@ guards, never app scopes or shared callback mutation. No storage schema changes.
 - Derive class and `appId` at the authenticated bridge boundary. Never trust
   `scheduling`, `schedulerClass` or priority fields from app options. The
   internal `recovery: true` hint may lower a structurally valid recovery archive
-  to `background`; it never raises priority.
+  or paged recovery read to `background`; it is structurally validated, removed
+  before reaching NostrDB and never raises priority.
+- Schedule planner and cursor transactions independently around their live IDB
+  work. Do not hold a readonly slot across personal-copy decrypt, chunk hydration,
+  result projection or app callbacks. At most one scheduled readonly transaction
+  may touch a given owner/store; a waiting foreground write runs before the next
+  background read.
 - Round-robin application lanes within each class and give `system` its own lane.
   Give lower classes a bounded turn after foreground/normal traffic. Do not add
   an app queue cap or a queue-full error. Serialize intersecting stores; allow a
@@ -504,3 +511,7 @@ guards, never app scopes or shared callback mutation. No storage schema changes.
   and connection generation before opening, and release the slot after every
   transaction failure/abort. Never hold a scheduler slot across crypto, network,
   signer, Web Lock or timer waits.
+- Cache `quotaUsage.phase === ready` per raw database connection. The first
+  mutation may perform the readonly preflight; later mutations validate quota
+  inside their write transaction and force one reinitialization/retry if the
+  cached state is stale. Explicit quota reviews force a fresh readiness check.

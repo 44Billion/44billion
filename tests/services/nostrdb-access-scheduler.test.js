@@ -2,17 +2,18 @@ import assert from 'node:assert/strict'
 import { afterEach, test } from 'node:test'
 import { setImmediate } from 'node:timers/promises'
 import {
-  cancelNostrDbWrites,
-  clearNostrDbWriteSchedulers,
-  nostrDbWriteSchedulerSnapshot,
+  cancelNostrDbAccesses,
+  clearNostrDbAccessSchedulers,
+  nostrDbAccessSchedulerSnapshot,
+  scheduleNostrDbRead,
   scheduleNostrDbWrite
-} from '../../src/services/idb/nostrdb/write-scheduler.js'
+} from '../../src/services/idb/nostrdb/access-scheduler.js'
 
 const owner = 'a'.repeat(64)
 
 afterEach(() => {
-  cancelNostrDbWrites(owner)
-  clearNostrDbWriteSchedulers()
+  cancelNostrDbAccesses(owner)
+  clearNostrDbAccessSchedulers()
 })
 
 test('runs disjoint stores together while an intersecting transaction waits', async () => {
@@ -46,12 +47,12 @@ test('runs disjoint stores together while an intersecting transaction waits', as
   await coverage
   await setImmediate()
   assert.deepEqual(started, ['events', 'coverage'])
-  assert.deepEqual(nostrDbWriteSchedulerSnapshot(owner), { active: 1, waiting: 1 })
+  assert.deepEqual(nostrDbAccessSchedulerSnapshot(owner), { active: 1, waiting: 1 })
 
   release.resolve()
   await Promise.all([events, waiting])
   assert.deepEqual(started, ['events', 'coverage', 'waiting'])
-  assert.deepEqual(nostrDbWriteSchedulerSnapshot(owner), { active: 0, waiting: 0 })
+  assert.deepEqual(nostrDbAccessSchedulerSnapshot(owner), { active: 0, waiting: 0 })
 })
 
 test('prioritizes foreground and round-robins applications within a class', async () => {
@@ -129,6 +130,42 @@ test('lower-priority work gets a bounded turn after foreground traffic', async (
   await Promise.all(jobs)
 })
 
+test('serializes background reads and lets a waiting foreground write run next', async () => {
+  const release = Promise.withResolvers()
+  const started = []
+  const firstRead = scheduleNostrDbRead({
+    owner,
+    stores: ['events'],
+    schedulerClass: 'background',
+    appId: 'recovery'
+  }, async () => {
+    started.push('read-1')
+    await release.promise
+  })
+  const secondRead = scheduleNostrDbRead({
+    owner,
+    stores: ['events'],
+    schedulerClass: 'background',
+    appId: 'recovery'
+  }, async () => {
+    started.push('read-2')
+  })
+  const write = scheduleNostrDbWrite({
+    owner,
+    stores: ['events'],
+    schedulerClass: 'foreground',
+    appId: 'chat'
+  }, async () => {
+    started.push('write')
+  })
+
+  await setImmediate()
+  assert.deepEqual(started, ['read-1'])
+  release.resolve()
+  await Promise.all([firstRead, secondRead, write])
+  assert.deepEqual(started, ['read-1', 'write', 'read-2'])
+})
+
 test('aborts queued work without opening it and survives operation failures', async () => {
   const release = Promise.withResolvers()
   const started = []
@@ -150,7 +187,7 @@ test('aborts queued work without opening it and survives operation failures', as
   })
   controller.abort()
   await assert.rejects(aborted, { name: 'AbortError' })
-  assert.deepEqual(nostrDbWriteSchedulerSnapshot(owner), { active: 1, waiting: 0 })
+  assert.deepEqual(nostrDbAccessSchedulerSnapshot(owner), { active: 1, waiting: 0 })
 
   const failure = scheduleNostrDbWrite({
     owner,

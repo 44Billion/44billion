@@ -101,6 +101,34 @@ it('keeps ordinary event mutations out of the maintenance store scope', async t 
   assert.equal(scopes.every(stores => !Array.isArray(stores) || !stores.includes('maintenance')), true)
 })
 
+it('skips the readonly quota preflight after initialization while transactions still validate it', async t => {
+  const a = await owner()
+  let preflights = 0
+  const original = a.raw.transaction.bind(a.raw)
+  t.mock.method(a.raw, 'transaction', (...args) => {
+    if (args[0] === QUOTA) preflights++
+    return original(...args)
+  })
+
+  assert.equal((await a.db.add(signed({}, a.secret))).stored, true)
+  assert.equal(preflights, 1)
+  assert.equal((await a.db.add(signed({}, a.secret))).stored, true)
+  assert.equal(preflights, 1)
+})
+
+it('rebuilds quota once when a cached-ready connection loses its usage row', async () => {
+  const a = await owner()
+  const first = signed({}, a.secret)
+  await a.db.add(first)
+  await request(a.raw.transaction(QUOTA, 'readwrite').objectStore(QUOTA).delete('quotaUsage'))
+
+  const second = signed({}, a.secret)
+  assert.equal((await a.db.add(second)).stored, true)
+  const usage = await request(a.raw.transaction(QUOTA).objectStore(QUOTA).get('quotaUsage'))
+  assert.equal(usage.phase, 'ready')
+  assert.equal(usage.publicCount, 2)
+})
+
 it('admits concurrent growth then blocks it after a global review', async () => {
   const a = await owner()
   const b = await owner()

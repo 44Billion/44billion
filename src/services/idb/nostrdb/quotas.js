@@ -1,7 +1,7 @@
 import { createQuotaScheduler, quotaBlocks, quotaTotalKeys, readQuotaState, reloadQuotaState, publishQuotaState, resetQuotaStateMemory, reportQuotaStateFailure } from './quota-state.js'
 export { readQuotaState, subscribeQuotaState, quotaNeedsAttention } from './quota-state.js'
 import { recordPerformance } from '#services/performance-diagnostics.js'
-import { scheduleNostrDbWrite } from './write-scheduler.js'
+import { scheduleNostrDbWrite } from './access-scheduler.js'
 import { assertNostrDbAccess, isNostrDbAccessError } from './access.js'
 import {
   NOSTRDB_CACHE_ACCESS_STORE as CACHE,
@@ -26,6 +26,7 @@ export const DEFAULT_NOSTRDB_QUOTAS = Object.freeze({
 })
 const encoder = new TextEncoder()
 const contexts = new WeakMap()
+const usageReady = new WeakSet()
 const touchQueue = new Map()
 let touchTimer
 let touchRunning = false
@@ -50,6 +51,10 @@ export class NostrDbQuotaError extends Error {
 
 function unavailable () {
   return Object.assign(new Error('NostrDB quota coordination is unavailable'), { code: 'unavailable' })
+}
+
+function usageNotReady () {
+  return Object.assign(new Error('NostrDB quota usage is not ready'), { code: 'NOSTRDB_QUOTA_NOT_READY' })
 }
 
 export function withNostrDbQuotaLock (callback, onTiming) {
@@ -229,7 +234,9 @@ async function forPage (tx, after, visit) {
   })
 }
 
-async function initializeUsage (db) {
+async function initializeUsage (db, { force = false } = {}) {
+  if (force) usageReady.delete(db)
+  else if (usageReady.has(db)) return
   const connection = captureNostrDbConnection(ownerFromDb(db))
   if (!connection || await connection.resolve() !== db) throw unavailable()
   const check = () => {
@@ -243,7 +250,10 @@ async function initializeUsage (db) {
   try {
     const ready = await request(readyTx.objectStore(QUOTA).get(USAGE_KEY))
     await readyDone
-    if (ready?.phase === 'ready') return ready
+    if (ready?.phase === 'ready') {
+      usageReady.add(db)
+      return ready
+    }
   } catch (error) {
     await readyDone.catch(() => {})
     throw error
@@ -265,6 +275,7 @@ async function initializeUsage (db) {
         const current = await request(stateStore.get(USAGE_KEY)) ?? initialQuotaUsage()
         if (current.phase === 'ready') {
           await done
+          usageReady.add(db)
           return current
         }
         const phase = current.phase
@@ -287,7 +298,10 @@ async function initializeUsage (db) {
         throw error
       }
     })
-    if (usage.phase === 'ready') return usage
+    if (usage.phase === 'ready') {
+      usageReady.add(db)
+      return usage
+    }
     await new Promise(resolve => setTimeout(resolve, 0))
   }
 }
@@ -304,7 +318,7 @@ async function allDatabases () {
     // Keep the last complete aggregate rather than publishing a partial sum.
     const db = await openNostrDb(name.slice(NOSTRDB_PREFIX.length), { quotaLockHeld: true, create: false })
     if (!db) throw unavailable()
-    await initializeUsage(db)
+    await initializeUsage(db, { force: true })
     dbs.push(db)
   }
   return dbs
@@ -481,7 +495,11 @@ async function mutate (db, callback, {
     try {
       const stateStore = tx.objectStore(QUOTA)
       const usage = await request(stateStore.get(USAGE_KEY))
-      if (usage?.phase !== 'ready') throw unavailable()
+      if (usage?.phase !== 'ready') {
+        usageReady.delete(db)
+        throw usageNotReady()
+      }
+      usageReady.add(db)
       if (!connection.isCurrent()) throw unavailable()
       const before = { ...usage }
       const ctx = { usage, refs: new Set() }
@@ -589,7 +607,7 @@ export async function withQuotaMutation (db, callback, {
 } = {}) {
   const owner = ownerFromDb(db)
   const startedAt = performance.now()
-  try {
+  const run = async () => {
     signal?.throwIfAborted()
     assertNostrDbAccess(owner)
     beforeMutation?.()
@@ -597,7 +615,7 @@ export async function withQuotaMutation (db, callback, {
     await initializeUsage(db)
     signal?.throwIfAborted()
     assertNostrDbAccess(owner)
-    return await mutate(db, callback, {
+    return mutate(db, callback, {
       admission,
       beforeMutation,
       schedulerClass,
@@ -605,6 +623,20 @@ export async function withQuotaMutation (db, callback, {
       signal,
       extraStores
     })
+  }
+  try {
+    try {
+      return await run()
+    } catch (error) {
+      if (error?.code !== 'NOSTRDB_QUOTA_NOT_READY') throw error
+      await initializeUsage(db, { force: true })
+      try {
+        return await run()
+      } catch (retryError) {
+        if (retryError?.code === 'NOSTRDB_QUOTA_NOT_READY') throw unavailable()
+        throw retryError
+      }
+    }
   } finally {
     const measure = { stage: 'quota-mutation', elapsedMs: performance.now() - startedAt, category: admission ? 'admission' : 'mutation' }
     try {

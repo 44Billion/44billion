@@ -93,6 +93,28 @@ it('uses a supplied live write transaction and sees its uncommitted index change
   await completed
 })
 
+it('opens its readonly planning transaction through the supplied scheduler', async () => {
+  const db = await fixture()
+  let scheduled = 0
+  const plan = await select(db, new ParsedFilter({ '#k': ['30078'], '#c': ['shared'] }), {
+    scheduleRead: async operation => {
+      scheduled++
+      return operation()
+    }
+  })
+  assert.equal(plan.cursors[0].range.lower[0], 'k')
+  assert.equal(scheduled, 1)
+
+  const tx = db.transaction('events', 'readonly')
+  const completed = done(tx)
+  await select(db, new ParsedFilter({ '#k': ['30078'], '#c': ['shared'] }), {
+    tx,
+    scheduleRead: () => assert.fail('supplied transactions must not reschedule')
+  })
+  await completed
+  assert.equal(scheduled, 1)
+})
+
 it('leaves direct and sync plans unchanged and opens no planning transaction', async () => {
   const db = { transaction () { assert.fail('unexpected planning transaction') } }
   for (const raw of [{ ids: ['a'.repeat(64)] }, { authors: ['a'.repeat(64)], kinds: [0] }, { search: 'algo:sync' }, { kinds: [9] }, { '#k': ['9'] }]) {

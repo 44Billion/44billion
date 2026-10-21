@@ -4,7 +4,7 @@ const MAX_KEYS = 256
 
 // Bounded primary-key probes select an access path, never a query result.
 // Callers still apply the complete filter, even when a probe found no keys.
-export async function selectTagQueryPlan (db, filter, baseline, { tx, tagValueKey, onTiming } = {}) {
+export async function selectTagQueryPlan (db, filter, baseline, { tx, tagValueKey, onTiming, scheduleRead } = {}) {
   if (baseline.type !== 'cursor' || !baseline.cursors.length || baseline.cursors.some(cursor => cursor.indexName !== 'byTag')) return baseline
   const startedAt = performance.now()
   const makePlan = (name, values) => ({
@@ -41,6 +41,14 @@ export async function selectTagQueryPlan (db, filter, baseline, { tx, tagValueKe
     }
   }
   if (ranges.size <= 1) return baseline
+  if (!tx && scheduleRead) {
+    return scheduleRead(() => selectTagQueryPlan(db, filter, baseline, {
+      tx: db.transaction(['events'], 'readonly'),
+      tagValueKey,
+      onTiming,
+      scheduleRead
+    }))
+  }
   const ownTransaction = !tx
   tx ??= db.transaction(['events'], 'readonly')
   const done = ownTransaction

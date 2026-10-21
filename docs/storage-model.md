@@ -320,6 +320,9 @@ review sums existing owner counters and persists an advisory summary; the summar
 is not an independently incremented global counter. Schema 4 moves this record
 unchanged into `quota`; no counter format or migration logic changes beyond the
 object-store relocation.
+The launcher caches readiness per raw connection. Only the first mutation needs
+the readonly quota preflight; an explicit review or a failed in-transaction
+validation forces a fresh resumable initialization.
 The storage audit inspects launcher state rather than internal NostrDB records;
 its app cleanup preserves the checkpoints and maintains quota usage. Owner-database removal deletes them and cache access rows
 with the other stores. No localStorage/sessionStorage repair key is needed.

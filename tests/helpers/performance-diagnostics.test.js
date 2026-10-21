@@ -23,6 +23,19 @@ test('development diagnostics bound history and retain only identifiers and nume
     assert.equal(performanceSnapshot()[0].stage, 'vault-dispatch')
     recordPerformance({ stage: 'query-planning', probes: 2, keysExamined: 66, earlyDecision: true, budgetExhausted: false, keys: ['private'], ranges: ['private'] })
     assert.deepEqual(performanceSnapshot().at(-1), { stage: 'query-planning', probes: 2, keysExamined: 66, earlyDecision: true, budgetExhausted: false })
+    recordPerformance({ stage: 'recovery-archive-result', rowCount: 3, uniqueCount: 2, existingCount: 1, insertedCount: 1, blockedCount: 0, expiredCount: 1, storedCount: 2, skippedCount: 2, schedulerMode: 'readonly' })
+    assert.deepEqual(performanceSnapshot().at(-1), {
+      stage: 'recovery-archive-result',
+      rowCount: 3,
+      uniqueCount: 2,
+      existingCount: 1,
+      insertedCount: 1,
+      blockedCount: 0,
+      expiredCount: 1,
+      storedCount: 2,
+      skippedCount: 2,
+      schedulerMode: 'readonly'
+    })
   } finally {
     console.debug = previousDebug
     if (previous === undefined) delete globalThis.IS_DEVELOPMENT

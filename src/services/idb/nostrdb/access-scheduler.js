@@ -14,6 +14,10 @@ function normalizeClass (value) {
   return Object.hasOwn(CLASS_RANK, value) ? value : 'normal'
 }
 
+function normalizeMode (value) {
+  return value === 'readonly' ? 'readonly' : 'readwrite'
+}
+
 function normalizeStores (stores) {
   if (!Array.isArray(stores) || stores.length === 0 || stores.some(store => typeof store !== 'string' || !store)) {
     throw new TypeError('INVALID_NOSTRDB_SCHEDULER_STORES')
@@ -133,6 +137,7 @@ function createScheduler () {
     recordPerformance({
       stage: 'scheduler-wait',
       schedulerClass: job.schedulerClass,
+      schedulerMode: job.mode,
       schedulerWaitMs: job.startedAt - job.queuedAt,
       schedulerActive: active.size,
       schedulerWaiting: waiting,
@@ -142,6 +147,7 @@ function createScheduler () {
     recordPerformance({
       stage: 'nostrdb-scheduler-start',
       schedulerClass: job.schedulerClass,
+      schedulerMode: job.mode,
       schedulerWaitMs: job.startedAt - job.queuedAt,
       schedulerActive: active.size,
       schedulerWaiting: waiting,
@@ -156,6 +162,7 @@ function createScheduler () {
         recordPerformance({
           stage: 'nostrdb-scheduler-complete',
           schedulerClass: job.schedulerClass,
+          schedulerMode: job.mode,
           schedulerActive: active.size,
           schedulerWaiting: waiting,
           storeCount: job.stores.length
@@ -216,10 +223,11 @@ function schedulerFor (owner) {
   return scheduler
 }
 
-export function scheduleNostrDbWrite ({
+export function scheduleNostrDbAccess ({
   owner,
   stores,
   schedulerClass = 'normal',
+  mode = 'readwrite',
   appId = 'system',
   signal,
   assertCurrent
@@ -233,6 +241,7 @@ export function scheduleNostrDbWrite ({
     job = {
       stores: normalizeStores(stores),
       schedulerClass: normalizeClass(schedulerClass),
+      mode: normalizeMode(mode),
       consumerId: `${appId || 'system'}`,
       operation: async () => {
         assertCurrent?.()
@@ -259,11 +268,22 @@ export function scheduleNostrDbWrite ({
   })
 }
 
-export function nostrDbWriteSchedulerSnapshot (owner) {
+export function scheduleNostrDbWrite (options, operation) {
+  return scheduleNostrDbAccess({ ...options, mode: 'readwrite' }, operation)
+}
+
+export function scheduleNostrDbRead (options, operation) {
+  const schedulerClass = ['background', 'maintenance'].includes(options?.schedulerClass)
+    ? options.schedulerClass
+    : 'background'
+  return scheduleNostrDbAccess({ ...options, schedulerClass, mode: 'readonly' }, operation)
+}
+
+export function nostrDbAccessSchedulerSnapshot (owner) {
   return schedulers.get(owner)?.snapshot() ?? { active: 0, waiting: 0 }
 }
 
-export function cancelNostrDbWrites (owner, error = resetError()) {
+export function cancelNostrDbAccesses (owner, error = resetError()) {
   const scheduler = schedulers.get(owner)
   if (!scheduler) return 0
   const cancelled = scheduler.cancelWaiting(error)
@@ -272,7 +292,7 @@ export function cancelNostrDbWrites (owner, error = resetError()) {
   return cancelled
 }
 
-export function clearNostrDbWriteSchedulers () {
+export function clearNostrDbAccessSchedulers () {
   schedulers.clear()
 }
 

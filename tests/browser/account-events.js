@@ -13,6 +13,7 @@ const bundle = await build({
     import { createAccountEventTracker, accountKinds } from './src/services/account-events.js';
     import { createAccountEventCoverage } from './src/services/account-event-coverage.js';
     import { getNostrDb, openNostrDb } from './src/services/idb/nostrdb/index.js';
+    import { scheduleNostrDbRead, scheduleNostrDbWrite } from './src/services/idb/nostrdb/access-scheduler.js';
     import { createLocalPersonalCopy } from './src/services/idb/nostrdb/personal-copy.js';
     import { accountRelayFixture } from './tests/fixtures/account-relay.js';
     import { finalizeEvent } from 'libp2r2p/event';
@@ -170,6 +171,13 @@ const bundle = await build({
         return true;
       },
       counts:()=>Promise.all(accounts.map(account=>account.db ? account.db.count([{kinds:[1],authors:[account.pubkey]}]) : 0)),
+      async readPriority(){
+        const owner='f'.repeat(64);let release;const gate=new Promise(resolve=>{release=resolve});const order=[];
+        const first=scheduleNostrDbRead({owner,stores:['events'],schedulerClass:'background',appId:'recovery'},async()=>{order.push('read-1');await gate});
+        const second=scheduleNostrDbRead({owner,stores:['events'],schedulerClass:'background',appId:'recovery'},async()=>{order.push('read-2')});
+        const write=scheduleNostrDbWrite({owner,stores:['events'],schedulerClass:'foreground',appId:'chat'},async()=>{order.push('write')});
+        await new Promise(resolve=>setTimeout(resolve,0));release();await Promise.all([first,second,write]);return order;
+      },
       isolated:async()=>{
         for(const account of accounts.filter(account=>!account.isReadOnly)) {
           const {results}=await account.db.query({kinds:[1]});
@@ -210,6 +218,7 @@ try {
   assert.deepEqual(await evaluate('fixture.errors'), [])
   assert.deepEqual(await evaluate('fixture.counts()'), [200, 3, 3, 3, 3, 0])
   assert.equal(await evaluate('fixture.isolated()'), true)
+  assert.deepEqual(await evaluate('fixture.readPriority()'), ['read-1', 'write', 'read-2'])
   assert.equal(await evaluate('fixture.transport.subscriptions.filter(sub=>!sub.closed&&sub.filter.limit===0).length'), 6)
   assert.equal(await evaluate('fixture.warnings.length'), 1)
   assert.equal(await evaluate('indexedDB.databases().then(dbs=>dbs.some(db=>db.name==="44billion_nostrdb:"+fixture.accounts[5].pubkey))'), false)

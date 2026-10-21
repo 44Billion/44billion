@@ -1,6 +1,6 @@
 import { normalizeRelayUrl } from 'libp2r2p/url'
 import { openNostrDb } from '#services/idb/nostrdb/index.js'
-import { scheduleNostrDbWrite } from '#services/idb/nostrdb/write-scheduler.js'
+import { scheduleNostrDbWrite } from '#services/idb/nostrdb/access-scheduler.js'
 import { invalidAccountCoverageKeys } from '#services/storage-audit/audit.js'
 import {
   NOSTRDB_ACCOUNT_COVERAGE_STORE as STORE,
