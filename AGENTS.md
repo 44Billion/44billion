@@ -503,6 +503,10 @@ guards, never app scopes or shared callback mutation. No storage schema changes.
   result projection or app callbacks. At most one scheduled readonly transaction
   may touch a given owner/store; a waiting foreground write runs before the next
   background read.
+- Keep scheduler wait/start/completion records in the bounded development
+  performance snapshot, but print their individual console lines only when the
+  launcher's `__44BILLION_SCHEDULER_TRACE__` global is enabled. This avoids
+  thousands of transition lines during ordinary development.
 - Round-robin application lanes within each class and give `system` its own lane.
   Give lower classes a bounded turn after foreground/normal traffic. Do not add
   an app queue cap or a queue-full error. Serialize intersecting stores; allow a

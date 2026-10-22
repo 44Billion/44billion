@@ -57,3 +57,42 @@ test('production diagnostics stay disabled and do not extend request envelopes',
     else globalThis.IS_DEVELOPMENT = previous
   }
 })
+
+test('scheduler console traces are opt-in while diagnostics remain in the bounded snapshot', async () => {
+  const previousDevelopment = globalThis.IS_DEVELOPMENT
+  const previousSchedulerTrace = globalThis.__44BILLION_SCHEDULER_TRACE__
+  const previousDebug = console.debug
+  const records = []
+  globalThis.IS_DEVELOPMENT = true
+  delete globalThis.__44BILLION_SCHEDULER_TRACE__
+  console.debug = value => records.push(JSON.parse(value.slice('[messaging-performance] '.length)))
+  try {
+    const { recordPerformance, performanceSnapshot } = await import('../../src/services/performance-diagnostics.js?scheduler-quiet-test')
+    recordPerformance({ stage: 'scheduler-wait', schedulerClass: 'foreground', schedulerWaitMs: 2 })
+    recordPerformance({ stage: 'nostrdb-scheduler-start', schedulerMode: 'readwrite', schedulerActive: 1 })
+    recordPerformance({ stage: 'nostrdb-scheduler-complete', schedulerActive: 0 })
+    recordPerformance({ stage: 'quota-mutation', elapsedMs: 3 })
+
+    assert.deepEqual(records, [{ stage: 'quota-mutation', elapsedMs: 3 }])
+    assert.deepEqual(performanceSnapshot().slice(-4), [
+      { stage: 'scheduler-wait', schedulerClass: 'foreground', schedulerWaitMs: 2 },
+      { stage: 'nostrdb-scheduler-start', schedulerMode: 'readwrite', schedulerActive: 1 },
+      { stage: 'nostrdb-scheduler-complete', schedulerActive: 0 },
+      { stage: 'quota-mutation', elapsedMs: 3 }
+    ])
+
+    globalThis.__44BILLION_SCHEDULER_TRACE__ = true
+    recordPerformance({ stage: 'scheduler-wait', schedulerClass: 'background', schedulerWaiting: 2 })
+    assert.deepEqual(records.at(-1), {
+      stage: 'scheduler-wait',
+      schedulerClass: 'background',
+      schedulerWaiting: 2
+    })
+  } finally {
+    console.debug = previousDebug
+    if (previousDevelopment === undefined) delete globalThis.IS_DEVELOPMENT
+    else globalThis.IS_DEVELOPMENT = previousDevelopment
+    if (previousSchedulerTrace === undefined) delete globalThis.__44BILLION_SCHEDULER_TRACE__
+    else globalThis.__44BILLION_SCHEDULER_TRACE__ = previousSchedulerTrace
+  }
+})

@@ -34,6 +34,11 @@ message/event payloads, crypto buffers, raw scopes or keys. Correlation and timi
 reply fields are internal diagnostics, absent in production; public app methods
 and NIP07 parameters are unchanged.
 
+NostrDB scheduler wait/start/completion records remain available in that bounded
+in-memory snapshot, but their per-transaction console lines are opt-in. Set
+`globalThis.__44BILLION_SCHEDULER_TRACE__ = true` in the launcher's top context
+before capturing scheduler transitions; ordinary development consoles stay quiet.
+
 For recovery-record writes, development traces also carry the fixed library seed
 coordinate (`seedRecordId`). It links a session's main event/publication trace to
 the derived personal-copy hash and its internal signer requests. This extraction
