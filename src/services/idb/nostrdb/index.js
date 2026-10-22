@@ -103,6 +103,7 @@ import {
 import { classifyEvent, isValidEvent } from 'libp2r2p/event'
 import { isAddressableKind as isAddressableKindRange, isEphemeralKind as isEphemeralKindRange, isReplaceableKind } from 'libp2r2p/kind'
 import { verifyEventSignature } from './verification.js'
+import { NOSTRDB_RECOVERY_READ } from '#helpers/window-message/nostrdb-protocol.js'
 
 export const NOSTRDB_VERSION = 4
 const SNAPSHOT_READ = Symbol('subscription snapshot read')
@@ -1993,6 +1994,7 @@ export class NostrDb {
     const schedulerClass = ['background', 'maintenance'].includes(options.schedulerClass)
       ? options.schedulerClass
       : null
+    const recoveryRead = schedulerClass === 'background' && options[NOSTRDB_RECOVERY_READ] === true
     let scheduleRead
     if (schedulerClass) {
       const connection = captureNostrDbConnection(this.ownerPubkey)
@@ -2000,14 +2002,15 @@ export class NostrDb {
         this.assertAccess()
         if (!connection || !connection.isCurrent()) throw Object.assign(new Error('NOSTRDB_RESET'), { code: 'NOSTRDB_RESET' })
       }
-      scheduleRead = operation => scheduleNostrDbRead({
+      scheduleRead = (operation, { preemptible = false } = {}) => scheduleNostrDbRead({
         owner: this.ownerPubkey,
         stores: [EVENTS_STORE],
         schedulerClass,
         appId: options.appId || 'system',
         signal: options.signal,
+        preemptible,
         assertCurrent
-      }, operation)
+      }, operationSignal => operation(operationSignal))
     }
 
     try {
@@ -2016,7 +2019,8 @@ export class NostrDb {
         ignoreLimit: false,
         decryptPersonalCopyContent: this.personalCopyDecrypt,
         onTiming: options.onTiming,
-        scheduleRead
+        scheduleRead,
+        recoveryRead
       })
       await hydrateChunkResults(this.ownerPubkey, results)
       this.queueAppClaimsFromResults(results, appRef)
@@ -3167,23 +3171,23 @@ async function queryRecords (db, rawFilter, { countOnly, ignoreLimit, tx, onTimi
   return queryParsedFilters(db, filters, { countOnly, ignoreLimit, onTiming })
 }
 
-async function queryParsedFilters (db, filters, { countOnly, ignoreLimit, decryptPersonalCopyContent, onTiming, scheduleRead } = {}) {
+async function queryParsedFilters (db, filters, { countOnly, ignoreLimit, decryptPersonalCopyContent, onTiming, scheduleRead, recoveryRead = false } = {}) {
   const liveFilters = filters.filter(filter => !filter.neverMatch)
   if (liveFilters.length === 0) return countOnly ? 0 : []
   if (liveFilters.length === 1) {
-    return queryParsedFilterRecords(db, liveFilters[0], { countOnly, ignoreLimit, decryptPersonalCopyContent, onTiming, scheduleRead })
+    return queryParsedFilterRecords(db, liveFilters[0], { countOnly, ignoreLimit, decryptPersonalCopyContent, onTiming, scheduleRead, recoveryRead })
   }
 
-  return queryMultipleParsedFilters(db, liveFilters, { countOnly, ignoreLimit, decryptPersonalCopyContent, onTiming, scheduleRead })
+  return queryMultipleParsedFilters(db, liveFilters, { countOnly, ignoreLimit, decryptPersonalCopyContent, onTiming, scheduleRead, recoveryRead })
 }
 
-async function queryParsedFilterRecords (db, filter, { countOnly, ignoreLimit, decryptPersonalCopyContent, tx, onTiming, scheduleRead }) {
+async function queryParsedFilterRecords (db, filter, { countOnly, ignoreLimit, decryptPersonalCopyContent, tx, onTiming, scheduleRead, recoveryRead = false }) {
   if (filter.neverMatch) return countOnly ? 0 : []
 
   const limit = ignoreLimit ? Infinity : Math.min(countOnly ? Infinity : MAX_LIMIT, filter.limit)
   if (limit <= 0) return countOnly ? 0 : []
 
-  const plan = await selectQueryPlan(db, filter, { tx, onTiming, scheduleRead })
+  const plan = await selectQueryPlan(db, filter, { tx, onTiming, scheduleRead, recoveryRead })
   const direction = queryDirection(filter)
   const now = currentUnixTime()
 
@@ -3264,16 +3268,16 @@ async function queryParsedFilterRecords (db, filter, { countOnly, ignoreLimit, d
   return projectQueryResults(Number.isFinite(limit) ? results.slice(0, limit) : results, filter, scoreById)
 }
 
-async function queryMultipleParsedFilters (db, filters, { countOnly, ignoreLimit, decryptPersonalCopyContent, onTiming, scheduleRead }) {
+async function queryMultipleParsedFilters (db, filters, { countOnly, ignoreLimit, decryptPersonalCopyContent, onTiming, scheduleRead, recoveryRead = false }) {
   const limit = ignoreLimit ? Infinity : Math.min(countOnly ? Infinity : MAX_LIMIT, filters[0].limit)
   if (limit <= 0) return countOnly ? 0 : []
 
   if (filters[0].searchText) {
-    return queryMultipleSearchFilters(db, filters, { countOnly, limit, decryptPersonalCopyContent, onTiming, scheduleRead })
+    return queryMultipleSearchFilters(db, filters, { countOnly, limit, decryptPersonalCopyContent, onTiming, scheduleRead, recoveryRead })
   }
 
   if (!countOnly && filters[0].idsOnly && filters.every(filter => canUseKeyOnlyCursor(planQuery(filter), filter))) {
-    return queryMultipleIdsWithKeyCursor(db, filters, { limit, onTiming })
+    return queryMultipleIdsWithKeyCursor(db, filters, { limit, onTiming, recoveryRead })
   }
 
   const now = currentUnixTime()
@@ -3298,7 +3302,7 @@ async function queryMultipleParsedFilters (db, filters, { countOnly, ignoreLimit
   }
 
   for (const filter of filters) {
-    const keepGoing = await scanParsedFilterEvents(db, filter, { now, limit, countOnly, onEvent: emit, decryptPersonalCopyContent, onTiming, scheduleRead })
+    const keepGoing = await scanParsedFilterEvents(db, filter, { now, limit, countOnly, onEvent: emit, decryptPersonalCopyContent, onTiming, scheduleRead, recoveryRead })
     if (!keepGoing || (countOnly && seen.size >= limit)) break
   }
 
@@ -3308,14 +3312,14 @@ async function queryMultipleParsedFilters (db, filters, { countOnly, ignoreLimit
   return projectQueryResults(Number.isFinite(limit) ? results.slice(0, limit) : results, filters[0], scoreById)
 }
 
-async function queryMultipleIdsWithKeyCursor (db, filters, { limit, onTiming }) {
+async function queryMultipleIdsWithKeyCursor (db, filters, { limit, onTiming, recoveryRead = false }) {
   const now = currentUnixTime()
   const seen = new Set()
   const results = []
   const compare = compareScoredResults(filters[0])
 
   for (const filter of filters) {
-    const plan = await selectQueryPlan(db, filter, { onTiming })
+    const plan = await selectQueryPlan(db, filter, { onTiming, recoveryRead })
     const direction = queryDirection(filter)
     const candidates = await collectKeyGateCandidates(db, plan, filter, direction, { limit, now })
 
@@ -3336,12 +3340,12 @@ async function queryMultipleIdsWithKeyCursor (db, filters, { limit, onTiming }) 
   return withQueryScores(selected.map(result => result.id), selected.map(result => result.score))
 }
 
-async function queryMultipleSearchFilters (db, filters, { countOnly, limit, decryptPersonalCopyContent, onTiming, scheduleRead }) {
+async function queryMultipleSearchFilters (db, filters, { countOnly, limit, decryptPersonalCopyContent, onTiming, scheduleRead, recoveryRead = false }) {
   const now = currentUnixTime()
   const candidatesById = new Map()
 
   for (const filter of filters) {
-    const plan = await selectQueryPlan(db, filter, { onTiming, scheduleRead })
+    const plan = await selectQueryPlan(db, filter, { onTiming, scheduleRead, recoveryRead })
     const direction = queryDirection(filter)
     const candidates = await collectSearchCandidates(db, plan, filter, direction, {
       countOnly,
@@ -3367,8 +3371,8 @@ async function queryMultipleSearchFilters (db, filters, { countOnly, limit, decr
   return projectQueryResults(events, filters[0], scoreByCandidateId(ranked))
 }
 
-async function scanParsedFilterEvents (db, filter, { now, limit, countOnly, onEvent, decryptPersonalCopyContent, onTiming, scheduleRead }) {
-  const plan = await selectQueryPlan(db, filter, { onTiming, scheduleRead })
+async function scanParsedFilterEvents (db, filter, { now, limit, countOnly, onEvent, decryptPersonalCopyContent, onTiming, scheduleRead, recoveryRead = false }) {
+  const plan = await selectQueryPlan(db, filter, { onTiming, scheduleRead, recoveryRead })
   const direction = queryDirection(filter)
   const seen = new Set()
 
@@ -3979,9 +3983,10 @@ function reportStorageTiming (onTiming, entry) {
   try { if (onTiming) onTiming(entry); else recordPerformance(entry) } catch {}
 }
 
-async function selectQueryPlan (db, filter, { tx, onTiming, scheduleRead } = {}) {
+async function selectQueryPlan (db, filter, { tx, onTiming, scheduleRead, recoveryRead = false } = {}) {
   return selectTagQueryPlan(db, filter, planQuery(filter), {
     tx, tagValueKey: tagValueIndexKey, scheduleRead,
+    recoveryRead,
     onTiming: entry => reportStorageTiming(onTiming, entry)
   })
 }

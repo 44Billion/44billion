@@ -1,6 +1,7 @@
 export const NOSTRDB_PUBLIC_METHODS = ['add', 'addPersonalCopy', 'remove', 'query', 'count', 'subscribe', 'supports']
 export const NOSTRDB_ONE_SHOT_METHODS = NOSTRDB_PUBLIC_METHODS.filter(method => method !== 'subscribe')
 export const NOSTRDB_STREAM_DONE = 'nostrdb:done'
+export const NOSTRDB_RECOVERY_READ = Symbol('nostrdb.recoveryRead')
 
 export function nostrDbStreamDonePayload (subscriptionId) {
   return { type: NOSTRDB_STREAM_DONE, subscriptionId }

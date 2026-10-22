@@ -30,6 +30,12 @@ import {
   nostrDbSignMethodForTemplate,
   runNostrDbMethod
 } from '../../src/helpers/window-message/browser/nostrdb.js'
+import { NOSTRDB_RECOVERY_READ } from '../../src/helpers/window-message/nostrdb-protocol.js'
+import {
+  cancelNostrDbAccesses,
+  clearNostrDbAccessSchedulers,
+  scheduleNostrDbRead
+} from '../../src/services/idb/nostrdb/access-scheduler.js'
 import {
   PERSONAL_COPY_PROVENANCE,
   personalCopySourceId
@@ -141,6 +147,8 @@ describe('nostrdb browser bridge helpers', () => {
       schedulerClass: 'background',
       signal
     })
+    const recoveryOptions = buildNostrDbReadOptions({}, { schedulerClass: 'background', recoveryRead: true })
+    assert.equal(recoveryOptions[NOSTRDB_RECOVERY_READ], true)
   })
 
   it('uses deletion target permissions for nostrdb add', async () => {
@@ -235,6 +243,56 @@ describe('nostrdb browser bridge helpers', () => {
     assert.equal(added.event.tags.some(tag => tag[1] === `obf:1006:.id:${original.id}`), true)
     assert.equal(added.options.appId, 'real-app')
     assert.equal(added.options.mergeSource, 'local')
+  })
+
+  it('registers foreground intent before personal-copy encryption completes', async () => {
+    const owner = 'a'.repeat(64)
+    const encryptionStarted = Promise.withResolvers()
+    const releaseEncryption = Promise.withResolvers()
+    const readStarted = Promise.withResolvers()
+    let readBegan = false
+    const db = {
+      ownerPubkey: owner,
+      async add () { return { ok: true, code: 'stored' } }
+    }
+    try {
+      const write = runNostrDbMethod({
+        db,
+        method: 'addPersonalCopy',
+        params: [{ kind: 9, created_at: 1, tags: [], content: 'trace' }],
+        appId: 'chat',
+        signEvent: async template => ({ ...template, id: 'e'.repeat(64), pubkey: owner, sig: '1'.repeat(128) }),
+        personalCopyEncrypt: async () => {
+          encryptionStarted.resolve()
+          await releaseEncryption.promise
+          return 'cipher'
+        },
+        personalCopyObfuscate: async value => value,
+        requestPermission: async () => {},
+        app: { id: 'chat' }
+      })
+      await encryptionStarted.promise
+      const read = scheduleNostrDbRead({
+        owner,
+        stores: ['events'],
+        schedulerClass: 'background',
+        appId: 'recovery'
+      }, async () => {
+        readBegan = true
+        readStarted.resolve()
+      })
+      await new Promise(resolve => setTimeout(resolve, 0))
+      assert.equal(readBegan, false)
+
+      releaseEncryption.resolve()
+      await write
+      await read
+      await readStarted.promise
+      assert.equal(readBegan, true)
+    } finally {
+      cancelNostrDbAccesses(owner)
+      clearNostrDbAccessSchedulers()
+    }
   })
 
   it('marks unsigned third-party personal copies with hearsay provenance', async () => {
@@ -538,7 +596,21 @@ describe('nostrdb browser bridge helpers', () => {
     })
     assert.equal(seen.options.schedulerClass, 'background')
     assert.equal(seen.options.appId, 'real-app')
+    assert.equal(seen.options[NOSTRDB_RECOVERY_READ], true)
     assert.equal('recovery' in seen.options, false)
+
+    const forged = { [NOSTRDB_RECOVERY_READ]: true }
+    await runNostrDbMethod({
+      db: {
+        async query (filter, options) { seen = { filter, options } }
+      },
+      method: 'query',
+      params: [{ kinds: [1] }, forged],
+      appId: 'real-app',
+      requestPermission: async () => {},
+      app: { id: 'app' }
+    })
+    assert.equal(seen.options[NOSTRDB_RECOVERY_READ], undefined)
   })
 
   it('allows only explicitly chunk-limited reads without permission', async () => {

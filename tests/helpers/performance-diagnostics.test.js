@@ -23,6 +23,31 @@ test('development diagnostics bound history and retain only identifiers and nume
     assert.equal(performanceSnapshot()[0].stage, 'vault-dispatch')
     recordPerformance({ stage: 'query-planning', probes: 2, keysExamined: 66, earlyDecision: true, budgetExhausted: false, keys: ['private'], ranges: ['private'] })
     assert.deepEqual(performanceSnapshot().at(-1), { stage: 'query-planning', probes: 2, keysExamined: 66, earlyDecision: true, budgetExhausted: false })
+    recordPerformance({
+      stage: 'query-planning',
+      probes: 2,
+      keysExamined: 130,
+      examined: 2,
+      recoveryPlan: true,
+      recoveryPath: 'o',
+      recoveryBaselineKeys: 65,
+      recoveryPreferredKeys: 65,
+      recoveryBaselineComplete: false,
+      recoveryPreferredComplete: false,
+      tagValues: ['private']
+    })
+    assert.deepEqual(performanceSnapshot().at(-1), {
+      stage: 'query-planning',
+      probes: 2,
+      keysExamined: 130,
+      examined: 2,
+      recoveryPlan: true,
+      recoveryPath: 'o',
+      recoveryBaselineKeys: 65,
+      recoveryPreferredKeys: 65,
+      recoveryBaselineComplete: false,
+      recoveryPreferredComplete: false
+    })
     recordPerformance({ stage: 'recovery-archive-result', rowCount: 3, uniqueCount: 2, existingCount: 1, insertedCount: 1, blockedCount: 0, expiredCount: 1, storedCount: 2, skippedCount: 2, schedulerMode: 'readonly' })
     assert.deepEqual(performanceSnapshot().at(-1), {
       stage: 'recovery-archive-result',
@@ -71,13 +96,17 @@ test('scheduler console traces are opt-in while diagnostics remain in the bounde
     recordPerformance({ stage: 'scheduler-wait', schedulerClass: 'foreground', schedulerWaitMs: 2 })
     recordPerformance({ stage: 'nostrdb-scheduler-start', schedulerMode: 'readwrite', schedulerActive: 1 })
     recordPerformance({ stage: 'nostrdb-scheduler-complete', schedulerActive: 0 })
+    recordPerformance({ stage: 'nostrdb-scheduler-preempt', schedulerClass: 'background' })
+    recordPerformance({ stage: 'nostrdb-scheduler-retry', schedulerClass: 'background' })
     recordPerformance({ stage: 'quota-mutation', elapsedMs: 3 })
 
     assert.deepEqual(records, [{ stage: 'quota-mutation', elapsedMs: 3 }])
-    assert.deepEqual(performanceSnapshot().slice(-4), [
+    assert.deepEqual(performanceSnapshot().slice(-6), [
       { stage: 'scheduler-wait', schedulerClass: 'foreground', schedulerWaitMs: 2 },
       { stage: 'nostrdb-scheduler-start', schedulerMode: 'readwrite', schedulerActive: 1 },
       { stage: 'nostrdb-scheduler-complete', schedulerActive: 0 },
+      { stage: 'nostrdb-scheduler-preempt', schedulerClass: 'background' },
+      { stage: 'nostrdb-scheduler-retry', schedulerClass: 'background' },
       { stage: 'quota-mutation', elapsedMs: 3 }
     ])
 

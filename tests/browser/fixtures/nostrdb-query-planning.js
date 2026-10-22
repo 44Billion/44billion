@@ -2,6 +2,7 @@ import { copy, db } from './nostrdb-contention.js'
 import { createAccountEventCoverage } from '#services/account-event-coverage.js'
 import { finalizeEvent } from 'libp2r2p/event'
 import { getPublicKey } from 'libp2r2p/key'
+import { NOSTRDB_RECOVERY_READ } from '#helpers/window-message/nostrdb-protocol.js'
 
 const secret = new Uint8Array(32).fill(21)
 const { fixture } = globalThis
@@ -32,6 +33,30 @@ globalThis.plannerFixture = {
     for (let i = 0; i < 50; i++) {
       const result = await db.add(await copy({ kind: 9, created_at: 1000 + i, tags: [], content: `history-${i}` }, 'history'))
       if (!result.ok) throw new Error('history fixture admission failed')
+    }
+  },
+  async recoveryPage () {
+    probes.length = 0
+    const measures = []
+    const filter = {
+      kinds: [1006],
+      authors: [fixture.owner],
+      '#k': ['30078'],
+      '#c': ['1006::'],
+      '#v': ['0', '1'],
+      '&o': ['1006:#t:seed'],
+      limit: 128,
+      search: 'sort:desc'
+    }
+    const { results } = await db.query(filter, {
+      schedulerClass: 'background',
+      [NOSTRDB_RECOVERY_READ]: true,
+      onTiming: row => measures.push(row)
+    })
+    return {
+      resultCount: results.length,
+      probes: probes.length,
+      plan: measures.find(row => row.stage === 'query-planning')
     }
   },
   async burst (n, history = false) {

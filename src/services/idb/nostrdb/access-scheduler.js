@@ -8,6 +8,7 @@ const CLASS_RANK = Object.freeze({
 })
 const CLASS_ORDER = Object.freeze(['foreground', 'normal', 'background', 'maintenance'])
 const CLASS_STARVATION_LIMIT = 3
+const PLANNING_PREEMPTED = 'NOSTRDB_PLANNING_PREEMPTED'
 const schedulers = new Map()
 
 function normalizeClass (value) {
@@ -34,6 +35,7 @@ function createScheduler () {
   const consumers = new Map()
   const cursors = new Map()
   const active = new Set()
+  const foregroundIntents = new Set()
   let preferred = 0
   let pumping = false
   let waiting = 0
@@ -87,7 +89,14 @@ function createScheduler () {
     return stores
   }
 
+  function foregroundIntentStores () {
+    const stores = []
+    for (const intent of foregroundIntents) stores.push(...intent.stores)
+    return stores
+  }
+
   function runnable (job, occupied) {
+    if (job.mode === 'readonly' && intersects(job.stores, foregroundIntentStores())) return false
     return !intersects(job.stores, occupied)
   }
 
@@ -194,6 +203,26 @@ function createScheduler () {
       pump()
     },
     remove: removeJob,
+    addForegroundIntent (intent) {
+      foregroundIntents.add(intent)
+      for (const job of active) {
+        if (!job.preemptible || job.mode !== 'readonly' || !intersects(job.stores, intent.stores)) continue
+        if (job.preempt(planningPreemptedError())) {
+          recordPerformance({
+            stage: 'nostrdb-scheduler-preempt',
+            schedulerClass: job.schedulerClass,
+            schedulerMode: job.mode,
+            schedulerActive: active.size,
+            schedulerWaiting: waiting,
+            storeCount: job.stores.length
+          })
+        }
+      }
+    },
+    releaseForegroundIntent (intent) {
+      if (!foregroundIntents.delete(intent)) return
+      pump()
+    },
     cancelWaiting (error) {
       let cancelled = 0
       for (const byConsumer of queues.values()) {
@@ -210,7 +239,9 @@ function createScheduler () {
       cursors.clear()
       return cancelled
     },
-    snapshot: () => ({ active: active.size, waiting })
+    clearForegroundIntents () { foregroundIntents.clear() },
+    snapshot: () => ({ active: active.size, waiting }),
+    isIdle: () => active.size === 0 && waiting === 0 && foregroundIntents.size === 0
   }
 }
 
@@ -230,12 +261,17 @@ export function scheduleNostrDbAccess ({
   mode = 'readwrite',
   appId = 'system',
   signal,
+  preemptible = false,
   assertCurrent
 }, operation) {
   if (typeof owner !== 'string' || !owner) return Promise.reject(new TypeError('INVALID_NOSTRDB_SCHEDULER_OWNER'))
   if (typeof operation !== 'function') return Promise.reject(new TypeError('INVALID_NOSTRDB_SCHEDULER_OPERATION'))
   signal?.throwIfAborted()
   const scheduler = schedulerFor(owner)
+  const operationController = preemptible ? new AbortController() : null
+  const operationSignal = operationController
+    ? signal ? AbortSignal.any([signal, operationController.signal]) : operationController.signal
+    : signal
   let job
   const scheduled = new Promise((resolve, reject) => {
     job = {
@@ -245,12 +281,18 @@ export function scheduleNostrDbAccess ({
       consumerId: `${appId || 'system'}`,
       operation: async () => {
         assertCurrent?.()
-        return operation()
+        return operation(operationSignal)
       },
       queuedAt: performance.now(),
       resolve,
       reject,
       signal,
+      preemptible,
+      preempt: reason => {
+        if (!operationController || operationController.signal.aborted) return false
+        operationController.abort(reason)
+        return true
+      },
       abort: null
     }
     if (signal) {
@@ -263,8 +305,7 @@ export function scheduleNostrDbAccess ({
   })
   return scheduled.finally(() => {
     if (signal && job?.abort) signal.removeEventListener('abort', job.abort)
-    const snapshot = scheduler.snapshot()
-    if (snapshot.active === 0 && snapshot.waiting === 0) schedulers.delete(owner)
+    if (scheduler.isIdle()) schedulers.delete(owner)
   })
 }
 
@@ -276,7 +317,47 @@ export function scheduleNostrDbRead (options, operation) {
   const schedulerClass = ['background', 'maintenance'].includes(options?.schedulerClass)
     ? options.schedulerClass
     : 'background'
-  return scheduleNostrDbAccess({ ...options, schedulerClass, mode: 'readonly' }, operation)
+  if (options?.preemptible !== true) {
+    return scheduleNostrDbAccess({ ...options, schedulerClass, mode: 'readonly', preemptible: false }, operation)
+  }
+  return (async () => {
+    while (true) {
+      options.signal?.throwIfAborted()
+      try {
+        return await scheduleNostrDbAccess({ ...options, schedulerClass, mode: 'readonly', preemptible: true }, operation)
+      } catch (error) {
+        if (error?.code !== PLANNING_PREEMPTED) throw error
+        options.signal?.throwIfAborted()
+        recordPerformance({
+          stage: 'nostrdb-scheduler-retry',
+          schedulerClass,
+          schedulerMode: 'readonly'
+        })
+        await Promise.resolve()
+      }
+    }
+  })()
+}
+
+export function beginNostrDbForegroundIntent ({ owner, stores, appId = 'system', signal } = {}) {
+  if (typeof owner !== 'string' || !owner) throw new TypeError('INVALID_NOSTRDB_SCHEDULER_OWNER')
+  signal?.throwIfAborted()
+  const scheduler = schedulerFor(owner)
+  const intent = {
+    stores: normalizeStores(stores),
+    consumerId: `${appId || 'system'}`
+  }
+  let released = false
+  const release = () => {
+    if (released) return
+    released = true
+    signal?.removeEventListener('abort', release)
+    scheduler.releaseForegroundIntent(intent)
+    if (scheduler.isIdle()) schedulers.delete(owner)
+  }
+  scheduler.addForegroundIntent(intent)
+  signal?.addEventListener('abort', release, { once: true })
+  return release
 }
 
 export function nostrDbAccessSchedulerSnapshot (owner) {
@@ -287,8 +368,8 @@ export function cancelNostrDbAccesses (owner, error = resetError()) {
   const scheduler = schedulers.get(owner)
   if (!scheduler) return 0
   const cancelled = scheduler.cancelWaiting(error)
-  const snapshot = scheduler.snapshot()
-  if (snapshot.active === 0 && snapshot.waiting === 0) schedulers.delete(owner)
+  scheduler.clearForegroundIntents()
+  if (scheduler.isIdle()) schedulers.delete(owner)
   return cancelled
 }
 
@@ -303,4 +384,11 @@ function abortReason (signal) {
 
 function resetError () {
   return Object.assign(new Error('NOSTRDB_RESET'), { code: 'NOSTRDB_RESET' })
+}
+
+function planningPreemptedError () {
+  return Object.assign(new Error('NOSTRDB planning deferred for foreground work'), {
+    name: 'AbortError',
+    code: PLANNING_PREEMPTED
+  })
 }

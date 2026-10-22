@@ -13,7 +13,7 @@ const bundle = await build({
     import { createAccountEventTracker, accountKinds } from './src/services/account-events.js';
     import { createAccountEventCoverage } from './src/services/account-event-coverage.js';
     import { getNostrDb, openNostrDb } from './src/services/idb/nostrdb/index.js';
-    import { scheduleNostrDbRead, scheduleNostrDbWrite } from './src/services/idb/nostrdb/access-scheduler.js';
+    import { beginNostrDbForegroundIntent, scheduleNostrDbRead, scheduleNostrDbWrite } from './src/services/idb/nostrdb/access-scheduler.js';
     import { createLocalPersonalCopy } from './src/services/idb/nostrdb/personal-copy.js';
     import { accountRelayFixture } from './tests/fixtures/account-relay.js';
     import { finalizeEvent } from 'libp2r2p/event';
@@ -178,6 +178,19 @@ const bundle = await build({
         const write=scheduleNostrDbWrite({owner,stores:['events'],schedulerClass:'foreground',appId:'chat'},async()=>{order.push('write')});
         await new Promise(resolve=>setTimeout(resolve,0));release();await Promise.all([first,second,write]);return order;
       },
+      async planningPriority(){
+        const owner='e'.repeat(64);const order=[];let attempts=0;const started=Promise.withResolvers();
+        const read=scheduleNostrDbRead({owner,stores:['events'],schedulerClass:'background',appId:'recovery',preemptible:true},async signal=>{
+          attempts++;order.push('plan-'+attempts);
+          if(attempts===1){started.resolve();await new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(signal.reason),{once:true}))}
+        });
+        await started.promise;
+        const release=beginNostrDbForegroundIntent({owner,stores:['events'],appId:'chat'});
+        const write=scheduleNostrDbWrite({owner,stores:['events'],schedulerClass:'foreground',appId:'chat'},async()=>order.push('write'));
+        await write;await new Promise(resolve=>setTimeout(resolve,0));const beforeRelease=order.slice();
+        release();await read;
+        return {beforeRelease,afterRelease:order.slice(),attempts};
+      },
       isolated:async()=>{
         for(const account of accounts.filter(account=>!account.isReadOnly)) {
           const {results}=await account.db.query({kinds:[1]});
@@ -219,6 +232,11 @@ try {
   assert.deepEqual(await evaluate('fixture.counts()'), [200, 3, 3, 3, 3, 0])
   assert.equal(await evaluate('fixture.isolated()'), true)
   assert.deepEqual(await evaluate('fixture.readPriority()'), ['read-1', 'write', 'read-2'])
+  assert.deepEqual(await evaluate('fixture.planningPriority()'), {
+    beforeRelease: ['plan-1', 'write'],
+    afterRelease: ['plan-1', 'write', 'plan-2'],
+    attempts: 2
+  })
   assert.equal(await evaluate('fixture.transport.subscriptions.filter(sub=>!sub.closed&&sub.filter.limit===0).length'), 6)
   assert.equal(await evaluate('fixture.warnings.length'), 1)
   assert.equal(await evaluate('indexedDB.databases().then(dbs=>dbs.some(db=>db.name==="44billion_nostrdb:"+fixture.accounts[5].pubkey))'), false)

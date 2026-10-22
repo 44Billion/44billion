@@ -176,6 +176,182 @@ it('prioritizes OR mirrors only for exclusively personal-copy queries', async t 
   }
 })
 
+it('queues baseline and the preferred recovery mirror together without waiting for the first sample', async t => {
+  const db = await fixture()
+  const probes = []
+  let callsAtFirstSuccess
+  const original = IDBIndex.prototype.getAllKeys
+  t.mock.method(IDBIndex.prototype, 'getAllKeys', function (range, limit) {
+    const request = original.call(this, range, limit)
+    probes.push({ tag: range.lower[0], limit })
+    request.addEventListener('success', () => { callsAtFirstSuccess ??= probes.length })
+    return request
+  })
+  const filter = new ParsedFilter({
+    kinds: [1006],
+    '#k': ['30078'],
+    '#c': ['shared'],
+    '#v': ['0', '1'],
+    '&o': ['type']
+  })
+  const timings = []
+  const pending = select(db, filter, { recoveryRead: true, onTiming: value => timings.push(value) })
+
+  assert.equal(probes.length, 2)
+  assert.deepEqual(probes.map(probe => probe.tag), ['k', 'o'])
+  const plan = await pending
+  assert.equal(callsAtFirstSuccess, 2)
+  assert.equal(plan.cursors.length, 1)
+  assert.equal(plan.cursors[0].range.lower[0], 'o')
+  assert.equal(timings[0].recoveryPlan, true)
+  assert.equal(timings[0].recoveryPath, 'o')
+  assert.equal(timings[0].probes, 2)
+})
+
+it('chooses the smaller complete recovery path and never probes more than twice', async t => {
+  const db = await fixture({
+    tags: i => [
+      ['k', i < 30 ? 'recovery' : 'other'],
+      ['c', i < 10 ? 'small' : 'wide'],
+      ['o', i < 5 ? 'preferred' : 'wide-o'],
+      ['v', '0']
+    ]
+  })
+  const probes = observe(t)
+  const filter = new ParsedFilter({
+    kinds: [1006],
+    '#k': ['recovery'],
+    '#c': ['small'],
+    '#v': ['0', '1'],
+    '&o': ['preferred']
+  })
+  const plan = await select(db, filter, { recoveryRead: true })
+
+  assert.deepEqual(probes.map(probe => probe.tag), ['k', 'o'])
+  assert.equal(plan.cursors[0].range.lower[0], 'o')
+})
+
+it('keeps a smaller complete baseline instead of a larger complete recovery mirror', async t => {
+  const db = await fixture({
+    tags: i => [
+      ['k', i < 4 ? 'recovery' : 'other'],
+      ['c', i < 20 ? 'small' : 'wide'],
+      ['o', i < 12 ? 'preferred' : 'wide-o'],
+      ['v', '0']
+    ]
+  })
+  const probes = observe(t)
+  const filter = new ParsedFilter({
+    kinds: [1006],
+    '#k': ['recovery'],
+    '#c': ['small'],
+    '#v': ['0', '1'],
+    '&o': ['preferred']
+  })
+  const plan = await select(db, filter, { recoveryRead: true })
+
+  assert.deepEqual(probes.map(probe => probe.tag), ['k', 'o'])
+  assert.equal(plan.cursors[0].range.lower[0], 'k')
+})
+
+it('uses a complete baseline when the recovery mirror saturates the probe', async t => {
+  const db = await fixture({
+    tags: i => [
+      ['k', i < 3 ? 'recovery' : 'other'],
+      ['c', i < 3 ? 'small' : 'wide'],
+      ['o', i < 65 ? 'preferred' : 'wide-o'],
+      ['v', '0']
+    ]
+  })
+  const probes = observe(t)
+  const filter = new ParsedFilter({
+    kinds: [1006],
+    '#k': ['recovery'],
+    '#c': ['small'],
+    '#v': ['0', '1'],
+    '&o': ['preferred']
+  })
+  const plan = await select(db, filter, { recoveryRead: true })
+
+  assert.deepEqual(probes.map(probe => probe.tag), ['k', 'o'])
+  assert.equal(plan.cursors[0].range.lower[0], 'k')
+})
+
+it('prefers the recovery mirror when complete baseline and mirror samples tie', async t => {
+  const db = await fixture({
+    tags: i => [
+      ['k', i < 10 ? 'recovery' : 'other'],
+      ['c', i < 10 ? 'small' : 'wide'],
+      ['o', i < 10 ? 'preferred' : 'wide-o'],
+      ['v', '0']
+    ]
+  })
+  const probes = observe(t)
+  const filter = new ParsedFilter({
+    kinds: [1006],
+    '#k': ['recovery'],
+    '#c': ['small'],
+    '#v': ['0', '1'],
+    '&o': ['preferred']
+  })
+  const plan = await select(db, filter, { recoveryRead: true })
+
+  assert.deepEqual(probes.map(probe => probe.tag), ['k', 'o'])
+  assert.equal(plan.cursors[0].range.lower[0], 'o')
+})
+
+it('uses the full recovery OR plan without probes when the mirror has multiple values', async t => {
+  const db = await fixture()
+  const probes = observe(t)
+  const filter = new ParsedFilter({
+    kinds: [1006],
+    '#o': ['id-1', 'id-2'],
+    '#c': ['shared']
+  })
+  const plan = await select(db, filter, { recoveryRead: true })
+
+  assert.deepEqual(probes, [])
+  assert.equal(plan.cursors.length, 2)
+  assert.equal(plan.cursors.every(cursor => cursor.range.lower[0] === 'o'), true)
+})
+
+it('uses baseline without probes when recovery has no mirror selector', async t => {
+  const db = await fixture()
+  const probes = observe(t)
+  const filter = new ParsedFilter({
+    kinds: [1006],
+    '#k': ['30078'],
+    '#c': ['shared']
+  })
+  const baseline = planQuery(filter)
+  const plan = await select(db, filter, { recoveryRead: true })
+
+  assert.deepEqual(probes, [])
+  assert.deepEqual(plan.cursors.map(cursor => cursor.range.lower[0]), baseline.cursors.map(cursor => cursor.range.lower[0]))
+})
+
+it('rejects an already-aborted recovery planning signal without returning a plan', async () => {
+  const db = await fixture()
+  const filter = new ParsedFilter({ kinds: [1006], '#c': ['shared'], '&o': ['type'] })
+  const controller = new AbortController()
+  const reason = Object.assign(new Error('deferred'), { code: 'NOSTRDB_PLANNING_PREEMPTED' })
+  controller.abort(reason)
+
+  await assert.rejects(
+    select(db, filter, { recoveryRead: true, signal: controller.signal }),
+    error => error === reason
+  )
+})
+
+it('propagates a recovery probe failure without selecting a path', async t => {
+  const db = await fixture()
+  const failure = new Error('recovery planning unavailable')
+  t.mock.method(IDBIndex.prototype, 'getAllKeys', () => { throw failure })
+  const filter = new ParsedFilter({ kinds: [1006], '#c': ['shared'], '&o': ['type'] })
+
+  await assert.rejects(select(db, filter, { recoveryRead: true }), error => error === failure)
+})
+
 it('caps all returned keys at 256 and never interprets the truncated last sample as small', async t => {
   const db = await fixture({ tags: () => [['k', 'wide'], ['c', 'wide'], ['x', 'wide'], ['y', 'wide'], ['o', 'wide']] })
   const probes = observe(t)

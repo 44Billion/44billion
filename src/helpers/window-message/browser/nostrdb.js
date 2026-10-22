@@ -1,6 +1,7 @@
 import { cachedPersonalCopyObfuscation, cachedPersonalCopyObfuscations } from '#services/personal-copy-cache.js'
 import { createLocalPersonalCopy } from '#services/idb/nostrdb/personal-copy.js'
 import { normalizeLocalRemovalTargets, localRemovalResult } from '#services/idb/nostrdb/local-removal.js'
+import { beginNostrDbForegroundIntent } from '#services/idb/nostrdb/access-scheduler.js'
 import { isPriorityEventKind } from '#services/vault-request-queue.js'
 import { eventKinds } from '#constants/event.js'
 import {
@@ -10,7 +11,7 @@ import {
   eventAccessPersonalPermission,
   normalizeEventKind
 } from './event-permissions.js'
-import { NOSTRDB_ONE_SHOT_METHODS } from '../nostrdb-protocol.js'
+import { NOSTRDB_ONE_SHOT_METHODS, NOSTRDB_RECOVERY_READ } from '../nostrdb-protocol.js'
 import {
   PERSONAL_COPY_KIND,
   isPersonalCopyEvent,
@@ -61,6 +62,17 @@ function withoutRecoveryOption (options) {
   const safe = { ...plainOptions(options) }
   delete safe.recovery
   return safe
+}
+
+function withForegroundIntent (db, schedulerClass, { appId, signal }, operation) {
+  if (schedulerClass !== 'foreground' || !/^[0-9a-f]{64}$/i.test(db.ownerPubkey || '')) return operation()
+  const release = beginNostrDbForegroundIntent({
+    owner: db.ownerPubkey,
+    stores: ['events'],
+    appId,
+    signal
+  })
+  return Promise.resolve().then(operation).finally(release)
 }
 
 function normalizedPersonalCopyKind (event) {
@@ -129,7 +141,7 @@ export function classifyNostrDbRead (method, params = []) {
   return plainOptions(args[1]).recovery === true && isRecoveryReadQuery(args) ? 'background' : undefined
 }
 
-export function buildNostrDbReadOptions (options, { appId, deferCacheAccess, schedulerClass, signal }) {
+export function buildNostrDbReadOptions (options, { appId, deferCacheAccess, schedulerClass, signal, recoveryRead = false }) {
   const safeOptions = {
     ...(options && typeof options === 'object' && !Array.isArray(options) ? options : {}),
     ...(appId === undefined ? {} : { appId }),
@@ -139,18 +151,20 @@ export function buildNostrDbReadOptions (options, { appId, deferCacheAccess, sch
   delete safeOptions.schedulerClass
   delete safeOptions.signal
   delete safeOptions.recovery
+  delete safeOptions[NOSTRDB_RECOVERY_READ]
   if (schedulerClass) safeOptions.schedulerClass = schedulerClass
   if (signal) safeOptions.signal = signal
+  if (recoveryRead) safeOptions[NOSTRDB_RECOVERY_READ] = true
   return safeOptions
 }
 
-export function nostrDbReadParamsWithAppId (params = [], { appId, deferCacheAccess, schedulerClass, signal } = {}) {
+export function nostrDbReadParamsWithAppId (params = [], { appId, deferCacheAccess, schedulerClass, signal, recoveryRead = false } = {}) {
   const args = Array.isArray(params) ? [...params] : []
-  if (appId === undefined && !schedulerClass && !signal) return args
+  if (appId === undefined && !schedulerClass && !signal && !recoveryRead) return args
 
   return [
     args[0],
-    buildNostrDbReadOptions(args[1], { appId, deferCacheAccess, schedulerClass, signal })
+    buildNostrDbReadOptions(args[1], { appId, deferCacheAccess, schedulerClass, signal, recoveryRead })
   ]
 }
 
@@ -546,7 +560,8 @@ export async function runNostrDbMethod ({
     if (!targets) return localRemovalResult('invalid')
     await requestPermissions(eventAccessPermissionRequestsForEvent({ kind: 5, tags: targets }), permissionContext)
     assertAccess?.()
-    return db.remove(targets, { assertAccess, appId, schedulerClass: 'foreground', signal })
+    return withForegroundIntent(db, 'foreground', { appId, signal }, () =>
+      db.remove(targets, { assertAccess, appId, schedulerClass: 'foreground', signal }))
   }
 
   if (method === 'add') {
@@ -557,13 +572,15 @@ export async function runNostrDbMethod ({
     } else {
       await requestPermissions(eventAccessPermissionRequestsForEvent(event), permissionContext)
     }
-    return db.add(event, buildNostrDbAddOptions(options, {
-      appId,
-      signEvent,
-      onTiming,
-      schedulerClass: classifyNostrDbWrite(method, args),
-      signal
-    }))
+    const schedulerClass = classifyNostrDbWrite(method, args)
+    return withForegroundIntent(db, schedulerClass, { appId, signal }, () =>
+      db.add(event, buildNostrDbAddOptions(options, {
+        appId,
+        signEvent,
+        onTiming,
+        schedulerClass,
+        signal
+      })))
   }
 
   if (method === 'addPersonalCopy') {
@@ -575,20 +592,22 @@ export async function runNostrDbMethod ({
     const normalizedOptions = plainOptions(options)
     const { context = '', hearsay = false, ...restOptions } = normalizedOptions
     const addOptions = withoutRecoveryOption(restOptions)
-    const event = await createLocalPersonalCopy({
-      signEvent,
-      originalEvent,
-      ownerPubkey: db.ownerPubkey,
-      context,
-      hearsay,
-      encrypt: personalCopyEncrypt,
-      obfuscate: personalCopyObfuscate,
-      ...(personalCopyObfuscateMany ? { obfuscateMany: personalCopyObfuscateMany } : {})
-    })
     const schedulerClass = classifyNostrDbWrite(method, [originalEvent, options])
-    signal?.throwIfAborted()
-    const result = await db.add(event, buildNostrDbAddOptions(addOptions, { appId, signEvent, onTiming, schedulerClass, signal }))
-    return { event: result?.storedEvent ?? event, result }
+    return withForegroundIntent(db, schedulerClass, { appId, signal }, async () => {
+      const event = await createLocalPersonalCopy({
+        signEvent,
+        originalEvent,
+        ownerPubkey: db.ownerPubkey,
+        context,
+        hearsay,
+        encrypt: personalCopyEncrypt,
+        obfuscate: personalCopyObfuscate,
+        ...(personalCopyObfuscateMany ? { obfuscateMany: personalCopyObfuscateMany } : {})
+      })
+      signal?.throwIfAborted()
+      const result = await db.add(event, buildNostrDbAddOptions(addOptions, { appId, signEvent, onTiming, schedulerClass, signal }))
+      return { event: result?.storedEvent ?? event, result }
+    })
   }
 
   if (method === 'query') {
@@ -602,7 +621,13 @@ export async function runNostrDbMethod ({
     }
 
     const schedulerClass = classifyNostrDbRead(method, args)
-    const readArgs = nostrDbReadParamsWithAppId(args, { appId, deferCacheAccess, schedulerClass, signal })
+    const readArgs = nostrDbReadParamsWithAppId(args, {
+      appId,
+      deferCacheAccess,
+      schedulerClass,
+      recoveryRead: schedulerClass === 'background',
+      signal
+    })
     if (onTiming) readArgs[1] = { ...plainOptions(readArgs[1]), onTiming }
     const payload = await db.query(...readArgs)
     if (explicitKinds !== null && explicitPersonalKinds === null) {

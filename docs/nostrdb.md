@@ -42,8 +42,16 @@ Every fetched event still passes the entire filter, including author/kind,
 other tags, exclusions, expiration and search. Even an empty probe only selects
 an access path: the actual query still runs, observing later committed changes.
 
-Planning has an all-or-nothing budget of sixteen distinct index intervals per
-filter. Larger candidate sets use the existing plan without partial probes.
+Validated recovery reads use a separate bounded planning round. The launcher
+adds an internal `Symbol` only after `isRecoveryReadQuery()` accepts the filter.
+Recovery queues the baseline and preferred `#o`/`&o` range together without
+waiting for the first `getAllKeys` response. A complete path below 65 keys wins;
+two complete paths use the smaller count; two truncated paths prefer `o`. A
+multi-value `o` plan is used directly without probes, and filters without `o` use
+baseline. Ordinary app queries retain the general planner unchanged.
+
+General planning has an all-or-nothing budget of sixteen distinct index
+intervals per filter. Larger candidate sets use the existing plan without partial probes.
 Each request returns at most 65 primary keys and the entire planning operation
 returns at most 256, across one request at a time. Observations are shared only
 within that operation. Early decisions do not start unused probes. These bounds
@@ -80,7 +88,8 @@ linearization point; a later independent deletion remains authoritative.
 Event mutations update exact per-owner counters in their own write transaction.
 Global quota review is asynchronous; see the advisory quota contract below.
 Development-only bounded diagnostics add `query-planning` (`probes`,
-`keysExamined`, candidate `examined`, `earlyDecision`, `budgetExhausted` and time;
+`keysExamined`, candidate `examined`, `earlyDecision`, `budgetExhausted`,
+`recoveryPlan`, `recoveryPath`, baseline/preferred cardinalities and time;
 `count` remains a probe-count alias),
 `query-candidates` (materialized tag entries), `provenance-query` and
 `duplicate-read`, correlated through existing bridge request IDs. They contain no
@@ -267,6 +276,10 @@ starvation protection for lower classes and round-robin app lanes inside each
 class. `system` has its own lane. There is deliberately no pending-job cap per app
 and no queue-full error.
 
+Scheduler diagnostics also record speculative planning preemption and deferred
+retry. These records remain development-only and opt-in like the other
+per-transition scheduler traces.
+
 The app bridge derives class from the authenticated app, normalized event kind
 and structurally validated recovery shape, never from app-provided scheduling
 fields. Kinds 9, 1063, 3560, 26300,
@@ -284,8 +297,16 @@ it only for one structurally valid kind-1006 personal-copy filter, strips it
 before calling NostrDB, and admits the planner and cursor transactions as
 background. Invalid hints, ordinary app filters and attempts to request a higher
 class remain direct normal reads. Because intersecting background reads serialize,
-up to four recovery pagers no longer open overlapping event-store transactions;
-an already active read still completes without preemption.
+up to four recovery pagers no longer open overlapping event-store transactions.
+
+Foreground event writes register a scheduler intent before personal-copy
+encryption and hold it through the write. The intent blocks new conflicting
+readonly jobs but does not occupy an active transaction slot. A validated
+recovery planning transaction is speculative and preemptible: when foreground
+begins, its readonly transaction is aborted, the slot is released, and the same
+planning promise is deferred until foreground writes clear. It then repeats the
+two-probe planning round rather than falling back to baseline. Recovery cursors
+and all other already-active reads remain non-preemptible.
 
 The shared cache uses the Web Lock `44billion:chunk-cache:v1` around selected
 cache operations. Without Web Locks, its fallback promise queue is local to the

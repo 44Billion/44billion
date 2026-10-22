@@ -31,6 +31,15 @@ try {
   await browser.navigate(origin + '/__tests__/bounded-planner')
   await browser.until(() => browser.evaluate('!!globalThis.plannerFixture', origin), 'planner fixture ready')
   await browser.evaluate('plannerFixture.seed()', origin)
+  if (!plannerSource) {
+    const recovery = await browser.evaluate('plannerFixture.recoveryPage()', origin)
+    assert.equal(recovery.resultCount, 128)
+    assert.equal(recovery.probes, 2)
+    assert.equal(recovery.plan.recoveryPlan, true)
+    assert.equal(recovery.plan.recoveryPath, 'o')
+    assert.equal(recovery.plan.keysExamined <= 130, true)
+    console.log('RECOVERY-PLAN', JSON.stringify(recovery))
+  }
   for (const history of [false, true]) {
     if (history) await browser.evaluate('plannerFixture.seedHistory()', origin)
     for (const n of history ? [100] : [1, 25, 100]) {

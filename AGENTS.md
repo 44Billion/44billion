@@ -503,6 +503,18 @@ guards, never app scopes or shared callback mutation. No storage schema changes.
   result projection or app callbacks. At most one scheduled readonly transaction
   may touch a given owner/store; a waiting foreground write runs before the next
   background read.
+- Mark validated recovery reads with the launcher-only
+  `NOSTRDB_RECOVERY_READ` symbol only after `isRecoveryReadQuery()` succeeds.
+  Never trust an app-supplied planning marker. Recovery planning queues one
+  baseline interval and one `#o`/`&o` `getAllKeys(65)` together; a complete
+  smaller path wins, while two truncated paths prefer `o`. Multi-value `o` uses
+  its full OR plan without probes; no usable `o` uses baseline.
+- Register a foreground intent before personal-copy encryption and hold it
+  through the corresponding write. It blocks new conflicting scheduled readonly
+  jobs without occupying a transaction slot. Only speculative recovery planning
+  is preemptible: abort its transaction, keep the original promise pending, and
+  retry the planning round after foreground intent and writes clear. Cursor reads
+  and other transactions retain the no-preemption guarantee.
 - Keep scheduler wait/start/completion records in the bounded development
   performance snapshot, but print their individual console lines only when the
   launcher's `__44BILLION_SCHEDULER_TRACE__` global is enabled. This avoids

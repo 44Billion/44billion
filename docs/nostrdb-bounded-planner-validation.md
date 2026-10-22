@@ -1,5 +1,20 @@
 # Bounded NostrDB planner validation — 2026-10-20
 
+## Recovery planning follow-up
+
+Production captures later showed five sequential recovery-planning transactions
+per page, each dominated by `getAllKeys` probes at roughly 367–411 ms. They could
+start before a foreground personal-copy write and delay its otherwise short
+IndexedDB mutation.
+
+The follow-up uses a launcher-validated internal recovery marker. Recovery
+planning now queues baseline and the preferred `#o`/`&o` sample together,
+selecting the smaller complete sample or preferring `o` when both saturate. Only
+this speculative planning transaction is preemptible. A foreground intent begins
+before personal-copy encryption, blocks new conflicting readonly jobs, and causes
+active recovery planning to defer and retry after foreground clears. Baseline is
+not used merely because planning was preempted.
+
 ## Regression and correction
 
 The exact-count planner improved the previously broad recovery lookup but
