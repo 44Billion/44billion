@@ -50,6 +50,16 @@ two complete paths use the smaller count; two truncated paths prefer `o`. A
 multi-value `o` plan is used directly without probes, and filters without `o` use
 baseline. Ordinary app queries retain the general planner unchanged.
 
+The selected recovery cursor is also chunked. Each readonly transaction examines
+at most 64 new index entries and stores an internal `(indexKey, primaryKey)`
+checkpoint. A later transaction reopens the same range and uses
+`continuePrimaryKey()` to skip the already processed position, including exact
+timestamp/primary-key ties. Between chunks the query yields a macrotask and
+checks cancellation/current generation before scheduling the next chunk.
+Foreground intent blocks that next chunk without aborting one already inside a
+64-entry callback. The original query promise remains pending until all chunks
+complete or fail; partial results are never returned.
+
 General planning has an all-or-nothing budget of sixteen distinct index
 intervals per filter. Larger candidate sets use the existing plan without partial probes.
 Each request returns at most 65 primary keys and the entire planning operation
@@ -91,6 +101,8 @@ Development-only bounded diagnostics add `query-planning` (`probes`,
 `keysExamined`, candidate `examined`, `earlyDecision`, `budgetExhausted`,
 `recoveryPlan`, `recoveryPath`, baseline/preferred cardinalities and time;
 `count` remains a probe-count alias),
+`recovery-cursor-chunk` (`cursorIndex`, `chunkIndex`, examined/matched counts,
+resume/done flags and duration),
 `query-candidates` (materialized tag entries), `provenance-query` and
 `duplicate-read`, correlated through existing bridge request IDs. They contain no
 tag values, event contents, keys or ciphertext.

@@ -15,6 +15,18 @@ before personal-copy encryption, blocks new conflicting readonly jobs, and cause
 active recovery planning to defer and retry after foreground clears. Baseline is
 not used merely because planning was preempted.
 
+A follow-up capture showed that non-preemptible recovery cursors still held the
+event store for 195–1,306 ms. Recovery cursor scans now stop after 64 newly
+examined entries, release their readonly transaction, yield a macrotask and
+resume from `(indexKey, primaryKey)` with `continuePrimaryKey()`. Foreground can
+therefore run between chunks without restarting or losing the recovery page.
+
+Protected Chrome validation with 15,000 synthetic recovery rows produced two
+64-entry chunks, the same 128 ordered results as the unchunked query and the
+sequence `chunk 1 → foreground kind 9 → chunk 2`. Node tests cover both cursor
+directions, shared index-key ties, a deleted checkpoint, abort inside/between
+chunks and absence of an occupied scheduler slot during the yield.
+
 ## Regression and correction
 
 The exact-count planner improved the previously broad recovery lookup but

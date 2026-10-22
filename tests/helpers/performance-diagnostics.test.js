@@ -48,6 +48,28 @@ test('development diagnostics bound history and retain only identifiers and nume
       recoveryBaselineComplete: false,
       recoveryPreferredComplete: false
     })
+    recordPerformance({
+      stage: 'recovery-cursor-chunk',
+      cursorIndex: 1,
+      chunkIndex: 2,
+      examined: 64,
+      matched: 21,
+      resumed: true,
+      chunkDone: false,
+      elapsedMs: 9,
+      indexKey: ['private'],
+      primaryKey: 'private'
+    })
+    assert.deepEqual(performanceSnapshot().at(-1), {
+      stage: 'recovery-cursor-chunk',
+      cursorIndex: 1,
+      chunkIndex: 2,
+      examined: 64,
+      matched: 21,
+      resumed: true,
+      chunkDone: false,
+      elapsedMs: 9
+    })
     recordPerformance({ stage: 'recovery-archive-result', rowCount: 3, uniqueCount: 2, existingCount: 1, insertedCount: 1, blockedCount: 0, expiredCount: 1, storedCount: 2, skippedCount: 2, schedulerMode: 'readonly' })
     assert.deepEqual(performanceSnapshot().at(-1), {
       stage: 'recovery-archive-result',

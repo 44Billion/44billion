@@ -3,6 +3,7 @@ import { createAccountEventCoverage } from '#services/account-event-coverage.js'
 import { finalizeEvent } from 'libp2r2p/event'
 import { getPublicKey } from 'libp2r2p/key'
 import { NOSTRDB_RECOVERY_READ } from '#helpers/window-message/nostrdb-protocol.js'
+import { beginNostrDbForegroundIntent } from '#services/idb/nostrdb/access-scheduler.js'
 
 const secret = new Uint8Array(32).fill(21)
 const { fixture } = globalThis
@@ -36,7 +37,6 @@ globalThis.plannerFixture = {
     }
   },
   async recoveryPage () {
-    probes.length = 0
     const measures = []
     const filter = {
       kinds: [1006],
@@ -48,6 +48,8 @@ globalThis.plannerFixture = {
       limit: 128,
       search: 'sort:desc'
     }
+    const ordinary = await db.query(filter)
+    probes.length = 0
     const { results } = await db.query(filter, {
       schedulerClass: 'background',
       [NOSTRDB_RECOVERY_READ]: true,
@@ -55,8 +57,72 @@ globalThis.plannerFixture = {
     })
     return {
       resultCount: results.length,
+      sameResults: JSON.stringify(results.map(event => event.id)) === JSON.stringify(ordinary.results.map(event => event.id)),
       probes: probes.length,
-      plan: measures.find(row => row.stage === 'query-planning')
+      plan: measures.find(row => row.stage === 'query-planning'),
+      chunks: measures.filter(row => row.stage === 'recovery-cursor-chunk')
+    }
+  },
+  async recoveryWithForeground () {
+    const order = []
+    const measures = []
+    let foreground
+    const filter = {
+      kinds: [1006],
+      authors: [fixture.owner],
+      '#k': ['30078'],
+      '#c': ['1006::'],
+      '#v': ['0', '1'],
+      '&o': ['1006:#t:seed'],
+      limit: 128,
+      search: 'sort:desc'
+    }
+    const query = db.query(filter, {
+      schedulerClass: 'background',
+      [NOSTRDB_RECOVERY_READ]: true,
+      onTiming: row => {
+        measures.push(row)
+        if (row.stage !== 'recovery-cursor-chunk') return
+        order.push(`chunk-${row.chunkIndex}`)
+        if (row.chunkIndex !== 1 || foreground) return
+        const release = beginNostrDbForegroundIntent({ owner: fixture.owner, stores: ['events'], appId: 'probe' })
+        foreground = (async () => {
+          const event = await copy({ kind: 9, created_at: 3000 + ++serial, tags: [], content: 'foreground' }, `dm:${fixture.owner}`)
+          await db.add(event, { schedulerClass: 'foreground' })
+          order.push('write')
+        })().finally(release)
+      }
+    })
+    const recovery = await query
+    if (foreground) await foreground
+    return {
+      order,
+      foregroundKind: 9,
+      resultCount: recovery.results.length,
+      chunks: measures.filter(row => row.stage === 'recovery-cursor-chunk')
+    }
+  },
+  async recoveryMulti () {
+    const filter = {
+      kinds: [1006],
+      authors: [fixture.owner],
+      '#k': ['30078'],
+      '#c': ['1006::'],
+      '#v': ['0', '1'],
+      '#o': ['1006:#t:seed', '1006:#d:template'],
+      limit: 128,
+      search: 'sort:desc'
+    }
+    const ordinary = await db.query(filter)
+    const measures = []
+    const recovery = await db.query(filter, {
+      schedulerClass: 'background',
+      [NOSTRDB_RECOVERY_READ]: true,
+      onTiming: row => measures.push(row)
+    })
+    return {
+      sameResults: JSON.stringify(recovery.results.map(event => event.id)) === JSON.stringify(ordinary.results.map(event => event.id)),
+      chunks: measures.filter(row => row.stage === 'recovery-cursor-chunk')
     }
   },
   async burst (n, history = false) {

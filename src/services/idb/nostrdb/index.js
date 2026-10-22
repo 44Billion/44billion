@@ -1,5 +1,6 @@
 import { recordPerformance } from '#services/performance-diagnostics.js'
 import { selectTagQueryPlan } from './query-plan.js'
+import { scanRecoveryCursorChunks } from './recovery-cursor.js'
 import { assertNostrDbAccess, isNostrDbAccessError, watchNostrDbAccess } from './access.js'
 import { cancelNostrDbAccesses, scheduleNostrDbRead, scheduleNostrDbWrite } from './access-scheduler.js'
 import { NOSTRDB_CAPABILITIES } from './capabilities.js'
@@ -3236,6 +3237,19 @@ async function queryParsedFilterRecords (db, filter, { countOnly, ignoreLimit, d
     return true
   }
 
+  if (recoveryRead && !tx && !countOnly && Number.isFinite(limit) && plan.type === 'cursor') {
+    await scanRecoveryPlanCursors(db, plan, {
+      direction,
+      limit,
+      onTiming,
+      scheduleRead,
+      matches,
+      emit
+    })
+    results.sort(compareEventsForFilter(filter, scoreById))
+    return projectQueryResults(results.slice(0, limit), filter, scoreById)
+  }
+
   if (plan.type === 'direct') {
     for (const cursor of plan.cursors) {
       const stored = await run('get', [cursor.key], EVENTS_STORE, cursor.indexName, { db, tx })
@@ -3266,6 +3280,32 @@ async function queryParsedFilterRecords (db, filter, { countOnly, ignoreLimit, d
 
   results.sort(compareEventsForFilter(filter, scoreById))
   return projectQueryResults(Number.isFinite(limit) ? results.slice(0, limit) : results, filter, scoreById)
+}
+
+async function scanRecoveryPlanCursors (db, plan, { direction, limit, onTiming, scheduleRead, matches, emit }) {
+  for (let cursorIndex = 0; cursorIndex < plan.cursors.length; cursorIndex++) {
+    const cursor = plan.cursors[cursorIndex]
+    await scanRecoveryCursorChunks(db, cursor.indexName, cursor.range, {
+      direction,
+      limit,
+      scheduleRead,
+      onStored: stored => {
+        if (!matches(stored)) return false
+        emit(stored)
+        return true
+      },
+      onChunk: chunk => reportStorageTiming(onTiming, {
+        stage: 'recovery-cursor-chunk',
+        cursorIndex,
+        chunkIndex: chunk.chunkIndex,
+        examined: chunk.examined,
+        matched: chunk.matched,
+        resumed: chunk.resumed,
+        chunkDone: chunk.done,
+        elapsedMs: chunk.elapsedMs
+      })
+    })
+  }
 }
 
 async function queryMultipleParsedFilters (db, filters, { countOnly, ignoreLimit, decryptPersonalCopyContent, onTiming, scheduleRead, recoveryRead = false }) {

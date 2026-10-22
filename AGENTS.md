@@ -509,6 +509,11 @@ guards, never app scopes or shared callback mutation. No storage schema changes.
   baseline interval and one `#o`/`&o` `getAllKeys(65)` together; a complete
   smaller path wins, while two truncated paths prefer `o`. Multi-value `o` uses
   its full OR plan without probes; no usable `o` uses baseline.
+- Scan validated recovery cursors in transactions of at most 64 newly examined
+  entries. Preserve `(indexKey, primaryKey)`, resume with
+  `continuePrimaryKey`, and yield to the event loop between chunks so foreground
+  intent can block the next one. A chunk itself remains non-preemptible; keep
+  `seen`, per-cursor match limits, scores and final ordering across chunks.
 - Register a foreground intent before personal-copy encryption and hold it
   through the corresponding write. It blocks new conflicting scheduled readonly
   jobs without occupying a transaction slot. Only speculative recovery planning
