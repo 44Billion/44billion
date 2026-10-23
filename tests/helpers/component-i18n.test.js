@@ -132,6 +132,18 @@ describe('permission translations', () => {
     assert.match(format('pt-BR', { name: 'eventAccessPersonal', eKind: 30499 }), /listas de sites/)
   })
 
+  it('distinguishes private contact lists from custom follow lists in every locale', () => {
+    assert.equal(format('en', { name: 'eventAccessPersonal', eKind: 13300 }), 'Can I access personal copies of contact lists?')
+    assert.equal(format('en', { name: 'eventAccess', eKind: 30000 }), 'Can I access custom follow lists?')
+    assert.equal(format('pt-BR', { name: 'eventAccessPersonal', eKind: 13300 }), 'Posso acessar cópias pessoais destes dados: listas de contatos?')
+    for (const locale of SUPPORTED_LOCALES) {
+      const translate = getT(permissionDialogLocales, { locale })
+      assert.notEqual(translate('contact lists'), translate('custom follow lists'), locale)
+      assert.ok(format(locale, { name: 'eventAccessPersonal', eKind: 13300 }).includes(translate('contact lists')), locale)
+      assert.ok(format(locale, { name: 'eventAccess', eKind: 30000 }).includes(translate('custom follow lists')), locale)
+    }
+  })
+
   it('describes app data and content-key announcements in the existing access templates', () => {
     for (const [eKind, en, ptBR] of [
       [30078, 'app settings and data', 'configurações e dados de aplicativos'],

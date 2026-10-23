@@ -2896,6 +2896,30 @@ describe('nostrdb', () => {
     ])
   })
 
+  it('keeps multi-character pp tags out of byTag and owner references', async () => {
+    const owner = hexId(30914)
+    const plaintexts = new Map()
+    const db = personalCopyDb(owner, plaintexts)
+    const inner = personalCopyTemplate({
+      kind: 13300,
+      created_at: 100,
+      tags: [['pp', B]],
+      content: ''
+    })
+    const wrapper = await personalCopyWrapper({
+      id: hexId(30915),
+      owner,
+      inner,
+      context: '',
+      content: 'cipher-contacts'
+    })
+    rememberPersonalCopy(plaintexts, wrapper, inner)
+
+    assert.deepEqual(toStoredRecord({ ...inner, id: hexId(30916), pubkey: owner }).t, [])
+    assertAddOk(await db.add(wrapper))
+    assert.deepEqual(fakeStore(owner, 'events').records.get(eventIdIndexKey(wrapper.id)).ownerRefs, [])
+  })
+
   it('prunes unreferenced hearsays while keeping same-context references', async () => {
     const owner = hexId(30900)
     const plaintexts = new Map()

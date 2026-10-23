@@ -256,7 +256,7 @@ test('removing an account discards its queued deliveries while a stored write fi
 })
 
 test('account import excludes private/app/file flows and ephemeral events', () => {
-  for (const kind of [4, 13, 14, 78, 1006, 1059, 3560, 10000, 10003, 30003, 30007, 30024, 30078, 30403, 34601, 20000, 22242, 29999, 40000]) assert.equal(shouldStoreAccountEvent(event(kind)), false)
+  for (const kind of [4, 13, 14, 78, 1006, 1059, 3560, 10000, 10003, 13300, 30003, 30007, 30024, 30078, 30403, 34601, 20000, 22242, 29999, 40000]) assert.equal(shouldStoreAccountEvent(event(kind)), false)
   assert.equal(shouldStoreAccountEvent(event(1, 10, pk(1), [['expiration', '10']])), false)
   for (const kind of [0, 1, 3, 5, 9, 10002, 1063, 30000, 30023]) assert.equal(shouldStoreAccountEvent(event(kind)), true)
 })
