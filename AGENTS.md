@@ -520,10 +520,11 @@ guards, never app scopes or shared callback mutation. No storage schema changes.
   is preemptible: abort its transaction, keep the original promise pending, and
   retry the planning round after foreground intent and writes clear. Cursor reads
   and other transactions retain the no-preemption guarantee.
-- Keep scheduler wait/start/completion records in the bounded development
-  performance snapshot, but print their individual console lines only when the
-  launcher's `__44BILLION_SCHEDULER_TRACE__` global is enabled. This avoids
-  thousands of transition lines during ordinary development.
+- Keep development performance records in the bounded snapshot without console
+  output by default. The launcher's `__44BILLION_PERFORMANCE_TRACE__` global
+  enables every sanitized stage; `__44BILLION_SCHEDULER_TRACE__` enables only
+  scheduler transitions. This avoids thousands of background lines during
+  ordinary development.
 - Round-robin application lanes within each class and give `system` its own lane.
   Give lower classes a bounded turn after foreground/normal traffic. Do not add
   an app queue cap or a queue-full error. Serialize intersecting stores; allow a

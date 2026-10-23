@@ -105,12 +105,14 @@ test('production diagnostics stay disabled and do not extend request envelopes',
   }
 })
 
-test('scheduler console traces are opt-in while diagnostics remain in the bounded snapshot', async () => {
+test('performance and scheduler console traces are independently opt-in while snapshots remain bounded', async () => {
   const previousDevelopment = globalThis.IS_DEVELOPMENT
+  const previousPerformanceTrace = globalThis.__44BILLION_PERFORMANCE_TRACE__
   const previousSchedulerTrace = globalThis.__44BILLION_SCHEDULER_TRACE__
   const previousDebug = console.debug
   const records = []
   globalThis.IS_DEVELOPMENT = true
+  delete globalThis.__44BILLION_PERFORMANCE_TRACE__
   delete globalThis.__44BILLION_SCHEDULER_TRACE__
   console.debug = value => records.push(JSON.parse(value.slice('[messaging-performance] '.length)))
   try {
@@ -122,7 +124,7 @@ test('scheduler console traces are opt-in while diagnostics remain in the bounde
     recordPerformance({ stage: 'nostrdb-scheduler-retry', schedulerClass: 'background' })
     recordPerformance({ stage: 'quota-mutation', elapsedMs: 3 })
 
-    assert.deepEqual(records, [{ stage: 'quota-mutation', elapsedMs: 3 }])
+    assert.deepEqual(records, [])
     assert.deepEqual(performanceSnapshot().slice(-6), [
       { stage: 'scheduler-wait', schedulerClass: 'foreground', schedulerWaitMs: 2 },
       { stage: 'nostrdb-scheduler-start', schedulerMode: 'readwrite', schedulerActive: 1 },
@@ -139,11 +141,22 @@ test('scheduler console traces are opt-in while diagnostics remain in the bounde
       schedulerClass: 'background',
       schedulerWaiting: 2
     })
+
+    delete globalThis.__44BILLION_SCHEDULER_TRACE__
+    globalThis.__44BILLION_PERFORMANCE_TRACE__ = true
+    recordPerformance({ stage: 'quota-mutation', elapsedMs: 4 })
+    recordPerformance({ stage: 'vault-dispatch', elapsedMs: 5 })
+    assert.deepEqual(records.slice(-2), [
+      { stage: 'quota-mutation', elapsedMs: 4 },
+      { stage: 'vault-dispatch', elapsedMs: 5 }
+    ])
   } finally {
     console.debug = previousDebug
     if (previousDevelopment === undefined) delete globalThis.IS_DEVELOPMENT
     else globalThis.IS_DEVELOPMENT = previousDevelopment
     if (previousSchedulerTrace === undefined) delete globalThis.__44BILLION_SCHEDULER_TRACE__
     else globalThis.__44BILLION_SCHEDULER_TRACE__ = previousSchedulerTrace
+    if (previousPerformanceTrace === undefined) delete globalThis.__44BILLION_PERFORMANCE_TRACE__
+    else globalThis.__44BILLION_PERFORMANCE_TRACE__ = previousPerformanceTrace
   }
 })

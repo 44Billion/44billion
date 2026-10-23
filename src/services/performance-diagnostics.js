@@ -18,7 +18,9 @@ export function recordPerformance (entry) {
   }).map(key => [key, entry[key]]))
   recent.push(value)
   if (recent.length > 128) recent.shift()
-  if (!schedulerStages.has(value.stage) || globalThis.__44BILLION_SCHEDULER_TRACE__ === true) {
+  const traceAll = globalThis.__44BILLION_PERFORMANCE_TRACE__ === true
+  const traceScheduler = globalThis.__44BILLION_SCHEDULER_TRACE__ === true && schedulerStages.has(value.stage)
+  if (traceAll || traceScheduler) {
     console.debug(`[messaging-performance] ${JSON.stringify(value)}`)
   }
 }
