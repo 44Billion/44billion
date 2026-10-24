@@ -3,8 +3,12 @@ import assert from 'node:assert/strict'
 
 import {
   EVENT_ACCESS_PERMISSION,
+  EVENT_ACCESS_PERSONAL_PERMISSION,
   ONE_TIME_DELETE_PERMISSION,
+  PERSONAL_COPY_WRAPPER_KIND,
+  PRIVATE_CHANNEL_KIND,
   eventAccessPermissionRequestsForEvent,
+  eventAccessPersonalPermissionRequestsForKind,
   deletionTargetKinds,
   permissionNamesForLookup
 } from '#helpers/window-message/browser/event-permissions.js'
@@ -47,5 +51,31 @@ describe('event permissions', () => {
   it('does not prompt for private-channel transport helper kinds', () => {
     assert.deepEqual(eventAccessPermissionRequestsForEvent({ kind: 26300, tags: [] }), [])
     assert.deepEqual(eventAccessPermissionRequestsForEvent({ kind: 26400, tags: [] }), [])
+  })
+
+  it('exempts protocol wrapper signing but keeps deletion target permissions', () => {
+    for (const kind of [PRIVATE_CHANNEL_KIND, PERSONAL_COPY_WRAPPER_KIND]) {
+      assert.deepEqual(eventAccessPermissionRequestsForEvent({ kind, tags: [] }), [])
+      assert.deepEqual(eventAccessPermissionRequestsForEvent({
+        kind: 5,
+        tags: [['a', `${kind}:${PUBKEY}:`]]
+      }), [{ name: EVENT_ACCESS_PERMISSION, eKind: kind }])
+    }
+    assert.deepEqual(eventAccessPermissionRequestsForEvent({
+      kind: 5,
+      tags: [['a', `26300:${PUBKEY}:`]]
+    }), [])
+  })
+
+  it('uses logical personal kinds while exempting private-channel crypto transport', () => {
+    for (const kind of [26300, 26400, PRIVATE_CHANNEL_KIND]) {
+      assert.deepEqual(eventAccessPersonalPermissionRequestsForKind(kind), [])
+    }
+    assert.deepEqual(eventAccessPersonalPermissionRequestsForKind(1006), [
+      { name: EVENT_ACCESS_PERSONAL_PERMISSION, eKind: 1006 }
+    ])
+    assert.deepEqual(eventAccessPersonalPermissionRequestsForKind(2), [
+      { name: EVENT_ACCESS_PERSONAL_PERMISSION, eKind: 2 }
+    ])
   })
 })

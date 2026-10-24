@@ -5,10 +5,8 @@ import { beginNostrDbForegroundIntent } from '#services/idb/nostrdb/access-sched
 import { isPriorityEventKind } from '#services/vault-request-queue.js'
 import { eventKinds } from '#constants/event.js'
 import {
-  BROAD_EVENT_KIND,
   eventAccessPermissionRequestsForEvent,
-  eventAccessPermissionRequestsForKind,
-  eventAccessPersonalPermission,
+  eventAccessPersonalPermissionRequestsForKind,
   normalizeEventKind
 } from './event-permissions.js'
 import { NOSTRDB_ONE_SHOT_METHODS, NOSTRDB_RECOVERY_READ } from '../nostrdb-protocol.js'
@@ -16,7 +14,6 @@ import {
   PERSONAL_COPY_KIND,
   isPersonalCopyEvent,
   personalCopyEncryptionKind,
-  personalCopyHintKinds,
   plaintextArrayBuffer
 } from '#helpers/personal-copy.js'
 
@@ -26,7 +23,6 @@ export const NOSTRDB_PERSONAL_COPY_CONTEXT = 'nostrdb_personal_copy'
 export const NIP07_BATCH_CODE = 'NIP07_BATCH'
 
 const textDecoder = new TextDecoder()
-const PUBLIC_CHUNK_KIND = 34601
 const MAX_PERSONAL_COPY_OBFUSCATIONS = 64
 const MAX_PERSONAL_COPY_OBFUSCATION_BYTES = 256 * 1024
 const personalCopyEncoder = new TextEncoder()
@@ -345,18 +341,12 @@ export function nostrDbMaintenanceOptions (signEvent) {
 }
 
 function normalizeFilterKind (kind) {
-  return Number.isInteger(kind) && kind >= 0 && kind <= 0xffffffff ? kind : null
+  return Number.isInteger(kind) && kind >= 0 && kind <= 0xffff ? kind : null
 }
 
 function normalizeFilterKinds (value) {
   if (!Array.isArray(value)) return null
   return [...new Set(value.map(normalizeFilterKind).filter(kind => kind !== null))]
-    .sort((a, b) => a - b)
-}
-
-function normalizeFilterEventKinds (value) {
-  if (!Array.isArray(value)) return null
-  return [...new Set(value.map(kind => normalizeEventKind(kind)).filter(kind => kind !== null))]
     .sort((a, b) => a - b)
 }
 
@@ -375,87 +365,6 @@ export function explicitFilterKinds (filterOrFilters) {
   }
 
   return [...kinds].sort((a, b) => a - b)
-}
-
-function explicitPersonalCopyKinds (filterOrFilters, explicitKinds) {
-  if (explicitKinds === null) return null
-  if (!explicitKinds.includes(PERSONAL_COPY_KIND)) return []
-
-  const filters = Array.isArray(filterOrFilters) ? filterOrFilters : [filterOrFilters]
-  const kinds = new Set()
-
-  for (const filter of filters) {
-    if (!filter || typeof filter !== 'object' || Array.isArray(filter)) return null
-    const filterKinds = normalizeFilterKinds(filter.kinds)
-    if (filterKinds === null || !filterKinds.includes(PERSONAL_COPY_KIND)) continue
-    if (!Object.prototype.hasOwnProperty.call(filter, '#k')) return null
-
-    const filterKTags = normalizeFilterEventKinds(filter['#k'])
-    if (filterKTags === null) return null
-    for (const kind of filterKTags) kinds.add(kind)
-  }
-
-  return [...kinds].sort((a, b) => a - b)
-}
-
-function explicitPermissionInfoFromParams (params = []) {
-  const filterOrFilters = Array.isArray(params) ? params[0] : undefined
-  const explicitKinds = explicitFilterKinds(filterOrFilters)
-  return {
-    explicitKinds,
-    explicitPersonalKinds: explicitPersonalCopyKinds(filterOrFilters, explicitKinds)
-  }
-}
-
-function normalExplicitKinds (explicitKinds) {
-  return (explicitKinds ?? []).filter(kind => kind !== PERSONAL_COPY_KIND && kind !== PUBLIC_CHUNK_KIND)
-}
-
-function mayIncludeNormalEvents (explicitKinds) {
-  return explicitKinds === null || explicitKinds.some(kind => kind !== PERSONAL_COPY_KIND)
-}
-
-function mayIncludePersonalCopies (explicitKinds) {
-  return explicitKinds === null || explicitKinds.includes(PERSONAL_COPY_KIND)
-}
-
-function resultKind (result) {
-  return Number.isInteger(result?.kind) && result.kind >= 0 && result.kind <= 0xffffffff
-    ? result.kind
-    : null
-}
-
-function personalCopyInnerKinds (result) {
-  return personalCopyHintKinds(result)
-}
-
-function resultPermissionRequests (result, { mayIncludeNormal, mayIncludePersonal }) {
-  const kind = resultKind(result)
-  if (kind === PERSONAL_COPY_KIND) {
-    const innerKinds = personalCopyInnerKinds(result)
-    return innerKinds.length > 0
-      ? innerKinds.map(kind => eventAccessPersonalPermission(kind))
-      : [eventAccessPersonalPermission(BROAD_EVENT_KIND)]
-  }
-
-  if (kind === null) {
-    return [
-      ...(mayIncludeNormal ? eventAccessPermissionRequestsForKind(BROAD_EVENT_KIND) : []),
-      ...(mayIncludePersonal ? [eventAccessPersonalPermission(BROAD_EVENT_KIND)] : [])
-    ]
-  }
-
-  if (kind === PUBLIC_CHUNK_KIND) return []
-
-  return eventAccessPermissionRequestsForKind(kind)
-}
-
-function queryResultPermissionRequests (payload, { explicitKinds }) {
-  const results = Array.isArray(payload?.results) ? payload.results : []
-  return results.flatMap(result => resultPermissionRequests(result, {
-    mayIncludeNormal: mayIncludeNormalEvents(explicitKinds),
-    mayIncludePersonal: mayIncludePersonalCopies(explicitKinds)
-  }))
 }
 
 function permissionKey (permission) {
@@ -488,51 +397,8 @@ async function requestPermissions (permissions, { app, requestPermission, params
   }
 }
 
-async function requestAccessKinds (kinds, context) {
-  await requestPermissions(kinds.flatMap(kind => eventAccessPermissionRequestsForKind(kind)), context)
-}
-
 async function requestPersonalKinds (kinds, context) {
-  await requestPermissions(kinds.map(kind => eventAccessPersonalPermission(kind)), context)
-}
-
-async function requestPermissionsForQueryResult (payload, context, { explicitKinds }) {
-  await requestPermissions(queryResultPermissionRequests(payload, { explicitKinds }), context)
-}
-
-export function createNostrDbSubscriptionAuthorizer ({ app, requestPermission, params = [] }) {
-  const { explicitKinds, explicitPersonalKinds } = explicitPermissionInfoFromParams(params)
-  const granted = new Set()
-  const context = { app, requestPermission, params }
-
-  async function requestOnce (permissions) {
-    const pending = uniquePermissions(permissions).filter(permission => !granted.has(permissionKey(permission)))
-    await requestPermissions(pending, context)
-    for (const permission of pending) granted.add(permissionKey(permission))
-  }
-
-  return {
-    async authorizeBeforeStart () {
-      if (explicitKinds === null) {
-        await requestOnce([
-          ...eventAccessPermissionRequestsForKind(BROAD_EVENT_KIND),
-          eventAccessPersonalPermission(BROAD_EVENT_KIND)
-        ])
-        return
-      }
-      await requestOnce(normalExplicitKinds(explicitKinds).flatMap(kind => eventAccessPermissionRequestsForKind(kind)))
-      if (explicitPersonalKinds !== null) await requestOnce(explicitPersonalKinds.map(kind => eventAccessPersonalPermission(kind)))
-    },
-    async authorizeItem (item) {
-      if (item?.type !== 'event') return
-      if (explicitKinds === null) return
-      if (explicitKinds !== null && explicitPersonalKinds !== null) return
-      await requestOnce(resultPermissionRequests(item?.event, {
-        mayIncludeNormal: mayIncludeNormalEvents(explicitKinds),
-        mayIncludePersonal: mayIncludePersonalCopies(explicitKinds)
-      }))
-    }
-  }
+  await requestPermissions(kinds.flatMap(kind => eventAccessPersonalPermissionRequestsForKind(kind)), context)
 }
 
 export async function runNostrDbMethod ({
@@ -567,9 +433,10 @@ export async function runNostrDbMethod ({
   if (method === 'add') {
     const [event, options] = args
     if (isPersonalCopyEvent(event)) {
-      const kinds = personalCopyHintKinds(event)
-      await requestPersonalKinds(kinds.length ? kinds : [BROAD_EVENT_KIND], permissionContext)
-    } else {
+      const innerKind = personalCopyEncryptionKind(event)
+      if (innerKind === null) throw new Error('PERSONAL_COPY_KIND_REQUIRED')
+      await requestPersonalKinds([innerKind], permissionContext)
+    } else if (normalizeEventKind(event?.kind) === eventKinds.DELETION) {
       await requestPermissions(eventAccessPermissionRequestsForEvent(event), permissionContext)
     }
     const schedulerClass = classifyNostrDbWrite(method, args)
@@ -611,15 +478,6 @@ export async function runNostrDbMethod ({
   }
 
   if (method === 'query') {
-    const { explicitKinds, explicitPersonalKinds } = explicitPermissionInfoFromParams(args)
-    if (explicitKinds === null) {
-      await requestAccessKinds([BROAD_EVENT_KIND], permissionContext)
-      await requestPersonalKinds([BROAD_EVENT_KIND], permissionContext)
-    } else {
-      await requestAccessKinds(normalExplicitKinds(explicitKinds), permissionContext)
-      if (explicitPersonalKinds !== null) await requestPersonalKinds(explicitPersonalKinds, permissionContext)
-    }
-
     const schedulerClass = classifyNostrDbRead(method, args)
     const readArgs = nostrDbReadParamsWithAppId(args, {
       appId,
@@ -629,20 +487,10 @@ export async function runNostrDbMethod ({
       signal
     })
     if (onTiming) readArgs[1] = { ...plainOptions(readArgs[1]), onTiming }
-    const payload = await db.query(...readArgs)
-    if (explicitKinds !== null && explicitPersonalKinds === null) {
-      await requestPermissionsForQueryResult(payload, permissionContext, { explicitKinds })
-    }
-    return payload
+    return db.query(...readArgs)
   }
 
   if (method === 'count') {
-    const { explicitKinds, explicitPersonalKinds } = explicitPermissionInfoFromParams(args)
-    if (explicitKinds !== null) await requestAccessKinds(normalExplicitKinds(explicitKinds), permissionContext)
-    else await requestAccessKinds([BROAD_EVENT_KIND], permissionContext)
-
-    if (explicitPersonalKinds !== null) await requestPersonalKinds(explicitPersonalKinds, permissionContext)
-    else if (mayIncludePersonalCopies(explicitKinds)) await requestPersonalKinds([BROAD_EVENT_KIND], permissionContext)
     const readArgs = [...args]
     if (onTiming) readArgs[1] = { ...plainOptions(readArgs[1]), onTiming }
     return db.count(...readArgs)

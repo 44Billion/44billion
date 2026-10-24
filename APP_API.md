@@ -120,8 +120,24 @@ the vault's remote bunker adapter converts it to/from standard Base64 for
 NIP-46. The activity log also uses Base64 inside its encrypted JSON fields.
 Apps must not encode/decode Base64 themselves for these methods. Double DH is
 a launcher/vault extension using the same binary convention, not a method
-defined by the cited NIP-07 extension. Permissions, account access checks and
-rejection of vault errors remain unchanged.
+defined by the cited NIP-07 extension. Account access checks and rejection of
+vault errors remain unchanged.
+
+Permission grants are exact. A stored `-1` grant does not authorize another
+kind. `signEvent`/`doubleSignEvent` request `eventAccess/<kind>` and remember
+it. Kinds 26300, 26400, 3560 and the personal-copy wrapper kind 1006 are protocol
+plumbing and are exempt when signing those events themselves; a kind-5 deletion
+targeting any of those kinds still follows the deletion rules below.
+
+NIP-44 v3 requests `eventAccessPersonal/<kind>`, including kind 1006. Kinds
+26300, 26400 and 3560 are exempt for this encryption path. Missing or invalid
+kinds reject with `INVALID_KIND` before any prompt. NIP-04 and NIP-44 v2 have
+no kind or scope argument and request the distinct remembered permission
+`legacyCryptoAccess/-1`, shown as “Can I access all encrypted data?”.
+Deprecated kind 2 used as a reserved fake context is labeled “generic data”.
+`obfuscate` and public-key reads remain permissionless. Outside the event store
+exceptions below, these NIP-07 signer methods are the only app methods that
+request kind-based permissions.
 
 This replaces the earlier Base64-string app contract; update consumers together
 with the launcher. Existing stored ciphertexts do not change or need migration.
@@ -271,10 +287,14 @@ const features = await eventStore.supports()
 ```
 
 The public methods are `add`, `addPersonalCopy`, `query`, `count`, `subscribe`,
-`remove`, and `supports`. Reads and writes may request the corresponding launcher
-permission. The event store remains scoped to the instance's workspace account
-and app; selecting a persona does not merge its members' event stores. Bridge
-errors reject method promises or the iterator's `next()` promise.
+`remove`, and `supports`. Queries, counts and subscriptions do not request
+event permissions. Ordinary public adds also require no prompt; encrypted
+personal-copy content remains protected by the decryption permission. `add`
+of a signed personal-copy wrapper and `addPersonalCopy` request the permission
+for their inner kind. Kind-5 adds and `remove` retain deletion authorization.
+The event store remains scoped to the instance's workspace account and app;
+selecting a persona does not merge its members' event stores. Bridge errors
+reject method promises or the iterator's `next()` promise.
 
 `addPersonalCopy` resolves to `{ event, result }`; `add` returns the result
 directly. Storage admission failures have result `{ ok: false, code: 'quota', message,
@@ -388,9 +408,10 @@ for (const pubkey of publicKeys) {
 Each call validates current persona membership, including calls on previously
 created objects. Invalid or unavailable keys reject with
 `error.code === 'PUBKEY_NOT_IN_PERSONA'`; access is also checked after pending
-permissions and before returning results. Existing event permissions still
-apply, with the target account identified in permission requests. Signing and
-personal-copy cryptography use the target account and its lock/read-only rules.
+permissions and before returning results. Reads need no event permission.
+Personal-wrapper writes, kind-5 operations and deletions use the target account
+as permission context. Signing and personal-copy cryptography use the target
+account and its lock/read-only rules.
 
 Read-only accounts have no local NostrDB. `add`, `addPersonalCopy`, `remove`,
 `query`, `count` and `subscribe` reject with `READ_ONLY_ACCOUNT`; the launcher's
@@ -484,9 +505,11 @@ for await (const item of subscription) {
 `k` identifies the inner kind, `c` holds the obfuscated context, and `v` records
 provenance: `0` signed original, `1` direct rumor/self template, `2` hearsay.
 For a self template, compute the original event ID using its fields plus the
-owner pubkey; replies refer to that ID, never the wrapper ID. Decryption and
-obfuscation use normal vault permissions and account lock/read-only constraints.
-Neither a self template nor a direct rumor becomes signed proof of its sender.
+owner pubkey; replies refer to that ID, never the wrapper ID. Neither a self
+template nor a direct rumor becomes signed proof of its sender. Reading wrapper
+metadata and obfuscating filters remain permissionless. Decrypting content
+requires `eventAccessPersonal/<inner-kind>`; signer/account lock and read-only
+constraints still apply to cryptography and wrapper signing.
 
 
 For local nsec accounts, the companion vault update signs personal copies using
@@ -523,8 +546,11 @@ was pending. Targets and overlapping matches are deduplicated. Absent events are
 ignored. Target personal copies using their wrapper ID/address, not the inner event.
 
 Permissions are exactly those of a kind 5 descriptor with these target tags:
-address-only requests use access to the target kinds (including existing transport
-exceptions); any ID target requests one-time `delete` with `remember: false`.
+address-only requests use access to the target kinds, including 3560 and 1006
+even though signing those kinds directly is exempt; existing 26300/26400
+transport exceptions remain. Any ID target requests one-time `delete` with
+`remember: false`. Permission grants are exact, so `eventAccess/-1` does not
+authorize a target kind.
 No event is signed or persisted. Permission denial and loss of persona access
 reject the Promise through the existing bridge. Access is rechecked after
 authorization and again with connection-generation validation before the transaction.
@@ -574,5 +600,7 @@ Confirmed files remain subject to the launcher's existing storage retention.
 
 The optional `libp2r2p/private-messenger/event-store` adapters consume this public
 contract and a signer for the same identity. They add no injected API. Recovery
-records are encrypted personal copies and use normal read/write permissions,
-quotas, obfuscated tag filters and private deletion requests.
+records are encrypted personal copies; creating them requests the inner-kind
+personal permission, while reading and decrypting them follow the event-store
+and NIP-44 v3 rules above. Quotas, obfuscated tag filters and private deletion
+requests remain unchanged.

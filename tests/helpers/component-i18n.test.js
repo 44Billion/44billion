@@ -144,6 +144,17 @@ describe('permission translations', () => {
     }
   })
 
+  it('labels generic kind contexts and legacy encrypted-data access', () => {
+    assert.equal(format('en', { name: 'eventAccess', eKind: 2 }), 'Can I access generic data?')
+    assert.equal(format('en', { name: 'eventAccessPersonal', eKind: 2 }), 'Can I access personal copies of generic data?')
+    assert.equal(format('en', { name: 'legacyCryptoAccess', eKind: -1 }), 'Can I access all encrypted data?')
+    for (const locale of SUPPORTED_LOCALES) {
+      const translate = getT(permissionDialogLocales, { locale })
+      assert.ok(format(locale, { name: 'eventAccess', eKind: 2 }).includes(translate('generic data')), locale)
+      assert.equal(format(locale, { name: 'legacyCryptoAccess', eKind: -1 }), translate('Can I access all encrypted data?'), locale)
+    }
+  })
+
   it('describes app data and content-key announcements in the existing access templates', () => {
     for (const [eKind, en, ptBR] of [
       [30078, 'app settings and data', 'configurações e dados de aplicativos'],

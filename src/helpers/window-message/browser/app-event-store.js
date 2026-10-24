@@ -13,7 +13,6 @@ import {
   createNostrDbPersonalCopyObfuscate,
   createNostrDbPersonalCopyObfuscateMany,
   createNostrDbSignEvent,
-  createNostrDbSubscriptionAuthorizer,
   isRecoveryArchiveEvent,
   nostrDbMaintenanceOptions,
   nostrDbReadParamsWithAppId,
@@ -161,16 +160,9 @@ export function createAppEventStoreBridge ({
         ...(personalCopyObfuscate ? { personalCopyObfuscate } : {})
       })
       if (subscription) {
-        const authorizer = createNostrDbSubscriptionAuthorizer({ app, requestPermission: scope.permission, params })
-        await authorizer.authorizeBeforeStart()
-        if (!active()) return
-        scope.assertAvailable()
         const readParams = nostrDbReadParamsWithAppId(params, { appId, deferCacheAccess: true })
         subscription.iterator = db.subscribe(...readParams)
         for await (const item of subscription.iterator) {
-          if (!active()) return
-          scope.assertAvailable()
-          if (item.type === 'event') await authorizer.authorizeItem(item)
           if (!active()) return
           scope.assertAvailable()
           reply(event, { payload: item, isLast: false })

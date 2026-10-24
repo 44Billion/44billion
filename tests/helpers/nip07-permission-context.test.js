@@ -4,6 +4,7 @@ import {
   BROAD_EVENT_KIND,
   EVENT_ACCESS_PERMISSION,
   EVENT_ACCESS_PERSONAL_PERMISSION,
+  LEGACY_CRYPTO_ACCESS_PERMISSION,
   ONE_TIME_DELETE_PERMISSION
 } from '#helpers/window-message/browser/event-permissions.js'
 import { needsNip07Permission, nip07PermissionContext } from '#helpers/window-message/browser/nip07-permission-context.js'
@@ -27,7 +28,7 @@ describe('NIP-07 permission context', () => {
         method: 'nip44v3Decrypt',
         eKind: 3560,
         scope: '',
-        permissions: [{ name: EVENT_ACCESS_PERMISSION, eKind: 3560 }]
+        permissions: []
       }
     )
   })
@@ -48,20 +49,19 @@ describe('NIP-07 permission context', () => {
         method: 'nip44v3DecryptDoubleDH',
         eKind: 3560,
         scope: '',
-        permissions: [{ name: EVENT_ACCESS_PERMISSION, eKind: 3560 }]
+        permissions: []
       }
     )
   })
 
-  it('does not remember invalid NIP-44 v3 kind permissions', () => {
-    assert.deepEqual(
-      nip07PermissionContext({ method: 'nip44v3_encrypt', params: ['peer', 'not-a-kind', 'scope', 'plain-b64'] }),
-      {
-        method: 'nip44v3Encrypt',
-        eKind: null,
-        scope: 'scope',
-        permissions: [{ name: EVENT_ACCESS_PERSONAL_PERMISSION, eKind: null, remember: false }]
-      }
+  it('rejects invalid NIP-44 v3 kinds before requesting permission', () => {
+    assert.throws(
+      () => nip07PermissionContext({ method: 'nip44v3_encrypt', params: ['peer', 'not-a-kind', 'scope', 'plain-b64'] }),
+      error => error.code === 'INVALID_KIND'
+    )
+    assert.throws(
+      () => nip07PermissionContext({ method: 'nip44v3_decrypt', params: ['peer', 65536, '', 'ciphertext'] }),
+      error => error.code === 'INVALID_KIND'
     )
   })
 
@@ -81,18 +81,18 @@ describe('NIP-07 permission context', () => {
         method: 'nip44v3Decrypt',
         eKind: 1006,
         scope: '',
-        permissions: [{ name: EVENT_ACCESS_PERSONAL_PERMISSION, eKind: BROAD_EVENT_KIND }]
+        permissions: [{ name: EVENT_ACCESS_PERSONAL_PERMISSION, eKind: 1006 }]
       }
     )
   })
 
-  it('uses broad remembered permissions for legacy encryption methods', () => {
+  it('uses a dedicated remembered permission for legacy encryption methods', () => {
     assert.deepEqual(
       nip07PermissionContext({ method: 'nip04_encrypt', params: ['peer', 'plain'] }),
       {
         method: 'nip04Encrypt',
         eKind: BROAD_EVENT_KIND,
-        permissions: [{ name: EVENT_ACCESS_PERMISSION, eKind: BROAD_EVENT_KIND }]
+        permissions: [{ name: LEGACY_CRYPTO_ACCESS_PERMISSION, eKind: BROAD_EVENT_KIND }]
       }
     )
     assert.deepEqual(
@@ -100,7 +100,7 @@ describe('NIP-07 permission context', () => {
       {
         method: 'nip44Decrypt',
         eKind: BROAD_EVENT_KIND,
-        permissions: [{ name: EVENT_ACCESS_PERMISSION, eKind: BROAD_EVENT_KIND }]
+        permissions: [{ name: LEGACY_CRYPTO_ACCESS_PERMISSION, eKind: BROAD_EVENT_KIND }]
       }
     )
   })
@@ -134,6 +134,20 @@ describe('NIP-07 permission context', () => {
     assert.deepEqual(
       nip07PermissionContext({ method: 'sign_event', params: [{ kind: 26300, tags: [] }] }),
       { method: 'signEvent', eKind: 26300, permissions: [] }
+    )
+    assert.deepEqual(
+      nip07PermissionContext({ method: 'sign_event', params: [{ kind: 2, tags: [] }] }),
+      { method: 'signEvent', eKind: 2, permissions: [{ name: EVENT_ACCESS_PERMISSION, eKind: 2 }] }
+    )
+    for (const kind of [3560, 1006]) {
+      assert.deepEqual(
+        nip07PermissionContext({ method: 'sign_event', params: [{ kind, tags: [] }] }),
+        { method: 'signEvent', eKind: kind, permissions: [] }
+      )
+    }
+    assert.deepEqual(
+      nip07PermissionContext({ method: 'sign_event', params: [{ kind: 5, tags: [['a', `3560:${PUBKEY}:`]] }] }),
+      { method: 'signEvent', eKind: 5, permissions: [{ name: EVENT_ACCESS_PERMISSION, eKind: 3560 }] }
     )
   })
 })

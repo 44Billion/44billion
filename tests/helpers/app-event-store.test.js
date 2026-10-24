@@ -4,6 +4,7 @@ import { setImmediate } from 'node:timers/promises'
 import { base16ToBase62 } from 'libp2r2p/base62'
 import { notifyNostrDbAccessChanged } from '../../src/services/idb/nostrdb/access.js'
 import { createAppEventStoreBridge } from '../../src/helpers/window-message/browser/app-event-store.js'
+import { ONE_TIME_DELETE_PERMISSION } from '../../src/helpers/window-message/browser/event-permissions.js'
 
 const owner = '11'.repeat(32)
 const peer = 'ab'.repeat(32)
@@ -81,17 +82,20 @@ describe('persona event store bridge', () => {
     assert.equal(f.replies.at(-1).payload.results[0].pubkey, owner)
     assert.equal(f.accesses.length, 1)
     assert.equal(f.replies.at(-1).payload.options.deferCacheAccess, true)
-    assert.equal(Object.hasOwn(f.permissions.at(-1).meta, 'accountUserPk'), false)
+    assert.equal(f.permissions.length, 0)
     await f.request({ method: 'query', userPk: peer.toUpperCase(), params: [{ kinds: [3] }, { appId: 'forged' }] })
     assert.equal(f.replies.at(-1).payload.results[0].pubkey, peer)
     assert.equal(f.replies.at(-1).payload.options.appId, 'chat-app')
-    assert.equal(f.permissions.at(-1).meta.accountUserPk, peer)
     await f.request({ method: 'count', userPk: peer, params: [{ kinds: [3] }] })
     assert.equal(f.replies.at(-1).payload, 2)
     await f.request({ method: 'add', userPk: peer, params: [{ kind: 3, tags: [] }, { appId: 'forged' }] })
     assert.equal(f.replies.at(-1).payload.signed.signedBy, peer)
     assert.equal(f.replies.at(-1).payload.appId, 'chat-app')
     assert.equal(f.vaultCalls.at(-1).payload.pubkey, peer)
+    assert.equal(f.permissions.length, 0)
+    await f.request({ method: 'remove', userPk: peer, params: [[['e', 'ab'.repeat(32)]]] })
+    assert.equal(f.permissions.at(-1).name, ONE_TIME_DELETE_PERMISSION)
+    assert.equal(f.permissions.at(-1).meta.accountUserPk, peer)
   })
 
   it('rejects invalid or unavailable targets before opening a database or requesting permission', async () => {
@@ -109,7 +113,7 @@ describe('persona event store bridge', () => {
   it('rechecks cached targets and access revoked while permission is pending', async () => {
     const permission = Promise.withResolvers()
     const f = fixture({ requestPermission: () => permission.promise })
-    const pending = f.request({ method: 'query', userPk: peer, params: [{ kinds: [3] }] })
+    const pending = f.request({ method: 'remove', userPk: peer, params: [[['e', 'ab'.repeat(32)]]] })
     await setImmediate()
     f.state.members = [owner]
     permission.resolve()
@@ -142,9 +146,7 @@ describe('persona event store bridge', () => {
   it('propagates permission failures without signing or returning data', async () => {
     const denied = Object.assign(new Error('Permission denied'), { code: 'DENIED' })
     const f = fixture({ requestPermission: async () => { throw denied } })
-    await f.request({ method: 'query', userPk: peer, params: [{ kinds: [3] }] })
-    assert.equal(f.replies.at(-1).error, denied)
-    await f.request({ method: 'add', userPk: peer, params: [{ kind: 3, tags: [] }] })
+    await f.request({ method: 'remove', userPk: peer, params: [[['e', 'ab'.repeat(32)]]] })
     assert.equal(f.replies.at(-1).error, denied)
     assert.equal(f.vaultCalls.length, 0)
     assert.equal(f.accesses.length, 0)
@@ -157,6 +159,7 @@ describe('persona event store bridge', () => {
     assert.equal(f.streams[0].pubkey, peer)
     assert.equal(f.streams[0].options.appId, 'chat-app')
     assert.equal(f.streams[0].options.deferCacheAccess, true)
+    assert.equal(f.permissions.length, 0)
     assert.equal(f.accesses.length, 0)
     f.streams[0].iterator.push({ type: 'event', event: { kind: 3, pubkey: peer } })
     await setImmediate()
@@ -207,15 +210,14 @@ describe('persona event store bridge', () => {
     assert.deepEqual(f.replies, [])
   })
 
-  it('cancels pending starts and isolates subscription IDs between documents', async () => {
-    const permission = Promise.withResolvers()
-    const waiting = fixture({ requestPermission: () => permission.promise })
+  it('cancels subscriptions and isolates IDs between documents', async () => {
+    const waiting = fixture()
     const pendingStart = waiting.request({ method: 'subscribe', userPk: peer, subscriptionId: 'sub', params: [{ kinds: [3] }] })
     await setImmediate()
+    assert.equal(waiting.streams.length, 1)
     waiting.bridge.cancel('sub')
-    permission.resolve()
     await pendingStart
-    assert.equal(waiting.streams.length, 0)
+    assert.equal(waiting.streams[0].iterator.closed, true)
 
     const a = fixture()
     const b = fixture()

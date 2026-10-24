@@ -1,21 +1,30 @@
 export const EVENT_ACCESS_PERMISSION = 'eventAccess'
 export const EVENT_ACCESS_PERSONAL_PERMISSION = 'eventAccessPersonal'
+export const LEGACY_CRYPTO_ACCESS_PERMISSION = 'legacyCryptoAccess'
 export const ONE_TIME_DELETE_PERMISSION = 'delete'
 export const BROAD_EVENT_KIND = -1
 export const PRIVATE_CHANNEL_ROUTER_KIND = 26300
 export const PRIVATE_CHANNEL_NYM_CARRIER_KIND = 26400
 export const PRIVATE_CHANNEL_KIND = 3560
+export const PERSONAL_COPY_WRAPPER_KIND = 1006
 
 const HEX64_RE = /^[0-9a-f]{64}$/i
 const PRIVATE_CHANNEL_TRANSPORT_KINDS = new Set([
   PRIVATE_CHANNEL_ROUTER_KIND,
   PRIVATE_CHANNEL_NYM_CARRIER_KIND
 ])
+const EVENT_ACCESS_EXEMPT_KINDS = new Set([
+  PRIVATE_CHANNEL_KIND,
+  PERSONAL_COPY_WRAPPER_KIND
+])
+const PERSONAL_CRYPTO_EXEMPT_KINDS = new Set([
+  PRIVATE_CHANNEL_KIND
+])
 
 export function normalizeEventKind (kind, { allowBroad = false } = {}) {
   if (allowBroad && kind === BROAD_EVENT_KIND) return BROAD_EVENT_KIND
   const n = typeof kind === 'string' && kind.trim() !== '' ? Number(kind) : kind
-  return Number.isInteger(n) && n >= 0 && n <= 0xffffffff ? n : null
+  return Number.isInteger(n) && n >= 0 && n <= 0xffff ? n : null
 }
 
 export function permissionNamesForLookup (name) {
@@ -67,16 +76,19 @@ export function eventAccessPersonalPermission (eKind, options = {}) {
 }
 
 export function eventAccessPermissionRequestsForKind (kind, options = {}) {
+  const { allowGenericExemptions = true, ...permissionOptions } = options
   const normalized = normalizeEventKind(kind, { allowBroad: true })
   if (normalized === null) return []
   if (normalized !== BROAD_EVENT_KIND && isPrivateChannelTransportKind(normalized)) return []
-  return [eventAccessPermission(normalized, options)]
+  if (allowGenericExemptions && normalized !== BROAD_EVENT_KIND && EVENT_ACCESS_EXEMPT_KINDS.has(normalized)) return []
+  return [eventAccessPermission(normalized, permissionOptions)]
 }
 
 export function eventAccessPersonalPermissionRequestsForKind (kind, options = {}) {
   const normalized = normalizeEventKind(kind, { allowBroad: true })
   if (normalized === null) return []
   if (normalized !== BROAD_EVENT_KIND && isPrivateChannelTransportKind(normalized)) return []
+  if (normalized !== BROAD_EVENT_KIND && PERSONAL_CRYPTO_EXEMPT_KINDS.has(normalized)) return []
   return [eventAccessPersonalPermission(normalized, options)]
 }
 
@@ -86,7 +98,11 @@ export function eventAccessPermissionRequestsForEvent (event) {
 
   if (kind === 5) {
     const targetKinds = deletionTargetKinds(event)
-    if (targetKinds) return targetKinds.flatMap(targetKind => eventAccessPermissionRequestsForKind(targetKind))
+    if (targetKinds) {
+      return targetKinds.flatMap(targetKind => eventAccessPermissionRequestsForKind(targetKind, {
+        allowGenericExemptions: false
+      }))
+    }
     return [eventPermission(ONE_TIME_DELETE_PERMISSION, kind, { remember: false })]
   }
 

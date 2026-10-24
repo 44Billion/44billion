@@ -47,6 +47,15 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   counts/timing. Apps cannot send the batch code through the NIP-07 bridge.
   Recovery archives inherit the original request priority/classification, carry
   an internal `recovery` scheduling hint and share a global two-job vault cap.
+- Stored permissions match app, name and kind exactly; `-1` never authorizes a
+  specific kind. NIP-44 v3 uses personal permissions by logical kind, kind 1006
+  included, while 26300/26400/3560 are permissionless crypto transport. Legacy
+  NIP-04/NIP-44 v2 use the separate `legacyCryptoAccess/-1` grant.
+  `signEvent`/`doubleSignEvent` exempt 26300/26400/3560/1006, but kind-5
+  address deletions must still request access to their target kinds. Common
+  event-store reads and public writes are permissionless; personal wrapper
+  writes request their inner kind, while kind-5 adds and `remove` retain the
+  deletion prompts.
 
 ## Styling Rules
 

@@ -1,16 +1,11 @@
 import {
   BROAD_EVENT_KIND,
-  EVENT_ACCESS_PERMISSION,
-  EVENT_ACCESS_PERSONAL_PERMISSION,
-  PRIVATE_CHANNEL_KIND,
-  eventAccessPermission,
   eventAccessPermissionRequestsForEvent,
-  eventAccessPermissionRequestsForKind,
-  eventAccessPersonalPermission,
   eventAccessPersonalPermissionRequestsForKind,
+  LEGACY_CRYPTO_ACCESS_PERMISSION,
   normalizeEventKind
 } from './event-permissions.js'
-import { PERSONAL_COPY_KIND } from '#helpers/personal-copy.js'
+import { ValidationError } from 'libp2r2p/error'
 
 const methodNameAliases = {
   nip44v3_encrypt_double_dh: 'nip44v3EncryptDoubleDH',
@@ -55,32 +50,22 @@ export function needsNip07Permission (method) {
   return !permissionlessMethods.has(normalizeMethodName(method || ''))
 }
 
-function oneTimeEventPermission (name) {
-  return { name, eKind: null, remember: false }
-}
-
 export function nip07PermissionContext ({ method, params = [] } = {}) {
   const normalizedMethod = normalizeMethodName(method || '')
 
   if (normalizedMethod === 'signEvent' || normalizedMethod === 'doubleSignEvent') {
     const event = params?.[0]
     const eKind = normalizeEventKind(event?.kind)
-    const permissions = eKind === null
-      ? [oneTimeEventPermission(EVENT_ACCESS_PERMISSION)]
-      : eventAccessPermissionRequestsForEvent(event)
+    if (eKind === null) throw new ValidationError('INVALID_KIND')
+    const permissions = eventAccessPermissionRequestsForEvent(event)
 
     return { method: normalizedMethod, eKind, permissions }
   }
 
   if (nip44v3EncryptMethods.has(normalizedMethod) || nip44v3DecryptMethods.has(normalizedMethod)) {
     const eKind = normalizeEventKind(params?.[1])
-    const permissions = eKind === null
-      ? [oneTimeEventPermission(EVENT_ACCESS_PERSONAL_PERMISSION)]
-      : eKind === PRIVATE_CHANNEL_KIND
-        ? eventAccessPermissionRequestsForKind(eKind)
-        : eKind === PERSONAL_COPY_KIND
-          ? [eventAccessPersonalPermission(BROAD_EVENT_KIND)]
-          : eventAccessPersonalPermissionRequestsForKind(eKind)
+    if (eKind === null) throw new ValidationError('INVALID_KIND')
+    const permissions = eventAccessPersonalPermissionRequestsForKind(eKind)
 
     return {
       method: normalizedMethod,
@@ -94,7 +79,7 @@ export function nip07PermissionContext ({ method, params = [] } = {}) {
     return {
       method: normalizedMethod,
       eKind: BROAD_EVENT_KIND,
-      permissions: [eventAccessPermission(BROAD_EVENT_KIND)]
+      permissions: [{ name: LEGACY_CRYPTO_ACCESS_PERMISSION, eKind: BROAD_EVENT_KIND }]
     }
   }
 

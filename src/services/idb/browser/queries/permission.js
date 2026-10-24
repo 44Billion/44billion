@@ -2,25 +2,7 @@ import { permissionNamesForLookup } from '#helpers/window-message/browser/event-
 import { run } from '#services/idb/browser/index.js'
 
 async function hasPermissionForName (appId, name, eKind) {
-  if (eKind === -1 /* wildcard */) {
-    return run('get', [[appId, name, -1]], 'permissions').then(v => !!v.result)
-  }
-
-  const range = IDBKeyRange.bound([appId, name, -1], [appId, name, eKind])
-  const p = Promise.withResolvers()
-  run('openKeyCursor', [range], 'permissions', null, { p })
-
-  let cursor
-  let keyEKind
-  const continueKey = [appId, name, eKind]
-  while ((cursor = (await p.promise).result)) {
-    keyEKind = cursor.primaryKey[2]
-    if (keyEKind === -1 || keyEKind === eKind) return true
-
-    Object.assign(p, Promise.withResolvers())
-    cursor.continue(continueKey)
-  }
-  return false
+  return run('get', [[appId, name, eKind]], 'permissions').then(value => !!value.result)
 }
 
 export async function hasPermission (appId, name, eKind) {

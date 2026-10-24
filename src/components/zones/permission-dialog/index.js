@@ -2,7 +2,13 @@ import { f, useGlobalStore, useClosestStore, useStore, useCallback } from '#f'
 import '#f/components/f-to-signals.js'
 import '#shared/modal.js'
 import { hasPermission, createOrUpdatePermission } from '#services/idb/browser/queries/permission.js'
-import { BROAD_EVENT_KIND, EVENT_ACCESS_PERMISSION, EVENT_ACCESS_PERSONAL_PERMISSION, ONE_TIME_DELETE_PERMISSION } from '#helpers/window-message/browser/event-permissions.js'
+import {
+  BROAD_EVENT_KIND,
+  EVENT_ACCESS_PERMISSION,
+  EVENT_ACCESS_PERSONAL_PERMISSION,
+  LEGACY_CRYPTO_ACCESS_PERMISSION,
+  ONE_TIME_DELETE_PERMISSION
+} from '#helpers/window-message/browser/event-permissions.js'
 import { cssVars, jsVars } from '#assets/styles/theme.js'
 import '#shared/app-icon.js'
 import '#shared/icons/icon-x.js'
@@ -18,7 +24,7 @@ export const permissionDialogLocales = getLocales()
 const t = getT(permissionDialogLocales)
 
 const EVENT_KIND_TEXT = {
-  0: 'profiles', 1: 'short text notes', 3: 'follow lists', 4: '(legacy) direct messages', 5: 'deletion requests', 6: 'short text renotes', 7: 'reactions', 9: 'chat messages', 13: 'message seals', 14: '(public) chat messages', 15: '(public) file decryption keys', 16: 'renotes', 20: 'pictures', 21: 'videos', 22: 'short vertical videos', 62: 'delete-all requests', 1018: 'poll responses', 1059: 'recipient directions', 1063: 'file properties', 1068: 'polls', 1111: 'comments', 1222: 'short voice notes', 1244: 'short voice comments', 1984: 'misconduct reports', 3560: 'private-channel broadcasts', 7376: 'nutzap redemption logs', 9321: 'nutzaps', 9734: 'bitcoin pre-payment data', 9735: 'bitcoin receipts', 10002: 'home server configurations', 10019: 'nutzap receiving addresses', 13300: 'contact lists', 18716: 'public information for private communication', 26300: 'private-channel router rows', 27235: 'API authentication requests', 30000: 'custom follow lists', 30008: 'profile badges', 30009: 'profile badge definitions', 30023: 'long text notes', 30078: 'app settings and data', 30311: 'livestreams', 30402: 'classified listings', 30403: '(draft) classified listings', 30499: 'site lists', 31922: 'date events', 31923: 'time events', 31924: 'calendars', 31925: 'event RSVPs', 34601: 'files', 35128: 'site manifests', 35129: '(next) site manifests', 35130: '(draft) site manifests'
+  0: 'profiles', 1: 'short text notes', 2: 'generic data', 3: 'follow lists', 4: '(legacy) direct messages', 5: 'deletion requests', 6: 'short text renotes', 7: 'reactions', 9: 'chat messages', 13: 'message seals', 14: '(public) chat messages', 15: '(public) file decryption keys', 16: 'renotes', 20: 'pictures', 21: 'videos', 22: 'short vertical videos', 62: 'delete-all requests', 1018: 'poll responses', 1059: 'recipient directions', 1063: 'file properties', 1068: 'polls', 1111: 'comments', 1222: 'short voice notes', 1244: 'short voice comments', 1984: 'misconduct reports', 3560: 'private-channel broadcasts', 7376: 'nutzap redemption logs', 9321: 'nutzaps', 9734: 'bitcoin pre-payment data', 9735: 'bitcoin receipts', 10002: 'home server configurations', 10019: 'nutzap receiving addresses', 13300: 'contact lists', 18716: 'public information for private communication', 26300: 'private-channel router rows', 27235: 'API authentication requests', 30000: 'custom follow lists', 30008: 'profile badges', 30009: 'profile badge definitions', 30023: 'long text notes', 30078: 'app settings and data', 30311: 'livestreams', 30402: 'classified listings', 30403: '(draft) classified listings', 30499: 'site lists', 31922: 'date events', 31923: 'time events', 31924: 'calendars', 31925: 'event RSVPs', 34601: 'files', 35128: 'site manifests', 35129: '(next) site manifests', 35130: '(draft) site manifests'
 }
 
 function getEventKindText (kind, translate) {
@@ -63,6 +69,8 @@ export function formatPermissionText ({ name, eKind, meta, getCachedAppName = ()
     text = translate('Can I open the {{appName}} app?', { appName })
   } else if (name === 'readProfile') {
     text = translate('Can I read your profile?')
+  } else if (name === LEGACY_CRYPTO_ACCESS_PERMISSION && eKind === BROAD_EVENT_KIND) {
+    text = translate('Can I access all encrypted data?')
   } else if (name === EVENT_ACCESS_PERMISSION && eKind === BROAD_EVENT_KIND) {
     text = translate('Can I access all app data?')
   } else if (name === EVENT_ACCESS_PERSONAL_PERMISSION && eKind === BROAD_EVENT_KIND) {
@@ -520,6 +528,7 @@ function getLocales () {
   return {
     profiles: l('profiles', 'profils', 'profili', 'Profile', 'perfiles', 'perfis', 'профили', '个人资料', '個人資料', 'プロフィール', '프로필'),
     'short text notes': l('short text notes', 'notes courtes', 'note brevi', 'Kurznotizen', 'notas cortas', 'notas curtas', 'короткие заметки', '短文本笔记', '短文字筆記', '短文ノート', '짧은 텍스트 노트'),
+    'generic data': l('generic data', 'données génériques', 'dati generici', 'generische Daten', 'datos genéricos', 'dados genéricos', 'общие данные', '通用数据', '一般資料', '汎用データ', '일반 데이터'),
     'follow lists': l('follow lists', 'listes d’abonnements', 'liste dei seguiti', 'Kontaktlisten', 'listas de seguidos', 'listas de seguidos', 'списки подписок', '关注列表', '關注清單', 'フォローリスト', '팔로우 목록'),
     '(legacy) direct messages': l('(legacy) direct messages', 'messages directs (anciens)', 'messaggi diretti (legacy)', 'Direktnachrichten (veraltet)', 'mensajes directos (legado)', 'mensagens diretas (legado)', 'личные сообщения (устаревшие)', '（旧版）私信', '（舊版）私訊', '（旧式）ダイレクトメッセージ', '(레거시) 다이렉트 메시지'),
     'deletion requests': l('deletion requests', 'demandes de suppression', 'richieste di eliminazione', 'Löschanfragen', 'solicitudes de eliminación', 'solicitações de exclusão', 'запросы на удаление', '删除请求', '刪除要求', '削除リクエスト', '삭제 요청'),
@@ -574,6 +583,7 @@ function getLocales () {
     'app data type {{kind}}': l('app data type {{kind}}', 'données d’application de type {{kind}}', 'dati dell’app di tipo {{kind}}', 'App-Daten des Typs {{kind}}', 'datos de aplicación de tipo {{kind}}', 'dados do app do tipo {{kind}}', 'данные приложения типа {{kind}}', '{{kind}} 类型的应用数据', '{{kind}} 類型的應用程式資料', '種類 {{kind}} のアプリデータ', '{{kind}} 유형의 앱 데이터'),
     'Can I read your profile?': l('Can I read your profile?', 'Puis-je lire votre profil ?', 'Posso leggere il tuo profilo?', 'Darf ich Ihr Profil lesen?', '¿Puedo leer tu perfil?', 'Posso ler seu perfil?', 'Можно прочитать ваш профиль?', '可以读取你的个人资料吗？', '可以讀取你的個人資料嗎？', 'あなたのプロフィールを読み取ってもよいですか？', '프로필을 읽어도 될까요?'),
     'Can I access all app data?': l('Can I access all app data?', 'Puis-je accéder à toutes les données des applications ?', 'Posso accedere a tutti i dati delle app?', 'Darf ich auf alle App-Daten zugreifen?', '¿Puedo acceder a todos los datos de las aplicaciones?', 'Posso acessar todos os dados dos apps?', 'Можно получить доступ ко всем данным приложений?', '可以访问所有应用数据吗？', '可以存取所有應用程式資料嗎？', 'すべてのアプリデータにアクセスしてもよいですか？', '모든 앱 데이터에 접근해도 될까요?'),
+    'Can I access all encrypted data?': l('Can I access all encrypted data?', 'Puis-je accéder à toutes les données chiffrées ?', 'Posso accedere a tutti i dati cifrati?', 'Darf ich auf alle verschlüsselten Daten zugreifen?', '¿Puedo acceder a todos los datos cifrados?', 'Posso acessar todos os dados criptografados?', 'Можно получить доступ ко всем зашифрованным данным?', '可以访问所有加密数据吗？', '可以存取所有加密資料嗎？', 'すべての暗号化データにアクセスしてもよいですか？', '모든 암호화된 데이터에 접근해도 될까요?'),
     'Can I access all personal data?': l('Can I access all personal data?', 'Puis-je accéder à toutes les données personnelles ?', 'Posso accedere a tutti i dati personali?', 'Darf ich auf alle persönlichen Daten zugreifen?', '¿Puedo acceder a todos los datos personales?', 'Posso acessar todos os dados pessoais?', 'Можно получить доступ ко всем личным данным?', '可以访问所有个人数据吗？', '可以存取所有個人資料嗎？', 'すべての個人データにアクセスしてもよいですか？', '모든 개인 데이터에 접근해도 될까요?'),
     'Can I access {{dataType}}?': l('Can I access {{dataType}}?', 'Puis-je accéder aux données suivantes : {{dataType}} ?', 'Posso accedere a questi dati: {{dataType}}?', 'Darf ich auf Daten des Typs „{{dataType}}“ zugreifen?', '¿Puedo acceder a estos datos: {{dataType}}?', 'Posso acessar estes dados: {{dataType}}?', 'Можно получить доступ к данным типа «{{dataType}}»?', '可以访问此类数据吗：{{dataType}}？', '可以存取這類資料嗎：{{dataType}}？', '次のデータにアクセスしてもよいですか：{{dataType}}？', '다음 데이터에 접근해도 될까요: {{dataType}}?'),
     'Can I access personal copies of {{dataType}}?': l('Can I access personal copies of {{dataType}}?', 'Puis-je accéder aux copies personnelles des données suivantes : {{dataType}} ?', 'Posso accedere alle copie personali di questi dati: {{dataType}}?', 'Darf ich auf persönliche Kopien von Daten des Typs „{{dataType}}“ zugreifen?', '¿Puedo acceder a copias personales de estos datos: {{dataType}}?', 'Posso acessar cópias pessoais destes dados: {{dataType}}?', 'Можно получить доступ к личным копиям данных типа «{{dataType}}»?', '可以访问此类数据的个人副本吗：{{dataType}}？', '可以存取這類資料的個人副本嗎：{{dataType}}？', '次のデータの個人用コピーにアクセスしてもよいですか：{{dataType}}？', '다음 데이터의 개인 사본에 접근해도 될까요: {{dataType}}?'),
