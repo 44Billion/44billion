@@ -4,10 +4,12 @@ import { normalizeLocalRemovalTargets, localRemovalResult } from '#services/idb/
 import { beginNostrDbForegroundIntent } from '#services/idb/nostrdb/access-scheduler.js'
 import { isPriorityEventKind } from '#services/vault-request-queue.js'
 import { eventKinds } from '#constants/event.js'
+import { getEventHash } from 'libp2r2p/event'
 import {
   eventAccessPermissionRequestsForEvent,
   eventAccessPersonalPermissionRequestsForKind,
-  normalizeEventKind
+  normalizeEventKind,
+  ONE_TIME_DELETE_PERMISSION
 } from './event-permissions.js'
 import { NOSTRDB_ONE_SHOT_METHODS, NOSTRDB_RECOVERY_READ } from '../nostrdb-protocol.js'
 import {
@@ -397,8 +399,37 @@ async function requestPermissions (permissions, { app, requestPermission, params
   }
 }
 
-async function requestPersonalKinds (kinds, context) {
-  await requestPermissions(kinds.flatMap(kind => eventAccessPersonalPermissionRequestsForKind(kind)), context)
+function deletionPermissionRequests (event, { appId, owner, scope }) {
+  const permissions = eventAccessPermissionRequestsForEvent(event)
+  if (!permissions.some(permission => permission.name === ONE_TIME_DELETE_PERMISSION && permission.remember === false)) return permissions
+  try {
+    const descriptor = getEventHash({
+      kind: event.kind,
+      created_at: event.created_at,
+      tags: event.tags,
+      content: event.content ?? '',
+      pubkey: owner
+    })
+    const dedupeKey = getEventHash({
+      kind: eventKinds.METADATA,
+      created_at: 0,
+      tags: [],
+      content: JSON.stringify([appId, owner, scope, descriptor]),
+      pubkey: owner
+    })
+    return permissions.map(permission => permission.name === ONE_TIME_DELETE_PERMISSION && permission.remember === false
+      ? { ...permission, dedupeKey: `${appId}:${dedupeKey}` }
+      : permission)
+  } catch {
+    return permissions
+  }
+}
+
+function personalWritePermissionRequests (event, innerKind, details, { inspectDeletionTags = true } = {}) {
+  if (innerKind !== eventKinds.DELETION) return eventAccessPersonalPermissionRequestsForKind(innerKind)
+  return deletionPermissionRequests(inspectDeletionTags
+    ? event
+    : { kind: eventKinds.DELETION, created_at: event.created_at, tags: [], content: '' }, details)
 }
 
 export async function runNostrDbMethod ({
@@ -435,7 +466,11 @@ export async function runNostrDbMethod ({
     if (isPersonalCopyEvent(event)) {
       const innerKind = personalCopyEncryptionKind(event)
       if (innerKind === null) throw new Error('PERSONAL_COPY_KIND_REQUIRED')
-      await requestPersonalKinds([innerKind], permissionContext)
+      await requestPermissions(personalWritePermissionRequests(event, innerKind, {
+        appId,
+        owner: db.ownerPubkey,
+        scope: `wrapper:${event.id ?? ''}`
+      }, { inspectDeletionTags: false }), permissionContext)
     } else if (normalizeEventKind(event?.kind) === eventKinds.DELETION) {
       await requestPermissions(eventAccessPermissionRequestsForEvent(event), permissionContext)
     }
@@ -454,10 +489,13 @@ export async function runNostrDbMethod ({
     const [originalEvent, options] = args
     const innerKind = normalizeEventKind(originalEvent?.kind)
     if (innerKind === null) throw new Error('INVALID_PERSONAL_COPY_INNER_EVENT')
-    await requestPersonalKinds([innerKind], permissionContext)
-
     const normalizedOptions = plainOptions(options)
     const { context = '', hearsay = false, ...restOptions } = normalizedOptions
+    await requestPermissions(personalWritePermissionRequests(originalEvent, innerKind, {
+      appId,
+      owner: db.ownerPubkey,
+      scope: context
+    }), permissionContext)
     const addOptions = withoutRecoveryOption(restOptions)
     const schedulerClass = classifyNostrDbWrite(method, [originalEvent, options])
     return withForegroundIntent(db, schedulerClass, { appId, signal }, async () => {

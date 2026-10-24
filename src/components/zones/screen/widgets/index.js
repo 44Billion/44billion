@@ -724,7 +724,8 @@ f('widget-window', function () {
   const widgetDragMoved$ = useGlobalSignal('widgetDragMoved', false)
   const tabVisible$ = useGlobalSignal('widgetsTabVisible', document.visibilityState === 'visible')
   const { askVault } = useVaultActor()
-  const { requestPermission } = usePermissionDialogStore()
+  const pdStore = usePermissionDialogStore()
+  const { requestPermission } = pdStore
   const { requestConfirmation } = useConfirmationDialogStore()
   const { openApp } = useGlobalStore('useAppRouter')
 
@@ -1245,6 +1246,8 @@ f('widget-window', function () {
       runtime.ac?.abort()
       runtime.unregister?.()
       runtime.appCleanup?.()
+      const permissionAppId = appId$()
+      if (permissionAppId) pdStore.clearApp(permissionAppId)
       runtime.ac = null
       runtime.unregister = null
       runtime.appCleanup = null

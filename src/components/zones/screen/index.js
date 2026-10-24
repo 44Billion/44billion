@@ -848,7 +848,11 @@ f('appWindow', function () {
         signal: ac.signal
       })
       runtime.appCleanup = cleanupApp
-      cleanup(cleanupApp)
+      const permissionAppId = appId$()
+      cleanup(() => {
+        cleanupApp()
+        if (permissionAppId) pdStore.clearApp(permissionAppId)
+      })
 
       appPageTimeout = setTimeout(() => {
         if (ac.signal.aborted || runtime.appReady) return

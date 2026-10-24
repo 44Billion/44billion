@@ -29,6 +29,13 @@ const { outputFiles } = await build({
               name: 'openApp', eKind: null, remember: false,
               meta: { targetApp: { name } }
             }).then(() => this.outcomes.push('granted'), () => this.outcomes.push('denied'))
+          },
+          requestDelete(dedupeKey) {
+            return permissions.requestPermission({
+              app: { id: 'permission-expansion-test', name: 'Permission test' },
+              name: 'delete', eKind: 5, remember: false, dedupeKey: 'permission-expansion-test:' + dedupeKey,
+              meta: { params: [{ kind: 5, tags: [['e', 'a'.repeat(64)]] }] }
+            })
           }
         }
         return h\`<permission-dialog />\`
@@ -118,12 +125,45 @@ try {
   await evaluate('document.querySelector(".deny-button").click()')
   await browser.until(() => evaluate('permissionFixture.outcomes.length === 2 && !document.querySelector("dialog[open]")'), 'deny still closes the remaining request')
   assert.deepEqual(await evaluate('permissionFixture.outcomes'), ['granted', 'denied'])
+  await evaluate('new Promise(resolve => setTimeout(resolve, 350))')
   await evaluate("permissionFixture.request('Fresh app')")
   await browser.until(() => evaluate('Boolean(document.querySelector("dialog[open] .permission-text"))'), 'fresh request')
   assert.equal((await measure()).clamp, 3)
   assert.equal((await measure()).expanded, 'false')
+  await evaluate('document.querySelector(".deny-button").click()')
+  await browser.until(() => evaluate('!document.querySelector("dialog[open]")'), 'fresh request denied')
+  await evaluate('new Promise(resolve => setTimeout(resolve, 350))')
+
+  await evaluate(`window.deleteOutcomes = []
+    void (window.deletePending = Promise.all([
+      permissionFixture.requestDelete('same-deletion').then(value => deleteOutcomes.push(value), () => deleteOutcomes.push(false)),
+      permissionFixture.requestDelete('same-deletion').then(value => deleteOutcomes.push(value), () => deleteOutcomes.push(false))
+    ]))`)
+  await browser.until(() => evaluate('document.querySelectorAll(".permission-text").length === 1 && document.querySelector(".permission-text").textContent === "Can I delete 1 item?"'), 'one shared deletion prompt')
+  await evaluate('document.querySelector(".allow-button").click()')
+  await browser.until(() => evaluate('deleteOutcomes.length === 2 && !document.querySelector("dialog[open]")'), 'shared deletion prompt resolves both calls')
+  assert.deepEqual(await evaluate('deleteOutcomes'), [true, true])
+
+  await evaluate('void (window.deleteReuse = permissionFixture.requestDelete("same-deletion").then(value => value, () => false))')
+  await browser.until(async () => await evaluate('deleteReuse'), 'recent one-time grant serves the second write path')
+  assert.equal(await evaluate('Boolean(document.querySelector("dialog[open]"))'), false)
+  await evaluate('void (window.otherDelete = permissionFixture.requestDelete("other-deletion").then(value => value, () => false))')
+  await browser.until(() => evaluate('Boolean(document.querySelector("dialog[open] .permission-text"))'), 'new descriptor prompts again')
+  await evaluate('document.querySelector(".deny-button").click()')
+  await browser.until(async () => await evaluate('new Promise(resolve => otherDelete.then(value => resolve(value === false)))'), 'new descriptor denial')
+  await evaluate('new Promise(resolve => setTimeout(resolve, 350))')
+
+  await evaluate('void (window.clearableGrant = permissionFixture.requestDelete("clear-me").then(value => value, () => false))')
+  await browser.until(() => evaluate('Boolean(document.querySelector("dialog[open] .permission-text"))'), 'grant before app cleanup')
+  await evaluate('document.querySelector(".allow-button").click()')
+  await browser.until(async () => await evaluate('clearableGrant'), 'grant before cleanup resolves')
+  await evaluate("permissionFixture.permissions.clearApp('permission-expansion-test')")
+  await evaluate('void (window.afterCleanup = permissionFixture.requestDelete("clear-me").then(value => value, () => false))')
+  await browser.until(() => evaluate('Boolean(document.querySelector("dialog[open] .permission-text"))'), 'app cleanup discards recent one-time grants')
+  await evaluate('document.querySelector(".deny-button").click()')
+  await browser.until(async () => await evaluate('new Promise(resolve => afterCleanup.then(value => resolve(value === false)))'), 'cleanup prompt denied')
   assert.deepEqual(browser.logs.filter(log => log.method === 'Runtime.exceptionThrown'), [])
-  console.log('Permission prompts passed: 3/5/7/9 lines, pointer/keyboard, full reveal, locale/resize, independent requests and grant/deny.')
+  console.log('Permission prompts passed: layout, independent requests, shared one-time grants and per-descriptor dedupe.')
 } catch (error) {
   await browser?.diagnose('/tmp/44billion-permission-dialog-failure')
   throw error

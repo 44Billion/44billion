@@ -18,6 +18,17 @@ import { getT } from '#i18n/index.js'
 const l = (en, fr, it, de, es, ptBR, ru, zhCN, zhTW, ja, ko) => ({
   en, fr, it, de, es, 'pt-BR': ptBR, ru, 'zh-CN': zhCN, 'zh-TW': zhTW, ja, ko
 })
+const ONE_TIME_DEDUPE_MS = 30000
+const permissionDedupeStates = new WeakMap()
+
+function dedupeState (store) {
+  let state = permissionDedupeStates.get(store)
+  if (!state) {
+    state = { grants: new Map(), pending: new Map() }
+    permissionDedupeStates.set(store, state)
+  }
+  return state
+}
 
 export const permissionDialogLocales = getLocales()
 
@@ -92,6 +103,13 @@ export function formatPermissionText ({ name, eKind, meta, getCachedAppName = ()
 function createPermissionDialogStore () {
   return {
     isOpen$ () { return this.queue$().length > 0 },
+    clearApp (appId) {
+      const state = dedupeState(this)
+      const prefix = `${appId}:`
+      for (const key of state.grants.keys()) {
+        if (key.startsWith(prefix)) state.grants.delete(key)
+      }
+    },
     close () {
       let lengthSnapshot = this.queue$().length
       let promise = Promise.resolve()
@@ -129,6 +147,8 @@ function createPermissionDialogStore () {
           },
           name: req.name,
           eKind: req.eKind,
+          remember: req.remember,
+          dedupeKey: req.dedupeKey,
           meta: {
             // params: req.meta.params (NIP07)
             // targetApp: req.meta.targetApp (OPEN_APP)
@@ -157,6 +177,7 @@ function createPermissionDialogStore () {
       if (granted) {
         // grant just once
         if (this.isSingularPermission(req)) {
+          if (req.dedupeKey) dedupeState(this).grants.set(req.dedupeKey, Date.now() + ONE_TIME_DEDUPE_MS)
           req.resolve(true)
           this.removeCurrent(current)
           return
@@ -179,6 +200,18 @@ function createPermissionDialogStore () {
       const granted = await this.queryPermission(req)
       if (granted) return true
 
+      if (req.dedupeKey) {
+        const state = dedupeState(this)
+        const recent = state.grants.get(req.dedupeKey)
+        if (recent > Date.now()) {
+          state.grants.delete(req.dedupeKey)
+          return true
+        }
+        state.grants.delete(req.dedupeKey)
+        const pending = state.pending.get(req.dedupeKey)
+        if (pending) return pending
+      }
+
       const p = Promise.withResolvers()
       this.addPermissionRequest({
         ...req,
@@ -187,7 +220,13 @@ function createPermissionDialogStore () {
           ? `${this.getPermissionId(req)}:${Date.now()}:${Math.random()}`
           : this.getPermissionId(req)
       })
-      return p.promise
+      if (!req.dedupeKey) return p.promise
+      const state = dedupeState(this)
+      const pending = p.promise.finally(() => {
+        if (state.pending.get(req.dedupeKey) === pending) state.pending.delete(req.dedupeKey)
+      })
+      state.pending.set(req.dedupeKey, pending)
+      return pending
     }
   }
 }

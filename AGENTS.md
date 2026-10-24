@@ -55,7 +55,10 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   address deletions must still request access to their target kinds. Common
   event-store reads and public writes are permissionless; personal wrapper
   writes request their inner kind, while kind-5 adds and `remove` retain the
-  deletion prompts.
+  deletion prompts. Private kind-5 personal copies classify their inner tags
+  like public deletions. Derive an opaque launcher-owned in-memory dedupe key
+  for one-time deletes so “delete for everyone” shares one prompt across its
+  two persistence paths; never accept a key from the app or persist it.
 
 ## Styling Rules
 

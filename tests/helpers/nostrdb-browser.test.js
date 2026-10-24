@@ -680,6 +680,49 @@ describe('nostrdb browser bridge helpers', () => {
     assert.equal(prompted, false)
   })
 
+  it('uses one deletion prompt per descriptor across both personal-copy write paths', async () => {
+    const deletion = {
+      kind: 5,
+      created_at: 20,
+      tags: [['e', 'b'.repeat(64)], ['k', '9']],
+      content: ''
+    }
+    const capture = async (method, params) => {
+      let request
+      await assert.rejects(
+        () => runNostrDbMethod({
+          db: { ownerPubkey: 'a'.repeat(64), async add () {} },
+          method,
+          params,
+          requestPermission: async value => {
+            request = value
+            throw new Error('stop after permission')
+          },
+          appId: 'app-id',
+          app: { id: 'app' }
+        }),
+        /stop after permission/
+      )
+      return request
+    }
+
+    const direct = await capture('addPersonalCopy', [deletion, { context: 'dm:peer' }])
+    const duplicate = await capture('addPersonalCopy', [deletion, { context: 'dm:peer', dedupeKey: 'forged' }])
+    const otherContext = await capture('addPersonalCopy', [deletion, { context: 'dm:other' }])
+    assert.equal(direct.name, ONE_TIME_DELETE_PERMISSION)
+    assert.equal(direct.remember, false)
+    assert.equal(direct.eKind, 5)
+    assert.match(direct.dedupeKey, /^app-id:[0-9a-f]{64}$/)
+    assert.equal(duplicate.dedupeKey, direct.dedupeKey)
+    assert.notEqual(otherContext.dedupeKey, direct.dedupeKey)
+
+    const wrapper = { id: 'c'.repeat(64), kind: 1006, tags: [['k', '5']], created_at: 20, content: 'cipher' }
+    const fromWrapper = await capture('add', [wrapper])
+    const sameWrapper = await capture('add', [structuredClone(wrapper)])
+    assert.equal(fromWrapper.name, ONE_TIME_DELETE_PERMISSION)
+    assert.equal(sameWrapper.dedupeKey, fromWrapper.dedupeKey)
+  })
+
   it('rejects unknown nostrdb methods', async () => {
     await assert.rejects(
       () => runNostrDbMethod({ db: {}, method: 'deleteDb' }),

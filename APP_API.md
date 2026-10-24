@@ -291,7 +291,9 @@ The public methods are `add`, `addPersonalCopy`, `query`, `count`, `subscribe`,
 event permissions. Ordinary public adds also require no prompt; encrypted
 personal-copy content remains protected by the decryption permission. `add`
 of a signed personal-copy wrapper and `addPersonalCopy` request the permission
-for their inner kind. Kind-5 adds and `remove` retain deletion authorization.
+for their inner kind, except inner kind 5, which follows the same deletion
+authorization as a public kind-5 descriptor. Kind-5 adds and `remove` retain
+deletion authorization.
 The event store remains scoped to the instance's workspace account and app;
 selecting a persona does not merge its members' event stores. Bridge errors
 reject method promises or the iterator's `next()` promise.
@@ -510,6 +512,12 @@ template nor a direct rumor becomes signed proof of its sender. Reading wrapper
 metadata and obfuscating filters remain permissionless. Decrypting content
 requires `eventAccessPersonal/<inner-kind>`; signer/account lock and read-only
 constraints still apply to cryptography and wrapper signing.
+Private deletion requests with only `e` targets use one-time `delete/5`;
+address-only requests use exact access to each target kind. For “delete for
+everyone”, the launcher derives an opaque, in-memory key from the authenticated
+app/account, context and canonical deletion descriptor so both persistence paths
+share one prompt and one immediate duplicate admission. This admission is not
+persisted. A different descriptor always prompts again.
 
 
 For local nsec accounts, the companion vault update signs personal copies using
