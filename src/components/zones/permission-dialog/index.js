@@ -1,7 +1,11 @@
-import { f, useGlobalStore, useClosestStore, useStore, useCallback } from '#f'
+import { f, useGlobalStore, useClosestStore, useStore, useCallback, useTask } from '#f'
 import '#f/components/f-to-signals.js'
 import '#shared/modal.js'
-import { hasPermission, createOrUpdatePermission } from '#services/idb/browser/queries/permission.js'
+import {
+  hasPermission,
+  createOrUpdatePermission,
+  reconcilePermissionScopes
+} from '#services/idb/browser/queries/permission.js'
 import {
   BROAD_EVENT_KIND,
   EVENT_ACCESS_PERMISSION,
@@ -44,14 +48,9 @@ function getEventKindText (kind, translate) {
   return kind == null ? translate('app data') : translate('app data type {{kind}}', { kind })
 }
 
-function getScopeText (scope, eKind, translate) {
-  if (!scope) return ''
-  const normalized = String(scope).replace(/\s+/g, ' ').trim()
-  if (!normalized) return ''
-  const clipped = normalized.length > 48 ? `${normalized.slice(0, 32)}...${normalized.slice(-12)}` : normalized
-  return eKind === 26300 && /^[0-9a-f]{64}$/i.test(normalized)
-    ? translate('Channel: {{scope}}', { scope: `${normalized.slice(0, 8)}...${normalized.slice(-8)}` })
-    : translate('Scope: {{scope}}', { scope: clipped })
+function getScopeText (scopeLabelKey, translate) {
+  if (typeof scopeLabelKey !== 'string' || !scopeLabelKey) return ''
+  return translate('Scope: {{scope}}', { scope: translate(scopeLabelKey) })
 }
 
 export function formatPermissionText ({ name, eKind, meta, getCachedAppName = () => undefined, translate = t }) {
@@ -93,7 +92,7 @@ export function formatPermissionText ({ name, eKind, meta, getCachedAppName = ()
     else text = translate('Can I {{action}} {{dataType}}?', { action: name, dataType })
   }
 
-  const scope = getScopeText(meta?.scope, eKind, translate)
+  const scope = getScopeText(meta?.scopeLabelKey, translate)
   if (!scope) return text
   const punctuation = /[?？]$/.test(text) ? text.slice(-1) : ''
   const question = punctuation ? text.slice(0, -1) : text
@@ -118,7 +117,9 @@ function createPermissionDialogStore () {
       }
     },
     queue$: [],
-    getPermissionId (req) { return `${req.app.id}:${req.name}:${req.eKind ?? ''}` },
+    getPermissionId (req) {
+      return JSON.stringify([req.app.id, req.name, req.eKind ?? '', req.scope ?? ''])
+    },
     isSingularPermission (req) {
       return req.remember === false || req.eKind == null || (req.app.id && req.name === 'openApp')
     },
@@ -147,6 +148,7 @@ function createPermissionDialogStore () {
           },
           name: req.name,
           eKind: req.eKind,
+          scope: req.scope,
           remember: req.remember,
           dedupeKey: req.dedupeKey,
           meta: {
@@ -184,7 +186,7 @@ function createPermissionDialogStore () {
         }
 
         // remember
-        await createOrUpdatePermission(req.app.id, req.name, req.eKind)
+        await createOrUpdatePermission(req.app.id, req.name, req.eKind, req.scope)
         req.resolve(true)
         this.removeCurrent(current)
       } else {
@@ -194,9 +196,10 @@ function createPermissionDialogStore () {
     },
     async queryPermission (req) {
       if (this.isSingularPermission(req)) return false
-      return hasPermission(req.app.id, req.name, req.eKind)
+      return hasPermission(req.app.id, req.name, req.eKind, req.scope)
     },
     async requestPermission (req) {
+      req = { ...req, scope: typeof req.scope === 'string' ? req.scope : '' }
       const granted = await this.queryPermission(req)
       if (granted) return true
 
@@ -238,6 +241,11 @@ export function usePermissionDialogStore () {
 // On the nip07 handler, call await pdStore.requestPermission(req)
 f('permissionDialog', function () {
   const pdStore = usePermissionDialogStore()
+  useTask(() => {
+    reconcilePermissionScopes().catch(error => {
+      console.warn('Could not reconcile permission scopes', error)
+    })
+  })
   const modalProps = useStore(() => ({
     isOpen$: pdStore.isOpen$,
     close: pdStore.close.bind(pdStore),

@@ -1,7 +1,7 @@
 export const getDb = (db => async () => (db ??= await initDb()))()
 const initDb = () => {
   const p = Promise.withResolvers()
-  const req = indexedDB.open('44billion_browser', 4)
+  const req = indexedDB.open('44billion_browser', 5)
   req.onerror = () => p.reject(req.error)
   req.onsuccess = () => {
     const db = req.result
@@ -37,8 +37,12 @@ const initDb = () => {
       if (e.oldVersion > 0 && e.oldVersion < 3) store.clear()
     }
     console.log(`[${db.name}DB v${db.version}] ${store.name} store is ready`)
+    if (e.oldVersion > 0 && e.oldVersion < 5 && db.objectStoreNames.contains('permissions')) {
+      db.deleteObjectStore('permissions')
+      console.log(`[${db.name}DB v${db.version}] reset 'permissions' for scope-aware keys`)
+    }
     if (!db.objectStoreNames.contains('permissions')) {
-      store = db.createObjectStore('permissions', { keyPath: ['appId', 'name', 'eKind'] })
+      store = db.createObjectStore('permissions', { keyPath: ['appId', 'name', 'eKind', 'scope'] })
     } else {
       store = tx.objectStore('permissions')
     }

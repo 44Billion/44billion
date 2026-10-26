@@ -19,29 +19,52 @@ const { hasPermission } = await import('../../src/services/idb/browser/queries/p
 
 describe('stored permission lookup', () => {
   it('matches only the exact kind and never treats -1 as a wildcard', async () => {
-    rows.set(JSON.stringify(['app', 'eventAccess', -1]), { appId: 'app', name: 'eventAccess', eKind: -1 })
-    rows.set(JSON.stringify(['app', 'eventAccess', 1]), { appId: 'app', name: 'eventAccess', eKind: 1 })
+    rows.set(JSON.stringify(['app', 'eventAccess', -1, '']), { appId: 'app', name: 'eventAccess', eKind: -1, scope: '' })
+    rows.set(JSON.stringify(['app', 'eventAccess', 1, '']), { appId: 'app', name: 'eventAccess', eKind: 1, scope: '' })
 
     assert.equal(await hasPermission('app', 'eventAccess', -1), true)
     assert.equal(await hasPermission('app', 'eventAccess', 1), true)
-    rows.delete(JSON.stringify(['app', 'eventAccess', 1]))
+    rows.delete(JSON.stringify(['app', 'eventAccess', 1, '']))
     assert.equal(await hasPermission('app', 'eventAccess', 1), false)
     assert.deepEqual(reads, [
-      ['app', 'eventAccess', -1],
-      ['app', 'eventAccess', 1],
-      ['app', 'eventAccess', 1]
+      ['app', 'eventAccess', -1, ''],
+      ['app', 'eventAccess', 1, ''],
+      ['app', 'eventAccess', 1, '']
     ])
   })
 
   it('keeps public and personal namespaces independent', async () => {
     rows.clear()
-    rows.set(JSON.stringify(['app', 'eventAccess', 9]), { appId: 'app', name: 'eventAccess', eKind: 9 })
+    rows.set(JSON.stringify(['app', 'eventAccess', 9, '']), { appId: 'app', name: 'eventAccess', eKind: 9, scope: '' })
     assert.equal(await hasPermission('app', 'eventAccessPersonal', 9), false)
-    rows.set(JSON.stringify(['app', 'eventAccessPersonal', 9]), {
+    rows.set(JSON.stringify(['app', 'eventAccessPersonal', 9, '']), {
       appId: 'app',
       name: 'eventAccessPersonal',
-      eKind: 9
+      eKind: 9,
+      scope: ''
     })
     assert.equal(await hasPermission('app', 'eventAccessPersonal', 9), true)
+  })
+
+  it('keeps kind-wide and scoped grants independent', async () => {
+    rows.clear()
+    rows.set(JSON.stringify(['app', 'eventAccessPersonal', 9, 'calendar:v1']), {
+      appId: 'app',
+      name: 'eventAccessPersonal',
+      eKind: 9,
+      scope: 'calendar:v1'
+    })
+    assert.equal(await hasPermission('app', 'eventAccessPersonal', 9, ''), false)
+    assert.equal(await hasPermission('app', 'eventAccessPersonal', 9, 'calendar:v1'), true)
+    assert.equal(await hasPermission('app', 'eventAccessPersonal', 9, 'photos:v1'), false)
+
+    rows.set(JSON.stringify(['app', 'eventAccessPersonal', 9, '']), {
+      appId: 'app',
+      name: 'eventAccessPersonal',
+      eKind: 9,
+      scope: ''
+    })
+    assert.equal(await hasPermission('app', 'eventAccessPersonal', 9, ''), true)
+    assert.equal(await hasPermission('app', 'eventAccessPersonal', 9, 'calendar:v1'), true)
   })
 })

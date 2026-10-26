@@ -22,16 +22,17 @@ export async function askNip07 (
     onAttention: onSignerRequestAttention
   })
   if (requestPermission && needsNip07Permission(method)) {
-    const { permissions, scope, unknown } = nip07PermissionContext({ method, params })
+    const { permissions, unknown } = nip07PermissionContext({ method, params })
     if (unknown) throw new Error(`Unknown method ${method}`)
 
-    for (const permission of permissions) {
+    for (const { scope = '', scopeLabelKey, ...permission } of permissions) {
       await requestPermission({
         app,
         ...permission,
+        scope,
         meta: {
           params,
-          ...(scope === undefined ? {} : { scope }),
+          ...(scopeLabelKey ? { scopeLabelKey } : {}),
           ...permission.meta,
           ...(permissionMeta || {})
         }

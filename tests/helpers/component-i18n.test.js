@@ -40,7 +40,11 @@ mock.module('#shared/icons/icon-check.js', { namedExports: {} })
 mock.module('#shared/icons/icon-help-hexagon-filled.js', { namedExports: {} })
 mock.module('#shared/icons/icon-info-hexagon-filled.js', { namedExports: {} })
 mock.module('#services/idb/browser/queries/permission.js', {
-  namedExports: { hasPermission: async () => false, createOrUpdatePermission: async () => {} }
+  namedExports: {
+    hasPermission: async () => false,
+    createOrUpdatePermission: async () => {},
+    reconcilePermissionScopes: async () => 0
+  }
 })
 mock.module('#assets/styles/theme.js', {
   namedExports: { cssVars: { colors: {} }, jsVars: { breakpoints: {} } }
@@ -65,6 +69,10 @@ const {
   formatPermissionText,
   permissionDialogLocales
 } = await import('../../src/components/zones/permission-dialog/index.js')
+const {
+  createPermissionScopeRegistry,
+  permissionScopeEntries
+} = await import('../../src/helpers/window-message/browser/permission-scopes.js')
 const {
   useConfirmationDialogStore
 } = await import('../../src/components/zones/confirmation-dialog/index.js')
@@ -155,6 +163,21 @@ describe('permission translations', () => {
     }
   })
 
+  it('requires translated labels for every registered scoped permission', () => {
+    const registry = createPermissionScopeRegistry([
+      { kind: 9, scope: 'test:chat:v1', labelKey: 'chat messages' },
+      { kind: 1063, scope: 'test:files:v1', labelKey: 'files' }
+    ])
+    const entries = [...permissionScopeEntries(registry)]
+    assert.equal(entries.length, 2)
+    for (const entry of entries) {
+      assert.ok(permissionDialogLocales[entry.labelKey], `${entry.kind}:${entry.scope}`)
+      assert.deepEqual(Object.keys(permissionDialogLocales[entry.labelKey]).sort(), [
+        'de', 'en', 'es', 'fr', 'it', 'ja', 'ko', 'pt-BR', 'ru', 'zh-CN', 'zh-TW'
+      ])
+    }
+  })
+
   it('describes app data and content-key announcements in the existing access templates', () => {
     for (const [eKind, en, ptBR] of [
       [30078, 'app settings and data', 'configurações e dados de aplicativos'],
@@ -176,12 +199,17 @@ describe('permission translations', () => {
     }
   })
 
-  it('pluralizes deletion counts and preserves localized scope punctuation', () => {
+  it('pluralizes deletion counts and shows only localized registered scope labels', () => {
     const event = count => ({ tags: Array.from({ length: count }, (_, index) => ['e', String(index)]) })
     assert.equal(format('en', { name: 'delete', eKind: 5, meta: { params: [event(1)] } }), 'Can I delete 1 item?')
     assert.equal(format('en', { name: 'delete', eKind: 5, meta: { params: [event(2)] } }), 'Can I delete 2 items?')
     assert.equal(format('ru', { name: 'delete', eKind: 5, meta: { params: [event(5)] } }), 'Можно удалить 5 элементов?')
-    assert.equal(format('zh-CN', { name: 'eventAccess', eKind: 34601, meta: { scope: 'asset' } }), '可以访问此类数据吗：文件 (范围：asset)？')
+    assert.equal(format('zh-CN', { name: 'eventAccess', eKind: 34601, meta: { scopeLabelKey: 'files' } }), '可以访问此类数据吗：文件 (范围：文件)？')
+    assert.equal(format('en', {
+      name: 'eventAccessPersonal',
+      eKind: 9,
+      meta: { scope: 'zillion:conversation-summaries:v1' }
+    }), 'Can I access personal copies of chat messages?')
   })
 
   it('uses the target app d tag instead of its encoded entity while metadata loads', () => {

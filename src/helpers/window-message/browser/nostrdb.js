@@ -370,7 +370,7 @@ export function explicitFilterKinds (filterOrFilters) {
 }
 
 function permissionKey (permission) {
-  return `${permission.name}:${permission.eKind}`
+  return `${permission.name}:${permission.eKind}:${permission.scope ?? ''}`
 }
 
 function uniquePermissions (permissions) {
@@ -391,6 +391,7 @@ async function requestPermissions (permissions, { app, requestPermission, params
     await requestPermission({
       app,
       ...permission,
+      scope: permission.scope ?? '',
       meta: {
         params,
         ...permission.meta

@@ -700,6 +700,7 @@ function createAppPageMessageListener ({
               ),
               name: 'openApp',
               eKind: null,
+              scope: '',
               meta: { targetApp: targetAppMetadata }
             })
             openApp(href)

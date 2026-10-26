@@ -201,12 +201,21 @@ Content-key revision notifications themselves are in memory only.
 
 - `fileChunks` — app file chunks keyed by `[appId, fx, pos]`.
 - `siteManifests` — site manifest events keyed by `[c, p, d]`.
-- `permissions` — app permissions keyed by `[appId, name, eKind]`.
+- `permissions` — app permissions keyed by `[appId, name, eKind, scope]`.
+  `scope: ''` is kind-wide. Non-empty scopes are granular only for
+  launcher-registered `(kind, scope)` entries with translated labels; unknown
+  scopes fall back to `''`. Schema v5 intentionally resets all permission
+  grants from v4 because the key path changed.
 - `chunkPayloads` — deduplicated chunk payloads.
 - `chunkCopies` — owner/root/index copies.
 - `chunkPayloadRoots` — owner/root/content-hash associations.
 - `chunkRoots` — owner chunk roots and purge metadata.
 - `chunkState` — chunk-cache reconciliation state.
+
+On permission-dialog initialization, scoped records not present in the current
+launcher registry are removed in the background. Uninstall and storage repair
+remove every kind-wide and scoped permission for the app while preserving other
+apps.
 
 The initial `siteManifests` write belongs to the normal first-open fetch. Being
 listed as installed in localStorage does not imply that this write has finished.

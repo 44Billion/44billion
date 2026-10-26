@@ -123,16 +123,24 @@ a launcher/vault extension using the same binary convention, not a method
 defined by the cited NIP-07 extension. Account access checks and rejection of
 vault errors remain unchanged.
 
-Permission grants are exact. A stored `-1` grant does not authorize another
-kind. `signEvent`/`doubleSignEvent` request `eventAccess/<kind>` and remember
-it. Kinds 26300, 26400, 3560 and the personal-copy wrapper kind 1006 are protocol
-plumbing and are exempt when signing those events themselves; a kind-5 deletion
-targeting any of those kinds still follows the deletion rules below.
+Permission grants are exact and include `{ appId, name, eKind, scope }`. A
+stored `-1` grant does not authorize another kind. `scope: ''` is a kind-wide
+grant. A non-empty scope is granular only when the launcher-owned `(kind, scope)`
+registry defines a translated label; unknown scopes are treated as `''` and do
+not appear in prompts. Removing a registry entry also removes its existing
+scoped grants during startup reconciliation, after which calls use the
+kind-wide `scope: ''` grant. `signEvent`/`doubleSignEvent` request
+`eventAccess/<kind>` with `scope: ''` and remember it. Kinds 26300, 26400, 3560
+and the personal-copy wrapper kind 1006 are protocol plumbing and are exempt
+when signing those events themselves; a kind-5 deletion targeting any of those
+kinds still follows the deletion rules below.
 
-NIP-44 v3 requests `eventAccessPersonal/<kind>`, including kind 1006. Kinds
-26300, 26400 and 3560 are exempt for this encryption path. Missing or invalid
-kinds reject with `INVALID_KIND` before any prompt. NIP-04 and NIP-44 v2 have
-no kind or scope argument and request the distinct remembered permission
+NIP-44 v3 requests `eventAccessPersonal/<kind>` with its resolved permission
+scope, including kind 1006. Kinds 26300, 26400 and 3560 are exempt for this
+encryption path. Missing or invalid kinds reject with `INVALID_KIND`; non-string
+scopes reject with `INVALID_SCOPE` before any prompt. NIP-04 and NIP-44 v2 have
+no kind or scope argument and request the distinct remembered `scope: ''`
+permission
 `legacyCryptoAccess/-1`, shown as “Can I access all encrypted data?”.
 Deprecated kind 2 used as a reserved fake context is labeled “generic data”.
 `obfuscate` and public-key reads remain permissionless. Outside the event store

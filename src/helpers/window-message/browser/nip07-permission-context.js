@@ -5,6 +5,7 @@ import {
   LEGACY_CRYPTO_ACCESS_PERMISSION,
   normalizeEventKind
 } from './event-permissions.js'
+import { resolvedPermissionScope, SUPPORTED_PERMISSION_SCOPES } from './permission-scopes.js'
 import { ValidationError } from 'libp2r2p/error'
 
 const methodNameAliases = {
@@ -50,14 +51,26 @@ export function needsNip07Permission (method) {
   return !permissionlessMethods.has(normalizeMethodName(method || ''))
 }
 
-export function nip07PermissionContext ({ method, params = [] } = {}) {
+function withPermissionScope (permissions, kind, scope, scopeRegistry) {
+  const resolved = resolvedPermissionScope(kind, scope, scopeRegistry)
+  return {
+    resolved,
+    permissions: permissions.map(permission => ({
+      ...permission,
+      scope: resolved.scope,
+      ...(resolved.labelKey ? { scopeLabelKey: resolved.labelKey } : {})
+    }))
+  }
+}
+
+export function nip07PermissionContext ({ method, params = [], scopeRegistry = SUPPORTED_PERMISSION_SCOPES } = {}) {
   const normalizedMethod = normalizeMethodName(method || '')
 
   if (normalizedMethod === 'signEvent' || normalizedMethod === 'doubleSignEvent') {
     const event = params?.[0]
     const eKind = normalizeEventKind(event?.kind)
     if (eKind === null) throw new ValidationError('INVALID_KIND')
-    const permissions = eventAccessPermissionRequestsForEvent(event)
+    const { permissions } = withPermissionScope(eventAccessPermissionRequestsForEvent(event), eKind, '', scopeRegistry)
 
     return { method: normalizedMethod, eKind, permissions }
   }
@@ -65,21 +78,32 @@ export function nip07PermissionContext ({ method, params = [] } = {}) {
   if (nip44v3EncryptMethods.has(normalizedMethod) || nip44v3DecryptMethods.has(normalizedMethod)) {
     const eKind = normalizeEventKind(params?.[1])
     if (eKind === null) throw new ValidationError('INVALID_KIND')
-    const permissions = eventAccessPersonalPermissionRequestsForKind(eKind)
+    const { permissions, resolved } = withPermissionScope(
+      eventAccessPersonalPermissionRequestsForKind(eKind),
+      eKind,
+      params?.[2] ?? '',
+      scopeRegistry
+    )
 
     return {
       method: normalizedMethod,
       eKind,
-      scope: String(params?.[2] ?? ''),
+      scope: resolved.scope,
       permissions
     }
   }
 
   if (legacyEncryptMethods.has(normalizedMethod) || legacyDecryptMethods.has(normalizedMethod)) {
+    const { permissions } = withPermissionScope(
+      [{ name: LEGACY_CRYPTO_ACCESS_PERMISSION, eKind: BROAD_EVENT_KIND }],
+      BROAD_EVENT_KIND,
+      '',
+      scopeRegistry
+    )
     return {
       method: normalizedMethod,
       eKind: BROAD_EVENT_KIND,
-      permissions: [{ name: LEGACY_CRYPTO_ACCESS_PERMISSION, eKind: BROAD_EVENT_KIND }]
+      permissions
     }
   }
 
