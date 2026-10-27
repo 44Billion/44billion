@@ -37,7 +37,8 @@ import {
   ASSET_BUDGET_DENIED_BY_USER
 } from '#services/app-asset-budget/index.js'
 import { APP_FILE_CHUNK_BYTES } from '#constants/app-file.js'
-import { PROGRESS_VISIBLE_AFTER_COMPLETE_MS, stampProgressEntry } from '#helpers/caching-progress.js'
+import { createAppFileProgressTracker } from '#helpers/caching-progress.js'
+import { streamAppFileChunks } from '#helpers/app-file-stream.js'
 import NFileDownloader from '#services/nfile-downloader/index.js'
 import { createRelayBridgeEndpoint } from '#services/relay-pool/bridge-endpoint.js'
 import { isRelayPoolEnabled, relayRegistry, unifiedRelayPool } from '#services/relay-pool/launcher.js'
@@ -254,82 +255,77 @@ function listenToTrustedAppPageMessages ({
                 let hasErrored = false
                 let hasSentLast = false
                 let isStreaming = false
-                const progressCompletionTimers = new Map()
+                let downloadValidated = false
+                let streamRequested = false
+                let streamPromise = null
 
-                const clearProgressCompletionTimer = filename => {
-                  const timer = progressCompletionTimers.get(filename)
-                  if (timer) {
-                    clearTimeout(timer)
-                    progressCompletionTimers.delete(filename)
-                  }
-                }
-
-                const tryStream = async () => {
-                  if (hasErrored || hasSentLast || isStreaming) return
+                const tryStream = () => {
+                  streamRequested = true
+                  if (hasErrored || hasSentLast) return streamPromise ?? Promise.resolve()
+                  if (isStreaming) return streamPromise
                   isStreaming = true
-                  try {
-                    // eslint-disable-next-line no-unmodified-loop-condition
-                    while (!hasErrored && !hasSentLast) {
-                      const chunks = await getFileChunksFromDb(appId, fileRootHash, {
-                        fromPos: nextChunkIndexToStream,
-                        toPos: nextChunkIndexToStream
-                      })
-                      if (chunks.length === 0) break
-                      const chunk = chunks[0]
-                      if (totalChunks === null) {
-                        const parsedTotal = chunk.total ?? Number(chunk.evt.tags.find(tag => tag[0] === 'mmr')?.[2])
-                        if (!Number.isNaN(parsedTotal) && parsedTotal > 0) totalChunks = parsedTotal
-                      }
-                      const isLast = (totalChunks != null && nextChunkIndexToStream === totalChunks - 1)
-                      reply(e, {
-                        payload: {
-                          content: chunk.evt.content,
-                          ...(nextChunkIndexToStream === 0 && { contentType: cacheStatus.contentType })
-                        },
-                        isLast
-                      }, { to: trustedAppPagePort })
-                      nextChunkIndexToStream++
-                      if (isLast) hasSentLast = true
+                  streamPromise = (async () => {
+                    try {
+                      do {
+                        streamRequested = false
+                        const streamState = await streamAppFileChunks({
+                          startIndex: nextChunkIndexToStream,
+                          totalChunks,
+                          downloadValidated,
+                          loadChunk: async index => {
+                            const chunks = await getFileChunksFromDb(appId, fileRootHash, {
+                              fromPos: index,
+                              toPos: index
+                            })
+                            return chunks[0] ?? null
+                          },
+                          sendChunk: ({ chunk, index, isLast }) => {
+                            reply(e, {
+                              payload: {
+                                content: chunk.evt.content,
+                                ...(index === 0 && { contentType: cacheStatus.contentType })
+                              },
+                              isLast
+                            }, { to: trustedAppPagePort })
+                          },
+                          sendTerminal: () => {
+                            reply(e, {
+                              payload: { content: '' },
+                              isLast: true
+                            }, { to: trustedAppPagePort })
+                          }
+                        })
+                        nextChunkIndexToStream = streamState.nextIndex
+                        totalChunks = streamState.totalChunks
+                        hasSentLast = streamState.hasSentLast
+                      } while (streamRequested && !hasErrored && !hasSentLast)
+                    } catch (err) {
+                      hasErrored = true
+                      handleStreamError(err)
+                    } finally {
+                      isStreaming = false
+                      streamPromise = null
                     }
-                  } catch (err) {
-                    hasErrored = true
-                    handleStreamError(err)
-                  } finally {
-                    isStreaming = false
-                  }
+                  })()
+                  return streamPromise
                 }
 
-                const progressCallback = async ({ progress: cachingProgress, chunkIndex, total, error }) => {
-                  if (hasErrored || hasSentLast) return
-                  const filename = e.data.payload.pathname
-                  if (error) {
-                    hasErrored = true
-                    clearProgressCompletionTimer(filename)
-                    const currentProgress = cachingProgress$()
-                    const { [filename]: _, ...remaining } = currentProgress
-                    cachingProgress$(remaining)
-                    return handleStreamError(error)
+                const trackProgress = createAppFileProgressTracker({
+                  cachingProgress$,
+                  filename: e.data.payload.pathname,
+                  getTotalChunks: () => totalChunks,
+                  setTotalChunks: value => { totalChunks = value },
+                  isErrored: () => hasErrored,
+                  markErrored: () => { hasErrored = true },
+                  isStreamComplete: () => hasSentLast,
+                  onError: handleStreamError
+                })
+                const progressCallback = async ({ chunkIndex, progress, ...report }) => {
+                  if (progress >= 100) {
+                    downloadValidated = true
+                    if (report.total > 0) totalChunks = report.total
                   }
-
-                  if (total && totalChunks === null) totalChunks = total
-                  const currentProgress = cachingProgress$()
-                  cachingProgress$({
-                    ...currentProgress,
-                    [filename]: stampProgressEntry({
-                      progress: cachingProgress,
-                      totalByteSizeEstimate: totalChunks ? totalChunks * APP_FILE_CHUNK_BYTES : 0
-                    })
-                  })
-                  if (cachingProgress >= 100) {
-                    clearProgressCompletionTimer(filename)
-                    const timer = setTimeout(() => {
-                      progressCompletionTimers.delete(filename)
-                      const latestProgress = cachingProgress$()
-                      const { [filename]: _, ...remaining } = latestProgress
-                      cachingProgress$(remaining)
-                    }, PROGRESS_VISIBLE_AFTER_COMPLETE_MS)
-                    progressCompletionTimers.set(filename, timer)
-                  }
+                  if (!trackProgress({ progress, ...report })) return
                   if (typeof chunkIndex === 'number') {
                     if (chunkIndex === nextChunkIndexToStream) await tryStream()
                   } else {

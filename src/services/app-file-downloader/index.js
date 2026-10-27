@@ -6,7 +6,9 @@ import {
   saveFileChunksToDB,
   countFileChunksFromDb,
   getFileChunksFromDb,
-  deleteFileChunksFromDb
+  deleteFileChunksFromDb,
+  getBlossomFileValidation,
+  isValidBlossomFileValidation
 } from '#services/idb/browser/queries/file-chunk.js'
 import FileDownloader from '#services/file-downloader/index.js'
 import BlossomFileDownloader from '#services/blossom-file-downloader/index.js'
@@ -106,11 +108,20 @@ export default class AppFileDownloader {
     _getFileChunksFromDb = getFileChunksFromDb,
     _deleteFileChunksFromDb = deleteFileChunksFromDb,
     _saveFileChunksToDB = saveFileChunksToDB,
+    _getBlossomFileValidation = getBlossomFileValidation,
     skipDb = false,
     assetBudget = null
   } = {}) {
     if (this.service === 'blossom') {
-      yield * this.#runBlossom({ _BlossomFileDownloader, _countFileChunksFromDb, _saveFileChunksToDB, _deleteFileChunksFromDb, skipDb, assetBudget })
+      yield * this.#runBlossom({
+        _BlossomFileDownloader,
+        _countFileChunksFromDb,
+        _getBlossomFileValidation,
+        _saveFileChunksToDB,
+        _deleteFileChunksFromDb,
+        skipDb,
+        assetBudget
+      })
     } else {
       yield * this.#runIrfs({ _FileDownloader, _countFileChunksFromDb, _getFileChunksFromDb, _saveFileChunksToDB, skipDb, assetBudget })
     }
@@ -119,18 +130,36 @@ export default class AppFileDownloader {
   async * #runBlossom ({
     _BlossomFileDownloader,
     _countFileChunksFromDb,
+    _getBlossomFileValidation,
     _saveFileChunksToDB,
     _deleteFileChunksFromDb,
     skipDb = false,
     assetBudget = null
   }) {
     // Check if already fully cached (chunks are stored under the sha256 hash)
+    let dbInfo = { count: 0, total: null }
     if (!skipDb) {
-      const dbInfo = await _countFileChunksFromDb(this.appId, this.fileRootHash)
+      dbInfo = await _countFileChunksFromDb(this.appId, this.fileRootHash)
       if (dbInfo.total && dbInfo.count >= dbInfo.total) {
-        yield { type: 'progress', progress: 100, count: dbInfo.total, total: dbInfo.total }
-        return
+        const validation = await _getBlossomFileValidation(this.appId, this.fileRootHash)
+        if (isValidBlossomFileValidation(validation, {
+          appId: this.appId,
+          rootHash: this.fileRootHash,
+          totalChunks: dbInfo.total
+        })) {
+          yield {
+            type: 'progress',
+            progress: 100,
+            count: dbInfo.total,
+            total: dbInfo.total,
+            byteLength: validation.byteLength
+          }
+          return
+        }
       }
+      // Unvalidated chunks may carry a provisional total. Re-download the root
+      // cleanly so old extra indices cannot survive validation.
+      if (dbInfo.count > 0) await _deleteFileChunksFromDb(this.appId, this.fileRootHash)
     }
 
     if (isLocalDevApp(this.appId)) throw new Error('Local app file is missing; restart the local watcher')

@@ -21,7 +21,10 @@ mock.module('#services/idb/browser/queries/file-chunk.js', {
   namedExports: {
     countFileChunksFromDb: async () => ({ count: 0, total: 1 }),
     deleteFileChunksFromDb: async () => {},
+    getBlossomFileValidation: async () => null,
     getFileChunksFromDb: async () => [],
+    isValidBlossomFileValidation: () => false,
+    markBlossomFileValidated: async () => {},
     saveFileChunksToDB: async () => {},
     streamFileChunksFromDb: async function * (_appId, root) {
       yield { evt: { content: encode(bytesByRoot.get(root)) } }

@@ -38,12 +38,12 @@ before(async () => {
 describe('file chunk deletion transactions', () => {
   it('opens a writable cursor when deleting all chunks', async () => {
     await deleteFileChunksFromDb('app')
-    assert.equal(run.mock.callCount(), 1)
+    assert.equal(run.mock.callCount(), 2)
   })
 
   it('opens a writable cursor when deleting stale chunks', async () => {
     run.mock.resetCalls()
     await deleteStaleFileChunksFromDb('app', [])
-    assert.equal(run.mock.callCount(), 1)
+    assert.equal(run.mock.callCount(), 2)
   })
 })

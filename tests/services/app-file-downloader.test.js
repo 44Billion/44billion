@@ -202,7 +202,7 @@ describe('AppFileDownloader', () => {
     })
 
     it('should skip download when already fully cached', async () => {
-      const testHash = 'abc123hash'
+      const testHash = 'a'.repeat(64)
       const downloader = new AppFileDownloader(appId, testHash, writeRelays, { service: 'blossom' })
 
       let blossomConstructorCalled = false
@@ -214,6 +214,14 @@ describe('AppFileDownloader', () => {
       const deps = {
         _BlossomFileDownloader: MockBlossomDownloader,
         _countFileChunksFromDb: mock.fn(async () => ({ total: 5, count: 5 })),
+        _getBlossomFileValidation: mock.fn(async () => ({
+          key: `blossomFileValidation:${appId}:${testHash}`,
+          appId,
+          root: testHash,
+          totalChunks: 5,
+          byteLength: 2,
+          validatedAt: 1
+        })),
         _saveFileChunksToDB: mock.fn(async () => {})
       }
 
@@ -225,6 +233,34 @@ describe('AppFileDownloader', () => {
       assert.equal(blossomConstructorCalled, false)
       assert.equal(updates.length, 1)
       assert.equal(updates[0].progress, 100)
+    })
+
+    it('does not treat provisional Blossom chunks as a validated cache', async () => {
+      const testHash = 'a'.repeat(64)
+      const downloader = new AppFileDownloader(appId, testHash, writeRelays, { service: 'blossom' })
+      let blossomConstructorCalled = false
+      const MockBlossomDownloader = class {
+        constructor (_hash, _pubkey, _relays, callback) {
+          blossomConstructorCalled = true
+          this.callback = callback
+        }
+
+        async run () {
+          await this.callback({ type: 'progress', progress: 100, count: 5, total: 5, byteLength: 2 })
+        }
+      }
+
+      const updates = []
+      for await (const report of downloader.run({
+        _BlossomFileDownloader: MockBlossomDownloader,
+        _countFileChunksFromDb: mock.fn(async () => ({ total: 5, count: 5 })),
+        _getBlossomFileValidation: mock.fn(async () => null),
+        _saveFileChunksToDB: mock.fn(async () => {}),
+        _deleteFileChunksFromDb: mock.fn(async () => {})
+      })) updates.push(report)
+
+      assert.equal(blossomConstructorCalled, true)
+      assert.equal(updates.at(-1).progress, 100)
     })
 
     it('discards provisional Blossom chunks before replay without exposing a failure', async () => {

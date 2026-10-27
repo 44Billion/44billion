@@ -93,6 +93,10 @@ export const APP_METADATA_SUFFIXES = [
   '_relayHints'
 ]
 
+// 44billion_browser.chunkState record written only after a Blossom root has
+// passed full-body SHA-256 validation.
+export const BLOSSOM_FILE_VALIDATION_PREFIX = 'blossomFileValidation:'
+
 export const ACCOUNT_SUFFIXES = [
   '_isReadOnly',
   '_isLocked',

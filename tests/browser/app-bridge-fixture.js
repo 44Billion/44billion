@@ -21,6 +21,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToBase16 } from 'libp2r2p/base16'
 import { saveSiteManifestToDb } from '#services/idb/browser/queries/site-manifest.js'
 import { run } from '#services/idb/browser/index.js'
+import { markBlossomFileValidated } from '#services/idb/browser/queries/file-chunk.js'
 import AppUpdater from '#services/app-updater/index.js'
 import '#zones/screen/index.js'
 import '#zones/single-napp/index.js'
@@ -98,6 +99,7 @@ window.addEventListener('message', async event => {
 const root = bytesToBase16(sha256(bytes))
 const manifest = { kind, pubkey, id: '22'.repeat(32), created_at: 1, content: '', tags: [['d', 'bridge-test'], ['name', 'Bridge Test'], ['path', '/index.html', root]] }
 await run('put', [{ appId, fx: root, pos: 0, total: 1, service: 'blossom', evt: { kind: 34601, tags: [['mmr', '0', '1', '']], content: encode(bytes) } }], 'fileChunks')
+await markBlossomFileValidated(appId, root, { totalChunks: 1, byteLength: bytes.length })
 if (draftStartup) {
   // Reproduce feed delivery before the ordinary first-open manifest write.
   // Files are cached so even the old updater can run without external traffic.

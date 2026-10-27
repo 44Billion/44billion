@@ -11,7 +11,13 @@ import getSiteManifestEvent from './get-site-manifest-event.js'
 import AppFileDownloader from '#services/app-file-downloader/index.js'
 import { getUserRelays } from '#helpers/nostr-queries.js'
 import { nappRelays } from 'libp2r2p/relay'
-import { countFileChunksFromDb, deleteFileChunksFromDb } from '#services/idb/browser/queries/file-chunk.js'
+import {
+  countFileChunksFromDb,
+  deleteFileChunksFromDb,
+  getBlossomFileValidation,
+  isValidBlossomFileValidation,
+  markBlossomFileValidated
+} from '#services/idb/browser/queries/file-chunk.js'
 import { saveSiteManifestToDb, deleteSiteManifestFromDb } from '#services/idb/browser/queries/site-manifest.js'
 import mime from 'mime'
 import { setWebStorageItem } from '#f'
@@ -274,14 +280,23 @@ export default class AppFileManager {
     if (!asset) throw new Error(`No matching manifest asset found for path: ${pathname}`)
     const fileRootHash = asset.root
     const chunkStatus = await countFileChunksFromDb(this.appId, fileRootHash)
-    if (!withMeta) return { isCached: chunkStatus.count === chunkStatus.total }
+    let isCached = chunkStatus.count === chunkStatus.total
+    if (isCached && asset.service === 'blossom' && !isLocalDevApp(this.appId)) {
+      const validation = await getBlossomFileValidation(this.appId, fileRootHash)
+      isCached = isValidBlossomFileValidation(validation, {
+        appId: this.appId,
+        rootHash: fileRootHash,
+        totalChunks: chunkStatus.total
+      })
+    }
+    if (!withMeta) return { isCached, ...chunkStatus }
 
     const filename = asset.filename || asset.paths[0]
     const mimeType = asset.mimeType || mime.getType(filename)
 
     return {
       ...chunkStatus,
-      isCached: chunkStatus.count === chunkStatus.total,
+      isCached,
       mimeType,
       contentType: getContentType(mimeType),
       isHtml: /^text\/html\b/.test(mimeType),
@@ -328,7 +343,19 @@ export default class AppFileManager {
       } else if (error) p.reject(error)
     })
     this.#cacheFileInBackground(filename, asset, assetBudget, signal)
-    return p.promise
+    await p.promise
+    if (asset.service === 'blossom') {
+      try {
+        await markBlossomFileValidated(this.appId, asset.root, {
+          totalChunks: config.result.total,
+          byteLength: config.result.byteLength
+        })
+      } catch (error) {
+        // The downloaded bytes were validated, but without the durable marker
+        // they must not be reused as a complete cache after a restart.
+        console.warn(`[app-files] Failed to persist Blossom validation for ${asset.root}`, error)
+      }
+    }
   }
 
   #isCacheMissingAppFilesRunning = false

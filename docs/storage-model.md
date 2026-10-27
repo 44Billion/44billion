@@ -210,7 +210,16 @@ Content-key revision notifications themselves are in memory only.
 - `chunkCopies` — owner/root/index copies.
 - `chunkPayloadRoots` — owner/root/content-hash associations.
 - `chunkRoots` — owner chunk roots and purge metadata.
-- `chunkState` — chunk-cache reconciliation state.
+- `chunkState` — chunk-cache reconciliation state and validated app-file
+  records. A Blossom root is considered cached only when its
+  `blossomFileValidation:<appId>:<root>` record
+  `{ key, appId, root, totalChunks, byteLength, validatedAt }` matches the
+  root's observed chunk total and was written after full-body SHA-256
+  validation. Records without a `version` field use format v1; a future format
+  will add `version: 2`. Provisional chunks remain usable for download progress
+  but cannot masquerade as a complete cache after an interrupted first pass or
+  restart. Blossom caches without this record are intentionally treated as
+  cache misses and revalidated on their next use.
 
 On permission-dialog initialization, scoped records not present in the current
 launcher registry are removed in the background. Uninstall and storage repair

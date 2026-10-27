@@ -8,6 +8,64 @@ import {
   ensureAssetBudgetInitialized,
   ensureCanStoreAppAssetBytes
 } from '#services/app-asset-budget/index.js'
+import { BLOSSOM_FILE_VALIDATION_PREFIX } from '#constants/storage-schema.js'
+
+function blossomFileValidationKey (appId, rootHash) {
+  return `${BLOSSOM_FILE_VALIDATION_PREFIX}${appId}:${rootHash}`
+}
+
+export function isValidBlossomFileValidation (record, { appId, rootHash, totalChunks }) {
+  return Boolean(
+    typeof appId === 'string' &&
+    appId.length > 0 &&
+    /^[0-9a-f]{64}$/.test(rootHash || '') &&
+    record &&
+    record.version === undefined &&
+    record.key === blossomFileValidationKey(appId, rootHash) &&
+    record.appId === appId &&
+    record.root === rootHash &&
+    Number.isSafeInteger(record.totalChunks) &&
+    record.totalChunks > 0 &&
+    record.totalChunks === totalChunks &&
+    Number.isSafeInteger(record.byteLength) &&
+    record.byteLength >= 0 &&
+    Number.isSafeInteger(record.validatedAt) &&
+    record.validatedAt > 0
+  )
+}
+
+export async function getBlossomFileValidation (appId, rootHash) {
+  return run('get', [blossomFileValidationKey(appId, rootHash)], 'chunkState').then(v => v.result ?? null)
+}
+
+export async function markBlossomFileValidated (appId, rootHash, {
+  totalChunks,
+  byteLength,
+  validatedAt = Date.now()
+}) {
+  const key = blossomFileValidationKey(appId, rootHash)
+  const record = {
+    key,
+    appId,
+    root: rootHash,
+    totalChunks,
+    byteLength,
+    validatedAt
+  }
+  if (!isValidBlossomFileValidation(record, { appId, rootHash, totalChunks })) {
+    throw new Error('Invalid Blossom file validation')
+  }
+  await run('put', [record], 'chunkState')
+  return record
+}
+
+async function deleteBlossomFileValidations (appId, rootHash) {
+  const prefix = `${BLOSSOM_FILE_VALIDATION_PREFIX}${appId}:`
+  const range = rootHash
+    ? IDBKeyRange.bound(blossomFileValidationKey(appId, rootHash), blossomFileValidationKey(appId, rootHash))
+    : IDBKeyRange.bound(prefix, `${prefix}\uffff`)
+  await run('delete', [range], 'chunkState')
+}
 
 export async function countFileChunksFromDb (appId, rootHash) {
   let total = null
@@ -25,6 +83,7 @@ export async function countFileChunksFromDb (appId, rootHash) {
 export async function deleteStaleFileChunksFromDb (appId, allowedRootHashes, { signal } = {}) {
   await ensureAssetBudgetInitialized({ appId, _countFileChunksForApp: countFileChunkRowsFromDb })
   const allowed = new Set(allowedRootHashes)
+  const staleRoots = new Set()
   const p = Promise.withResolvers()
   const range = IDBKeyRange.bound([appId, '\u0000', -Infinity], [appId, '\uffff', Infinity])
   run('openCursor', [range], 'fileChunks', null, { p, txMode: 'readwrite' })
@@ -42,6 +101,7 @@ export async function deleteStaleFileChunksFromDb (appId, allowedRootHashes, { s
 
     if (!allowed.has(cursor.value.fx)) {
       deletedCount++
+      staleRoots.add(cursor.value.fx)
       cursor.delete()
     } else {
       continueKey = getContinueKey(cursor)
@@ -50,12 +110,16 @@ export async function deleteStaleFileChunksFromDb (appId, allowedRootHashes, { s
     cursor.continue(continueKey)
     if (continueKey) continueKey = undefined
   }
-  if (deletedCount > 0 && !signal?.aborted) applyAssetBudgetDelta(-(deletedCount * APP_FILE_CHUNK_BYTES), { appId })
+  if (deletedCount > 0 && !signal?.aborted) {
+    applyAssetBudgetDelta(-(deletedCount * APP_FILE_CHUNK_BYTES), { appId })
+    await Promise.all([...staleRoots].map(rootHash => deleteBlossomFileValidations(appId, rootHash)))
+  }
 }
 
 // Caution: when there's no rootHash arg, use this only when no user has the app installed anymore
 export async function deleteFileChunksFromDb (appId, rootHash) {
   if (!appId) throw new Error('Missing app id')
+  await deleteBlossomFileValidations(appId, rootHash)
   await ensureAssetBudgetInitialized({ appId, _countFileChunksForApp: countFileChunkRowsFromDb })
 
   const range = IDBKeyRange.bound([appId, rootHash ?? '\u0000', -Infinity], [appId, rootHash ?? '\uffff', Infinity])
