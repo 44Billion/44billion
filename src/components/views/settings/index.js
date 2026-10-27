@@ -217,10 +217,14 @@ f('a-settings', function () {
           font-size: 12rem;
           font-weight: bold;
         }
-        .input-group {
+        .vault-item-content {
+          width: 100%;
+        }
+        .vault-url-row {
           display: flex;
-          flex-direction: column;
+          align-items: center;
           gap: 8px;
+          margin-top: 12px;
         }
         input[type="text"] {
           padding: 10px;
@@ -347,15 +351,25 @@ f('a-settings', function () {
 
         <div class="section">
           <div class="section-title">${t('Advanced')}</div>
+          <button class="item" onclick=${() => location.pushState({}, '', '/app-data-access')}>
+            <div class="item-content">
+              <div class="item-title">${t('App Data Access')}</div>
+              <div class="item-subtitle">${t('Review which apps can access your data')}</div>
+            </div>
+          </button>
           <button class="item" onclick=${() => location.pushState({}, '', '/event-storage')}>
-            <div class="item-content"><div class="item-title">${storageT('Event storage')}</div></div>
+            <div class="item-content">
+              <div class="item-title">${storageT('Event storage')}</div>
+              <div class="item-subtitle">${t('Review storage usage and limits')}</div>
+            </div>
             ${quotaNeedsAttention(quotaState$()) ? this.h`<span class="quota-dot" role="img" aria-label=${storageT('Above limit')}></span>` : ''}
           </button>
 
           <div class="item" style="cursor: default;">
-            <div class="input-group" style="width: 100%;">
+            <div class="item-content vault-item-content">
               <div class="item-title">${t('Credential Vault URL')}</div>
-              <div style="display: flex; gap: 8px; align-items: center;">
+              <div class="item-subtitle">${t('Choose the server that stores account credentials')}</div>
+              <div class="vault-url-row">
                 <input type="text" style=${{
                   flexGrow: 1,
                   borderColor: hasVaultUrlError$() ? cssVars.colors.fgError : cssVars.colors.bg3
@@ -421,6 +435,10 @@ function getLocales () {
     'Disabling Sticky Sessions deletes all saved sessions. This cannot be undone.': { en: 'Disabling Sticky Sessions deletes all saved sessions. This cannot be undone.', fr: 'La désactivation des sessions persistantes supprime toutes les sessions enregistrées. Cette action est irréversible.', it: 'Disattivare le sessioni persistenti elimina tutte le sessioni salvate. Questa operazione non può essere annullata.', de: 'Das Deaktivieren der Sticky-Sitzungen löscht alle gespeicherten Sitzungen. Dies kann nicht rückgängig gemacht werden.', es: 'Desactivar las sesiones persistentes elimina todas las sesiones guardadas. Esto no se puede deshacer.', 'pt-BR': 'Desativar sessões persistentes apaga todas as sessões salvas. Isso não pode ser desfeito.', ru: 'Отключение липких сессий удаляет все сохранённые сессии. Это действие нельзя отменить.', 'zh-CN': '禁用粘性会话将删除所有已保存的会话，且无法撤消。', 'zh-TW': '停用黏性工作階段會刪除所有已儲存的工作階段，且無法復原。', ja: 'スティッキーセッションを無効にすると保存済みのセッションがすべて削除され、元に戻せません。', ko: '고정 세션을 비활성화하면 저장된 모든 세션이 삭제되며 되돌릴 수 없습니다.' },
     'Disable & delete sessions': { en: 'Disable & delete sessions', fr: 'Désactiver et supprimer les sessions', it: 'Disattiva ed elimina le sessioni', de: 'Deaktivieren und Sitzungen löschen', es: 'Desactivar y eliminar sesiones', 'pt-BR': 'Desativar e apagar sessões', ru: 'Отключить и удалить сессии', 'zh-CN': '禁用并删除会话', 'zh-TW': '停用並刪除工作階段', ja: '無効化してセッションを削除', ko: '비활성화 및 세션 삭제' },
     Advanced: { en: 'Advanced', fr: 'Avancé', it: 'Avanzate', de: 'Erweitert', es: 'Avanzado', 'pt-BR': 'Avançado', ru: 'Дополнительно', 'zh-CN': '高级', 'zh-TW': '進階', ja: '詳細設定', ko: '고급' },
+    'App Data Access': { en: 'App Data Access', fr: 'Accès aux données des applications', it: 'Accesso ai dati delle app', de: 'App-Datenzugriff', es: 'Acceso a datos de apps', 'pt-BR': 'Acesso a dados dos apps', ru: 'Доступ приложений к данным', 'zh-CN': '应用数据访问', 'zh-TW': '應用程式資料存取', ja: 'アプリデータアクセス', ko: '앱 데이터 접근' },
+    'Review which apps can access your data': { en: 'Review which apps can access your data', fr: 'Vérifiez quelles applications peuvent accéder à vos données', it: 'Controlla quali app possono accedere ai tuoi dati', de: 'Prüfen Sie, welche Apps auf Ihre Daten zugreifen können', es: 'Revisa qué aplicaciones pueden acceder a tus datos', 'pt-BR': 'Revise quais apps podem acessar seus dados', ru: 'Проверьте, какие приложения имеют доступ к вашим данным', 'zh-CN': '查看哪些应用可以访问您的数据', 'zh-TW': '查看哪些應用程式可以存取您的資料', ja: 'データにアクセスできるアプリを確認', ko: '어떤 앱이 데이터에 접근할 수 있는지 확인' },
+    'Review storage usage and limits': { en: 'Review storage usage and limits', fr: 'Vérifiez l’utilisation et les limites du stockage', it: 'Controlla utilizzo e limiti dello spazio', de: 'Speicherbelegung und Limits prüfen', es: 'Revisa el uso y los límites de almacenamiento', 'pt-BR': 'Revise o uso e os limites de armazenamento', ru: 'Проверьте использование и лимиты хранилища', 'zh-CN': '查看存储用量和限制', 'zh-TW': '查看儲存空間用量與限制', ja: 'ストレージの使用量と上限を確認', ko: '저장 공간 사용량과 제한 확인' },
+    'Choose the server that stores account credentials': { en: 'Choose the server that stores account credentials', fr: 'Choisissez le serveur qui stocke les identifiants du compte', it: 'Scegli il server che archivia le credenziali dell’account', de: 'Wählen Sie den Server für die Speicherung der Kontozugangsdaten', es: 'Elige el servidor que almacena las credenciales de la cuenta', 'pt-BR': 'Escolha o servidor que armazena as credenciais da conta', ru: 'Выберите сервер для хранения учётных данных аккаунта', 'zh-CN': '选择存储账户凭据的服务器', 'zh-TW': '選擇儲存帳戶憑證的伺服器', ja: 'アカウント認証情報を保存するサーバーを選択', ko: '계정 자격 증명을 저장할 서버 선택' },
     'Credential Vault URL': { en: 'Credential Vault URL', fr: 'URL du coffre d’identifiants', it: 'URL del vault delle credenziali', de: 'URL des Anmeldedatentresors', es: 'URL de la bóveda de credenciales', 'pt-BR': 'URL do cofre de credenciais', ru: 'URL хранилища учётных данных', 'zh-CN': '凭据保管库 URL', 'zh-TW': '憑證保管庫 URL', ja: '認証情報保管庫の URL', ko: '자격 증명 보관소 URL' }
   }
 }

@@ -141,7 +141,10 @@ f('event-storage', ({ h, s }) => {
         h2 { display: flex; align-items: center; gap: 10px; font-size: 16rem; font-weight: 600; margin: 0; }
         .category-icon { display: flex; width: 22px; height: 22px; flex-shrink: 0; }
         .scroll-area { flex: 1; min-height: 0; overflow-y: auto; }
-        .content { width: 100%; max-width: 900px; margin-inline: auto; padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+        /* App Data Access measured 16px between summary copy and the first app card. */
+        .content { width: 100%; max-width: 900px; margin-inline: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+        .intro-copy { display: flex; flex-direction: column; gap: 0; }
+        .content > p, .intro-copy p { margin: 0; }
         .card { background: ${cssVars.colors.bg2}; border-radius: 8px; padding: 18px; }
         .summary { display: flex; align-items: center; gap: 28px; }
         .donut { position: relative; width: 200px; height: 200px; flex-shrink: 0; }
@@ -193,8 +196,10 @@ f('event-storage', ({ h, s }) => {
             <div class="legend-row"><span class="swatch" style=${`background: ${colors[i]}`}></span><span class="legend-name">${t(segmentTitles[i])}</span><strong>${usage ? bytes(value) : '—'}</strong></div>
           `)}</div>
         </div>
-        <p>${t('Usage is refreshed in the background. Temporary excess is possible.')}</p>
-        ${quotaState$()?.checkedAt ? h`<p class="muted">${t('Last checked')}: ${new Date(quotaState$().checkedAt).toLocaleString(getEffectiveLocale())}</p>` : ''}
+        <div class="intro-copy">
+          <p>${t('Usage is refreshed in the background. Temporary excess is possible.')}</p>
+          ${quotaState$()?.checkedAt ? h`<p class="muted">${t('Last checked')}: ${new Date(quotaState$().checkedAt).toLocaleString(getEffectiveLocale())}</p>` : ''}
+        </div>
         <p>${t('Limits are shared across all accounts. Only event data is counted; app files and chunk payloads have separate budgets.')}</p>
         ${quotaFields.map((key, i) => {
           const preview = state.dirty$()[key] ? parseQuotaMiB(state.draft$()[key]) : limits[key]

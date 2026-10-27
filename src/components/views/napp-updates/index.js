@@ -17,8 +17,9 @@ import { getProfileEventsByPubkey } from '#helpers/nostr-queries.js'
 import { base16ToBase62 } from 'libp2r2p/base62'
 import { useConfirmationDialogStore } from '#zones/confirmation-dialog/index.js'
 import { getAssetBudgetConfirmation } from '#i18n/asset-budget.js'
-import { getT } from '#i18n/index.js'
+import { getEffectiveLocale, getT } from '#i18n/index.js'
 import { formatManifestVersion } from '#helpers/site-manifest.js'
+import { sortAppIdsByName } from '#helpers/app-name-order.js'
 
 export const nappUpdatesLocales = getLocales()
 const t = getT(nappUpdatesLocales)
@@ -53,7 +54,14 @@ f('napp-updates', function () {
       unpinned.forEach(id => appIds.add(id))
     })
 
-    return AppUpdater.filterRegularAppIds(Array.from(appIds))
+    const regularAppIds = AppUpdater.filterRegularAppIds(Array.from(appIds))
+    return sortAppIdsByName(regularAppIds, {
+      getAppName: appId => storage[`session_appById_${appId}_name$`](),
+      collator: new Intl.Collator(getEffectiveLocale(), {
+        numeric: true,
+        sensitivity: 'base'
+      })
+    })
   })
 
   const publisherProfiles$ = useSignal({})

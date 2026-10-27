@@ -63,6 +63,11 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   like public deletions. Derive an opaque launcher-owned in-memory dedupe key
   for one-time deletes so “delete for everyone” shares one prompt across its
   two persistence paths; never accept a key from the app or persist it.
+  Settings exposes `App Data Access` from Advanced. It lists every remembered
+  grant once by app, regardless of workspace or account, and allows exact
+  individual revocation or confirmed app-wide revocation. Revocation applies to
+  future protected requests; it does not reload app windows, cancel permissionless
+  event-store reads, or delete app data.
 
 ## Styling Rules
 
@@ -102,6 +107,9 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   persisted expansion state. Each keyed request starts with its own limit.
   The protected `tests/browser/permission-dialog.js` check covers pointer and
   keyboard expansion, narrow layouts, full text and independent requests.
+  The protected `tests/browser/app-data-access.js` check covers alphabetical app
+  ordering, grouped grants, scope redaction, individual revocation and confirmed
+  app-wide revocation against real IndexedDB.
 
 ## Persisted state
 

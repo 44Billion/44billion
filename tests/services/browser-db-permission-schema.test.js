@@ -52,6 +52,7 @@ describe('launcher permission schema', () => {
     const {
       createOrUpdatePermission,
       deleteAllPermissionsForApp,
+      listAllPermissions,
       reconcilePermissionScopes,
       streamAllPermissionsForApp
     } = await import('../../src/services/idb/browser/queries/permission.js?permission-schema')
@@ -59,6 +60,16 @@ describe('launcher permission schema', () => {
     await createOrUpdatePermission('old-app', 'eventAccess', 1, '')
     await createOrUpdatePermission('old-app', 'eventAccessPersonal', 9, 'calendar:v1')
     await createOrUpdatePermission('other-app', 'eventAccess', 1, '')
+    assert.deepEqual((await listAllPermissions()).map(permission => [
+      permission.appId,
+      permission.name,
+      permission.eKind,
+      permission.scope
+    ]).sort(), [
+      ['old-app', 'eventAccess', 1, ''],
+      ['old-app', 'eventAccessPersonal', 9, 'calendar:v1'],
+      ['other-app', 'eventAccess', 1, '']
+    ])
     await deleteAllPermissionsForApp('old-app')
     await new Promise(resolve => setImmediate(resolve))
     const remaining = []

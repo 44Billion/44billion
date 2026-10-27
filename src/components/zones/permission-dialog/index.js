@@ -13,6 +13,7 @@ import {
   LEGACY_CRYPTO_ACCESS_PERMISSION,
   ONE_TIME_DELETE_PERMISSION
 } from '#helpers/window-message/browser/event-permissions.js'
+import { getEventKindText } from '#helpers/event-kind-text.js'
 import { cssVars, jsVars } from '#assets/styles/theme.js'
 import '#shared/app-icon.js'
 import '#shared/icons/icon-x.js'
@@ -37,16 +38,6 @@ function dedupeState (store) {
 export const permissionDialogLocales = getLocales()
 
 const t = getT(permissionDialogLocales)
-
-const EVENT_KIND_TEXT = {
-  0: 'profiles', 1: 'short text notes', 2: 'generic data', 3: 'follow lists', 4: '(legacy) direct messages', 5: 'deletion requests', 6: 'short text renotes', 7: 'reactions', 9: 'chat messages', 13: 'message seals', 14: '(public) chat messages', 15: '(public) file decryption keys', 16: 'renotes', 20: 'pictures', 21: 'videos', 22: 'short vertical videos', 62: 'delete-all requests', 1018: 'poll responses', 1059: 'recipient directions', 1063: 'file properties', 1068: 'polls', 1111: 'comments', 1222: 'short voice notes', 1244: 'short voice comments', 1984: 'misconduct reports', 3560: 'private-channel broadcasts', 7376: 'nutzap redemption logs', 9321: 'nutzaps', 9734: 'bitcoin pre-payment data', 9735: 'bitcoin receipts', 10002: 'home server configurations', 10019: 'nutzap receiving addresses', 13300: 'contact lists', 18716: 'public information for private communication', 26300: 'private-channel router rows', 27235: 'API authentication requests', 30000: 'custom follow lists', 30008: 'profile badges', 30009: 'profile badge definitions', 30023: 'long text notes', 30078: 'app settings and data', 30311: 'livestreams', 30402: 'classified listings', 30403: '(draft) classified listings', 30499: 'site lists', 31922: 'date events', 31923: 'time events', 31924: 'calendars', 31925: 'event RSVPs', 34601: 'files', 35128: 'site manifests', 35129: '(next) site manifests', 35130: '(draft) site manifests'
-}
-
-function getEventKindText (kind, translate) {
-  const key = EVENT_KIND_TEXT[kind]
-  if (key) return translate(key)
-  return kind == null ? translate('app data') : translate('app data type {{kind}}', { kind })
-}
 
 function getScopeText (scopeLabelKey, translate) {
   if (typeof scopeLabelKey !== 'string' || !scopeLabelKey) return ''

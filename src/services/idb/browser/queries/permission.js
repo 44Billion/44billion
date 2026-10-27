@@ -76,6 +76,12 @@ export async function * streamAllPermissionsForApp (appId) {
   }
 }
 
+export async function listAllPermissions () {
+  const permissions = []
+  for await (const permission of streamPermissions()) permissions.push(permission)
+  return permissions
+}
+
 export async function reconcilePermissionScopes ({ registry = SUPPORTED_PERMISSION_SCOPES } = {}) {
   const stale = []
   for await (const permission of streamPermissions()) {

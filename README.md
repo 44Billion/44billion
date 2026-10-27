@@ -14,6 +14,10 @@ the injected contract and [AGENTS.md](AGENTS.md) for contribution rules.
 Permission prompts initially show up to three lines. Clicking the prompt or
 activating it with Enter/Space reveals two more lines at a time. Each request
 starts collapsed; expanding its text does not grant or deny the permission.
+Settings > Advanced > App Data Access lists remembered grants by app. Individual
+grants or all grants for an app can be revoked without closing or reloading app
+windows; revocation applies to future protected requests and does not delete data
+already stored by the app.
 
 [NostrDB internals and maintenance](docs/nostrdb.md) documents event-store cleanup,
 concurrency, recovery and storage growth limits for developers.

@@ -55,6 +55,10 @@ with the launcher reset/theme, checking three initial lines, two-line increments
 through pointer/Enter/Space, full reveal, locale/resize changes, independent
 requests and unchanged grant/deny behavior in a disposable browser profile.
 
+Run `node bin/run-browser-tests.js -- node tests/browser/app-data-access.js`
+to verify alphabetical app ordering, grouped grants, raw-scope omission,
+individual revocation and confirmed app-wide revocation against real IndexedDB.
+
 Account-ingestion regression:
 
 ```sh

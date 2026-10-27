@@ -9,6 +9,12 @@ const router = new Router({
     tag: 'napp-updates',
     loadModule: () => import('#views/napp-updates/index.js')
   },
+  '/app-data-access': {
+    mount: 'system-views',
+    path: '/app-data-access',
+    tag: 'app-data-access',
+    loadModule: () => import('#views/app-data-access/index.js')
+  },
   '/sticky-sessions': {
     mount: 'system-views',
     path: '/sticky-sessions',

@@ -26,6 +26,7 @@ mock.module('#f', {
     useStore: () => {},
     useCallback: value => value,
     useSignal: toTestSignal,
+    useComputed: () => {},
     useGlobalSignal: (_namespace, value) => toTestSignal(value),
     useTask: () => {},
     useWebStorage: () => ({}),
@@ -35,14 +36,21 @@ mock.module('#f', {
 mock.module('#f/components/f-to-signals.js', { namedExports: {} })
 mock.module('#shared/modal.js', { namedExports: {} })
 mock.module('#shared/app-icon.js', { namedExports: {} })
+mock.module('#shared/back-btn.js', { namedExports: {} })
+mock.module('#shared/pending-indicator.js', { namedExports: {} })
 mock.module('#shared/icons/icon-x.js', { namedExports: {} })
 mock.module('#shared/icons/icon-check.js', { namedExports: {} })
+mock.module('#shared/icons/icon-chevron-left.js', { namedExports: {} })
 mock.module('#shared/icons/icon-help-hexagon-filled.js', { namedExports: {} })
 mock.module('#shared/icons/icon-info-hexagon-filled.js', { namedExports: {} })
+mock.module('#shared/icons/icon-shield-lock.js', { namedExports: {} })
 mock.module('#services/idb/browser/queries/permission.js', {
   namedExports: {
     hasPermission: async () => false,
     createOrUpdatePermission: async () => {},
+    deletePermission: async () => {},
+    deleteAllPermissionsForApp: async () => {},
+    listAllPermissions: async () => [],
     reconcilePermissionScopes: async () => 0
   }
 })
@@ -70,6 +78,9 @@ const {
   permissionDialogLocales
 } = await import('../../src/components/zones/permission-dialog/index.js')
 const {
+  appDataAccessLocales
+} = await import('../../src/components/views/app-data-access/index.js')
+const {
   createPermissionScopeRegistry,
   permissionScopeEntries
 } = await import('../../src/helpers/window-message/browser/permission-scopes.js')
@@ -85,6 +96,8 @@ describe('component translation catalogs', () => {
     assert.deepEqual(SUPPORTED_LOCALES, ['en', 'fr', 'it', 'de', 'es', 'pt-BR', 'ru', 'zh-CN', 'zh-TW', 'ja', 'ko'])
     assert.equal(getT(assetBudgetLocales, { locale: 'en' })('More app storage?'), 'More app storage?')
     assert.equal(getT(permissionDialogLocales, { locale: 'en' })('Allow'), 'Allow')
+    assert.equal(getT(appDataAccessLocales, { locale: 'en' })('App Data Access'), 'App Data Access')
+    assert.equal(getT(appDataAccessLocales, { locale: 'pt-BR' })('App Data Access'), 'Acesso a dados dos apps')
     assert.equal(getT(infoDialogLocales, { locale: 'en' })('Dismiss'), 'Dismiss')
     assert.throws(() => getT({ Hello: { en: 'Hello' } }), /missing translation/)
     assert.throws(() => getT({ Hello: { en: 'Hello' } }, {

@@ -29,7 +29,7 @@ const bundle = await build({
     f('storage-fixture', ({h}) => {
       const location = useLocation(router); useInitI18n(); useInitQuotaState(); fixture.location = location;
       useGlobalStore('useAppRouter', { openApp () {} });
-      return h\`<aside style="position:fixed;right:0;top:0"><toolbar-more-menu /></aside><f-route props=\${{path:'/event-storage'}} /><f-route props=\${{path:'/settings'}} /><f-route props=\${{path:'/sticky-sessions'}} /><f-route props=\${{path:'/app-updates'}} />\`;
+      return h\`<aside style="position:fixed;right:0;top:0"><toolbar-more-menu /></aside><f-route props=\${{path:'/event-storage'}} /><f-route props=\${{path:'/settings'}} /><f-route props=\${{path:'/sticky-sessions'}} /><f-route props=\${{path:'/app-updates'}} /><f-route props=\${{path:'/app-data-access'}} />\`;
     });
     document.body.insertAdjacentHTML('beforeend', '<storage-fixture></storage-fixture>');
     fixture.seed = async () => {
@@ -189,6 +189,7 @@ try {
     }`)
     for (const [route, host, content, header] of [
       ['/settings', 'a-settings', '.content', '.header'],
+      ['/app-data-access', 'app-data-access', '.content', '.header'],
       ['/sticky-sessions', 'sticky-sessions', '.content', '.header'],
       ['/app-updates', 'napp-updates', '.body-cydfv983dfff', '.header-1kuhvcxd8b'],
       ['/event-storage', 'event-storage', '.content', '.header']
@@ -219,7 +220,50 @@ try {
       assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${route}: no horizontal overflow`)
     }
   }
-  console.log('Event storage: drafts, proportional quota, errors, cross-tab updates, themes, responsive layout and routing passed; all four settings views scroll across the available layer width')
+
+  await evaluate("fixture.location.pushState({}, '', '/event-storage')")
+  await browser.until(() => evaluate('!!document.querySelector("event-storage .intro-copy .muted")'), 'event storage checked timestamp')
+  const textSpacing = await evaluate(`(() => {
+    const intro = document.querySelector('event-storage .intro-copy')
+    const [usage, lastChecked] = intro.querySelectorAll('p')
+    const limits = document.querySelector('event-storage .content > p')
+    const firstCard = limits.nextElementSibling
+    const rect = node => node.getBoundingClientRect()
+    return {
+      usageToLastChecked: Math.round(rect(lastChecked).top - rect(usage).bottom),
+      introToLimits: Math.round(rect(limits).top - rect(intro).bottom),
+      limitsToCard: Math.round(rect(firstCard).top - rect(limits).bottom)
+    }
+  })()`)
+  assert.deepEqual(textSpacing, {
+    usageToLastChecked: 0,
+    introToLimits: 16,
+    limitsToCard: 16
+  })
+
+  await evaluate("fixture.location.pushState({}, '', '/settings')")
+  await browser.until(() => evaluate('!!document.querySelector("a-settings .section-title")'), 'settings descriptions')
+  const advancedDescriptions = await evaluate(`(() => {
+    const section = [...document.querySelectorAll('a-settings .section')]
+      .find(node => node.querySelector('.section-title')?.textContent === 'Advanced')
+    return [...section.querySelectorAll('.item')].map(item => {
+      const title = item.querySelector('.item-title')
+      const subtitle = item.querySelector('.item-subtitle')
+      const row = item.querySelector('.vault-url-row')
+      return {
+        title: title?.textContent,
+        subtitle: subtitle?.textContent,
+        titleToSubtitle: Math.round(subtitle.getBoundingClientRect().top - title.getBoundingClientRect().bottom),
+        subtitleToInput: row ? Math.round(row.getBoundingClientRect().top - subtitle.getBoundingClientRect().bottom) : null
+      }
+    })
+  })()`)
+  assert.deepEqual(advancedDescriptions, [
+    { title: 'App Data Access', subtitle: 'Review which apps can access your data', titleToSubtitle: 4, subtitleToInput: null },
+    { title: 'Event storage', subtitle: 'Review storage usage and limits', titleToSubtitle: 4, subtitleToInput: null },
+    { title: 'Credential Vault URL', subtitle: 'Choose the server that stores account credentials', titleToSubtitle: 4, subtitleToInput: 12 }
+  ])
+  console.log('Event storage: drafts, proportional quota, errors, cross-tab updates, themes, responsive layout and routing passed; all five settings views scroll across the available layer width')
 } finally {
   await browser.diagnose('/tmp/44billion-event-storage-browser')
   await browser.close()

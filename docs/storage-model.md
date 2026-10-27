@@ -215,7 +215,10 @@ Content-key revision notifications themselves are in memory only.
 On permission-dialog initialization, scoped records not present in the current
 launcher registry are removed in the background. Uninstall and storage repair
 remove every kind-wide and scoped permission for the app while preserving other
-apps.
+apps. Settings > Advanced > App Data Access reads all permission rows and groups
+them by app for display; it does not introduce another persisted store. Revoking
+one row deletes that exact four-part key, while app-wide revocation deletes all
+rows for that app.
 
 The initial `siteManifests` write belongs to the normal first-open fetch. Being
 listed as installed in localStorage does not imply that this write has finished.
