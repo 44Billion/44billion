@@ -2,6 +2,7 @@ import { useQuotaState } from '#hooks/use-quota-state.js'
 import { quotaNeedsAttention } from '#services/idb/nostrdb/quotas.js'
 import { f, useStore, useGlobalStore, useGlobalSignal, useComputed, useSignal, useTask } from '#f'
 import { cssVars } from '#assets/styles/theme.js'
+import nappletStoreIcon from '#assets/media/napplet-store.webp'
 import '#shared/menu.js'
 import '#shared/icons/icon-dots.js'
 import '#shared/icons/icon-eye-closed.js'
@@ -181,7 +182,7 @@ f('toolbar-more-menu', function () {
           openApp('/napplets')
           isOpen$.set(false)
         }}>
-          <div class='icon-wrapper'><icon-shopping-bag props=${{ size: '16px' }} /></div>
+          <div class='icon-wrapper'><img src=${nappletStoreIcon} alt='' width='16' height='16' /></div>
           <div class='menu-label'>${nappletT('Napplets')}</div>
         </div>
         <div onclick=${() => {

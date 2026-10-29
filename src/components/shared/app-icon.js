@@ -1,5 +1,6 @@
 import { f, useMemo, useStore, useTask } from '#f'
-import '#shared/icons/icon-shopping-bag.js'
+// Lossless copy of https://github.com/hzrd149/steamduck/blob/master/icon.png
+import nappletStoreIcon from '#assets/media/napplet-store.webp'
 import { isBuiltInAppId, isLauncherRenderedAppId } from '#helpers/launcher-app.js'
 import { isNappletAppId, nappletDescriptor } from '#helpers/napplet.js'
 import { getInstallation } from '#services/napplets/storage.js'
@@ -428,7 +429,7 @@ f('app-icon', ({ h, props }) => {
   })
 
   if (isBuiltInAppId(store.appId$())) {
-    return h`<div style=${`display: grid; place-items: center; width: 100%; height: 100%; background: ${cssVars.colors.bg2}; color: ${cssVars.colors.fg};`}><icon-shopping-bag props=${{ size: '65%' }} /></div>`
+    return h`<img src=${nappletStoreIcon} alt=${t('App icon')} style=${`display: block; width: 100%; height: 100%; object-fit: contain; ${store.style$()}`} />`
   }
 
   if (store.nappletIconUrl$()) {
