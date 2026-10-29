@@ -1,3 +1,4 @@
+import { installUploadBinding } from './upload-binding.js'
 import { createRuntime } from '@kehto/runtime'
 import { originRegistry, prepareNappletSrcdoc } from '@kehto/shell'
 import { createThemeService } from '@kehto/services'
@@ -63,7 +64,7 @@ export function mountNapplet ({ iframe, resolved, appId, userPk, wsKey, askVault
   const environment = { capabilities: { domains }, services: [...Object.keys(backends.services), 'theme', ...(intent ? ['intent'] : [])] }
   let srcdoc = prepareNappletSrcdoc(resolved.indexHtml, { domains })
   // Append to the injected prelude, preserving the original doctype/head order.
-  if (intent) srcdoc = srcdoc.replace('</script>', end => `${end}<script>(${installIntentLinks.toString()})()</script>`)
+  srcdoc = srcdoc.replace('</script>', end => `${end}<script>(${installUploadBinding.toString()})();${intent ? `(${installIntentLinks.toString()})()` : ''}</script>`)
   iframe.setAttribute('sandbox', 'allow-scripts')
   iframe.setAttribute('allow', "camera 'none'; microphone 'none'; geolocation 'none'; usb 'none'; hid 'none'; gamepad 'none'; clipboard-read 'none'; clipboard-write 'none'")
   originRegistry.register(source, windowId, identity)

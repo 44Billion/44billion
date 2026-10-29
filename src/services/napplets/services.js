@@ -42,7 +42,7 @@ export function createNappletServices ({ account, network, state, signal, iframe
     onWindowDestroyed: closeNappletUi
   })
   const services = {
-    upload: createNappletUploadService({ account, signal, latest: social.latest, present: (status, cancel) => nappletUploads$(items => Object.fromEntries([...Object.entries(items).filter(([id]) => id !== status.uploadId), [status.uploadId, { status, cancel, name, windowId }]].slice(-16))), confirm: options => confirmNappletUpload({ ...options, name, windowId }) }),
+    upload: createNappletUploadService({ account, signal, latest: (kind, pubkey) => social.latest(kind, pubkey, { allowIncomplete: true }), present: (status, cancel) => nappletUploads$(items => Object.fromEntries([...Object.entries(items).filter(([id]) => id !== status.uploadId), [status.uploadId, { status, cancel, name, windowId }]].slice(-16))), confirm: options => confirmNappletUpload({ ...options, name, windowId }) }),
     identity: createIdentityService({
       getSigner: () => signer,
       getProfile: async pubkey => pubkey ? (await social.getProfile(pubkey)).profile : null,

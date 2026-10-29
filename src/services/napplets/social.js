@@ -9,12 +9,13 @@ export function publicKeyFromTarget (target) {
 }
 
 export function createNappletSocial ({ network, account, locks = globalThis.navigator?.locks }) {
-  const latest = async (kind, pubkey = account.getPublicKey()) => {
+  const latest = async (kind, pubkey = account.getPublicKey(), { allowIncomplete = false } = {}) => {
     account.guard()
     if (!pubkey) return null
     const response = await network.router.query([{ kinds: [kind], authors: [pubkey], limit: 1 }], { limit: 20 })
-    if (response.error || response.incomplete) throw new Error(response.error || 'INCOMPLETE_PUBLIC_STATE')
-    return response.events.map(result => result.event).sort((a, b) => b.created_at - a.created_at || a.id.localeCompare(b.id))[0] || null
+    account.guard()
+    if (!allowIncomplete && (response.error || response.incomplete)) throw new Error(response.error || 'INCOMPLETE_PUBLIC_STATE')
+    return (response.events || []).map(result => result.event).sort((a, b) => b.created_at - a.created_at || a.id.localeCompare(b.id))[0] || null
   }
   const publish = (kind, content, tags) => network.router.publish({ kind, content, tags, created_at: Math.floor(Date.now() / 1000) })
   const follows = async () => ({ ok: true, pubkeys: (await latest(3))?.tags.filter(tag => tag[0] === 'p').map(tag => tag[1]) || [] })

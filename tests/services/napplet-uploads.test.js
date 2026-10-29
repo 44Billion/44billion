@@ -26,11 +26,16 @@ it('normalizes public destinations without accepting local servers, credentials 
 
 it('returns pending before consent and uploads to preferred mirrors with validated integrity', async () => {
   const calls = []
+  const authorizations = []
+  let signs = 0
   const data = new Blob(['test'])
   const hash = createHash('sha256').update('test').digest('hex')
   const f = fixture({
+    account: { guard () {}, getPublicKey: () => pubkey, signEvent: async template => { signs++; return { ...template, pubkey, id: 'id', sig: 'sig' } } },
     fetchUpload: async (url, init) => {
       calls.push(url)
+      authorizations.push(init.headers.Authorization)
+      if (url.endsWith('/mirror')) { assert.equal(init.headers['Content-Type'], 'application/json'); assert.equal(JSON.parse(init.body).url, `https://one.example/${hash}`) }
       assert.equal(init.credentials, 'omit')
       assert.equal(init.redirect, 'error')
       assert.equal(init.method, 'PUT')
@@ -41,7 +46,9 @@ it('returns pending before consent and uploads to preferred mirrors with validat
   assert.equal(f.messages[0].result.status, 'pending')
   const status = await f.done
   assert.equal(status.status, 'complete', status.error)
-  assert.deepEqual(calls, ['https://one.example/upload', 'https://two.example/upload'])
+  assert.deepEqual(calls, ['https://one.example/upload', 'https://two.example/mirror'])
+  assert.equal(signs, 1)
+  assert.equal(authorizations[0], authorizations[1])
   assert.deepEqual(status.fallbackUrls, [`https://two.example/${hash}`])
   f.controller.abort()
 })
@@ -116,4 +123,56 @@ it('cancels the transport on teardown and suppresses late responses', async () =
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(aborted, true)
   assert.equal(f.messages.length, count)
+})
+
+it('allows a user-selected server when preferred-server discovery fails', async () => {
+  const hash = createHash('sha256').update('test').digest('hex')
+  let prompted = false
+  const f = fixture({
+    latest: async () => { throw new Error('INCOMPLETE_PUBLIC_STATE') },
+    confirm: async ({ servers }) => { prompted = true; assert.deepEqual(servers, []); return ['https://chosen.example'] },
+    fetchUpload: async url => {
+      assert.equal(url, 'https://chosen.example/upload')
+      return Response.json({ url: `https://chosen.example/${hash}`, sha256: hash, size: 4 })
+    }
+  })
+  f.request({ data: new Blob(['test']) })
+  assert.equal((await f.done).status, 'complete')
+  assert.equal(prompted, true)
+  f.controller.abort()
+})
+
+it('does not show destination selection when access is revoked during failed discovery', async () => {
+  let allowed = true
+  const f = fixture({
+    account: { guard () { if (!allowed) throw new Error('REVOKED') }, getPublicKey: () => pubkey },
+    latest: async () => { allowed = false; throw new Error('GET_EVENTS_TIMEOUT') },
+    confirm: () => assert.fail('revoked access must not open a dialog')
+  })
+  f.request({ data: new Blob(['test']) })
+  assert.equal((await f.done).error, 'REVOKED')
+  f.controller.abort()
+})
+
+it('falls back from unsupported mirroring to direct upload with the same authorization', async () => {
+  const hash = createHash('sha256').update('test').digest('hex')
+  const calls = []
+  const auth = []
+  let signs = 0
+  const f = fixture({
+    account: { guard () {}, getPublicKey: () => pubkey, signEvent: async template => { signs++; return { ...template, pubkey } } },
+    fetchUpload: async (url, init) => {
+      calls.push(url)
+      auth.push(init.headers.Authorization)
+      if (url.endsWith('/mirror')) return new Response('', { status: 405 })
+      assert.ok(init.body instanceof ArrayBuffer)
+      return Response.json({ url: `${new URL(url).origin}/${hash}`, sha256: hash, size: 4 })
+    }
+  })
+  f.request({ data: new Blob(['test']) })
+  assert.equal((await f.done).status, 'complete')
+  assert.deepEqual(calls, ['https://one.example/upload', 'https://two.example/mirror', 'https://two.example/upload'])
+  assert.equal(new Set(auth).size, 1)
+  assert.equal(signs, 1)
+  f.controller.abort()
 })

@@ -26,11 +26,15 @@ own graceful fallback.
   declaration never grants signing permission.
 - `upload` supports Blossom uploads of `Blob`/`ArrayBuffer` data up to 64 MiB.
   `upload.info` advertises the rail and limit. `upload.upload` returns a pending
-  upload ID immediately; subscribe to `upload.status.changed` (SDK `onStatus`)
-  before uploading, or query `upload.status` until complete/failed/cancelled.
+  upload ID immediately on the wire. The injected `upload.upload()` API and SDK
+  await a terminal result with an attachable URL or failure; status listeners
+  (SDK `onStatus`) receive intermediate updates. Raw protocol clients must
+  subscribe before uploading or query `upload.status` until terminal.
   The launcher loads the active account's signed kind-10063 server list and
   asks the user to select destinations; an additional public HTTPS server can
-  be supplied for this request. Files are public. No file event is published.
+  be supplied for this request. Incomplete discovery uses available verified
+  server-list results; failed discovery still opens the destination dialog.
+  Files are public. No file event is published.
   Authorization is signed through the vault and existing app/kind permissions;
   anonymous/read-only/locked accounts cannot authorize uploads. Workspace/persona
   access is rechecked when signing and around network waits. Up to two jobs per
@@ -38,6 +42,9 @@ own graceful fallback.
   Transfers use a ten-minute deadline; closing the window cancels its jobs.
   Launcher UI offers cancellation and indeterminate transfer progress. Successful
   results include URL, hash, size, MIME, NIP-94 tags and successful mirror URLs.
+  A single hash-scoped Blossom authorization is reused within each upload job.
+  After the first successful upload, remaining servers use BUD-04 `/mirror`;
+  unsupported mirroring or an upstream-fetch failure falls back to direct upload.
   Partial mirror success returns success; failed destinations are omitted.
   Errors include `UNSUPPORTED_UPLOAD_RAIL`, `INVALID_UPLOAD_DATA`,
   `UPLOAD_TOO_LARGE`, `UPLOAD_BUSY`, `NO_BLOSSOM_SERVERS`, `UPLOAD_TIMEOUT`

@@ -1,3 +1,5 @@
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToHex } from '@noble/hashes/utils.js'
 import { createHttpUploader } from '@kehto/services'
 import { isValidPublicBlossomServerUrl } from 'libp2r2p/url'
 
@@ -35,7 +37,10 @@ export function createNappletUploadService ({ account, signal, latest, confirm, 
     }
     try {
       check()
-      const list = await latest(10063, pubkey)
+      // Server discovery is advisory: a partial verified list is useful and a
+      // failed relay lookup must still allow the user to choose a destination.
+      let list
+      try { list = await latest(10063, pubkey) } catch { check() }
       check()
       const servers = normalizeUploadServers((list?.tags || []).filter(tag => tag[0] === 'server').map(tag => tag[1]))
       const selected = await confirm({ uploadId: job.status.uploadId, filename: request.filename, size: request.data.size, pubkey, servers, signal: lifetime, cancel: () => cancel(job) })
@@ -46,14 +51,24 @@ export function createNappletUploadService ({ account, signal, latest, confirm, 
       update({ status: 'uploading' })
       const completed = []
       let failure
+      let authorization
+      let digest
       for (const server of destinations) {
         check()
         const uploader = createHttpUploader({
           rails: { blossom: { servers: [server] } }, defaultRail: 'blossom',
-          signEvent: async template => { check(); const event = await account.signEvent(template); check(); return event },
+          digestSha256: bytes => { digest ??= bytesToHex(sha256(bytes)); return Promise.resolve(digest) },
+          signEvent: async template => { check(); authorization ??= account.signEvent(template); const event = await authorization; check(); return event },
           fetch: async (url, init) => {
             check()
-            const response = await fetchUpload(url, { ...init, signal: lifetime, credentials: 'omit', redirect: 'error' })
+            const options = { ...init, signal: lifetime, credentials: 'omit', redirect: 'error' }
+            let response
+            if (completed.length) {
+              response = await fetchUpload(`${server}/mirror`, { ...options, headers: { ...init.headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ url: completed[0].url }) })
+              check()
+              if ([404, 405, 501, 502].includes(response.status)) { await response.body?.cancel(); response = undefined }
+            }
+            response ??= await fetchUpload(url, options)
             check()
             // Descriptors are small JSON, never unbounded server response bodies.
             if (!response.ok) { await response.body?.cancel(); throw new Error(`UPLOAD_HTTP_${response.status}`) }
