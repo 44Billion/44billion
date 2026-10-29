@@ -17,7 +17,7 @@ export function normalizeUploadServers (values) {
 }
 
 // Jobs are ephemeral and belong exclusively to one mounted napplet instance.
-export function createNappletUploadService ({ account, signal, latest, confirm, fetchUpload = fetch, present = () => {}, generateId = () => crypto.randomUUID() }) {
+export function createNappletUploadService ({ account, signal, latest, confirm, fetchUpload = fetch, present = () => {}, generateId = () => crypto.randomUUID(), deadlineSignal = () => AbortSignal.timeout(10 * 60 * 1000) }) {
   const jobs = new Map()
   let destroyed = false
   const guard = pubkey => {
@@ -29,7 +29,10 @@ export function createNappletUploadService ({ account, signal, latest, confirm, 
   const close = () => { destroyed = true; for (const job of jobs.values()) cancel(job); jobs.clear() }
   signal.addEventListener('abort', close, { once: true })
   const run = async (job, request, pubkey, send) => {
-    const lifetime = AbortSignal.any([signal, job.controller.signal, AbortSignal.timeout(10 * 60 * 1000)])
+    const deadline = deadlineSignal()
+    const lifetime = AbortSignal.any([signal, job.controller.signal, deadline])
+    const completed = []
+    const complete = () => update({ ...completed[0], fallbackUrls: completed.slice(1).map(result => result.url), status: 'complete', ok: true })
     const check = () => { lifetime.throwIfAborted(); guard(pubkey) }
     const update = value => {
       job.status = { ...job.status, ...value, updatedAt: Date.now() }
@@ -49,7 +52,6 @@ export function createNappletUploadService ({ account, signal, latest, confirm, 
       const destinations = normalizeUploadServers(selected)
       if (!destinations.length) throw new Error('NO_BLOSSOM_SERVERS')
       update({ status: 'uploading' })
-      const completed = []
       let failure
       let authorization
       let digest
@@ -101,9 +103,15 @@ export function createNappletUploadService ({ account, signal, latest, confirm, 
       }
       if (!completed.length) throw new Error(failure || 'UPLOAD_FAILED')
       check()
-      update({ ...completed[0], fallbackUrls: completed.slice(1).map(result => result.url), status: 'complete', ok: true })
+      complete()
     } catch (error) {
-      update({ ok: false, status: lifetime.aborted && lifetime.reason?.name !== 'TimeoutError' ? 'cancelled' : 'failed', error: lifetime.reason?.name === 'TimeoutError' ? 'UPLOAD_TIMEOUT' : error.message })
+      let failure = error
+      // Replication timing out does not erase verified storage. Explicit cancellation
+      // and current access checks still take precedence over partial success.
+      if (deadline.aborted && completed.length && !job.controller.signal.aborted && !signal.aborted) {
+        try { guard(pubkey); complete(); return } catch (accessError) { failure = accessError }
+      }
+      update({ ok: false, status: lifetime.aborted && lifetime.reason?.name !== 'TimeoutError' ? 'cancelled' : 'failed', error: failure === lifetime.reason && deadline.aborted ? 'UPLOAD_TIMEOUT' : failure.message })
     } finally { job.cancel = undefined }
   }
   return {
@@ -131,7 +139,7 @@ export function createNappletUploadService ({ account, signal, latest, confirm, 
         const mimeType = typeof input.mimeType === 'string' && /^[\w.+-]+\/[\w.+-]+$/.test(input.mimeType) ? input.mimeType : input.data.type || 'application/octet-stream'
         const request = { data: new Blob([input.data], { type: mimeType }), mimeType, filename: typeof input.filename === 'string' ? Array.from(input.filename).filter(char => char.charCodeAt(0) >= 32 && char.charCodeAt(0) !== 127).join('').slice(0, 255) : 'file' }
         const uploadId = generateId()
-        const job = { controller: new AbortController(), status: { uploadId, rail: 'blossom', status: 'pending', ok: true, bytesTotal: size, updatedAt: Date.now() } }
+        const job = { controller: new AbortController(), status: { uploadId, rail: 'blossom', status: 'uploading', ok: true, bytesTotal: size, updatedAt: Date.now() } }
         jobs.set(uploadId, job)
         reply({ result: job.status })
         present(job.status, () => cancel(job))

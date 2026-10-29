@@ -24,7 +24,7 @@ it('normalizes public destinations without accepting local servers, credentials 
   assert.deepEqual(normalizeUploadServers(['https://one.example/', 'https://one.example', 'http://one.example', 'https://localhost', 'https://user:secret@one.example', 'https://one.example/?token=secret']), ['https://one.example'])
 })
 
-it('returns pending before consent and uploads to preferred mirrors with validated integrity', async () => {
+it('returns uploading before consent and uploads to preferred mirrors with validated integrity', async () => {
   const calls = []
   const authorizations = []
   let signs = 0
@@ -43,7 +43,7 @@ it('returns pending before consent and uploads to preferred mirrors with validat
     }
   })
   f.request({ data, filename: 'test.txt' })
-  assert.equal(f.messages[0].result.status, 'pending')
+  assert.equal(f.messages[0].result.status, 'uploading')
   const status = await f.done
   assert.equal(status.status, 'complete', status.error)
   assert.deepEqual(calls, ['https://one.example/upload', 'https://two.example/mirror'])
@@ -201,3 +201,30 @@ it('fails an upload only when no destination stores a valid blob', async () => {
   assert.equal(f.messages.at(-1).status.status, 'failed')
   f.controller.abort()
 })
+
+for (const outcome of ['deadline', 'cancel', 'revoke']) {
+  it(`handles ${outcome} after a verified destination`, async () => {
+    const deadline = new AbortController()
+    const hash = createHash('sha256').update('test').digest('hex')
+    let allowed = true
+    let cancel
+    const f = fixture({
+      present: (_status, action) => { cancel = action },
+      deadlineSignal: () => deadline.signal,
+      account: { guard () { if (!allowed) throw new Error('REVOKED') }, getPublicKey: () => pubkey, signEvent: async template => ({ ...template, pubkey }) },
+      fetchUpload: async url => {
+        if (url.includes('one.example')) return Response.json({ url: `https://one.example/${hash}`, sha256: hash, size: 4 })
+        if (outcome === 'cancel') cancel()
+        if (outcome === 'revoke') allowed = false
+        deadline.abort(new DOMException('Deadline', 'TimeoutError'))
+        throw deadline.signal.reason
+      }
+    })
+    f.request({ data: new Blob(['test']) })
+    const result = await f.done
+    assert.equal(result.status, outcome === 'deadline' ? 'complete' : outcome === 'cancel' ? 'cancelled' : 'failed')
+    if (outcome === 'deadline') assert.equal(result.url, `https://one.example/${hash}`)
+    if (outcome === 'revoke') assert.equal(result.error, 'REVOKED')
+    f.controller.abort()
+  })
+}

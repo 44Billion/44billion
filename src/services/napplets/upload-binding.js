@@ -1,10 +1,10 @@
 // Serialized into the sandbox after Kehto's prelude and before authored scripts.
-// Keep the wire's immediate pending reply, while SDK callers await attachable URLs.
+// Optional launcher convenience; standard upload() keeps its initial-result semantics.
 export function installUploadBinding () {
   const api = window.napplet?.upload
   if (!api) return
   const start = api.upload.bind(api)
-  api.upload = request => new Promise((resolve, reject) => {
+  api.uploadAndWait = request => new Promise((resolve, reject) => {
     let uploadId
     let finished = false
     const early = new Map()
@@ -13,6 +13,7 @@ export function installUploadBinding () {
       finished = true
       clearTimeout(timer)
       subscription.close()
+      window.removeEventListener('pagehide', teardown)
       if (error) reject(error)
       else resolve(result)
     }
@@ -25,6 +26,8 @@ export function installUploadBinding () {
         if (early.size > 64) early.delete(early.keys().next().value)
       }
     })
+    const teardown = () => finish(null, new Error('UPLOAD_CONTEXT_CLOSED'))
+    window.addEventListener('pagehide', teardown, { once: true })
     const timer = setTimeout(() => finish(null, new Error('UPLOAD_TIMEOUT')), 11 * 60 * 1000)
     Promise.resolve().then(() => start(request)).then(result => {
       uploadId = result.uploadId

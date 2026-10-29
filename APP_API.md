@@ -22,17 +22,23 @@ own graceful fallback.
   the explicit public-relay escape hatch. Incoming events are signature/filter
   checked. Publishing signs through the existing vault and app/kind permission
   dialog, rechecks workspace/persona access after waits, rejects read-only or
-  locked signing, and waits for relay acknowledgements. One accepting relay is
-  sufficient for success; individual failures remain in the result's `relays`
+  locked signing, and waits for relay acknowledgements. As an explicit launcher policy, one accepting relay is
+  sufficient for success (this does not establish recipient delivery); individual failures remain in the result's `relays`
   map. If no relay accepts, the result reports `PUBLICATION_FAILED`, distinct
   from signing or permission refusal. A manifest
   declaration never grants signing permission.
 - `upload` supports Blossom uploads of `Blob`/`ArrayBuffer` data up to 64 MiB.
-  `upload.info` advertises the rail and limit. `upload.upload` returns a pending
-  upload ID immediately on the wire. The injected `upload.upload()` API and SDK
-  await a terminal result with an attachable URL or failure; status listeners
-  (SDK `onStatus`) receive intermediate updates. Raw protocol clients must
-  subscribe before uploading or query `upload.status` until terminal.
+  `upload.info` advertises the rail and limit. Standard `upload.upload()` returns
+  an initial `uploading` result and upload ID promptly, before consent/transfer
+  completes. A missing URL at this stage is not failure. Subscribe with `onStatus`
+  before starting, correlate by `uploadId` (including updates arriving before the
+  initial response), and stop at `complete`, `failed` or `cancelled`. Close the
+  subscription and clear timers on rejection, terminal results and disposal.
+  Query `upload.status` to recover the current job status.
+  The launcher-specific `window.napplet.upload.uploadAndWait(request)` convenience
+  returns a terminal result; it does not change standard SDK upload semantics.
+  It subscribes before starting, handles early completion, and cleans up on
+  rejection, terminal status, its eleven-minute timeout or page teardown.
   The launcher loads the active account's signed kind-10063 server list and
   asks the user to select destinations; an additional public HTTPS server can
   be supplied for this request. Incomplete discovery uses available verified
@@ -47,8 +53,11 @@ own graceful fallback.
   results include URL, hash, size, MIME, NIP-94 tags and successful mirror URLs.
   A single hash-scoped Blossom authorization is reused within each upload job.
   After the first successful upload, remaining servers use BUD-04 `/mirror`;
-  unsupported mirroring or an upstream-fetch failure falls back to direct upload.
+  HTTP 404/405/501/502 falls back to direct upload. Network exceptions fail that
+  destination without retrying its bytes.
   Partial mirror success returns success; failed destinations are omitted.
+  The ten-minute replication deadline preserves already verified destinations;
+  explicit cancellation or access revocation still prevents success.
   Errors include `UNSUPPORTED_UPLOAD_RAIL`, `INVALID_UPLOAD_DATA`,
   `UPLOAD_TOO_LARGE`, `UPLOAD_BUSY`, `NO_BLOSSOM_SERVERS`, `UPLOAD_TIMEOUT`
   and server/signing errors. Unknown or evicted IDs return `UNKNOWN_UPLOAD`.

@@ -3,17 +3,10 @@ import { nappletDescriptor } from '#helpers/napplet.js'
 import { listInstallations } from './storage.js'
 import { NAPPLET_INTENT_DEFAULTS_KEY } from '#constants/storage-schema.js'
 
-// Read current z/i tags explicitly: legacy combined advertisements are not contracts.
+// Signature and current-format checks stay launcher-owned; shared parsing owns z/i.
 export function nappletIntentEntry (event) {
-  const { catalogId, manifest } = nappletDescriptor(event)
-  const roles = new Set(event.tags.filter(tag => tag[0] === 'z').map(tag => tag[1]))
-  const archetypes = event.tags.filter(tag => tag[0] === 'i').flatMap(tag => {
-    const match = /^napplet:([a-z0-9][a-z0-9-]*)\/([a-z0-9][a-z0-9-]*)$/.exec(tag[1])
-    return match && roles.has(match[1]) && tag.slice(2).every(value => typeof value === 'string')
-      ? [{ slug: match[1], convention: tag[1], params: tag.slice(2) }]
-      : []
-  })
-  return manifestToIntentCatalogEntry({ catalogId, title: manifest.title, archetypes })
+  const { manifest } = nappletDescriptor(event)
+  return manifestToIntentCatalogEntry(manifest)
 }
 
 export function validIntentDefaults (value) {
