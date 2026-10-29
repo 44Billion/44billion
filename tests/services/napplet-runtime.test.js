@@ -157,3 +157,38 @@ it('isolates shared OS media actions and teardown between app frames', async () 
   stopFirst()
   stopSecond()
 })
+
+it('reports OUTBOX success when any destination accepts and preserves individual failures', async () => {
+  const key = generateSecretKey()
+  const urls = ['wss://one.example', 'wss://two.example']
+  let accepted = [urls[0]]
+  let signs = 0
+  const network = createNappletNetwork({
+    signal: new AbortController().signal,
+    account: { guard () {}, getPublicKey: () => getPublicKey(key), signEvent: async template => { signs++; return finalizeEvent(template, key) } },
+    loadRelays: async keys => Object.fromEntries(keys.map(key => [key, { read: urls, write: urls }])),
+    pool: { sendEvent: async () => ({ promise: Promise.resolve({ succeededRelays: accepted }) }) }
+  })
+  const template = { kind: 1, content: 'partial delivery', tags: [], created_at: 1 }
+  const partial = await network.router.publish(template, { toInboxes: [getPublicKey(key)] })
+  assert.equal(partial.ok, true)
+  assert.equal(partial.error, undefined)
+  assert.deepEqual(partial.relays, { [urls[0]]: true, [urls[1]]: false })
+  assert.equal(partial.eventId, partial.event.id)
+  assert.equal(signs, 1)
+  accepted = []
+  const failed = await network.router.publish(template)
+  assert.equal(failed.ok, false)
+  assert.equal(failed.error, 'PUBLICATION_FAILED')
+  network.close()
+})
+
+it('preserves signer refusals without attempting publication', async () => {
+  const network = createNappletNetwork({
+    signal: new AbortController().signal,
+    account: { guard () {}, getPublicKey: () => 'ab'.repeat(32), signEvent: async () => { throw new Error('SIGNATURE_DENIED') } },
+    pool: { sendEvent: () => assert.fail('must not publish') }
+  })
+  assert.deepEqual(await network.router.publish({ kind: 1, content: '', tags: [], created_at: 1 }), { ok: false, error: 'SIGNATURE_DENIED' })
+  network.close()
+})

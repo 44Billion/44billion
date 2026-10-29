@@ -163,6 +163,11 @@ ephemeral and intentionally not persisted; they do not belong here or in
 
 ### Per workspace (`<wsKey>`)
 
+New workspaces pin the starter apps, including the main app store followed by
+`builtin-napplet-store`. Both stores start closed. Existing workspace pins are
+preserved. The built-in store uses the same app and instance keys below; it
+requires no installation record or app origin.
+
 - `session_workspaceByKey_<wsKey>_userPk`
 - `session_workspaceByKey_<wsKey>_pinnedAppIds`
 - `session_workspaceByKey_<wsKey>_unpinnedAppIds`

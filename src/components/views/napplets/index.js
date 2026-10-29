@@ -1,6 +1,7 @@
 import { f, useGlobalStore, useSignal, useTask, useWebStorage } from '#f'
 import { useActiveWorkspaceOrder } from '#hooks/use-active-workspace-order.js'
 import { getAppIconMonogram } from '#helpers/app-icon.js'
+import { filterNappletCatalog, nappletArchetypes } from '#helpers/napplet-catalog.js'
 import { createNappletIconUrl, loadNappletAuthors, nappletAuthorLabel } from '#services/napplets/catalog-metadata.js'
 import { cssVars } from '#assets/styles/theme.js'
 import { nappletReference } from '#helpers/napplet.js'
@@ -31,6 +32,7 @@ f('napplet-catalog', function ({ props }) {
   const busy$ = useSignal('')
   const reference$ = useSignal('')
   const search$ = useSignal('')
+  const archetypes$ = useSignal([])
   const revision$ = useSignal(0)
   useTask(async ({ track, cleanup }) => {
     const handoff = track(() => { revision$(); return nappletIntentHandoffs$()[props.wsKey] })
@@ -92,8 +94,9 @@ f('napplet-catalog', function ({ props }) {
       ]
     : [])
   const handoff = nappletIntentHandoffs$()[props.wsKey]
-  const search = search$().toLocaleLowerCase()
-  const entries = entries$().filter(entry => !handoff || Object.values(nappletIntentEntry(entry.event).archetypes).some(role => role.contracts.some(contract => contract.convention === handoff.request.convention))).filter(({ manifest }) => `${manifest.title || ''} ${manifest.description || ''} ${manifest.dTag}`.toLocaleLowerCase().includes(search))
+  const candidates = entries$().filter(entry => !handoff || Object.values(nappletIntentEntry(entry.event).archetypes).some(role => role.contracts.some(contract => contract.convention === handoff.request.convention)))
+  const archetypes = [...new Set([...candidates.flatMap(nappletArchetypes), ...archetypes$()])].sort((a, b) => a.localeCompare(b))
+  const entries = filterNappletCatalog(candidates, { search: search$(), archetypes: archetypes$() })
   return this.h`
     <style>${/* css */`
       napplet-catalog {
@@ -122,8 +125,10 @@ f('napplet-catalog', function ({ props }) {
           width: 100%; max-width: 1200px; margin-inline: auto; padding: 20px;
         }
         p { line-height: 1.5; }
-        .intro { color: ${cssVars.colors.fg2}; }
         .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+        .archetypes { display: flex; flex-wrap: wrap; gap: 8px; }
+        .archetypes button { min-height: 36px; padding: 6px 12px; border-radius: 18px; overflow-wrap: anywhere; max-width: 100%; }
+        .archetypes button[aria-pressed='true'] { background: ${cssVars.colors.bgAccentPrimary}; color: ${cssVars.colors.fgAccent}; }
         input {
           flex: 1 1 200px; min-width: 0; width: 100%; min-height: 42px;
           padding: 10px 12px; border-radius: 6px;
@@ -182,7 +187,6 @@ f('napplet-catalog', function ({ props }) {
     `}</style>
     ${props.windowed ? '' : this.h`<div class='heading'><back-btn /><h1>${t('Napplets')}</h1></div>`}
     <div class='scroll-area'><div class='content'>
-    <p class='intro'>${t('Install sandboxed napplets and open them in your workspace.')}</p>
     ${handoff ? this.h`<p>${t('Find a napplet for')} <strong>${handoff.request.convention}</strong> <button onclick=${() => nappletIntentHandoffs$(value => { const next = { ...value }; delete next[props.wsKey]; return next })}>${t('Cancel')}</button></p>` : ''}
     ${handoff
 ? ''
@@ -194,8 +198,18 @@ f('napplet-catalog', function ({ props }) {
       <input type='search' aria-label=${t('Search napplets')} placeholder=${t('Search napplets')} value=${search$()} oninput=${event => search$(event.target.value)} />
       <button onclick=${() => revision$(n => n + 1)} disabled=${loading$()}>${t('Refresh')}</button>
     </div>
+    ${archetypes.length
+? this.h`<div class='archetypes' role='group' aria-label=${t('Filter by archetype')}>
+      <button type='button' aria-pressed=${archetypes$().length === 0 ? 'true' : 'false'} onclick=${() => archetypes$([])}>${t('All')}</button>
+      ${archetypes.map(archetype => this.h({ key: archetype })`<button
+        type='button'
+        aria-pressed=${archetypes$().includes(archetype) ? 'true' : 'false'}
+        onclick=${() => archetypes$(selected => selected.includes(archetype) ? selected.filter(value => value !== archetype) : [...selected, archetype])}
+      >${archetype}</button>`)}
+    </div>`
+: ''}
     ${error$() || navigation.error$() ? this.h`<p class='error' role='alert'>${error$() || navigation.error$()}</p>` : ''}
-    ${loading$() ? this.h`<p role='status'>${t('Loading napplets…')}</p>` : entries.length ? '' : this.h`<p>${t('No napplets found. You can open one using its reference above.')}</p>`}
+    ${loading$() ? this.h`<p role='status'>${t('Loading napplets…')}</p>` : entries.length ? '' : this.h`<p role='status'>${search$().trim() || archetypes$().length ? t('No napplets match these filters.') : t('No napplets found. You can open one using its reference above.')}</p>`}
     <div class='catalog'>${entries.map(entry => this.h({ key: entry.appId })`
       <article>
         <div class='app-summary'>

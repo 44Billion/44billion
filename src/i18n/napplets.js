@@ -2,6 +2,9 @@ import { getT, SUPPORTED_LOCALES } from './index.js'
 
 // Rows follow SUPPORTED_LOCALES; napplet is a format/product name.
 const rows = [
+  ['No napplets match these filters.', 'Aucun napplet ne correspond à ces filtres.', 'Nessun napplet corrisponde a questi filtri.', 'Keine Napplets entsprechen diesen Filtern.', 'Ningún napplet coincide con estos filtros.', 'Nenhum napplet corresponde a estes filtros.', 'Нет napplet, соответствующих этим фильтрам.', '没有符合这些筛选条件的 napplet。', '沒有符合這些篩選條件的 napplet。', '条件に一致する Napplet はありません。', '이 필터와 일치하는 Napplet이 없습니다.'],
+  ['All', 'Tous', 'Tutti', 'Alle', 'Todos', 'Todos', 'Все', '全部', '全部', 'すべて', '모두'],
+  ['Filter by archetype', 'Filtrer par archétype', 'Filtra per archetipo', 'Nach Archetyp filtern', 'Filtrar por arquetipo', 'Filtrar por arquétipo', 'Фильтр по архетипу', '按原型筛选', '依原型篩選', 'アーキタイプで絞り込み', '유형별 필터'],
   ['pending', 'En attente', 'In attesa', 'Ausstehend', 'Pendiente', 'Pendente', 'Ожидание', '等待中', '等待中', '待機中', '대기 중'],
   ['uploading', 'Envoi en cours', 'Caricamento', 'Wird hochgeladen', 'Subiendo', 'Enviando', 'Загрузка', '上传中', '上傳中', 'アップロード中', '업로드 중'],
   ['complete', 'Terminé', 'Completato', 'Abgeschlossen', 'Completado', 'Concluído', 'Готово', '已完成', '已完成', '完了', '완료'],
@@ -32,7 +35,6 @@ const rows = [
   ['Napplet', 'Napplet', 'Napplet', 'Napplet', 'Napplet', 'Napplet', 'Napplet', 'Napplet', 'Napplet', 'Napplet', 'Napplet'],
   ['Retry', 'Réessayer', 'Riprova', 'Erneut versuchen', 'Reintentar', 'Tentar novamente', 'Повторить', '重试', '重試', '再試行', '다시 시도'],
   ['Opening napplet…', 'Ouverture du napplet…', 'Apertura del napplet…', 'Napplet wird geöffnet…', 'Abriendo napplet…', 'Abrindo napplet…', 'Открытие napplet…', '正在打开 napplet…', '正在開啟 napplet…', 'Napplet を開いています…', 'Napplet 여는 중…'],
-  ['Install sandboxed napplets and open them in your workspace.', 'Installez des napplets isolés et ouvrez-les dans votre espace de travail.', 'Installa napplet isolati e aprili nel tuo spazio di lavoro.', 'Installiere isolierte Napplets und öffne sie in deinem Arbeitsbereich.', 'Instala napplets aislados y ábrelos en tu espacio de trabajo.', 'Instale napplets isolados e abra-os no seu espaço de trabalho.', 'Устанавливайте изолированные napplet и открывайте их в рабочей области.', '安装沙盒 napplet 并在工作区中打开。', '安裝沙箱 napplet 並在工作區中開啟。', 'サンドボックス化された napplet をインストールしてワークスペースで開きます。', '격리된 napplet을 설치하고 작업 공간에서 여세요.'],
   ['Napplet reference', 'Référence du napplet', 'Riferimento napplet', 'Napplet-Referenz', 'Referencia del napplet', 'Referência do napplet', 'Ссылка на napplet', 'Napplet 引用', 'Napplet 參照', 'Napplet の参照', 'Napplet 참조'],
   ['Paste a napplet naddr or nevent', 'Collez le naddr ou nevent du napplet', 'Incolla il naddr o nevent del napplet', 'Napplet-naddr oder -nevent einfügen', 'Pega el naddr o nevent del napplet', 'Cole o naddr ou nevent do napplet', 'Вставьте naddr или nevent napplet', '粘贴 napplet 的 naddr 或 nevent', '貼上 napplet 的 naddr 或 nevent', 'Napplet の naddr または nevent を貼り付け', 'Napplet naddr 또는 nevent 붙여넣기'],
   ['Open napplet', 'Ouvrir le napplet', 'Apri napplet', 'Napplet öffnen', 'Abrir napplet', 'Abrir napplet', 'Открыть napplet', '打开 napplet', '開啟 napplet', 'Napplet を開く', 'Napplet 열기'],

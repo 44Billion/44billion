@@ -11,6 +11,9 @@ import { removeSelectionsForWorkspace } from '#services/personas/index.js'
 import { cleanupNostrDbAppForWorkspace } from './helpers/nostrdb-app-lifecycle.js'
 import { requestNostrDbAppBackfillsForWorkspace } from './helpers/nostrdb-app-backfill.js'
 import { firstAccountActivationMetadata } from './account-attention.js'
+import { NAPPLET_STORE_APP_ID } from '#helpers/launcher-app.js'
+import { cacheAppMetadata } from '#services/app-file-manager/index.js'
+import { nappletT } from '#i18n/napplets.js'
 
 // the screen has
 // 1 active (active as in last clicked) user (pk) at all times (defaultUserPk is the default user pk)
@@ -34,7 +37,7 @@ import { firstAccountActivationMetadata } from './account-attention.js'
 const coreAppIds = [
   '+32Wp7Qdz5XIbjlzHht7GdEP8IDxk6CC90ee8lRxYjx0stjsVD8yzTguF', // jumble fork w/ window.nostr.peekPublicKey() support
   '+3swFhu23QNl8er5yOtc8bf9ueHCdwF8CzoDUiSSwwKIWoS8Ki5TwMyeA3Js1' // nappstore
-].map(appDecode).map(addressObjToAppId) // ['44b', 'minimoon', 'nappstore']
+].map(appDecode).map(addressObjToAppId).concat(NAPPLET_STORE_APP_ID)
 
 export default function useInitOrResetScreen () {
   const storage = useWebStorage(localStorage)
@@ -43,6 +46,7 @@ export default function useInitOrResetScreen () {
 
   // init
   useTask(() => {
+    cacheAppMetadata(NAPPLET_STORE_APP_ID, { name: nappletT('Napplets'), description: '' })
     if (storage.session_workspaceKeys$()) return
 
     const defaultUserPk = getB62PublicKeyStub()

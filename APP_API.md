@@ -22,7 +22,10 @@ own graceful fallback.
   the explicit public-relay escape hatch. Incoming events are signature/filter
   checked. Publishing signs through the existing vault and app/kind permission
   dialog, rechecks workspace/persona access after waits, rejects read-only or
-  locked signing, and waits for a successful relay acknowledgement. A manifest
+  locked signing, and waits for relay acknowledgements. One accepting relay is
+  sufficient for success; individual failures remain in the result's `relays`
+  map. If no relay accepts, the result reports `PUBLICATION_FAILED`, distinct
+  from signing or permission refusal. A manifest
   declaration never grants signing permission.
 - `upload` supports Blossom uploads of `Blob`/`ArrayBuffer` data up to 64 MiB.
   `upload.info` advertises the rail and limit. `upload.upload` returns a pending
@@ -52,8 +55,26 @@ own graceful fallback.
   Status listeners must be closed on napplet disposal. NIP-96 is unavailable.
 - `count` uses relay NIP-45 COUNT, accepts one filter, and returns unavailable
   when the relay cannot count. It never downloads events to simulate COUNT.
-- `common` supports public profiles, follows/unfollows, reactions and reports.
-  `lists` supports public items in kinds 10000/10001/10003/10006/10007/10015/10050
+- `common` supports all eight NAP-COMMON operations: `encodeNip19`,
+  `decodeNip19`, `getProfile`, `follows`, `follow`, `unfollow`, `react` and
+  `report`. Identifier helpers support npub/note/nprofile/nevent/naddr/nrelay,
+  reject secrets, and validate decode checksums with a 5,000-character limit.
+  Profile lookup accepts hex/npub/nprofile, passes relay hints through the
+  public-relay policy, and retains the backing relay result and its sidecar.
+  Follows are unique valid lowercase hex keys. Follow changes deduplicate input,
+  preserve unrelated tags/content, serialize with public kind-3 list edits, and
+  refuse incomplete reads. Mutations require a workspace signing identity and
+  use the existing vault/app-kind consent and account/persona checks; no new
+  permission is granted by exposing this domain. Reactions accept `+`, `-`, one
+  Unicode emoji or one `:shortcode:` paired with an HTTP(S) custom emoji URL.
+  Addressable reaction targets include an `a` tag. Reports validate NIP-56
+  reasons and require an author, supplied by the caller or resolved using the
+  optional relay hint. Results use `ok: false`/`error` on failure, including
+  `invalid-nip19`, `unsupported-nip19-type`, `not-signed-in`, `invalid-reaction`,
+  `invalid-report-reason`, `invalid-target` and `author-unresolved`, plus existing
+  lookup/signing/publication errors. Calls wait for the injected protocol
+  handshake; this domain creates no subscriptions requiring cleanup.
+- `lists` supports public items in kinds 10000/10001/10003/10006/10007/10015/10050
   and sets 30000/30002/30003/30015. Mutations retain unrelated tags and existing
   encrypted content; private-item edits are explicitly unsupported. Incomplete
   reads refuse replacement writes.

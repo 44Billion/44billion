@@ -61,6 +61,17 @@ export function createNappletNetwork ({ account, signal, pool = relayPool, loadR
     signEvent: template => account.signEvent(template), verifyEvent,
     isRelayAllowed: isValidPublicRelayUrl, defaultTimeoutMs: 10000
   })
+  // Kehto requires every NIP-65 destination to acknowledge. Relays are
+  // redundant: one confirmed acceptance is enough, with failures still visible.
+  const publishOutbox = router.publish.bind(router)
+  router.publish = async (...args) => {
+    const result = await publishOutbox(...args)
+    if (!result.relays) return result
+    const ok = Object.values(result.relays).some(value => value === true)
+    const publication = { ...result }
+    delete publication.error
+    return { ...publication, ok, ...(ok ? {} : { error: 'PUBLICATION_FAILED' }) }
+  }
   const getRelays = async () => {
     const pubkey = account.getPublicKey()
     const entry = pubkey ? (await relaysFor([pubkey])).get(pubkey) : { read: freeRelays, write: freeRelays }

@@ -2,7 +2,7 @@ import { createNappletUploadService } from './uploads.js'
 import { confirmNappletUpload, nappletUploads$ } from './ui.js'
 import {
   createIdentityService, createOutboxService, createRelayPoolService, createCountService,
-  createResourceService, createCommonService, createListsService, createKeysService,
+  createResourceService, createListsService, createKeysService,
   createGamepadService, browserGamepadOptions, createConfigService, createNotifyService, createLinkService,
   createBrowserMediaPlayback, createMediaService
 } from '@kehto/services'
@@ -10,6 +10,7 @@ import { freeRelays } from 'libp2r2p/relay'
 import { originRegistry } from '@kehto/shell'
 import { createNappletResourceResolver, MAX_RESOURCE_BYTES } from './resources.js'
 import { createNappletSocial } from './social.js'
+import { createNappletCommonService } from './common.js'
 import { createNappletLists } from './lists.js'
 import { nappletSettings$, nappletBadges$, nappletMedia$, closeNappletUi, presentNappletNotice, dismissNappletNotice } from './ui.js'
 import { NAPPLET_CONFIG_STATE_KEY } from '#constants/storage-schema.js'
@@ -64,7 +65,7 @@ export function createNappletServices ({ account, network, state, signal, iframe
       fetch: createNappletResourceResolver({ signal, guard: account.guard, fallbackServers: resolved.manifest.servers, loadAuthorServers: async author => (await social.latest(10063, author))?.tags.filter(tag => tag[0] === 'server').map(tag => tag[1]) || [] }),
       resourceInfo: { schemes: [{ scheme: 'https' }, { scheme: 'http' }, { scheme: 'blossom' }], maxBytes: MAX_RESOURCE_BYTES }
     }),
-    common: createCommonService(social),
+    common: createNappletCommonService(social),
     lists: createListsService(createNappletLists({ network, account })),
     keys,
     gamepad: createGamepadService(browserGamepadOptions(host, win => originRegistry.getWindowId(win))),

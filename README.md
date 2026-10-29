@@ -37,7 +37,8 @@ bridge; its catalog needs a companion change to list them alongside existing app
 Kehto dependencies are pinned registry packages: `@kehto/nip` verifies signed
 manifests/artifacts, `@kehto/runtime` dispatches NAP requests, `@kehto/shell`
 prepares CSP/injected namespaces and binds frame sources, and `@kehto/services`
-provides protocol service adapters. `@kehto/acl`, `@napplet/core`, `@napplet/nap`, and
+provides protocol service adapters. `@scure/base` validates public NIP-19
+bech32 checksums before COMMON requests reach the shared adapter. `@kehto/acl`, `@napplet/core`, `@napplet/nap`, and
 `nostr-tools` provide their compatible protocol/crypto contracts. The launcher
 supplies account-scoped persistence rather than Kehto's default global browser
 storage. See [Kehto documentation](https://kehto.github.io/web/docs/).

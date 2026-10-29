@@ -176,3 +176,28 @@ it('falls back from unsupported mirroring to direct upload with the same authori
   assert.equal(signs, 1)
   f.controller.abort()
 })
+
+it('keeps the original upload successful when every subsequent mirror fails', async () => {
+  const hash = createHash('sha256').update('test').digest('hex')
+  const f = fixture({
+    fetchUpload: async url => {
+      if (url.includes('two.example')) throw new Error('offline')
+      return Response.json({ url: `https://one.example/${hash}`, sha256: hash, size: 4 })
+    }
+  })
+  f.request({ data: new Blob(['test']) })
+  const status = await f.done
+  assert.equal(status.status, 'complete')
+  assert.equal(status.ok, true)
+  assert.equal(status.url, `https://one.example/${hash}`)
+  assert.deepEqual(status.fallbackUrls, [])
+  f.controller.abort()
+})
+
+it('fails an upload only when no destination stores a valid blob', async () => {
+  const f = fixture({ fetchUpload: async () => { throw new Error('offline') } })
+  f.request({ data: new Blob(['test']) })
+  assert.equal((await f.done).ok, false)
+  assert.equal(f.messages.at(-1).status.status, 'failed')
+  f.controller.abort()
+})
