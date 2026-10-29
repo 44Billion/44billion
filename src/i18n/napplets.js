@@ -2,6 +2,15 @@ import { getT, SUPPORTED_LOCALES } from './index.js'
 
 // Rows follow SUPPORTED_LOCALES; napplet is a format/product name.
 const rows = [
+  ['pending', 'En attente', 'In attesa', 'Ausstehend', 'Pendiente', 'Pendente', 'Ожидание', '等待中', '等待中', '待機中', '대기 중'],
+  ['uploading', 'Envoi en cours', 'Caricamento', 'Wird hochgeladen', 'Subiendo', 'Enviando', 'Загрузка', '上传中', '上傳中', 'アップロード中', '업로드 중'],
+  ['complete', 'Terminé', 'Completato', 'Abgeschlossen', 'Completado', 'Concluído', 'Готово', '已完成', '已完成', '完了', '완료'],
+  ['failed', 'Échec', 'Non riuscito', 'Fehlgeschlagen', 'Fallido', 'Falhou', 'Ошибка', '失败', '失敗', '失敗', '실패'],
+  ['cancelled', 'Annulé', 'Annullato', 'Abgebrochen', 'Cancelado', 'Cancelado', 'Отменено', '已取消', '已取消', 'キャンセル済み', '취소됨'],
+  ['Upload file', 'Envoyer un fichier', 'Carica file', 'Datei hochladen', 'Subir archivo', 'Enviar arquivo', 'Загрузить файл', '上传文件', '上傳檔案', 'ファイルをアップロード', '파일 업로드'],
+  ['This file will be publicly accessible.', 'Ce fichier sera accessible publiquement.', 'Questo file sarà accessibile pubblicamente.', 'Diese Datei wird öffentlich zugänglich sein.', 'Este archivo será público.', 'Este arquivo será público.', 'Этот файл будет общедоступным.', '此文件将公开访问。', '此檔案將公開存取。', 'このファイルは公開されます。', '이 파일은 공개됩니다.'],
+  ['Additional Blossom server', 'Serveur Blossom supplémentaire', 'Server Blossom aggiuntivo', 'Zusätzlicher Blossom-Server', 'Servidor Blossom adicional', 'Servidor Blossom adicional', 'Дополнительный сервер Blossom', '其他 Blossom 服务器', '其他 Blossom 伺服器', '追加の Blossom サーバー', '추가 Blossom 서버'],
+  ['Choose a public HTTPS Blossom server.', 'Choisissez un serveur Blossom HTTPS public.', 'Scegli un server Blossom HTTPS pubblico.', 'Öffentlichen HTTPS-Blossom-Server auswählen.', 'Elige un servidor Blossom HTTPS público.', 'Escolha um servidor Blossom HTTPS público.', 'Выберите публичный HTTPS-сервер Blossom.', '请选择公共 HTTPS Blossom 服务器。', '請選擇公開 HTTPS Blossom 伺服器。', '公開 HTTPS Blossom サーバーを選択してください。', '공개 HTTPS Blossom 서버를 선택하세요.'],
   ['Play', 'Lire', 'Riproduci', 'Wiedergeben', 'Reproducir', 'Reproduzir', 'Воспроизвести', '播放', '播放', '再生', '재생'],
   ['Pause', 'Pause', 'Pausa', 'Pause', 'Pausa', 'Pausar', 'Пауза', '暂停', '暫停', '一時停止', '일시 정지'],
   ['Settings', 'Paramètres', 'Impostazioni', 'Einstellungen', 'Ajustes', 'Configurações', 'Настройки', '设置', '設定', '設定', '설정'],

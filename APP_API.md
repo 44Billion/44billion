@@ -11,7 +11,7 @@ Napplets use a separate opaque-origin sandbox and receive `window.napplet`
 before authored scripts execute, rather than the napp/signer APIs described
 below. Supported domains are `shell`, `storage`, `theme`, `identity`, `outbox`,
 `relay`, `count`, `resource`, `common`, `lists`, `keys`, `gamepad`, `config`,
-`notify`, `link`, and `media`. Required domains are advisory compatibility hints
+`notify`, `link`, `media`, and `upload`. Required domains are advisory compatibility hints
 and never block installation/loading. Unavailable domains remain absent; napplets
 own graceful fallback.
 
@@ -24,6 +24,25 @@ own graceful fallback.
   dialog, rechecks workspace/persona access after waits, rejects read-only or
   locked signing, and waits for a successful relay acknowledgement. A manifest
   declaration never grants signing permission.
+- `upload` supports Blossom uploads of `Blob`/`ArrayBuffer` data up to 64 MiB.
+  `upload.info` advertises the rail and limit. `upload.upload` returns a pending
+  upload ID immediately; subscribe to `upload.status.changed` (SDK `onStatus`)
+  before uploading, or query `upload.status` until complete/failed/cancelled.
+  The launcher loads the active account's signed kind-10063 server list and
+  asks the user to select destinations; an additional public HTTPS server can
+  be supplied for this request. Files are public. No file event is published.
+  Authorization is signed through the vault and existing app/kind permissions;
+  anonymous/read-only/locked accounts cannot authorize uploads. Workspace/persona
+  access is rechecked when signing and around network waits. Up to two jobs per
+  window, ten destinations and 64 recent statuses are retained in memory.
+  Transfers use a ten-minute deadline; closing the window cancels its jobs.
+  Launcher UI offers cancellation and indeterminate transfer progress. Successful
+  results include URL, hash, size, MIME, NIP-94 tags and successful mirror URLs.
+  Partial mirror success returns success; failed destinations are omitted.
+  Errors include `UNSUPPORTED_UPLOAD_RAIL`, `INVALID_UPLOAD_DATA`,
+  `UPLOAD_TOO_LARGE`, `UPLOAD_BUSY`, `NO_BLOSSOM_SERVERS`, `UPLOAD_TIMEOUT`
+  and server/signing errors. Unknown or evicted IDs return `UNKNOWN_UPLOAD`.
+  Status listeners must be closed on napplet disposal. NIP-96 is unavailable.
 - `count` uses relay NIP-45 COUNT, accepts one filter, and returns unavailable
   when the relay cannot count. It never downloads events to simulate COUNT.
 - `common` supports public profiles, follows/unfollows, reactions and reports.
@@ -47,7 +66,7 @@ own graceful fallback.
 - `media` mediates audio/video through host resource loading and native controls,
   with up to four sessions per frame and shared OS media-session controls.
 
-DM, inter-napplet messaging/intents, uploads, filesystem and device-specific
+DM, inter-napplet messaging/intents, filesystem and device-specific
 services are not advertised yet. Signing uses the existing vault channel;
 subscriptions, pending requests, controls and listeners are cancelled when the
 frame closes or its workspace account changes.

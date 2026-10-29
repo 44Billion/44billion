@@ -1,6 +1,7 @@
+import '#shared/napplet-upload-dialog.js'
 import { f, useSignal, useTask } from '#f'
 import { cssVars } from '#assets/styles/theme.js'
-import { nappletSettings$, nappletNotices$, nappletBadges$, nappletMedia$, dismissNappletNotice } from '#services/napplets/ui.js'
+import { nappletSettings$, nappletNotices$, nappletBadges$, nappletMedia$, dismissNappletNotice, nappletUploads$ } from '#services/napplets/ui.js'
 import { nappletT as t } from '#i18n/napplets.js'
 
 f('napplet-host-ui', function () {
@@ -68,12 +69,19 @@ f('napplet-host-ui', function () {
       </form>`
 : ''}
     </dialog>
+    <napplet-upload-dialog></napplet-upload-dialog>
     <div class='notices' aria-live='polite'>
       <div class='players'>${Object.values(nappletMedia$()).flatMap(group => group.sessions.map(session => this.h({ key: session.sessionId })`<div class='notice'>
         <p>${session.metadata?.title || group.name}</p>
         ${group.service.getElement(session.sessionId) || ''}
         <div class='actions'><button onclick=${() => group.service.command(session.sessionId, { action: 'play' })}>${t('Play')}</button><button onclick=${() => group.service.command(session.sessionId, { action: 'pause' })}>${t('Pause')}</button><button onclick=${() => group.service.retire(session.sessionId, 'user')}>${t('Close')}</button></div>
       </div>`))}</div>
+      ${Object.values(nappletUploads$()).map(item => this.h({ key: item.status.uploadId })`<div class='notice'>
+        <p>${item.name} · ${t('Upload file')}</p><p role='status'>${t(item.status.status)}</p>
+        ${item.status.error ? this.h`<p class='error'>${item.status.error}</p>` : ''}
+        ${item.status.status === 'uploading' ? this.h`<progress aria-label=${t('Upload file')}></progress>` : ''}
+        <button onclick=${() => { if (['pending', 'uploading'].includes(item.status.status)) item.cancel(); else nappletUploads$(items => Object.fromEntries(Object.entries(items).filter(([id]) => id !== item.status.uploadId))) }}>${t(['pending', 'uploading'].includes(item.status.status) ? 'Cancel' : 'Close')}</button>
+      </div>`)}
       ${badges.map(badge => this.h`<div class='badge'>${badge.name}: ${badge.count}</div>`)}
       ${nappletNotices$().map(notice => this.h({ key: notice.notificationId })`<div class='notice'>
         <p class='help'>${notice.name}</p><p><strong>${notice.message.title}</strong></p><p>${notice.message.body || ''}</p>

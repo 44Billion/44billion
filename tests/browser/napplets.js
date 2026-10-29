@@ -66,6 +66,17 @@ try {
   assert.equal(await evaluate('document.querySelector("napplet-catalog .heading")'), null)
   assert.equal(await evaluate('location.pathname'), '/')
   assert.equal(await evaluate('document.querySelectorAll("napplet-catalog input").length'), 2)
+  await evaluate('window.uploadSelection = null; fixture.confirmNappletUpload({ name: \'Upload fixture\', filename: \'photo.png\', size: 1024, pubkey: \'account\', servers: [\'https://preferred.example\'], signal: new AbortController().signal }).then(value => { window.uploadSelection = value }); true')
+  await browser.until(() => evaluate('!!document.querySelector("napplet-upload-dialog dialog")?.open'), 'upload consent dialog')
+  assert.equal(await evaluate('document.querySelector("napplet-upload-dialog input[type=checkbox]").checked'), true)
+  await evaluate('document.querySelector("napplet-upload-dialog input[type=checkbox]").click()')
+  await evaluate('document.querySelector("napplet-upload-dialog .actions button:last-child").click()')
+  await browser.until(() => evaluate('!!document.querySelector("napplet-upload-dialog [role=alert]")'), 'upload requires a destination')
+  await evaluate('const input = document.querySelector(\'napplet-upload-dialog input[type=url]\'); input.value = \'https://additional.example\'; input.dispatchEvent(new Event(\'input\', { bubbles: true }))')
+  await evaluate('document.querySelector("napplet-upload-dialog .actions button:last-child").click()')
+  await browser.until(() => evaluate('Array.isArray(window.uploadSelection)'), 'upload destination selection')
+  assert.deepEqual(await evaluate('window.uploadSelection'), ['https://additional.example'])
+
   await browser.until(() => evaluate('document.querySelectorAll("napplet-catalog article").length === 8'), 'verified catalog cards')
   await browser.until(() => evaluate('!!document.querySelector("napplet-catalog .app-icon img")?.naturalWidth'), 'verified napplet icon')
   await browser.until(() => evaluate('[...document.querySelectorAll("napplet-catalog .author")].every(el=>el.textContent.startsWith("Publisher "))'), 'publisher names')
@@ -133,12 +144,13 @@ try {
       const count=await call('count.query',{filters:[{kinds:[1]}]});
       const resource=await call('resource.bytes',{url:'https://icons.example.com/${iconHash}'});
       const resourceInfo=await call('resource.info');
+      const uploadInfo=await window.napplet.upload.info();
       const keys=await call('keys.registerAction',{action:{id:'fixture-action',label:'Fixture action',defaultKey:'Alt+K'}});
       const media=await call('media.session.create',{owner:'napplet',sessionId:'fixture-player',metadata:{title:'Fixture media'},capabilities:['play','pause']});
       const notice=await call('notify.send',{title:'Runtime notification',body:'Notification delivered'});
       addEventListener('message',event=>{if(event.source!==parent)return;if(event.data.fixtureOpenSettings)window.napplet.config.openSettings();if(event.data.fixtureKeys)parent.postMessage({type:'keys.forward',key:'k',code:'KeyK',alt:true},'*')});
       let blocked=false;try{localStorage.getItem('secret')}catch{blocked=true}
-      parent.postMessage({fixtureReport:true,previous,blocked,domains:Object.keys(window.napplet),theme:theme.theme,identity,schema,config,count,resource,resourceInfo,keys,media,notice},'*');
+      parent.postMessage({fixtureReport:true,previous,blocked,domains:Object.keys(window.napplet),theme:theme.theme,identity,schema,config,count,resource,resourceInfo,uploadInfo,keys,media,notice},'*');
     })().catch(error=>parent.postMessage({fixtureError:String(error)},'*'));
   </script></body></html>`
   const bytes = new TextEncoder().encode(html)
@@ -152,6 +164,9 @@ try {
   assert.equal(await evaluate('document.querySelector("napplet-frame iframe").getAttribute("sandbox")'), 'allow-scripts')
   assert.equal(await evaluate('reports[0].domains.includes("outbox")'), true)
   assert.equal(await evaluate('reports[0].domains.includes("dm")'), false)
+  assert.equal(await evaluate('reports[0].domains.includes("upload")'), true)
+  assert.equal(await evaluate('reports[0].uploadInfo.rails[0].rail'), 'blossom')
+  assert.equal(await evaluate('reports[0].uploadInfo.maxBytes'), 64 * 1024 * 1024)
   assert.equal(await evaluate('reports[0].schema.ok'), true)
   assert.equal(await evaluate('reports[0].count.count'), 7)
   assert.equal(await evaluate('!!reports[0].resource.error'), false)

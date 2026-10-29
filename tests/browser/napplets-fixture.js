@@ -1,3 +1,4 @@
+import { confirmNappletUpload } from '#services/napplets/ui.js'
 import '#config/polyfills.js'
 import { f, useGlobalStore, useLocation, useWebStorage } from '#f'
 import { installStorageEventGuard } from '#helpers/storage-event-guard.js'
@@ -31,7 +32,7 @@ relayPool.getEvents = (filter, ...args) => {
 }
 
 installStorageEventGuard()
-window.fixture = { installNapplet, getInstallation, nappletReference }
+window.fixture = { confirmNappletUpload, installNapplet, getInstallation, nappletReference }
 f('napplet-test-host', function () {
   const initialStorage = useWebStorage(localStorage)
   if (!initialStorage.session_workspaceKeys$()?.length) {

@@ -3,7 +3,7 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 import { decode, naddrEncode, neventEncode } from 'nostr-tools/nip19'
 import { getNappletCatalogId, parseNappletManifest, verifyManifestSignature } from '@kehto/nip/5d'
 
-export const NAPPLET_DOMAINS = Object.freeze(['shell', 'storage', 'theme', 'identity', 'outbox', 'relay', 'count', 'resource', 'common', 'lists', 'keys', 'gamepad', 'config', 'notify', 'link', 'media'])
+export const NAPPLET_DOMAINS = Object.freeze(['shell', 'storage', 'theme', 'identity', 'outbox', 'relay', 'count', 'resource', 'common', 'lists', 'keys', 'gamepad', 'config', 'notify', 'link', 'media', 'upload'])
 export const isNappletAppId = value => typeof value === 'string' && /^napplet-[0-9a-f]{64}$/.test(value)
 export const nappletAppId = catalogId => `napplet-${bytesToHex(sha256(new TextEncoder().encode(catalogId)))}`
 
