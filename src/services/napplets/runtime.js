@@ -1,7 +1,7 @@
 import { createRuntime } from '@kehto/runtime'
 import { originRegistry, prepareNappletSrcdoc } from '@kehto/shell'
 import { createThemeService } from '@kehto/services'
-import { verifyEvent } from 'nostr-tools/pure'
+import { verifyEvent } from '../event-verification.js'
 import { NAPPLET_DOMAINS } from '#helpers/napplet.js'
 import { defaultThemeColorValues } from '#assets/styles/theme.js'
 import { createNappletStatePersistence } from './storage.js'

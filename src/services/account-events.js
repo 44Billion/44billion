@@ -1,8 +1,9 @@
+import { verifyEvent as isValidEvent } from '#services/event-verification.js'
 import { accountEventPages, assertHistoryReport, ACCOUNT_PAGE_SIZE } from './account-event-pages.js'
 import { missingCoverage } from './account-event-coverage.js'
 import { createAccountCoverageCheckpointQueue } from './account-coverage-checkpoints.js'
 import { createAccountEventRetry } from './account-event-retry.js'
-import { isEphemeralEvent, isValidEvent } from 'libp2r2p/event'
+import { isEphemeralEvent } from 'libp2r2p/event'
 import {
   eventKinds, isEphemeralKind,
   CUSTOM_APP_DATA, REGULAR_CUSTOM_APP_DATA, PERSONAL_COPY,

@@ -1,4 +1,5 @@
-import { getEventHash, isValidEvent } from 'libp2r2p/event'
+import { verifyEvent as isValidEvent } from '#services/event-verification.js'
+import { getEventHash } from 'libp2r2p/event'
 import { isAddressableKind, isEphemeralKind, isReplaceableKind } from 'libp2r2p/kind'
 import { eventKinds } from '#constants/event.js'
 

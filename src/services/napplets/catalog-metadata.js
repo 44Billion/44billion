@@ -1,4 +1,4 @@
-import { verifyEvent } from 'nostr-tools/pure'
+import { verifyEvent } from '../event-verification.js'
 import { npubEncode } from 'nostr-tools/nip19'
 import { verifyBlobHash } from '@kehto/nip/5d'
 import { getProfileEventsByPubkey } from '#helpers/nostr-queries.js'
