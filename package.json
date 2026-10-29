@@ -14,6 +14,7 @@
     "test": "node --test --experimental-test-module-mocks 'tests/**/*.test.js'",
     "test:browser:quotas": "node bin/run-browser-tests.js -- node tests/browser/nostrdb-quotas.js",
     "test:browser:storage": "node bin/run-browser-tests.js -- node tests/browser/event-storage.js",
+    "test:browser:napplet-intents": "node bin/run-browser-tests.js -- node tests/browser/napplet-intents.js",
     "test:browser:napplets": "node bin/run-browser-tests.js -- node tests/browser/napplets.js",
     "test:browser": "node bin/run-browser-tests.js -- sh -c 'node tests/browser/event-storage.js && node tests/browser/nostrdb-quotas.js && node tests/browser/app-bridge.js && node tests/browser/widget-pinning.js && node tests/browser/widget-pinning.js --gestures && node tests/browser/widget-pinning.js --menus && node tests/browser/widget-pinning.js --wheel && node tests/browser/menu-focus.js'",
     "test:only": "node --test --test-only --experimental-test-module-mocks 'tests/**/*.test.js'"

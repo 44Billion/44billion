@@ -614,3 +614,15 @@ app lists, instance records and metadata templates. It uses ordinary window
 visibility, order, pinning and restoration; it has no remote manifest, app origin,
 napplet installation or separate persisted keys. Removal and audit repair skip
 remote file, origin and NostrDB cleanup for this identity.
+
+### Napplet intent preferences
+
+`local_nappletIntentDefaults` is a launcher-owned JSON object mapping workspace
+user IDs to archetype slugs to opaque verified catalog IDs. Only chooser actions
+set or clear a default; napplets cannot write preferences. Resolution ignores
+stale defaults that no longer support the requested exact contract. The storage
+audit removes malformed preference objects, preserving unrelated data.
+Pending intent payloads, endpoint registrations and store continuations live only
+in memory, scoped by workspace and user. They are lost on launcher reload and are
+never put in URLs, logs, WebStorage or IndexedDB. Accepted deliveries have a
+20-second startup deadline and a 32-job per-workspace limit.

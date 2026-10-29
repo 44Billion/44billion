@@ -23,9 +23,11 @@ export const NAPPLET_STATE_PREFIX = 'local_nappletState_'
 // Reserved string-map entry inside the existing per-account/app napplet record.
 // JSON settings object, maximum 32 KiB; no standalone WebStorage key.
 export const NAPPLET_CONFIG_STATE_KEY = 'launcher:config'
+export const NAPPLET_INTENT_DEFAULTS_KEY = 'local_nappletIntentDefaults'
 
 export const GLOBAL_LOCAL_KEYS = [
   'storage_version',
+  NAPPLET_INTENT_DEFAULTS_KEY, // User -> archetype -> verified catalog ID.
   'local_devApps', // Development-only app classification and retained file versions.
   'config_locale',
   'config_isSingleWindow',

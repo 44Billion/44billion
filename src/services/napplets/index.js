@@ -87,16 +87,17 @@ export async function loadNapplet (appId, { idb } = {}) {
   const record = await getInstallation(appId, idb)
   if (!record || nappletDescriptor(record.event).appId !== appId) throw new Error('Napplet installation is missing or invalid')
   const blobs = new Map(record.blobs)
-  return resolveNapplet({
+  const resolved = await resolveNapplet({
     event: record.event, fetchBlob: async hash => {
       if (!blobs.has(hash)) throw new Error('Installed napplet artifact is missing')
       return blobs.get(hash)
     }
   })
+  return { ...resolved, event: record.event }
 }
 
-export async function queryNappletCatalog ({ signal, pool = relayPool } = {}) {
-  const response = await pool.getEvents({ kinds: [15129, 35129, 5129], limit: 100 }, NAPPLET_DISCOVERY_RELAYS, { signal, timeout: 10000 })
+export async function queryNappletCatalog ({ signal, convention, pool = relayPool } = {}) {
+  const response = await pool.getEvents({ kinds: [15129, 35129, 5129], ...(convention ? { '#i': [convention] } : {}), limit: 100 }, NAPPLET_DISCOVERY_RELAYS, { signal, timeout: 10000 })
   if (!response.success) throw new Error('Could not load the napplet catalog')
   const entries = new Map()
   for (const { event } of (response.result || []).sort((a, b) => b.event.created_at - a.event.created_at || a.event.id.localeCompare(b.event.id))) {

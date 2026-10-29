@@ -5,6 +5,8 @@ import { createNappletIconUrl, loadNappletAuthors, nappletAuthorLabel } from '#s
 import { cssVars } from '#assets/styles/theme.js'
 import { nappletReference } from '#helpers/napplet.js'
 import { queryNappletCatalog } from '#services/napplets/index.js'
+import { nappletIntentEntry } from '#services/napplets/intents.js'
+import { nappletIntentHandoffs$ } from '#services/napplets/ui.js'
 import '#shared/back-btn.js'
 import { nappletT as t } from '#i18n/napplets.js'
 
@@ -14,6 +16,13 @@ f('napplet-catalog', function ({ props }) {
   const storage = useWebStorage(localStorage)
   const tabStorage = useWebStorage(sessionStorage)
   const { order$ } = useActiveWorkspaceOrder(storage, tabStorage)
+  useTask(({ track }) => {
+    const [handoff, userPk] = track(() => [nappletIntentHandoffs$()[props.wsKey], storage[`session_workspaceByKey_${props.wsKey}_userPk$`]()])
+    if (handoff && handoff.userPk !== userPk) nappletIntentHandoffs$(value => { const next = { ...value }; delete next[props.wsKey]; return next })
+  })
+  useTask(({ cleanup }) => {
+    cleanup(() => nappletIntentHandoffs$(value => { const next = { ...value }; delete next[props.wsKey]; return next }))
+  })
   const profiles$ = useSignal({})
   const icons$ = useSignal({})
   const entries$ = useSignal([])
@@ -24,13 +33,13 @@ f('napplet-catalog', function ({ props }) {
   const search$ = useSignal('')
   const revision$ = useSignal(0)
   useTask(async ({ track, cleanup }) => {
-    track(() => revision$())
+    const handoff = track(() => { revision$(); return nappletIntentHandoffs$()[props.wsKey] })
     const ac = new AbortController()
     cleanup(() => ac.abort())
     loading$(true)
     error$('')
     try {
-      const entries = await queryNappletCatalog({ signal: ac.signal })
+      const entries = await queryNappletCatalog({ signal: ac.signal, convention: handoff?.request.convention })
       if (ac.signal.aborted) return
       entries$(entries)
       profiles$({})
@@ -63,7 +72,17 @@ f('napplet-catalog', function ({ props }) {
     busy$(reference)
     error$('')
     navigation.error$('')
-    try { await openApp(`/napplet/${encodeURIComponent(reference.replace(/^nostr:/, ''))}`, props.wsKey) } catch (error) { error$(error.message) } finally { busy$('') }
+    try {
+      const handoff = nappletIntentHandoffs$()[props.wsKey]
+      if (handoff && storage[`session_workspaceByKey_${props.wsKey}_userPk$`]() !== handoff.userPk) throw new Error('ACCOUNT_ACCESS_REVOKED')
+      await openApp(`/napplet/${encodeURIComponent(reference.replace(/^nostr:/, ''))}`, props.wsKey)
+      if (handoff && nappletIntentHandoffs$()[props.wsKey] === handoff) {
+        const entry = entries$().find(entry => nappletReference(entry.event) === reference)
+        if (!entry) throw new Error('Unsupported intent handler')
+        await handoff.continue(entry.catalogId)
+        nappletIntentHandoffs$(value => { const next = { ...value }; delete next[props.wsKey]; return next })
+      }
+    } catch (error) { error$(error.message) } finally { busy$('') }
   }
   const wsKey = props.wsKey || order$()[0]
   const installed = new Set(wsKey
@@ -72,8 +91,9 @@ f('napplet-catalog', function ({ props }) {
         ...(storage[`session_workspaceByKey_${wsKey}_unpinnedAppIds$`]() || [])
       ]
     : [])
+  const handoff = nappletIntentHandoffs$()[props.wsKey]
   const search = search$().toLocaleLowerCase()
-  const entries = entries$().filter(({ manifest }) => `${manifest.title || ''} ${manifest.description || ''} ${manifest.dTag}`.toLocaleLowerCase().includes(search))
+  const entries = entries$().filter(entry => !handoff || Object.values(nappletIntentEntry(entry.event).archetypes).some(role => role.contracts.some(contract => contract.convention === handoff.request.convention))).filter(({ manifest }) => `${manifest.title || ''} ${manifest.description || ''} ${manifest.dTag}`.toLocaleLowerCase().includes(search))
   return this.h`
     <style>${/* css */`
       napplet-catalog {
@@ -163,10 +183,13 @@ f('napplet-catalog', function ({ props }) {
     ${props.windowed ? '' : this.h`<div class='heading'><back-btn /><h1>${t('Napplets')}</h1></div>`}
     <div class='scroll-area'><div class='content'>
     <p class='intro'>${t('Install sandboxed napplets and open them in your workspace.')}</p>
-    <form class='controls' onsubmit=${event => { event.preventDefault(); open(reference$().trim()) }}>
+    ${handoff ? this.h`<p>${t('Find a napplet for')} <strong>${handoff.request.convention}</strong> <button onclick=${() => nappletIntentHandoffs$(value => { const next = { ...value }; delete next[props.wsKey]; return next })}>${t('Cancel')}</button></p>` : ''}
+    ${handoff
+? ''
+: this.h`<form class='controls' onsubmit=${event => { event.preventDefault(); open(reference$().trim()) }}>
       <input aria-label=${t('Napplet reference')} placeholder=${t('Paste a napplet naddr or nevent')} value=${reference$()} oninput=${event => reference$(event.target.value)} required />
       <button class='primary' type='submit' disabled=${!!busy$()}>${t('Open napplet')}</button>
-    </form>
+    </form>`}
     <div class='controls'>
       <input type='search' aria-label=${t('Search napplets')} placeholder=${t('Search napplets')} value=${search$()} oninput=${event => search$(event.target.value)} />
       <button onclick=${() => revision$(n => n + 1)} disabled=${loading$()}>${t('Refresh')}</button>
@@ -189,7 +212,7 @@ f('napplet-catalog', function ({ props }) {
         <p class='description'>${entry.manifest.description || ''}</p>
         <div class='card-actions'>
           <span class='compatibility' title=${entry.missing.length ? `${t('Requires unsupported capabilities:')} ${entry.missing.join(', ')}` : ''}>${entry.missing.length ? t('Some features may be unavailable') : ''}</span>
-          <button class='primary' disabled=${!!busy$()} onclick=${() => open(nappletReference(entry.event))}>${busy$() === nappletReference(entry.event) ? t('Opening…') : installed.has(entry.appId) ? t('Open') : t('Install')}</button>
+          <button class='primary' disabled=${!!busy$()} onclick=${() => open(nappletReference(entry.event))}>${busy$() === nappletReference(entry.event) ? t('Opening…') : installed.has(entry.appId) ? (handoff ? t('Open and continue') : t('Open')) : (handoff ? t('Install and continue') : t('Install'))}</button>
         </div>
       </article>
     `)}</div>

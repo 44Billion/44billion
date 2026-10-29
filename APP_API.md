@@ -11,7 +11,7 @@ Napplets use a separate opaque-origin sandbox and receive `window.napplet`
 before authored scripts execute, rather than the napp/signer APIs described
 below. Supported domains are `shell`, `storage`, `theme`, `identity`, `outbox`,
 `relay`, `count`, `resource`, `common`, `lists`, `keys`, `gamepad`, `config`,
-`notify`, `link`, `media`, and `upload`. Required domains are advisory compatibility hints
+`notify`, `link`, `media`, `intent`, and `upload`. Required domains are advisory compatibility hints
 and never block installation/loading. Unavailable domains remain absent; napplets
 own graceful fallback.
 
@@ -66,7 +66,43 @@ own graceful fallback.
 - `media` mediates audio/video through host resource loading and native controls,
   with up to four sessions per frame and shared OS media-session controls.
 
-DM, inter-napplet messaging/intents, filesystem and device-specific
+`intent.invoke(uri, options?)` and `intent.open(uri, options?)` route exact
+`napplet:<archetype>/<action>` conventions to verified installed handlers in the
+source workspace. `open` requires `/open`. Query parameters become text payload
+fields (literal `+` retained); fragments, malformed escapes, duplicate names and
+query plus explicit payload are rejected by the binding before dispatch.
+Handlers advertise matching `z` roles and queryless `i` conventions. Trailing
+`i` values are advertised parameter names, never payload restrictions.
+`available(role)`, `handlers()` and `onChanged(callback)` expose this workspace's
+installed catalog; close returned subscription handles to unsubscribe.
+
+The launcher attests `delivery.sender` from the source's verified catalog ID.
+`onDelivery(callback)` receives the normalized action, convention and optional
+payload; the binding buffers delivery until a listener exists. Targets must
+validate payloads. A successful invocation accepts delivery responsibility;
+accepted work survives source closure, but not launcher reload. Startup has a
+20-second deadline; terminal failures appear in launcher UI without another RPC
+result. No target acknowledgement or exactly-once guarantee across reload exists.
+The source remains open. `behavior.reuse: false` creates another window;
+otherwise an existing window in the same workspace may be reused. `focus` is a
+hint. Explicit handler IDs require user selection. Users can set or clear a
+per-account archetype default through `handler: 'choose'`.
+
+Plain sandboxed `<a href="napplet:profile/open?pubkey=…">` links also dispatch
+through `intent.invoke`; napplet click handlers can prevent the default handoff.
+
+With no compatible installed handler, the result is `{ ok: false, error: 'no
+handler' }` (or the protocol's unsupported-action/convention error), and the
+launcher opens a store filtered by the exact convention. Its explicit
+Install/Open and continue action performs a separate user-authorized handoff;
+it does not change the earlier failure result. Payloads stay in launcher memory
+and are sent only to the selected handler. Cancelling the store continuation or
+reloading discards them. Invocation requires no shell handshake or signer grant;
+workspace ownership is rechecked before resolution and delivery. Required NAP
+hints remain advisory. Calls are limited to 32 pending target startups per
+workspace and eight invocations per source per ten seconds; the chooser cancels after 25 seconds or when already occupied.
+
+DM, inter-napplet broadcasts, filesystem and device-specific
 services are not advertised yet. Signing uses the existing vault channel;
 subscriptions, pending requests, controls and listeners are cancelled when the
 frame closes or its workspace account changes.

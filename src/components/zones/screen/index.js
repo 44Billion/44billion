@@ -998,7 +998,7 @@ f('appWindow', function () {
     ${isBuiltInAppId(appId$())
       ? this.h`<napplet-catalog props=${{ wsKey: this.props.wsKey, windowed: true }} />`
       : isNappletAppId(appId$())
-      ? this.h`<napplet-frame props=${{ appId$, userPk$, wsKey }} />`
+      ? this.h`<napplet-frame props=${{ appId$, userPk$, wsKey, appKey }} />`
       : launchError$()
       ? this.h`<div class='app-window-error'>${launchError$()}</div>`
       : this.h`

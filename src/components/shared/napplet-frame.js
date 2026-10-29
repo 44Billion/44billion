@@ -1,10 +1,12 @@
-import { f, useSignal, useTask, useGlobalStore } from '#f'
+import { f, useSignal, useTask, useGlobalStore, useWebStorage } from '#f'
 import { useVaultActor } from '#zones/vault-modal/index.js'
 import { usePermissionDialogStore } from '#zones/permission-dialog/index.js'
 import { useConfirmationDialogStore } from '#zones/confirmation-dialog/index.js'
 import { nappletReferenceFromHref } from '#helpers/napplet.js'
 import { loadNapplet } from '#services/napplets/index.js'
 import { mountNapplet } from '#services/napplets/runtime.js'
+import { getNappletIntentCoordinator } from '#services/napplets/intents.js'
+import { chooseNappletIntent, nappletIntentHandoffs$, presentNappletNotice } from '#services/napplets/ui.js'
 import { cssVars } from '#assets/styles/theme.js'
 import { nappletT as t } from '#i18n/napplets.js'
 
@@ -12,7 +14,18 @@ f('napplet-frame', function () {
   const { askVault } = useVaultActor()
   const { requestPermission } = usePermissionDialogStore()
   const { requestConfirmation } = useConfirmationDialogStore()
-  const { openApp } = useGlobalStore('useAppRouter')
+  const { openApp, openIntentTarget, openNappletStore } = useGlobalStore('useAppRouter')
+  const storage = useWebStorage(localStorage)
+  const coordinator$ = useSignal(null)
+  useTask(({ track }) => {
+    const coordinator = track(() => {
+      storage[`session_workspaceByKey_${this.props.wsKey}_pinnedAppIds$`]()
+      storage[`session_workspaceByKey_${this.props.wsKey}_unpinnedAppIds$`]()
+      storage.local_nappletIntentDefaults$()
+      return coordinator$()
+    })
+    coordinator?.changed().catch(() => {})
+  })
   const frame$ = useSignal(null)
   const error$ = useSignal('')
   const loading$ = useSignal(true)
@@ -28,7 +41,19 @@ f('napplet-frame', function () {
     try {
       const resolved = await loadNapplet(appId)
       if (disposed) return
+      const intents = getNappletIntentCoordinator({
+        wsKey: this.props.wsKey, userPk, storage: localStorage,
+        openTarget: (target, behavior) => openIntentTarget(target, this.props.wsKey, behavior),
+        choose: chooseNappletIntent,
+        find: handoff => {
+          nappletIntentHandoffs$(value => ({ ...value, [this.props.wsKey]: { ...handoff, userPk } }))
+          openNappletStore(this.props.wsKey)
+        },
+        reportError: () => presentNappletNotice(t('Napplet'), { notificationId: 'intent-failure', message: { title: t('Could not open intent') } })
+      })
+      coordinator$(intents)
       unmount = mountNapplet({
+        intents, appKey: this.props.appKey,
         iframe: frame, resolved, appId, userPk, wsKey: this.props.wsKey, askVault, requestPermission,
         openLink: async url => {
           await requestConfirmation({ title: t('Open link'), message: url.href, confirmText: t('Open') })

@@ -1,11 +1,19 @@
 import '#shared/napplet-upload-dialog.js'
 import { f, useSignal, useTask } from '#f'
 import { cssVars } from '#assets/styles/theme.js'
-import { nappletSettings$, nappletNotices$, nappletBadges$, nappletMedia$, dismissNappletNotice, nappletUploads$ } from '#services/napplets/ui.js'
+import { nappletSettings$, nappletNotices$, nappletBadges$, nappletMedia$, dismissNappletNotice, nappletIntentChoice$, nappletUploads$ } from '#services/napplets/ui.js'
 import { nappletT as t } from '#i18n/napplets.js'
 
 f('napplet-host-ui', function () {
   const ref$ = useSignal(null)
+  const choiceRef$ = useSignal(null)
+  const remember$ = useSignal(false)
+  useTask(({ track }) => { track(() => nappletIntentChoice$()); remember$(false) })
+  useTask(({ track }) => {
+    const [dialog, choice] = track(() => [choiceRef$(), nappletIntentChoice$()])
+    if (dialog && choice && !dialog.open) dialog.showModal()
+    else if (dialog?.open && !choice) dialog.close()
+  }, { after: 'rendering' })
   const draft$ = useSignal({})
   const error$ = useSignal('')
   useTask(({ track }) => {
@@ -19,6 +27,7 @@ f('napplet-host-ui', function () {
     else if (dialog?.open && !settings) dialog.close()
   }, { after: 'rendering' })
   const settings = nappletSettings$()
+  const choice = nappletIntentChoice$()
   const save = event => {
     event.preventDefault()
     if (error$()) return
@@ -67,6 +76,14 @@ f('napplet-host-ui', function () {
         ${error$() ? this.h`<p class='error' role='alert'>${error$()}</p>` : ''}
         <div class='actions'><button type='button' onclick=${() => nappletSettings$(null)}>${t('Cancel')}</button><button class='primary' type='submit'>${t('Save')}</button></div>
       </form>`
+: ''}
+    </dialog>
+    <dialog class='settings' ref=${choiceRef$} oncancel=${event => { event.preventDefault(); choice?.finish() }}>
+      ${choice
+? this.h`<h2>${t('Open with')}</h2><p class='help'>${choice.role}</p>${choice.error ? this.h`<p class='error' role='alert'>${choice.error}</p>` : ''}
+        ${choice.candidates.map(candidate => this.h`<p><button onclick=${() => choice.finish(candidate.id, remember$())}>${candidate.title || candidate.id}</button></p>`)}
+        ${choice.setDefault ? this.h`<label><input type='checkbox' checked=${remember$()} onchange=${event => remember$(event.target.checked)} />${t('Use by default')}</label>` : ''}
+        <div class='actions'>${choice.setDefault ? this.h`<button onclick=${() => { try { choice.setDefault(undefined); remember$(false) } catch (error) { nappletIntentChoice$(value => ({ ...value, error: error.message })) } }}>${t('Clear default')}</button>` : ''}<button onclick=${() => choice.finish()}>${t('Cancel')}</button></div>`
 : ''}
     </dialog>
     <napplet-upload-dialog></napplet-upload-dialog>

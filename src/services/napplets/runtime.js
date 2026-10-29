@@ -7,6 +7,7 @@ import { defaultThemeColorValues } from '#assets/styles/theme.js'
 import { createNappletStatePersistence } from './storage.js'
 import { createNappletAccount } from './account.js'
 import { createNappletNetwork } from './network.js'
+import { installIntentLinks } from './intent-links.js'
 import { createNappletServices } from './services.js'
 
 const ephemeral = () => ({ load: () => null, persist: () => {} })
@@ -26,7 +27,7 @@ export function getNappletTheme (dark) {
 // Kehto's default browser bridge has global, account-independent WebStorage
 // backends. Use its protocol engine and document/registry helpers with explicit
 // launcher-owned persistence instead. Never use the legacy AUTH/keypair path.
-export function mountNapplet ({ iframe, resolved, appId, userPk, wsKey, askVault, requestPermission, openLink, host = window, storage = localStorage }) {
+export function mountNapplet ({ iframe, resolved, appId, userPk, wsKey, askVault, requestPermission, openLink, intents, appKey, host = window, storage = localStorage }) {
   const source = iframe.contentWindow
   if (!source) throw new Error('Napplet frame unavailable')
   const windowId = crypto.randomUUID()
@@ -40,6 +41,8 @@ export function mountNapplet ({ iframe, resolved, appId, userPk, wsKey, askVault
   const backends = createNappletServices({ account, network, state, signal, iframe, windowId, name: resolved.manifest.title || resolved.dTag || 'Napplet', resolved, host, openLink })
   const domains = NAPPLET_DOMAINS.filter(domain => ['shell', 'storage', 'theme'].includes(domain) || backends.services[domain])
   const send = (_id, envelope) => { if (alive) source.postMessage(envelope, '*') }
+  const intent = intents?.service({ windowId, appKey, event: resolved.event, send: envelope => send(windowId, envelope), guard: account.guard })
+  if (intent) domains.push('intent')
   const media = host.matchMedia('(prefers-color-scheme: dark)')
   const theme = createThemeService({ initialTheme: getNappletTheme(media.matches), onBroadcast: envelope => send(windowId, envelope) })
   const runtime = createRuntime({
@@ -54,11 +57,13 @@ export function mountNapplet ({ iframe, resolved, appId, userPk, wsKey, askVault
     statePersistence: state,
     windowManager: { createWindow: () => null },
     relayConfig: { addRelay: () => {}, removeRelay: () => {}, getRelayConfig: () => ({ discovery: [], super: [], outbox: [] }), getNip66Suggestions: () => [] },
-    services: { ...backends.services, theme: theme.handler }
+    services: { ...backends.services, ...(intent ? { intent: intent.service } : {}), theme: theme.handler }
   })
   const identity = { dTag: resolved.dTag, aggregateHash: resolved.aggregateHash }
-  const environment = { capabilities: { domains }, services: [...Object.keys(backends.services), 'theme'] }
-  const srcdoc = prepareNappletSrcdoc(resolved.indexHtml, { domains })
+  const environment = { capabilities: { domains }, services: [...Object.keys(backends.services), 'theme', ...(intent ? ['intent'] : [])] }
+  let srcdoc = prepareNappletSrcdoc(resolved.indexHtml, { domains })
+  // Append to the injected prelude, preserving the original doctype/head order.
+  if (intent) srcdoc = srcdoc.replace('</script>', end => `${end}<script>(${installIntentLinks.toString()})()</script>`)
   iframe.setAttribute('sandbox', 'allow-scripts')
   iframe.setAttribute('allow', "camera 'none'; microphone 'none'; geolocation 'none'; usb 'none'; hid 'none'; gamepad 'none'; clipboard-read 'none'; clipboard-write 'none'")
   originRegistry.register(source, windowId, identity)
@@ -71,7 +76,7 @@ export function mountNapplet ({ iframe, resolved, appId, userPk, wsKey, askVault
     const message = event.data
     if (!message || typeof message !== 'object' || typeof message.type !== 'string') return
     if (message.type === 'shell.ready') {
-      if (!initialized) { initialized = true; send(windowId, { type: 'shell.init', ...environment }) }
+      if (!initialized) { initialized = true; send(windowId, { type: 'shell.init', ...environment }); intent?.ready() }
       return
     }
     runtime.handleMessage(windowId, message)
@@ -84,6 +89,7 @@ export function mountNapplet ({ iframe, resolved, appId, userPk, wsKey, askVault
     if (!alive) return
     alive = false
     controller.abort()
+    intent?.close()
     host.removeEventListener('message', handleMessage)
     media.removeEventListener('change', updateTheme)
     runtime.destroyWindow(windowId)

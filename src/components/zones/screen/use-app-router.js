@@ -264,6 +264,18 @@ export default function useAppRouter () {
 
       openApp(napp, appRoute, wsKey)
     },
+    openNappletStore,
+    openIntentTarget (appId, wsKey, { reuse = true, focus = true } = {}) {
+      if (!openWorkspaceKeys$().includes(wsKey)) throw new Error('Workspace is closed')
+      const installed = [...(storage[`session_workspaceByKey_${wsKey}_pinnedAppIds$`]() || []), ...(storage[`session_workspaceByKey_${wsKey}_unpinnedAppIds$`]() || [])]
+      if (!installed.includes(appId)) throw new Error('Intent handler is not installed')
+      const keys = storage[`session_workspaceByKey_${wsKey}_appById_${appId}_appKeys$`]() || []
+      const key = reuse && keys.find(key => (tabStorage[`session_appByKey_${key}_visibility$`]() || 'closed') !== 'closed')
+      if (!key) return createAppInstance(appId, '', wsKey).key
+      tabStorage[`session_appByKey_${key}_visibility$`]('open')
+      if (focus) tabStorage[`session_workspaceByKey_${wsKey}_openAppKeys$`]((value = []) => [key, ...value.filter(item => item !== key)])
+      return key
+    },
     openNewAppInstance (appId, wsKey) {
       return createAppInstance(appId, '', wsKey, { isInstalled: true }).key
     }
