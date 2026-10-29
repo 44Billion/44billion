@@ -104,7 +104,8 @@ through `intent.invoke`; napplet click handlers can prevent the default handoff.
 
 With no compatible installed handler, the result is `{ ok: false, error: 'no
 handler' }` (or the protocol's unsupported-action/convention error), and the
-launcher opens a store filtered by the exact convention. Its explicit
+launcher reuses and focuses the workspace’s existing store window (or creates
+one if absent), filtered by the exact convention. Its explicit
 Install/Open and continue action performs a separate user-authorized handoff;
 it does not change the earlier failure result. Payloads stay in launcher memory
 and are sent only to the selected handler. Cancelling the store continuation or

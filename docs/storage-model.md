@@ -613,7 +613,10 @@ the storage schema are unchanged; no destructive cache repair is needed.
 app lists, instance records and metadata templates. It uses ordinary window
 visibility, order, pinning and restoration; it has no remote manifest, app origin,
 napplet installation or separate persisted keys. Removal and audit repair skip
-remote file, origin and NostrDB cleanup for this identity.
+remote file, origin and NostrDB cleanup for this identity. Opening the store
+reuses and focuses an existing instance in the selected workspace, restoring it
+from minimized or closed state. Repeated intent discovery updates that window’s
+in-memory handoff instead of adding more instance records.
 
 ### Napplet intent preferences
 

@@ -137,6 +137,17 @@ export default function useAppRouter () {
     if (!wsKey) throw new Error('User n/a')
     const appId = NAPPLET_STORE_APP_ID
     cacheAppMetadata(appId, { name: nappletT('Napplets'), description: '' })
+    const appKeys = storage[`session_workspaceByKey_${wsKey}_appById_${appId}_appKeys$`]() || []
+    const installed = [...(storage[`session_workspaceByKey_${wsKey}_pinnedAppIds$`]() || []), ...(storage[`session_workspaceByKey_${wsKey}_unpinnedAppIds$`]() || [])].includes(appId)
+    if (installed && appKeys.length) {
+      // The built-in store reads the current workspace handoff directly, so
+      // its existing window can be focused regardless of its previous route.
+      const openKeys = tabStorage[`session_workspaceByKey_${wsKey}_openAppKeys$`]() || []
+      const key = openKeys.find(key => appKeys.includes(key)) || appKeys[0]
+      tabStorage[`session_appByKey_${key}_visibility$`]('open')
+      tabStorage[`session_workspaceByKey_${wsKey}_openAppKeys$`]((value = []) => [key, ...value.filter(item => item !== key)])
+      return
+    }
     const { hasOpened, isInstalled } = maybeOpenInstalledApp(appId, '', wsKey)
     if (hasOpened) return
     createAppInstance(appId, '', wsKey, { isInstalled })

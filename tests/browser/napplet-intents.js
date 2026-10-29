@@ -25,6 +25,7 @@ const remote = app('Message handler', targetHtml('dm'), [['z', 'dm'], ['i', 'nap
 const source = app('Source', `<!doctype html><html><head></head><body><a id='link' href='napplet:profile/open?pubkey=anchor%2Bvalue'>Open profile</a><script>
   addEventListener('message',event=>{
     if(event.source!==parent)return;
+    if(event.data.intentPing)parent.postMessage({intentPong:true},'*');
     if(event.data.clickIntent)document.getElementById('link').click();
     if(event.data.invokeIntent) {
       try { window.napplet.intent.open(event.data.invokeIntent,event.data.options).then(result=>parent.postMessage({intentResult:result},'*'),error=>parent.postMessage({intentError:String(error)},'*')); }
@@ -64,7 +65,7 @@ try {
   const act = expression => evaluate(`(async()=>{${expression}})()`)
   await browser.navigate(origin)
   await browser.until(() => evaluate('!!window.fixture?.appRouter'), 'intent host')
-  await evaluate('window.deliveries=[];window.results=[];window.intentErrors=[];window.boots=[];addEventListener(\'message\',event=>{if(event.data?.sourceBoot){window.sourceFrame=event.source;window.sourceCompat=event.data.compatMode;}if(event.data?.intentDelivery)deliveries.push(event.data);if(event.data?.intentResult)results.push(event.data.intentResult);if(event.data?.intentError)intentErrors.push(event.data.intentError);if(event.data?.intentBoot)boots.push(event.data.intentBoot)});')
+  await evaluate('window.deliveries=[];window.results=[];window.intentErrors=[];window.boots=[];addEventListener(\'message\',event=>{if(event.data?.sourceBoot){window.sourceFrame=event.source;window.sourceCompat=event.data.compatMode;}if(event.data?.intentPong)window.sourceResponsive=true;if(event.data?.intentDelivery)deliveries.push(event.data);if(event.data?.intentResult)results.push(event.data.intentResult);if(event.data?.intentError)intentErrors.push(event.data.intentError);if(event.data?.intentBoot)boots.push(event.data.intentBoot)});')
   const install = async entry => act(`await fixture.installNapplet(${JSON.stringify(entry.event)},{fetchBlob:async()=>new Uint8Array(${JSON.stringify([...entry.bytes])})});await fixture.appRouter.openApp('/napplet/${entry.reference}')`)
   await install(profile)
   await browser.until(() => evaluate('boots.includes("profile")'), 'initial profile')
@@ -102,6 +103,28 @@ try {
   await browser.until(() => evaluate('results.length===4 && !!document.querySelector("napplet-catalog")'), 'no-handler store')
   assert.deepEqual(await evaluate('results[3]'), { ok: false, error: 'no handler' })
   await browser.until(() => evaluate('document.querySelectorAll("napplet-catalog article").length===1 && document.querySelector("napplet-catalog article h2").textContent==="Message handler"'), 'exact store filter')
+  // Repeated missing-handler intents must keep the store's instance key,
+  // including while it is minimized or closed, and refresh its filter.
+  const storeKeyExpression = 'fixture.storage["session_workspaceByKey_ws_appById_builtin-napplet-store_appKeys$"]()'
+  const storeKey = await evaluate(`${storeKeyExpression}[0]`)
+  let resultCount = 4
+  for (const visibility of ['open', 'minimized', 'closed']) {
+    await evaluate(`window.previousStoreElement=document.querySelector('napplet-catalog');fixture.tabStorage['session_appByKey_${storeKey}_visibility$'](${JSON.stringify(visibility)});fixture.tabStorage.session_workspaceByKey_ws_openAppKeys$((value=[])=>{const other=value.filter(key=>key!==${JSON.stringify(storeKey)});return ${JSON.stringify(visibility)}==='closed'?other:value})`)
+    await act('await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')
+    if (visibility === 'closed') await browser.until(() => evaluate('!document.querySelector("napplet-catalog")'), 'closed store unmounted')
+    await evaluate('window.sourceResponsive=false')
+    await browser.until(() => evaluate('sourceFrame.postMessage({intentPing:true},"*");sourceResponsive'), 'source ready after window ordering')
+    const uri = visibility === 'minimized' ? 'napplet:missing/open' : 'napplet:dm/open?pubkey=store%2Bpayload'
+    await evaluate(`sourceFrame.postMessage({invokeIntent:${JSON.stringify(uri)}},"*")`)
+    resultCount++
+    await browser.until(() => evaluate(`results.length===${resultCount} && fixture.tabStorage.session_workspaceByKey_ws_openAppKeys$()[0]===${JSON.stringify(storeKey)}`), `reuse ${visibility} store`)
+    assert.deepEqual(await evaluate(storeKeyExpression), [storeKey])
+    if (visibility !== 'closed') assert.equal(await evaluate('document.querySelector("napplet-catalog")===previousStoreElement'), true)
+    assert.equal(await evaluate(`fixture.tabStorage['session_appByKey_${storeKey}_visibility$']()`), 'open')
+    await browser.until(() => evaluate(`document.querySelector("napplet-catalog strong")?.textContent===${JSON.stringify(uri.split('?')[0])}`), 'updated store convention')
+    if (visibility === 'minimized') await browser.until(() => evaluate('document.querySelectorAll("napplet-catalog article").length===0'), 'different convention clears results')
+  }
+  await browser.until(() => evaluate('document.querySelectorAll("napplet-catalog article").length===1'), 'restored message handler filter')
   assert.equal(await evaluate('document.querySelector("napplet-catalog article button").textContent'), 'Install and continue')
   await evaluate('document.querySelector("napplet-catalog article button").click()')
   await browser.until(() => evaluate('deliveries.length===5'), 'installed store continuation')
