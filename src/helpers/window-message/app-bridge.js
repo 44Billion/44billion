@@ -21,6 +21,7 @@ import {
   nostrDbMaintenanceOptions
 } from './browser/nostrdb.js'
 import { appIdToAddressObj, addressObjToAppId } from '#helpers/app.js'
+import { nappletReferenceFromHref } from '#helpers/napplet.js'
 import { base36NsiteToBase16, bytesToBase36Nsite } from 'libp2r2p/base36'
 import { base16ToBase62, base62ToBytes } from 'libp2r2p/base62'
 import { appEncode, appDecode } from 'libp2r2p/nip19'
@@ -667,6 +668,19 @@ function createAppPageMessageListener ({
           try {
             const { href } = e.data.payload
             const urlObj = new URL(href, self.location.origin)
+            const nappletReference = nappletReferenceFromHref(urlObj.href)
+            if (nappletReference) {
+              const { resolveNappletReference } = await import('#services/napplets/index.js')
+              const target = await resolveNappletReference(nappletReference, { signal: documentSignal })
+              targetAppId = target.appId
+              await requestPermission({
+                app: await getPermissionAppMetadata(appId, appAddress, appMetadataCache, appFetchingState),
+                name: 'openApp', eKind: null, scope: '',
+                meta: { targetApp: { id: target.appId, name: target.manifest.title || target.manifest.dTag || 'Napplet' } }
+              })
+              if (!documentSignal.aborted) await openApp(href)
+              break
+            }
             const pathname = urlObj.pathname
             const encodedAppPattern = /^\/(\+{1,3}[a-zA-Z0-9]{48,}|naddr1[0-9a-z]+)/
             const match = pathname.match(encodedAppPattern)

@@ -1,4 +1,5 @@
 import { base62ToBase16 } from 'libp2r2p/base62'
+import { isLauncherRenderedAppId } from '#helpers/launcher-app.js'
 import {
   cleanupNostrDbAppForOwner as cleanupNostrDbAppForOwnerBase,
   NOSTRDB_APP_BACKFILL_CODE
@@ -83,7 +84,7 @@ export async function hasRecentSingleNappOpenForOwner ({
   retentionMs = SINGLE_NAPP_RETENTION_MS
 } = {}) {
   const owner = typeof ownerPubkey === 'string' ? ownerPubkey.toLowerCase() : ''
-  if (!appId || !HEX32.test(owner)) return false
+  if (!appId || isLauncherRenderedAppId(appId) || !HEX32.test(owner)) return false
   const manifest = await getSiteManifestFromDb(appId)
   return recentSingleNappOwnersFromManifest(manifest, { now, retentionMs })[owner] != null
 }
@@ -94,7 +95,7 @@ export async function hasAnyRecentSingleNappOpen ({
   now = Date.now(),
   retentionMs = SINGLE_NAPP_RETENTION_MS
 } = {}) {
-  if (!appId) return false
+  if (!appId || isLauncherRenderedAppId(appId)) return false
   const manifest = await getSiteManifestFromDb(appId)
   return Object.keys(recentSingleNappOwnersFromManifest(manifest, { now, retentionMs })).length > 0
 }
@@ -106,6 +107,7 @@ export async function cleanupNostrDbAppForOwner ({
   getSiteManifestFromDb = defaultGetSiteManifestFromDb,
   saveSiteManifestToDb = defaultSaveSiteManifestToDb
 } = {}) {
+  if (isLauncherRenderedAppId(appId)) return false
   return cleanupNostrDbAppForOwnerBase({
     ownerPubkey,
     appId,
@@ -127,6 +129,7 @@ export async function cleanupNostrDbAppForWorkspace ({
   now = Date.now(),
   retentionMs = SINGLE_NAPP_RETENTION_MS
 } = {}) {
+  if (isLauncherRenderedAppId(appId)) return false
   const ownerPubkey = workspaceOwnerPubkey(storage, wsKey)
   if (!ownerPubkey || !appId) return false
   if (isNostrDbAppInstalledForOwner({

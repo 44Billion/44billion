@@ -150,15 +150,17 @@ export async function getEventsByStrategy (filter, st /*, timeoutMs = 3000 */) {
  * and a small, bounded set of public fallback relays.
  */
 export async function getProfileEventsByPubkey (pubkeys, {
+  signal,
   _getUserRelays = getUserRelays,
   _nostrRelays = nostrRelays,
   _freeRelays = freeRelays
 } = {}) {
   const { events } = await getLatestEventsByPubkey(pubkeys, {
+    signal,
     kinds: [0],
     fallbackRelays: _freeRelays.slice(0, PROFILE_FALLBACK_RELAY_LIMIT),
     _getRelaysByPubkey: _getUserRelays,
-    _getEvents: (filter, relays) => _nostrRelays.getEvents(filter, relays)
+    _getEvents: (filter, relays) => _nostrRelays.getEvents(filter, relays, ...(signal ? [{ signal }] : []))
   })
   return events
 }

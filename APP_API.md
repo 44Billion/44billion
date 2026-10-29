@@ -5,6 +5,176 @@ Windows and widgets launched by 44billion receive `window.napp` and
 wait for the launcher handshake, including `setMinWidth`. These APIs also exist
 in standalone embedded apps.
 
+## NIP-5D napplets
+
+Napplets use a separate opaque-origin sandbox and receive `window.napplet`
+before authored scripts execute, rather than the napp/signer APIs described
+below. Supported domains are `shell`, `storage`, `theme`, `identity`, `outbox`,
+`relay`, `count`, `resource`, `common`, `lists`, `keys`, `gamepad`, `config`,
+`notify`, `link`, `media`, `intent`, and `upload`. Required domains are advisory compatibility hints
+and never block installation/loading. Unavailable domains remain absent; napplets
+own graceful fallback.
+
+- `identity` exposes the current workspace account's public key, public profile,
+  follows and public mutes. Anonymous workspaces have no signing identity. No
+  private key or alternate persona signer is exposed.
+- `outbox` uses NIP-65 routing over the existing launcher relay pool. `relay` is
+  the explicit public-relay escape hatch. Incoming events are signature/filter
+  checked. Publishing signs through the existing vault and app/kind permission
+  dialog, rechecks workspace/persona access after waits, rejects read-only or
+  locked signing, and waits for relay acknowledgements. As an explicit launcher policy, one accepting relay is
+  sufficient for success (this does not establish recipient delivery); individual failures remain in the result's `relays`
+  map. If no relay accepts, the result reports `PUBLICATION_FAILED`, distinct
+  from signing or permission refusal. A manifest
+  declaration never grants signing permission.
+- `upload` supports Blossom uploads of `Blob`/`ArrayBuffer` data up to 64 MiB.
+  `upload.info` advertises the rail and limit. Standard `upload.upload()` returns
+  an initial `uploading` result and upload ID promptly, before consent/transfer
+  completes. A missing URL at this stage is not failure. Subscribe with `onStatus`
+  before starting, correlate by `uploadId` (including updates arriving before the
+  initial response), and stop at `complete`, `failed` or `cancelled`. Close the
+  subscription and clear timers on rejection, terminal results and disposal.
+  Query `upload.status` to recover the current job status.
+  The launcher-specific `window.napplet.upload.uploadAndWait(request)` convenience
+  returns a terminal result; it does not change standard SDK upload semantics.
+  It subscribes before starting, handles early completion, and cleans up on
+  rejection, terminal status, its eleven-minute timeout or page teardown.
+  The launcher loads the active account's signed kind-10063 server list and
+  asks the user to select destinations; an additional public HTTPS server can
+  be supplied for this request. Incomplete discovery uses available verified
+  server-list results; failed discovery still opens the destination dialog.
+  Files are public. No file event is published.
+  Authorization is signed through the vault and existing app/kind permissions;
+  anonymous/read-only/locked accounts cannot authorize uploads. Workspace/persona
+  access is rechecked when signing and around network waits. Up to two jobs per
+  window, ten destinations and 64 recent statuses are retained in memory.
+  Transfers use a ten-minute deadline; closing the window cancels its jobs.
+  Launcher UI offers cancellation and indeterminate transfer progress. Successful
+  results include URL, hash, size, MIME, NIP-94 tags and successful mirror URLs.
+  A single hash-scoped Blossom authorization is reused within each upload job.
+  After the first successful upload, remaining servers use BUD-04 `/mirror`;
+  HTTP 404/405/501/502 falls back to direct upload. Network exceptions fail that
+  destination without retrying its bytes.
+  Partial mirror success returns success; failed destinations are omitted.
+  The ten-minute replication deadline preserves already verified destinations;
+  explicit cancellation or access revocation still prevents success.
+  Errors include `UNSUPPORTED_UPLOAD_RAIL`, `INVALID_UPLOAD_DATA`,
+  `UPLOAD_TOO_LARGE`, `UPLOAD_BUSY`, `NO_BLOSSOM_SERVERS`, `UPLOAD_TIMEOUT`
+  and server/signing errors. Unknown or evicted IDs return `UNKNOWN_UPLOAD`.
+  Status listeners must be closed on napplet disposal. NIP-96 is unavailable.
+- `count` uses relay NIP-45 COUNT, accepts one filter, and returns unavailable
+  when the relay cannot count. It never downloads events to simulate COUNT.
+- `common` supports all eight NAP-COMMON operations: `encodeNip19`,
+  `decodeNip19`, `getProfile`, `follows`, `follow`, `unfollow`, `react` and
+  `report`. Identifier helpers support npub/note/nprofile/nevent/naddr/nrelay,
+  reject secrets, and validate decode checksums with a 5,000-character limit.
+  Profile lookup accepts hex/npub/nprofile, passes relay hints through the
+  public-relay policy, and retains the backing relay result and its sidecar.
+  Follows are unique valid lowercase hex keys. Follow changes deduplicate input,
+  preserve unrelated tags/content, serialize with public kind-3 list edits, and
+  refuse incomplete reads. Mutations require a workspace signing identity and
+  use the existing vault/app-kind consent and account/persona checks; no new
+  permission is granted by exposing this domain. Reactions accept `+`, `-`, one
+  Unicode emoji or one `:shortcode:` paired with an HTTP(S) custom emoji URL.
+  Addressable reaction targets include an `a` tag. Reports validate NIP-56
+  reasons and require an author, supplied by the caller or resolved using the
+  optional relay hint. Results use `ok: false`/`error` on failure, including
+  `invalid-nip19`, `unsupported-nip19-type`, `not-signed-in`, `invalid-reaction`,
+  `invalid-report-reason`, `invalid-target` and `author-unresolved`, plus existing
+  lookup/signing/publication errors. Calls wait for the injected protocol
+  handshake; this domain creates no subscriptions requiring cleanup.
+- `lists` supports public items in kinds 10000/10001/10003/10006/10007/10015/10050
+  and sets 30000/30002/30003/30015. Mutations retain unrelated tags and existing
+  encrypted content; private-item edits are explicitly unsupported. Incomplete
+  reads refuse replacement writes.
+- `resource` mediates public HTTP(S) and hash-verified Blossom reads, omits
+  ambient credentials, refuses redirects/private origins, bounds each response
+  to 16 MiB and 30 seconds, and derives MIME types from bytes. Browser CORS and
+  mixed-content policies still apply; no arbitrary authenticated fetch is offered.
+  Blossom accepts `blossom:<sha256>.<ext>` (BUD-10) and extensionless
+  `blossom:<sha256>`; `blossom:sha256:<sha256>` is invalid. Repeated `xs`
+  hints are tried first (HTTPS then HTTP for bare domains), then repeated `as`
+  authors' public kind-10063 server lists, request `servers`, and manifest servers.
+  Server paths are discarded in favor of root blob endpoints. Each source list
+  is limited to ten entries and author discovery to ten valid public keys.
+  Downloads must match the hash and optional positive integer `sz`; extensions
+  never determine MIME. Oversized declared sizes fail before network access.
+  Cancellation and account access checks apply across retries. `bytesMany`
+  uses the same resolver and reports per-item failures. Only HTTP, HTTPS and
+  Blossom are advertised by this shell; other shell-side schemes are unsupported.
+- `keys` handles shortcuts for the focused frame while reserving browser tab/
+  navigation chords. `gamepad` uses the host's browser gamepad adapter, with
+  hardware availability and browser permission rules still applying.
+- `config` renders a host settings dialog from the registered schema. Values
+  share the account/catalog identity scope, survive artifact updates, and are
+  limited to 32 KiB. They are not a secret vault.
+- `notify` presents shell-local notices, actions, channels and badges, with at
+  most eight visible notices; it does not request OS notification permission.
+  `link` asks the user before opening an HTTP(S) link or internal napplet link.
+- `media` mediates audio/video through host resource loading and native controls,
+  with up to four sessions per frame and shared OS media-session controls.
+
+`intent.invoke(uri, options?)` and `intent.open(uri, options?)` route exact
+`napplet:<archetype>/<action>` conventions to verified installed handlers in the
+source workspace. `open` requires `/open`. Query parameters become text payload
+fields (literal `+` retained); fragments, malformed escapes, duplicate names and
+query plus explicit payload are rejected by the binding before dispatch.
+Handlers advertise matching `z` roles and queryless `i` conventions. Trailing
+`i` values are advertised parameter names, never payload restrictions.
+`available(role)`, `handlers()` and `onChanged(callback)` expose this workspace's
+installed catalog; close returned subscription handles to unsubscribe.
+
+The launcher attests `delivery.sender` from the source's verified catalog ID.
+`onDelivery(callback)` receives the normalized action, convention and optional
+payload; the binding buffers delivery until a listener exists. Targets must
+validate payloads. A successful invocation accepts delivery responsibility;
+accepted work survives source closure, but not launcher reload. Startup has a
+20-second deadline; terminal failures appear in launcher UI without another RPC
+result. No target acknowledgement or exactly-once guarantee across reload exists.
+The source remains open. `behavior.reuse: false` creates another window;
+otherwise an existing window in the same workspace may be reused. `focus` is a
+hint. Explicit handler IDs require user selection. Users can set or clear a
+per-account archetype default through `handler: 'choose'`.
+
+Plain sandboxed `<a href="napplet:profile/open?pubkey=…">` links also dispatch
+through `intent.invoke`; napplet click handlers can prevent the default handoff.
+
+With no compatible installed handler, the result is `{ ok: false, error: 'no
+handler' }` (or the protocol's unsupported-action/convention error), and the
+launcher reuses and focuses the workspace’s existing store window (or creates
+one if absent), filtered by the exact convention. Its explicit
+Install/Open and continue action performs a separate user-authorized handoff;
+it does not change the earlier failure result. Payloads stay in launcher memory
+and are sent only to the selected handler. Cancelling the store continuation or
+reloading discards them. Invocation requires no shell handshake or signer grant;
+workspace ownership is rechecked before resolution and delivery. Required NAP
+hints remain advisory. Calls are limited to 32 pending target startups per
+workspace and eight invocations per source per ten seconds; the chooser cancels after 25 seconds or when already occupied.
+
+DM, inter-napplet broadcasts, filesystem and device-specific
+services are not advertised yet. Signing uses the existing vault channel;
+subscriptions, pending requests, controls and listeners are cancelled when the
+frame closes or its workspace account changes.
+
+`storage` is scoped to the workspace account, publisher-safe catalog identity
+and installed artifact hash, with Kehto's 512 KiB UTF-8 quota. It is retained
+across close/reopen and reload. Storage failure returns the protocol error;
+invalid or missing installation bytes fail visibly before execution. `theme`
+uses the launcher palette and pushes system light/dark changes. Session identity
+comes from the parent-bound iframe source before execution; optional
+`shell.ready` is not an authorization prerequisite. Closing/replacing a frame
+removes its listeners, runtime state and source registration.
+
+App links to `/napplet/<naddr-or-nevent>` are intercepted through the existing
+`OPEN_APP` bridge, including app-store links. The launcher verifies the target
+manifest and requests the existing `openApp` permission for the calling app
+before installing/opening the napplet. Manifest declarations do not grant
+permissions. This adds no new `window.napp` method. Use explicit `/napplet/`
+paths because named NIP-5D manifests and existing next-channel napps share kind
+35129. Root references use naddr kind 15129 with an empty identifier; snapshot
+references use the exact signed event's nevent. Bare napp URLs retain their
+existing meaning.
+
 ## Users and personas
 
 ```js

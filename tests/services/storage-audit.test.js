@@ -626,3 +626,15 @@ it('reports a malformed advisory quota snapshot without deleting state or accoun
   assert.equal(Object.hasOwn(result.plan.local, key), false)
   assert.deepEqual(result.plan.removeNostrDbOwners, [])
 })
+
+it('repairs only malformed napplet configuration and preserves its app state', () => {
+  const key = `local_nappletState_user_napplet-${'ab'.repeat(32)}`
+  const counter = 'napplet-state:test:hash:counter'
+  for (const config of ['not JSON', '[]', JSON.stringify({ text: 'x'.repeat(32768) })]) {
+    const state = validState({ local: { [key]: { [counter]: '4', 'launcher:config': config } } })
+    const result = auditPersistedState(state.local, state.session)
+    assert.deepEqual(result.plan.local[key], { [counter]: '4' })
+  }
+  const state = validState({ local: { [key]: { [counter]: '4', 'launcher:config': '{"label":"Saved"}' } } })
+  assert.equal(auditPersistedState(state.local, state.session).plan.local[key], undefined)
+})

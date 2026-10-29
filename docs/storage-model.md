@@ -7,6 +7,49 @@ templates to classify and remove orphaned data.
 
 Values written through `useWebStorage`/`setWebStorageItem` are JSON-encoded.
 
+## Napplet installations and state
+
+NIP-5D installations use the launcher-origin `44billion_napplets` IndexedDB
+database, schema 1. Its `installations` store is keyed by `appId` and contains
+`{ appId, event, blobs: [[sha256, Uint8Array]], installedAt }`. The signed event
+pins the selected release; bytes are verified before committing and reverified
+on every load. Each installation is limited to 8 MiB. A missing/corrupt record
+fails visibly; opening a coordinate does not silently select a newer release.
+These are durable installation records, not the optional Kehto artifact cache.
+Connections close after each transaction and on version changes.
+
+`local_nappletState_<encodeURIComponent(userPk)>_<appId>` is a JSON string map
+owned by the launcher. Kehto's `napplet-state:<dTag>:<artifactHash>:<key>` keys
+live inside this map, including its instance-scope segments. The outer key
+isolates workspace accounts and publisher-safe catalog IDs; the inner key
+isolates artifact versions. Kehto enforces its default 512 KiB UTF-8 quota.
+Closing/reloading retains state. Removing the last installation for an account
+deletes its map; removing the last installation globally also deletes the
+artifact record. Shared workspace installations retain their common state.
+Other account maps remain until their account's uninstall, the last global
+uninstall, or full reset.
+
+NAP-CONFIG stores one launcher-owned `launcher:config` entry inside that same
+string map: a JSON settings object capped at 32 KiB. It is account/catalog scoped
+and survives artifact updates; the registered schema validates/defaults values
+before use and before a shell settings form commits them. Napplets cannot write
+this entry through NAP-STORAGE, whose keys have a different runtime-owned prefix.
+The audit drops only a malformed/oversized config entry while preserving the
+rest of the napplet's state. Configuration schemas, notifications, badges,
+keyboard registrations and relay subscriptions remain in memory.
+
+The pure storage audit removes malformed state maps and preserves valid maps,
+including those whose accounts are temporarily unavailable. Repair removes
+unreferenced installation bytes and their state. Full development reset deletes
+the database and these launcher-origin keys through the existing full wipe.
+No Kehto default ACL, manifest-cache, GUID or shell-secret keys are written:
+runtime policy/metadata are in memory. Napplets receive no browser storage API.
+
+Napplet app IDs are `napplet-<sha256(catalogId)>`. Catalog IDs include publisher
+and kind (or exact snapshot event ID); they are separate from artifact identity
+and from the existing napp channel IDs. Workspace/instance metadata uses the
+existing registered key templates.
+
 `appId` is global and shared across users and workspaces; `appKey` identifies
 one app instance. App metadata/caches keyed by `appId` are therefore global,
 while `session_appByKey_<appKey>_*` stores only per-instance state. Keys used
@@ -119,6 +162,11 @@ ephemeral and intentionally not persisted; they do not belong here or in
   when their effective set of keys changes; no reload is required.
 
 ### Per workspace (`<wsKey>`)
+
+New workspaces pin the starter apps, including the main app store followed by
+`builtin-napplet-store`. Both stores start closed. Existing workspace pins are
+preserved. The built-in store uses the same app and instance keys below; it
+requires no installation record or app origin.
 
 - `session_workspaceByKey_<wsKey>_userPk`
 - `session_workspaceByKey_<wsKey>_pinnedAppIds`
@@ -563,3 +611,26 @@ Provisional/invalid metadata does not block grouped discovery. Duplicate,
 superseded, ignored and locally blocked records are already resolved; real
 storage failures still prevent coverage advancement. Presentation caches and
 the storage schema are unchanged; no destructive cache repair is needed.
+
+### Built-in napplet store window
+
+`builtin-napplet-store` is a launcher-owned app identity in the existing workspace
+app lists, instance records and metadata templates. It uses ordinary window
+visibility, order, pinning and restoration; it has no remote manifest, app origin,
+napplet installation or separate persisted keys. Removal and audit repair skip
+remote file, origin and NostrDB cleanup for this identity. Opening the store
+reuses and focuses an existing instance in the selected workspace, restoring it
+from minimized or closed state. Repeated intent discovery updates that window’s
+in-memory handoff instead of adding more instance records.
+
+### Napplet intent preferences
+
+`local_nappletIntentDefaults` is a launcher-owned JSON object mapping workspace
+user IDs to archetype slugs to opaque verified catalog IDs. Only chooser actions
+set or clear a default; napplets cannot write preferences. Resolution ignores
+stale defaults that no longer support the requested exact contract. The storage
+audit removes malformed preference objects, preserving unrelated data.
+Pending intent payloads, endpoint registrations and store continuations live only
+in memory, scoped by workspace and user. They are lost on launcher reload and are
+never put in URLs, logs, WebStorage or IndexedDB. Accepted deliveries have a
+20-second startup deadline and a 32-job per-workspace limit.

@@ -11,6 +11,51 @@ A Nostr app launcher with isolated app origins, injected signer/event-store APIs
 local app installation, and live draft updates. See [APP_API.md](APP_API.md) for
 the injected contract and [AGENTS.md](AGENTS.md) for contribution rules.
 
+The toolbar's **Napplets** entry opens the built-in napplet store in an ordinary
+workspace window. `/napplets` opens the same store from a direct link. The store
+supports search and direct-reference installation, window restoration, pinning,
+minimizing, multiple windows and sharing its link. Install/Open targets the
+store window's workspace. Installed napplets open in ordinary launcher
+windows and can be pinned, reopened, shared, or removed. Current named (`35129`),
+root (`15129`), and immutable snapshot (`5129`) manifests are supported through
+explicit `/napplet/<naddr-or-nevent>` links, preserving existing napp URLs and
+the overlapping next-channel kind. Discovery uses the launcher's app and fallback relays;
+links can supply relay hints. Catalog availability depends on relay indexing.
+
+The runtime exposes `shell`, `storage`, `theme`, `identity`, `outbox`, `relay`,
+`count`, `resource`, `common`, `lists`, `keys`, `gamepad`, `config`, `notify`,
+`link`, and `media`. Signing uses the existing account permissions and vault;
+Nostr traffic uses the existing launcher relay pool. Settings, notifications and
+media controls are rendered by the host. See [APP_API.md](APP_API.md) for domain
+coverage and limits. Required domains are advisory compatibility hints and never
+prevent installation or loading; unavailable domains remain absent and napplets
+own graceful fallback. DM, inter-napplet messaging/intents, upload/filesystem
+services and automatic artifact updates remain follow-up work. The separately
+published app-store UI can hand off napplet links through the existing app-opening
+bridge; its catalog needs a companion change to list them alongside existing apps.
+
+Kehto dependencies are pinned registry packages: `@kehto/nip` verifies signed
+manifests/artifacts, `@kehto/runtime` dispatches NAP requests, `@kehto/shell`
+prepares CSP/injected namespaces and binds frame sources, and `@kehto/services`
+provides protocol service adapters. `@scure/base` validates public NIP-19
+bech32 checksums before COMMON requests reach the shared adapter. `@kehto/acl`, `@napplet/core`, `@napplet/nap`, and
+`nostr-tools` provide their compatible protocol/crypto contracts. The launcher
+supplies account-scoped persistence rather than Kehto's default global browser
+storage. See [Kehto documentation](https://kehto.github.io/web/docs/).
+
+Run the napplet browser regression with
+`node bin/run-browser-tests.js -- node tests/browser/napplets.js` after stopping
+the development runtime. It exercises the real router, app window, verified
+installation, opaque sandbox, persistent state and uninstall in a disposable
+profile with external traffic blocked.
+
+Store cards display hash-verified raster icons (or a monogram fallback), signed
+publisher profile names (or an abbreviated npub), and descriptions limited to
+five lines. Icons are fetched with bounded concurrency and a 512 KiB limit,
+decoded before display, and kept only in memory until the catalog closes.
+Install becomes Open for apps installed in the active workspace. Missing NAPs
+show an advisory compatibility note and never disable either action.
+
 Permission prompts initially show up to three lines. Clicking the prompt or
 activating it with Enter/Space reveals two more lines at a time. Each request
 starts collapsed; expanding its text does not grant or deny the permission.

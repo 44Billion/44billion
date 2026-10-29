@@ -1,4 +1,5 @@
 import { isLocalDevApp } from '#services/local-dev/state.js'
+import { isLauncherRenderedAppId } from '#helpers/launcher-app.js'
 import AppFileDownloader from '#services/app-file-downloader/index.js'
 import { replaceCachedSiteManifest } from '#services/app-file-manager/manifest-instance-cache.js'
 import { nappRelays, relayPool as nostrRelays } from 'libp2r2p/relay'
@@ -99,7 +100,7 @@ export default class AppUpdater {
   }
 
   static filterRegularAppIds (appIds, deps = {}) {
-    return (appIds || []).filter(appId => !isLocalDevApp(appId, deps._localStorage) && !this.isDraftAppId(appId, deps))
+    return (appIds || []).filter(appId => !isLauncherRenderedAppId(appId) && !isLocalDevApp(appId, deps._localStorage) && !this.isDraftAppId(appId, deps))
   }
 
   static filterDraftAppIds (appIds, deps = {}) {
@@ -1086,6 +1087,7 @@ export default class AppUpdater {
       const openApps = []
 
       for (const appId of idsToCheck) {
+        if (isLauncherRenderedAppId(appId)) continue
         if (typeof IS_DEVELOPMENT !== 'undefined' && IS_DEVELOPMENT && isLocalDevApp(appId, _localStorage)) {
           const { pruneLocalVersions } = await import('#services/local-dev/install.js')
           const { installLock } = await import('#services/local-dev/state.js')

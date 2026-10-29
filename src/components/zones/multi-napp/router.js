@@ -1,6 +1,8 @@
 import Router from 'url-router'
 
 const router = new Router({
+  '/napplet/:reference': {},
+  '/napplets': {},
   '/:napp(\\+{1,3}[^/]+):appPath($|\\/.*)': {},
   '/:napp(naddr1[^/]+):appPath($|\\/.*)': {},
   '/app-updates': {

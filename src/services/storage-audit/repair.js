@@ -1,4 +1,7 @@
+import { isBuiltInAppId } from '#helpers/launcher-app.js'
 import AppFileManager from '#services/app-file-manager/index.js'
+import { isNappletAppId } from '#helpers/napplet.js'
+import { deleteInstallation, clearNappletState } from '#services/napplets/storage.js'
 import AppUpdater from '#services/app-updater/index.js'
 import { ACCOUNT_SUFFIXES } from '#constants/storage-schema.js'
 import {
@@ -35,6 +38,20 @@ async function deleteNostrDbOwner (ownerPubkey) {
 
 async function removeAppData (appId, ownerPubkey, localStorageArea) {
   const results = { appId, nostrDb: false, files: false }
+  if (isBuiltInAppId(appId)) return results
+  if (isNappletAppId(appId)) {
+    // Owner cleanup is scoped separately; keep shared installation bytes while
+    // any workspace still references this app.
+    const keys = JSON.parse(localStorageArea?.getItem('session_workspaceKeys') || '[]')
+    const installed = keys.some(wsKey => ['pinned', 'unpinned'].some(group => JSON.parse(localStorageArea?.getItem(`session_workspaceByKey_${wsKey}_${group}AppIds`) || '[]').includes(appId)))
+    if (!installed) {
+      await deleteInstallation(appId)
+      clearNappletState(appId, localStorageArea)
+      AppUpdater.clearCachedAppMetadata(appId, { _localStorage: localStorageArea })
+      results.files = true
+    }
+    return results
+  }
   if (ownerPubkey) {
     try {
       await cleanupNostrDbAppForOwner({ ownerPubkey, appId })

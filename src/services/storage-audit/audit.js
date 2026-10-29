@@ -7,6 +7,9 @@ import {
   NOSTRDB_ACCOUNT_COVERAGE_PREFIX,
   NOSTRDB_ACCOUNT_COVERAGE_REGISTRY,
   ACCOUNT_SUFFIXES,
+  NAPPLET_STATE_PREFIX,
+  NAPPLET_CONFIG_STATE_KEY,
+  NAPPLET_INTENT_DEFAULTS_KEY,
   APP_INSTANCE_LOCAL_SUFFIXES,
   APP_INSTANCE_SESSION_SUFFIXES,
   APP_METADATA_SUFFIXES,
@@ -611,6 +614,7 @@ export function auditPersistedState (localStorageArea, sessionStorageArea, {
         continue
       }
 
+      // Built-in windows use the same instance invariants without an origin or manifest.
       referencedAppIds.add(appId)
     }
 
@@ -874,6 +878,34 @@ function auditOrphanKeys (local, session, {
   const accountPrefixes = ['session_accountByUserPk_']
 
   for (const [key] of local) {
+    if (key === NAPPLET_INTENT_DEFAULTS_KEY) {
+      const value = getValue(local, key)
+      if (isInvalid(local, key) || !toPlainObject(value) || Object.values(value).some(roles => !toPlainObject(roles) || Object.entries(roles).some(([role, id]) => !/^[a-z0-9][a-z0-9-]*$/.test(role) || typeof id !== 'string' || !id.length || id.length > 1024))) {
+        issue('invalid_napplet_intent_defaults', 'Intent defaults must map users and roles to catalog IDs', { key })
+        setLocal(key, null)
+      }
+      continue
+    }
+    if (key.startsWith(NAPPLET_STATE_PREFIX)) {
+      // Napplet maps are owned by account + publisher-safe app identity.
+      // Invalid maps cannot serve requests; retain valid state until explicit
+      // uninstall, including state for accounts temporarily absent at startup.
+      const state = getValue(local, key)
+      if (isInvalid(local, key) || !toPlainObject(state) || Object.values(state).some(value => typeof value !== 'string')) {
+        issue('invalid_napplet_state', 'Napplet state must be a string map', { key })
+        setLocal(key, null)
+      } else if (state[NAPPLET_CONFIG_STATE_KEY] !== undefined) {
+        let valid = false
+        try { valid = Boolean(toPlainObject(JSON.parse(state[NAPPLET_CONFIG_STATE_KEY]))) } catch {}
+        if (!valid || new TextEncoder().encode(state[NAPPLET_CONFIG_STATE_KEY]).length > 32768) {
+          issue('invalid_napplet_config', 'Napplet configuration must be a bounded JSON object', { key })
+          const next = { ...state }
+          delete next[NAPPLET_CONFIG_STATE_KEY]
+          setLocal(key, next)
+        }
+      }
+      continue
+    }
     if (key.startsWith('session_workspaceByKey_')) {
       const id = extractDynamicId(key, workspaceLocalPrefixes, WORKSPACE_LOCAL_SUFFIXES)
       if (id && !workspaceKeys.includes(id)) {

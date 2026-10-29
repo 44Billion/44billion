@@ -13,6 +13,7 @@ import '#zones/file-not-cached-dialog/index.js'
 import '#zones/launcher-update-dialog/index.js'
 import '#zones/info-dialog/index.js'
 import '#zones/app-bridge-host.js'
+import '#zones/napplet-ui.js'
 
 f('multi-napp', function () {
   const { requestConfirmation } = useConfirmationDialogStore()
@@ -47,6 +48,7 @@ f('multi-napp', function () {
     <launcher-update-dialog />
     ${IS_DEVELOPMENT ? this.h`<info-dialog />` : ''}
     <app-bridge-host />
+    <napplet-host-ui />
     <a-screen />
   `
 })
