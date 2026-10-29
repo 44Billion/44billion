@@ -1,3 +1,4 @@
+// Workspace app/instance templates also hold builtin-napplet-store; no separate store or origin.
 // Single source of truth for the launcher's persisted state.
 //
 // Every key/template listed here must also be explained in docs/storage-model.md.
@@ -13,6 +14,15 @@ export const STORAGE_AREA = {
   LOCAL: 'local',
   SESSION: 'session'
 }
+
+// Host-owned NIP-5D installations, schema 1; signed event + verified blob bytes.
+export const NAPPLET_DATABASE = '44billion_napplets'
+export const NAPPLET_INSTALLATIONS_STORE = 'installations'
+// JSON string map per encoded workspace user and publisher-safe napplet app ID.
+export const NAPPLET_STATE_PREFIX = 'local_nappletState_'
+// Reserved string-map entry inside the existing per-account/app napplet record.
+// JSON settings object, maximum 32 KiB; no standalone WebStorage key.
+export const NAPPLET_CONFIG_STATE_KEY = 'launcher:config'
 
 export const GLOBAL_LOCAL_KEYS = [
   'storage_version',
@@ -106,6 +116,7 @@ export const ACCOUNT_SUFFIXES = [
 ]
 
 export const DYNAMIC_LOCAL_PREFIXES = [
+  NAPPLET_STATE_PREFIX,
   'session_workspaceByKey_',
   'session_appByKey_',
   'session_appById_',

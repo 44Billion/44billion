@@ -11,6 +11,7 @@ import '#shared/icons/icon-reload.js'
 import { useLocation } from '#f'
 import { useWebStorage } from '#f'
 import { getT } from '#i18n/index.js'
+import { nappletT } from '#i18n/napplets.js'
 import { launcherUpdateLocales } from '#i18n/launcher-update.js'
 import { applyLauncherUpdate, launcherUpdateState$ } from '#services/launcher-sw-manager.js'
 import useStickySessionBadgeCount from '#hooks/use-sticky-session-badge.js'
@@ -175,6 +176,13 @@ f('toolbar-more-menu', function () {
         }}>
           <div class='icon-wrapper'><icon-shopping-bag props=${{ size: '16px' }} /></div>
           <div class='menu-label'>${t('App Store')}</div>
+        </div>
+        <div onclick=${() => {
+          openApp('/napplets')
+          isOpen$.set(false)
+        }}>
+          <div class='icon-wrapper'><icon-shopping-bag props=${{ size: '16px' }} /></div>
+          <div class='menu-label'>${nappletT('Napplets')}</div>
         </div>
         <div onclick=${() => {
           location.pushState({}, '', '/settings')

@@ -1,8 +1,10 @@
 import { enqueueVaultAcceptedMessage } from '#helpers/window-message/browser/vault-accepted-message-queue.js'
+import { isLauncherRenderedAppId } from '#helpers/launcher-app.js'
 import { flushQueuedVaultAcceptedMessages } from '#zones/vault-modal/index.js'
 import { NOSTRDB_APP_BACKFILL_CODE, workspaceOwnerPubkey } from './nostrdb-app-lifecycle.js'
 
 export function requestNostrDbAppBackfillForWorkspace ({ storage, wsKey, appId }) {
+  if (isLauncherRenderedAppId(appId)) return false
   const ownerPubkey = workspaceOwnerPubkey(storage, wsKey)
   if (!ownerPubkey || !appId) return false
   const queued = enqueueVaultAcceptedMessage({

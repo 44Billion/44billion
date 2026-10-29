@@ -1,3 +1,5 @@
+import { isBuiltInAppId, isLauncherRenderedAppId } from '#helpers/launcher-app.js'
+import '#views/napplets/index.js'
 import { useInitQuotaState } from '#hooks/use-quota-state.js'
 import { useAppSubdomain } from '#hooks/use-app-subdomain.js'
 import { useAppPersona } from '#hooks/use-app-persona.js'
@@ -55,6 +57,9 @@ import { useConfirmationDialogStore } from '#zones/confirmation-dialog/index.js'
 import { scheduleStorageRepair } from '#services/storage-audit/bootstrap.js'
 import '#shared/napp-assets-caching-progress-bar.js'
 import '#shared/app-icon.js'
+import '#shared/napplet-frame.js'
+import { isNappletAppId, nappletReference } from '#helpers/napplet.js'
+import { getInstallation } from '#services/napplets/storage.js'
 import '#shared/pending-indicator.js'
 import 'thenameisf/components/f-svg.js'
 import '#shared/icons/icon-close.js'
@@ -591,7 +596,7 @@ f('appWindow', function () {
   }
 
   const registeredBridge$ = useAppBridgeRegistration(() => {
-    if (isClosed$()) return null
+    if (isClosed$() || isLauncherRenderedAppId(appId$())) return null
     return { appSubdomain: appSubdomain$(), appId: appId$(), userPk: userPk$() }
   }, () => ({
     appKey,
@@ -624,7 +629,7 @@ f('appWindow', function () {
     useTask(async ({ track, cleanup }) => {
       const [closed, frame, appSubdomain, appId, userPk] = track(() => [isClosed$(), appIframeRef$(), appSubdomain$(), appId$(), userPk$()])
       localRuntimeReady$(false)
-      if (closed || !frame || appSubdomain == null || !appId || !userPk) return
+      if (closed || !frame || appSubdomain == null || !appId || !userPk || isLauncherRenderedAppId(appId)) return
       const ac = new AbortController()
       cleanup(() => ac.abort())
       try {
@@ -668,6 +673,7 @@ f('appWindow', function () {
       // page MessagePort, and the early-return guard below would leave the
       // port closed forever.
       const routeValue = initialRoute$()
+      if (isLauncherRenderedAppId(appId)) return
       const identity = JSON.stringify([wsKey, userPk, appId, appSubdomain])
       if (runtime.identity !== identity) {
         runtime.appCleanup?.()
@@ -927,6 +933,11 @@ f('appWindow', function () {
             }
           }
 
+          & > napplet-catalog {
+            position: absolute;
+            inset: 0;
+          }
+
           .app-window-pending {
             position: absolute;
             inset: 0;
@@ -984,7 +995,11 @@ f('appWindow', function () {
       }
     `}</style>
     <napp-assets-caching-progress-bar />
-    ${launchError$()
+    ${isBuiltInAppId(appId$())
+      ? this.h`<napplet-catalog props=${{ wsKey: this.props.wsKey, windowed: true }} />`
+      : isNappletAppId(appId$())
+      ? this.h`<napplet-frame props=${{ appId$, userPk$, wsKey }} />`
+      : launchError$()
       ? this.h`<div class='app-window-error'>${launchError$()}</div>`
       : this.h`
         <iframe
@@ -1937,11 +1952,12 @@ f('appLaunchersMenu', function () {
       this.close() // close menu
       openNewAppInstance(appId, workspaceKey)
     },
-    shareApp () {
+    async shareApp () {
       const { id: appId, key: appKey } = this.app$()
       const appName = storage[`session_appById_${appId}_name$`]()
-      const napp = appEncode({ ...appIdToAddressObj(appId), relays: [] })
-      const url = new URL(`/${napp}`, window.location.origin).href
+      const record = isNappletAppId(appId) ? await getInstallation(appId) : null
+      const pathname = isBuiltInAppId(appId) ? '/napplets' : record ? `/napplet/${nappletReference(record.event)}` : `/${appEncode({ ...appIdToAddressObj(appId), relays: [] })}`
+      const url = new URL(pathname, window.location.origin).href
       const shareData = { title: appName || '44billion', url }
       const canShare = typeof navigator.share === 'function'
 

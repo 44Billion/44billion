@@ -14,6 +14,7 @@
     "test": "node --test --experimental-test-module-mocks 'tests/**/*.test.js'",
     "test:browser:quotas": "node bin/run-browser-tests.js -- node tests/browser/nostrdb-quotas.js",
     "test:browser:storage": "node bin/run-browser-tests.js -- node tests/browser/event-storage.js",
+    "test:browser:napplets": "node bin/run-browser-tests.js -- node tests/browser/napplets.js",
     "test:browser": "node bin/run-browser-tests.js -- sh -c 'node tests/browser/event-storage.js && node tests/browser/nostrdb-quotas.js && node tests/browser/app-bridge.js && node tests/browser/widget-pinning.js && node tests/browser/widget-pinning.js --gestures && node tests/browser/widget-pinning.js --menus && node tests/browser/widget-pinning.js --wheel && node tests/browser/menu-focus.js'",
     "test:only": "node --test --test-only --experimental-test-module-mocks 'tests/**/*.test.js'"
   },
@@ -48,12 +49,20 @@
   "dependencies": {
     "@dicebear/core": "^10.4.0",
     "@dicebear/styles": "^10.3.0",
+    "@kehto/acl": "0.19.1",
+    "@kehto/nip": "0.7.0",
+    "@kehto/runtime": "0.26.1",
+    "@kehto/services": "0.26.0",
+    "@kehto/shell": "0.25.0",
     "@leeoniya/ufuzzy": "^1.0.19",
+    "@napplet/core": "0.32.0",
+    "@napplet/nap": "0.32.0",
     "@noble/hashes": "^2.0.1",
     "libp2r2p": "^0.11.36",
     "meilisearch": "^0.54.0",
     "mime": "^4.0.7",
     "nmmr": "^2.0.1",
+    "nostr-tools": "2.23.3",
     "thenameisf": "^1.2.11",
     "url-router": "^13.0.0"
   }

@@ -702,6 +702,8 @@ function interceptNavigations (browserPortPromise) {
 
       // Check if pathname starts with an encoded app pattern
       const pathname = urlObj.pathname
+      // Explicit NIP-5D references are verified and opened by the parent.
+      if (/^\/napplet\/(?:naddr1|nevent1)[0-9a-z]+\/?$/.test(pathname)) return true
       // Match patterns like /+abc123, /++abc123, /+++abc123 or /naddr1...
       const encodedAppPattern = /^\/(\+{1,3}[a-zA-Z0-9]{48,}|naddr1[0-9a-z]+)/
       const match = pathname.match(encodedAppPattern)

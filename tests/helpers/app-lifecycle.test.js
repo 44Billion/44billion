@@ -79,6 +79,31 @@ function baseTabStorage (overrides = {}) {
 }
 
 describe('app lifecycle helper', () => {
+  it('removes the built-in store without remote files, origins or event cleanup', async () => {
+    const appId = 'builtin-napplet-store'
+    const storage = signalStorage({
+      session_workspaceKeys: ['ws1'],
+      session_workspaceByKey_ws1_userPk: 'user-a',
+      [`session_workspaceByKey_ws1_appById_${appId}_appKeys`]: ['store'],
+      session_workspaceByKey_ws1_pinnedAppIds: [appId],
+      session_workspaceByKey_ws1_unpinnedAppIds: [],
+      session_appByKey_store_id: appId,
+      [`session_appById_${appId}_name`]: 'Napplets'
+    })
+    const tabStorage = signalStorage({ session_workspaceByKey_ws1_openAppKeys: ['store'] })
+    const unexpected = () => { throw new Error('Built-in store must not use remote cleanup') }
+    await uninstallAppFromWorkspace({
+      storage, tabStorage, wsKey: 'ws1', appKey: 'store', appId, userPk: 'user-a',
+      _removeWidgetsForApp: () => {}, _removeSelectionsForApp: () => {},
+      _cleanupNostrDb: unexpected, _clearAppFiles: unexpected,
+      _releaseAppSubdomain: unexpected, _hasRecentSingleNappOpenForOwner: unexpected,
+      _hasAnyRecentSingleNappOpen: unexpected
+    })
+    assert.deepEqual(storage.session_workspaceByKey_ws1_pinnedAppIds$(), [])
+    assert.deepEqual(tabStorage.session_workspaceByKey_ws1_openAppKeys$(), [])
+    assert.equal(storage.session_appByKey_store_id$(), undefined)
+  })
+
   it('removes a single instance without removing the app lists', () => {
     const storage = signalStorage(baseAppStorage())
     const tabStorage = signalStorage(baseTabStorage())

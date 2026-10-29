@@ -5,6 +5,72 @@ Windows and widgets launched by 44billion receive `window.napp` and
 wait for the launcher handshake, including `setMinWidth`. These APIs also exist
 in standalone embedded apps.
 
+## NIP-5D napplets
+
+Napplets use a separate opaque-origin sandbox and receive `window.napplet`
+before authored scripts execute, rather than the napp/signer APIs described
+below. Supported domains are `shell`, `storage`, `theme`, `identity`, `outbox`,
+`relay`, `count`, `resource`, `common`, `lists`, `keys`, `gamepad`, `config`,
+`notify`, `link`, and `media`. Required domains are advisory compatibility hints
+and never block installation/loading. Unavailable domains remain absent; napplets
+own graceful fallback.
+
+- `identity` exposes the current workspace account's public key, public profile,
+  follows and public mutes. Anonymous workspaces have no signing identity. No
+  private key or alternate persona signer is exposed.
+- `outbox` uses NIP-65 routing over the existing launcher relay pool. `relay` is
+  the explicit public-relay escape hatch. Incoming events are signature/filter
+  checked. Publishing signs through the existing vault and app/kind permission
+  dialog, rechecks workspace/persona access after waits, rejects read-only or
+  locked signing, and waits for a successful relay acknowledgement. A manifest
+  declaration never grants signing permission.
+- `count` uses relay NIP-45 COUNT, accepts one filter, and returns unavailable
+  when the relay cannot count. It never downloads events to simulate COUNT.
+- `common` supports public profiles, follows/unfollows, reactions and reports.
+  `lists` supports public items in kinds 10000/10001/10003/10006/10007/10015/10050
+  and sets 30000/30002/30003/30015. Mutations retain unrelated tags and existing
+  encrypted content; private-item edits are explicitly unsupported. Incomplete
+  reads refuse replacement writes.
+- `resource` mediates public HTTP(S) and hash-verified Blossom reads, omits
+  ambient credentials, refuses redirects/private origins, bounds each response
+  to 16 MiB and 30 seconds, and derives MIME types from bytes. Browser CORS and
+  mixed-content policies still apply; no arbitrary authenticated fetch is offered.
+- `keys` handles shortcuts for the focused frame while reserving browser tab/
+  navigation chords. `gamepad` uses the host's browser gamepad adapter, with
+  hardware availability and browser permission rules still applying.
+- `config` renders a host settings dialog from the registered schema. Values
+  share the account/catalog identity scope, survive artifact updates, and are
+  limited to 32 KiB. They are not a secret vault.
+- `notify` presents shell-local notices, actions, channels and badges, with at
+  most eight visible notices; it does not request OS notification permission.
+  `link` asks the user before opening an HTTP(S) link or internal napplet link.
+- `media` mediates audio/video through host resource loading and native controls,
+  with up to four sessions per frame and shared OS media-session controls.
+
+DM, inter-napplet messaging/intents, uploads, filesystem and device-specific
+services are not advertised yet. Signing uses the existing vault channel;
+subscriptions, pending requests, controls and listeners are cancelled when the
+frame closes or its workspace account changes.
+
+`storage` is scoped to the workspace account, publisher-safe catalog identity
+and installed artifact hash, with Kehto's 512 KiB UTF-8 quota. It is retained
+across close/reopen and reload. Storage failure returns the protocol error;
+invalid or missing installation bytes fail visibly before execution. `theme`
+uses the launcher palette and pushes system light/dark changes. Session identity
+comes from the parent-bound iframe source before execution; optional
+`shell.ready` is not an authorization prerequisite. Closing/replacing a frame
+removes its listeners, runtime state and source registration.
+
+App links to `/napplet/<naddr-or-nevent>` are intercepted through the existing
+`OPEN_APP` bridge, including app-store links. The launcher verifies the target
+manifest and requests the existing `openApp` permission for the calling app
+before installing/opening the napplet. Manifest declarations do not grant
+permissions. This adds no new `window.napp` method. Use explicit `/napplet/`
+paths because named NIP-5D manifests and existing next-channel napps share kind
+35129. Root references use naddr kind 15129 with an empty identifier; snapshot
+references use the exact signed event's nevent. Bare napp URLs retain their
+existing meaning.
+
 ## Users and personas
 
 ```js

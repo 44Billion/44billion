@@ -31,6 +31,11 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
 
 ## Injected app APIs
 
+- Napplet required-NAP declarations are advisory compatibility hints. Never
+  prevent installation or loading because a required domain is unavailable.
+  Expose only implemented domains; the napplet owns graceful fallback. Store
+  compatibility notes must never disable its Install/Open action.
+
 - Keep [`APP_API.md`](APP_API.md) updated in the same change that adds or changes
   an injected API. Consumers use the committed version on `main` as their contract.
 - NIP-44 v3 app methods and internal NostrDB callers send/receive `ArrayBuffer`

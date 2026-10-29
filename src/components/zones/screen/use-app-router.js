@@ -1,3 +1,5 @@
+import { NAPPLET_STORE_APP_ID } from '#helpers/launcher-app.js'
+import { nappletT } from '#i18n/napplets.js'
 import { useTask, useCallback, useGlobalStore } from '#f'
 import { useLocation } from '#f'
 import { useWebStorage } from '#f'
@@ -8,6 +10,9 @@ import { isAppUrl, resolveAppUrl } from '#helpers/resolve-app-url.js'
 import { useActiveWorkspaceOrder } from '#hooks/use-active-workspace-order.js'
 import router from '#zones/multi-napp/router.js'
 import { requestNostrDbAppBackfillForWorkspace } from './helpers/nostrdb-app-backfill.js'
+import { nappletReferenceFromHref } from '#helpers/napplet.js'
+import { installNapplet, resolveNappletReference } from '#services/napplets/index.js'
+import { cacheAppMetadata } from '#services/app-file-manager/index.js'
 
 export default function useAppRouter () {
   const loc = useLocation()
@@ -128,6 +133,59 @@ export default function useAppRouter () {
     requestNostrDbAppBackfillForWorkspace({ storage, wsKey, appId: app.id })
   })
 
+  const openNappletStore = useCallback((wsKey = openWorkspaceKeys$()[0]) => {
+    if (!wsKey) throw new Error('User n/a')
+    const appId = NAPPLET_STORE_APP_ID
+    cacheAppMetadata(appId, { name: nappletT('Napplets'), description: '' })
+    const { hasOpened, isInstalled } = maybeOpenInstalledApp(appId, '', wsKey)
+    if (hasOpened) return
+    createAppInstance(appId, '', wsKey, { isInstalled })
+    if (!isInstalled) storage[`session_workspaceByKey_${wsKey}_unpinnedAppIds$`]((v = []) => [appId, ...v])
+  })
+
+  useTask(({ track }) => {
+    const route = track(() => loc.route$())
+    if (!/^\/napplets\/?$/.test(route.url.pathname)) return
+    openNappletStore()
+    loc.replaceState(history.state, '', '/')
+  })
+
+  const openNapplet = useCallback(async (reference, wsKey, { signal } = {}) => {
+    wsKey ??= openWorkspaceKeys$()[0]
+    if (!wsKey) throw new Error('User n/a')
+    const { event, manifest } = await resolveNappletReference(reference, { signal })
+    const appId = await installNapplet(event, { signal })
+    signal?.throwIfAborted()
+    cacheAppMetadata(appId, { name: manifest.title || manifest.dTag || 'Napplet', description: manifest.description })
+    const { hasOpened, isInstalled } = maybeOpenInstalledApp(appId, '', wsKey)
+    if (hasOpened) return
+    createAppInstance(appId, '', wsKey, { isInstalled })
+    if (!isInstalled) storage[`session_workspaceByKey_${wsKey}_unpinnedAppIds$`]((v = []) => [appId, ...v])
+  })
+
+  const nappletError$ = useGlobalStore('nappletNavigation', () => ({ error$: '' }))
+  useTask(async ({ track, cleanup }) => {
+    const href = track(() => loc.route$().url.href)
+    let reference
+    try { reference = nappletReferenceFromHref(href) } catch (error) {
+      nappletError$.error$(error.message)
+      loc.replaceState(history.state, '', '/napplets')
+      return
+    }
+    if (!reference) return
+    const ac = new AbortController()
+    cleanup(() => ac.abort())
+    try {
+      await openNapplet(reference, undefined, { signal: ac.signal })
+      if (!ac.signal.aborted) loc.replaceState(history.state, '', '/')
+    } catch (error) {
+      if (!ac.signal.aborted) {
+        nappletError$.error$(error.message)
+        loc.replaceState(history.state, '', '/napplets')
+      }
+    }
+  })
+
   useTask(async ({ track }) => {
     const route = track(() => loc.route$())
     const firstPart = route.url.pathname.split('/')[1]
@@ -183,6 +241,9 @@ export default function useAppRouter () {
   useGlobalStore('useAppRouter', () => ({
     async openApp (href, wsKey) {
       const url = new URL(href, window.location.origin)
+      if (/^\/napplets\/?$/.test(url.pathname)) return openNappletStore(wsKey)
+      const napplet = nappletReferenceFromHref(url.href)
+      if (napplet) return openNapplet(napplet, wsKey)
       const firstPart = url.pathname.split('/')[1]
       let napp
       const decodedFirstPart = tryDecodeAppUrl(firstPart)

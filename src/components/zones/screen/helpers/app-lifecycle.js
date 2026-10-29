@@ -1,4 +1,7 @@
+import { isBuiltInAppId } from '#helpers/launcher-app.js'
 import { base62ToBase16 } from 'libp2r2p/base62'
+import { isNappletAppId } from '#helpers/napplet.js'
+import { deleteInstallation, clearNappletState } from '#services/napplets/storage.js'
 import { releaseAppSubdomain, subdomainStorage } from '#helpers/subdomain-mapping.js'
 import {
   cleanupNostrDbAppForWorkspace,
@@ -132,12 +135,9 @@ export async function uninstallAppFromWorkspace ({
   _releaseAppSubdomain = releaseAppSubdomain,
   _base62ToBase16 = base62ToBase16
 }) {
-  await _cleanupNostrDb({
-    storage,
-    wsKey,
-    appId,
-    excludeWorkspaceKeys: [wsKey]
-  })
+  if (!isBuiltInAppId(appId)) {
+    await _cleanupNostrDb({ storage, wsKey, appId, excludeWorkspaceKeys: [wsKey] })
+  }
   const removed = removeAppFromWorkspace({
     storage,
     tabStorage,
@@ -198,6 +198,15 @@ export async function clearAppDataAfterRemoval ({
   if (!appId) return { clearedAppData: false, clearedAppFiles: false }
 
   const instances = countAppInstances({ storage, appId, userPk })
+  if (isBuiltInAppId(appId)) return { clearedAppData: false, clearedAppFiles: false, ...instances }
+  if (isNappletAppId(appId)) {
+    if (!instances.hasOtherSameUserInstances) clearNappletState(appId, globalThis.localStorage, userPk)
+    if (!instances.hasOtherAnyInstances) {
+      await deleteInstallation(appId)
+      clearNappletState(appId)
+    }
+    return { clearedAppData: !instances.hasOtherSameUserInstances, clearedAppFiles: !instances.hasOtherAnyInstances, queuedOriginCleanup: false, ...instances }
+  }
   const ownerPubkey = ownerPubkeyFromUserPk(userPk, { _base62ToBase16 })
   const recentForOwner = ownerPubkey
     ? await _hasRecentSingleNappOpenForOwner({ appId, ownerPubkey })

@@ -1,4 +1,9 @@
 import { f, useMemo, useStore, useTask } from '#f'
+import '#shared/icons/icon-shopping-bag.js'
+import { isBuiltInAppId, isLauncherRenderedAppId } from '#helpers/launcher-app.js'
+import { isNappletAppId, nappletDescriptor } from '#helpers/napplet.js'
+import { getInstallation } from '#services/napplets/storage.js'
+import { createNappletIconUrl } from '#services/napplets/catalog-metadata.js'
 import { useWebStorage } from '#f'
 import { cssVars } from '#assets/styles/theme.js'
 import AppFileManager from '#services/app-file-manager/index.js'
@@ -83,6 +88,7 @@ f('app-icon', ({ h, props }) => {
     isLoading$: false,
     isResolutionPending$: true,
     displayedIcon$: null,
+    nappletIconUrl$: null,
     currentIcon$ () { return this.iconCandidates$()[this.iconIndex$()] ?? null },
     resetForApp (appId) {
       if (runtime.currentAppId === appId) return
@@ -146,6 +152,7 @@ f('app-icon', ({ h, props }) => {
       runtime.appFileManager?.cacheMetadata(this.appId$(), { icon: promoted })
     },
     async reconcilePreferredIcon () {
+      if (isLauncherRenderedAppId(this.appId$())) return
       if (
         !this.displayedIcon$() ||
         this.preferredManifestPending$() ||
@@ -252,6 +259,7 @@ f('app-icon', ({ h, props }) => {
       }
     },
     async loadNextIcon () {
+      if (isLauncherRenderedAppId(this.appId$())) { this.exhausted$(true); this.isResolutionPending$(false); return }
       if (this.isLoading$() || runtime.abortController.signal.aborted) return
       const appId = this.appId$()
       const signal = runtime.abortController.signal
@@ -317,13 +325,41 @@ f('app-icon', ({ h, props }) => {
     }
   }))
 
+  useTask(async ({ track, cleanup }) => {
+    const appId = track(() => store.appId$())
+    store.nappletIconUrl$(null)
+    if (!isNappletAppId(appId)) return
+    const controller = new AbortController()
+    let url
+    cleanup(() => {
+      controller.abort()
+      if (url) URL.revokeObjectURL(url)
+    })
+    try {
+      const installation = await getInstallation(appId)
+      controller.signal.throwIfAborted()
+      if (!installation) return
+      const descriptor = nappletDescriptor(installation.event)
+      if (descriptor.appId !== appId) return
+      const { manifest } = descriptor
+      url = await createNappletIconUrl(manifest, { signal: controller.signal })
+      if (controller.signal.aborted) {
+        if (url) URL.revokeObjectURL(url)
+        return
+      }
+      store.nappletIconUrl$(url)
+    } catch {
+      // Icons are optional; unavailable or invalid artwork keeps the monogram.
+    }
+  })
+
   // The monogram needs the app name. Some consumers (e.g. the toolbar app
   // launcher) don't provide it and may have no cached name yet, so resolve it
   // lazily the same way napp-updates does — the cached manifest name feeds
   // appName$() reactively.
   useTask(async ({ track }) => {
     const [appId, name] = track(() => [store.appId$(), store.appName$()])
-    if (!appId || name) return
+    if (!appId || name || isLauncherRenderedAppId(appId)) return
     try {
       // Deliberately no abort signal: runtime.abortController is rotated by
       // resetForApp right after mount, so a signal here would abort the shared
@@ -390,6 +426,19 @@ f('app-icon', ({ h, props }) => {
       runtime.abortController.abort()
     })
   })
+
+  if (isBuiltInAppId(store.appId$())) {
+    return h`<div style=${`display: grid; place-items: center; width: 100%; height: 100%; background: ${cssVars.colors.bg2}; color: ${cssVars.colors.fg};`}><icon-shopping-bag props=${{ size: '65%' }} /></div>`
+  }
+
+  if (store.nappletIconUrl$()) {
+    return h`<img
+      src=${store.nappletIconUrl$()}
+      alt=${t('App icon')}
+      onerror=${() => store.nappletIconUrl$(null)}
+      style=${`display: block; width: 100%; height: 100%; object-fit: contain; ${store.style$()}`}
+    />`
+  }
 
   if (shouldShowAppIconShimmer({
     resolutionPending: store.isResolutionPending$(),
