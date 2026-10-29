@@ -54,6 +54,17 @@ own graceful fallback.
   ambient credentials, refuses redirects/private origins, bounds each response
   to 16 MiB and 30 seconds, and derives MIME types from bytes. Browser CORS and
   mixed-content policies still apply; no arbitrary authenticated fetch is offered.
+  Blossom accepts `blossom:<sha256>.<ext>` (BUD-10) and extensionless
+  `blossom:<sha256>`; `blossom:sha256:<sha256>` is invalid. Repeated `xs`
+  hints are tried first (HTTPS then HTTP for bare domains), then repeated `as`
+  authors' public kind-10063 server lists, request `servers`, and manifest servers.
+  Server paths are discarded in favor of root blob endpoints. Each source list
+  is limited to ten entries and author discovery to ten valid public keys.
+  Downloads must match the hash and optional positive integer `sz`; extensions
+  never determine MIME. Oversized declared sizes fail before network access.
+  Cancellation and account access checks apply across retries. `bytesMany`
+  uses the same resolver and reports per-item failures. Only HTTP, HTTPS and
+  Blossom are advertised by this shell; other shell-side schemes are unsupported.
 - `keys` handles shortcuts for the focused frame while reserving browser tab/
   navigation chords. `gamepad` uses the host's browser gamepad adapter, with
   hardware availability and browser permission rules still applying.

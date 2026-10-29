@@ -61,7 +61,7 @@ export function createNappletServices ({ account, network, state, signal, iframe
     }),
     count: createCountService({ count: request => network.count(request.filters) }),
     resource: createResourceService({
-      fetch: createNappletResourceResolver({ signal, guard: account.guard, fallbackServers: resolved.manifest.servers }),
+      fetch: createNappletResourceResolver({ signal, guard: account.guard, fallbackServers: resolved.manifest.servers, loadAuthorServers: async author => (await social.latest(10063, author))?.tags.filter(tag => tag[0] === 'server').map(tag => tag[1]) || [] }),
       resourceInfo: { schemes: [{ scheme: 'https' }, { scheme: 'http' }, { scheme: 'blossom' }], maxBytes: MAX_RESOURCE_BYTES }
     }),
     common: createCommonService(social),
