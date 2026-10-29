@@ -65,7 +65,6 @@
     "mime": "^4.0.7",
     "nmmr": "^2.0.1",
     "nostr-tools": "2.23.3",
-    "nostr-wasm": "0.1.0",
     "thenameisf": "^1.2.11",
     "url-router": "^13.0.0"
   }

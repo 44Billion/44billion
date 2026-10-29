@@ -1,7 +1,7 @@
-import { verifyEvent as isValidEvent } from '#services/event-verification.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { encode } from 'libp2r2p/base93'
 import { bytesToBase16 } from 'libp2r2p/base16'
+import { isValidEvent } from 'libp2r2p/event'
 
 import { parseIrfsChunkEvent } from '#services/irfs-chunk.js'
 

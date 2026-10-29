@@ -1,6 +1,5 @@
 import { base62ToBase16 } from 'libp2r2p/base62'
-import { validateEvent } from 'nostr-tools/pure'
-import { verifyEvent } from '../event-verification.js'
+import { verifyEvent, validateEvent } from 'nostr-tools/pure'
 import { askNip07 } from '#helpers/window-message/browser/nip07.js'
 import { readSignerAccountFlags, guardSignerRequest } from '#helpers/window-message/browser/signer-guard.js'
 import { readAppPersonaContext, resolvePersonaUserPks } from '#services/personas/model.js'

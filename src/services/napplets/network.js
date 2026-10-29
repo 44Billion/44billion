@@ -1,6 +1,6 @@
 import { freeRelays, relayPool, getRelaysByPubkey } from 'libp2r2p/relay'
 import { isValidPublicRelayUrl, normalizeRelayUrl } from 'libp2r2p/url'
-import { verifyEvent } from '../event-verification.js'
+import { verifyEvent } from 'nostr-tools/pure'
 import { matchFilters } from 'nostr-tools/filter'
 import { createRelayPoolOutboxRouter } from '@kehto/services'
 

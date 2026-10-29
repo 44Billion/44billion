@@ -1,4 +1,3 @@
-import { verifyEvent as isValidEvent } from '#services/event-verification.js'
 import { recordPerformance } from '#services/performance-diagnostics.js'
 import { selectTagQueryPlan } from './query-plan.js'
 import { scanRecoveryCursorChunks } from './recovery-cursor.js'
@@ -102,7 +101,7 @@ import {
   normalizeChunkEventForOwner,
   validateCanonicalOwnerChunkEvent
 } from './chunk-event.js'
-import { classifyEvent } from 'libp2r2p/event'
+import { classifyEvent, isValidEvent } from 'libp2r2p/event'
 import { isAddressableKind as isAddressableKindRange, isEphemeralKind as isEphemeralKindRange, isReplaceableKind } from 'libp2r2p/kind'
 import { verifyEventSignature } from './verification.js'
 import { NOSTRDB_RECOVERY_READ } from '#helpers/window-message/nostrdb-protocol.js'
