@@ -110,7 +110,7 @@ test('sends an empty terminal frame when an oversized hint already streamed ever
 
   const completed = await streamAppFileChunks({
     startIndex: first.nextIndex,
-    totalChunks: first.totalChunks,
+    totalChunks: 3,
     downloadValidated: true,
     loadChunk: async index => chunks.get(index) ?? null,
     sendChunk: () => assert.fail('no data chunk should remain'),

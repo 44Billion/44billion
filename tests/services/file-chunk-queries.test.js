@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict'
 import { before, describe, it, mock } from 'node:test'
 
-const run = mock.fn((_method, _args, _storeName, _indexName, { p, txMode }) => {
+const run = mock.fn((method, _args, storeName, _indexName, { p, txMode } = {}) => {
+  if (method !== 'openCursor') {
+    return Promise.resolve({ result: undefined, tx: { abort () {} } })
+  }
+  assert.equal(storeName, 'fileChunks')
   assert.equal(txMode, 'readwrite')
   const cursor = {
     key: ['app', 'root', 0],
