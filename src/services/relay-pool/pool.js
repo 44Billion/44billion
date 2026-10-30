@@ -1,6 +1,6 @@
+import { verifyEvent as isValidEvent } from '#services/event-verification.js'
 import { recordPerformance } from '../performance-diagnostics.js'
 import { isPriorityPublication } from './priority.js'
-import { isValidEvent } from 'libp2r2p/event'
 import { normalizeRelayUrl } from 'libp2r2p/url'
 import { parseRelayRetryAdvice } from 'libp2r2p/relay'
 
