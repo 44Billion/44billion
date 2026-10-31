@@ -82,10 +82,6 @@ test('a lifecycle message without an app id reaches every local instance', { tim
     const count = { paused: 0, reloaded: 0 }; counts.push(count)
     await attachLocalInstance({ appId, userPk, signal: controller.signal, pause: async () => { count.paused++ }, reload: async () => { count.reloaded++ } })
   }
-  notifyLocalInstances({ type: 'pause' })
-  for (let step = 0; step < 100; step++) {
-    if (counts.every(count => count.paused === 1)) break
-    await new Promise(resolve => setTimeout(resolve, 5))
-  }
+  await notifyLocalInstances({ type: 'pause' })
   assert.deepEqual(counts, [{ paused: 1, reloaded: 0 }, { paused: 1, reloaded: 0 }])
 })

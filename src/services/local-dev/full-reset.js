@@ -26,7 +26,7 @@ export function readKnownAppSubdomains (localStorageArea = globalThis.localStora
 
 async function pauseLocalInstances () {
   const { notifyLocalInstances } = await import('./instances.js')
-  notifyLocalInstances({ type: 'pause' })
+  await notifyLocalInstances({ type: 'pause' })
 }
 
 async function clearAppOrigin (appSubdomain) {

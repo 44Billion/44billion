@@ -216,6 +216,29 @@ describe('development environment reset request', () => {
     assert.deepEqual(readPendingFullReset(localStorage), { attempts: 0 })
   })
 
+  it('waits for local instances to pause before starting the vault wipe', async () => {
+    const pause = Promise.withResolvers()
+    let vaultAsked = false
+    const reset = requestLocalDevFullReset({
+      localStorageArea: memoryStorage(),
+      pauseInstances: () => pause.promise,
+      askVault: async message => {
+        vaultAsked = true
+        return { code: message.code, payload: { databases: ['ez-vault'], failures: [] } }
+      },
+      clearOrigin: async () => {},
+      reload: () => {},
+      resetUrl: () => {},
+      warn: () => {}
+    })
+
+    await Promise.resolve()
+    assert.equal(vaultAsked, false)
+    pause.resolve()
+    await reset
+    assert.equal(vaultAsked, true)
+  })
+
   it('aborts before clearing anything when the vault cannot be wiped', async () => {
     const localStorage = mappingStorage()
     const cleared = []

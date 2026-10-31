@@ -24,16 +24,19 @@ async function lease (name, signal) {
 
 // Every tab receives the same lifecycle message, including the sending tab.
 export function notifyLocalInstances (message) {
-  receive(message)
+  const local = receive(message)
   channel.postMessage(message)
+  return Promise.all(local)
 }
 function receive (message) {
+  const queued = []
   for (const instance of instances) {
     // A message without an app id addresses every local instance (full reset).
     if (message.appId && instance.appId !== message.appId) continue
     if (message.userPk && instance.userPk !== message.userPk) continue
-    instance.enqueue(message)
+    queued.push(instance.enqueue(message))
   }
+  return queued
 }
 channel.onmessage = event => receive(event.data)
 
@@ -82,6 +85,7 @@ export async function attachLocalInstance ({ appId, userPk, reload, pause, signa
           await navigator.locks.request(installLock(appId), () => pruneLocalVersions(appId))
         }
       }).catch(error => { if (!signal.aborted) console.error('[local app]', error) })
+      return queue
     }
   }
   const close = () => {
@@ -100,10 +104,10 @@ export async function attachLocalInstance ({ appId, userPk, reload, pause, signa
 export async function clearLocalAppData ({ appId, userPk, appSubdomain }) {
   if (!isLocalDevApp(appId)) throw new Error('This is not a local development app')
   return navigator.locks.request(`local-dev:reset:${appId}:${userPk}`, async () => {
-    notifyLocalInstances({ type: 'pause', appId, userPk })
+    await notifyLocalInstances({ type: 'pause', appId, userPk })
     try {
-      // Acquire after each tab has processed its pause request and released its lease.
-      await new Promise(resolve => setTimeout(resolve, 100))
+      // The exclusive lease also waits for instances in other tabs to process
+      // their pause notification and release their shared leases.
       await navigator.locks.request(userLock(appId, userPk), { signal: AbortSignal.timeout(20000) }, async () => {
         const errors = []
         try { await askAppToClearData(appSubdomain, { strict: true, localDevelopment: true }) } catch (error) { errors.push(error) }
