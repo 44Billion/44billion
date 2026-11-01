@@ -44,6 +44,30 @@ test('correlated OK bypasses queued history, uses reserved credit, and ledger fo
   assert.equal(receive.snapshot().queuedFrames, 0)
 })
 
+test('hidden intermediate AUTH rejection preserves priority for the final retried OK', t => {
+  const frames = []
+  const receive = createBridgeReceiveQueue({
+    endpointId: 'auto-auth-priority',
+    virtualId: 'v',
+    owner: 'app',
+    relay: 'relay',
+    limits: RELAY_POOL_LIMITS,
+    onFrame: data => frames.push({ raw: data, frame: JSON.parse(data) }),
+    onClose: () => {},
+    onOverflow: () => {}
+  })
+  t.after(() => receive.close())
+  receive.noteOutgoing(publication('private-event'))
+  receive.push(JSON.stringify(['EVENT', 'history', { content: 'x'.repeat(970000) }]))
+  receive.push(JSON.stringify(['EVENT', 'history', { content: 'y'.repeat(100000) }]))
+  // The automatic path hides the first auth-required OK from the consumer,
+  // so no take() consumes the publication correlation hint.
+  receive.push(JSON.stringify(['OK', 'private-event', true, 'saved after AUTH']))
+  receive.grant({ frames: 1, bytes: frames[0].raw.length, through: 1 })
+  assert.equal(frames[1].frame[0], 'OK')
+  assert.equal(frames[1].frame[1], 'private-event')
+})
+
 test('bridge weights preserve normal service under a saturated reserved window and admit large frames alone', () => {
   const normal = { data: publication('normal', 1), size: 200, priority: false }
   const high = { data: publication('priority'), size: 200, priority: true }

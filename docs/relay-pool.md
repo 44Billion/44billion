@@ -78,10 +78,34 @@ A relay `AUTH` challenge never triggers a migration: most relays send it
 proactively and most clients ignore it. The client's `AUTH` response is the
 trigger.
 
+There is one transparent exception for `EVENT` publication. When the relay
+answers `OK false` with an `auth-required:` or `restricted:` reason, the pool
+checks that the original EVENT is signed, asks the member's private
+authentication provider whether its pubkey is currently authorized, and
+isolates that member in a dedicated bucket before signing `AUTH`. App members
+re-evaluate the app's active persona at authentication time; the vault and
+direct launcher operations use the vault-backed default provider. This
+private metadata never crosses the app/launcher bridge.
+
+The provider creates a strict kind-22242 event with empty content and matching
+`relay`/`challenge` tags. The pool validates the event again, sends it on the
+dedicated bucket and hides the intermediate EVENT rejection. After
+`OK true` for the AUTH, it resends the original EVENT raw frame exactly once;
+the final EVENT `OK true` is the result delivered to the member. If isolation,
+signing, AUTH, network or the retried EVENT fails, the member receives the
+original `auth-required:`/`restricted:` rejection. No app API or persisted
+relay grant is created, and the transparent path never signs `22242` on behalf
+of an app without a current persona match. An explicit client AUTH cancels a
+pending automatic attempt and continues through the normal manual path, where
+the existing permission flow applies. Because the intermediate rejection is
+not delivered to the consumer, its publication-correlation hint remains
+available: the final retried `OK` keeps the same receive priority as the
+original publication.
+
 Every client AUTH is validated locally before the pool routes it: signature
 and id via `isValidEvent`, kind 22242, `created_at` window, `relay` tag
-matching the relay URL and `challenge` tag matching the current bucket
-challenge. Invalid AUTHs are answered with a synthetic
+matching the relay URL, non-empty content rejected, and `challenge` tag
+matching the current bucket challenge. Invalid AUTHs are answered with a synthetic
 `["OK", id, false, "invalid: ..."]` and are never forwarded.
 
 Valid AUTHs follow these rules:
@@ -120,7 +144,9 @@ bucket can accept it does the pool close that virtual socket with 1013
 unverified or authenticating, and the total subscription count for the host.
 
 The pool always prefers merging on the next AUTH and exposes `authMerges`,
-`authSwaps` and `authReconnects` in the snapshot. Multiple authenticated
+`authSwaps`, `authReconnects`, `automaticAuths`, `automaticAuthSuccesses` and
+`automaticAuthFailures` in the snapshot. The automatic-auth count contains no
+event content, challenge or signatures. Multiple authenticated
 buckets for the same `(relay, pubkey)` are consolidated proactively:
 whenever a subscription slot frees (`CLOSE`/`CLOSED`), a NEG session closes,
 a member leaves an authenticated bucket, or a new identity is confirmed, the

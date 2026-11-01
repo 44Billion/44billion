@@ -13,6 +13,7 @@ class FakeSocket {
   constructor (url) {
     this.url = url
     this.sent = []
+    this.sentRaw = []
     this.readyState = 0
     this.extensions = ''
     this.closed = null
@@ -24,6 +25,7 @@ class FakeSocket {
   }
 
   send (raw) {
+    this.sentRaw.push(raw)
     this.sent.push(JSON.parse(raw))
   }
 
@@ -112,6 +114,33 @@ function signedEvent (pubkey = 'p'.repeat(64)) {
     created_at: 1,
     tags: [],
     content: 'hello'
+  }
+}
+
+function validEvent (secretKey, overrides = {}) {
+  return finalizeEvent({
+    kind: 3560,
+    created_at: Math.floor(Date.now() / 1000) - 3600,
+    tags: [],
+    content: 'private envelope',
+    ...overrides
+  }, secretKey)
+}
+
+function automaticAuthProvider (secretKey, { canAuthenticate = () => true } = {}) {
+  const calls = { canAuthenticate: [], signAuth: [] }
+  return {
+    calls,
+    provider: {
+      canAuthenticate: async pubkey => {
+        calls.canAuthenticate.push(pubkey)
+        return await canAuthenticate(pubkey)
+      },
+      signAuth: async request => {
+        calls.signAuth.push(request)
+        return authEvent(secretKey, request)
+      }
+    }
   }
 }
 
@@ -338,6 +367,364 @@ describe('unified relay pool', () => {
         ['OK', event.id, true, 'saved on retry']
       ], 'each publication attempt receives its acknowledgement; unsolicited repeats stay suppressed')
     }
+  })
+
+  it('authenticates transparently in an isolated bucket and retries the exact EVENT once', async t => {
+    const { pool, sockets } = createPool()
+    t.after(() => pool.closeAll())
+    const secretKey = generateSecretKey()
+    const { provider, calls } = automaticAuthProvider(secretKey)
+    const receivedA = []
+    const receivedB = []
+    const memberA = pool.attach(
+      'wss://relay.example',
+      { onMessage: raw => receivedA.push(JSON.parse(raw)) },
+      { auth: provider }
+    )
+    pool.attach('wss://relay.example', { onMessage: raw => receivedB.push(JSON.parse(raw)) })
+    await tick()
+    sockets[0].open()
+    await tick()
+    const event = validEvent(secretKey)
+    const rawEvent = JSON.stringify(['EVENT', event])
+    memberA.send(rawEvent)
+    await tick()
+    sockets[0].message(['OK', event.id, false, 'auth-required: old event needs AUTH'])
+    await tick()
+    assert.equal(sockets.length, 2, 'the authenticating member receives a dedicated connection')
+    assert.deepEqual(receivedA.filter(message => message[0] === 'OK'), [])
+    assert.deepEqual(receivedB, [])
+
+    sockets[1].open()
+    await tick()
+    sockets[1].message(['AUTH', 'automatic-challenge'])
+    await tick()
+    assert.deepEqual(calls.canAuthenticate, [event.pubkey])
+    assert.deepEqual(calls.signAuth, [{
+      relay: 'wss://relay.example',
+      challenge: 'automatic-challenge',
+      pubkey: event.pubkey
+    }])
+    const auth = sockets[1].sent.find(message => message[0] === 'AUTH')
+    assert.ok(auth)
+    assert.equal(auth[1].kind, 22242)
+    assert.equal(auth[1].content, '')
+    assert.deepEqual(auth[1].tags, [
+      ['relay', 'wss://relay.example'],
+      ['challenge', 'automatic-challenge']
+    ])
+    assert.equal(auth[1].pubkey, event.pubkey)
+
+    sockets[1].message(['OK', auth[1].id, true, 'authenticated'])
+    await tick()
+    const retries = sockets[1].sentRaw.filter(raw => JSON.parse(raw)[0] === 'EVENT')
+    assert.deepEqual(retries, [rawEvent])
+    sockets[1].message(['OK', event.id, true, 'saved'])
+    await tick()
+    assert.deepEqual(receivedA.filter(message => message[0] === 'OK'), [
+      ['OK', event.id, true, 'saved']
+    ])
+    assert.equal(pool.snapshot().automaticAuths, 0)
+    assert.equal(pool.snapshot().automaticAuthSuccesses, 1)
+  })
+
+  it('returns the original rejection when the retried EVENT fails', async t => {
+    const { pool, sockets } = createPool()
+    t.after(() => pool.closeAll())
+    const secretKey = generateSecretKey()
+    const { provider } = automaticAuthProvider(secretKey)
+    const received = []
+    const member = pool.attach(
+      'wss://relay.example',
+      { onMessage: raw => received.push(JSON.parse(raw)) },
+      { auth: provider }
+    )
+    await tick()
+    sockets[0].open()
+    await tick()
+    sockets[0].message(['AUTH', 'challenge'])
+    const event = validEvent(secretKey)
+    member.send(JSON.stringify(['EVENT', event]))
+    await tick()
+    sockets[0].message(['OK', event.id, false, 'restricted: first rejection'])
+    await tick()
+    const auth = sockets[0].sent.find(message => message[0] === 'AUTH')
+    sockets[0].message(['OK', auth[1].id, true, 'authenticated'])
+    await tick()
+    sockets[0].message(['OK', event.id, false, 'restricted: still refused'])
+    await tick()
+    assert.deepEqual(received.filter(message => message[0] === 'OK'), [
+      ['OK', event.id, false, 'restricted: first rejection']
+    ])
+    assert.equal(pool.snapshot().automaticAuths, 0)
+  })
+
+  it('does not call the signer when the original event or pubkey is not accepted', async t => {
+    const { pool, sockets } = createPool()
+    t.after(() => pool.closeAll())
+    const secretKey = generateSecretKey()
+    const { provider, calls } = automaticAuthProvider(secretKey, { canAuthenticate: () => false })
+    const received = []
+    const member = pool.attach(
+      'wss://relay.example',
+      { onMessage: raw => received.push(JSON.parse(raw)) },
+      { auth: provider }
+    )
+    await tick()
+    sockets[0].open()
+    await tick()
+    const invalid = signedEvent()
+    member.send(JSON.stringify(['EVENT', invalid]))
+    await tick()
+    sockets[0].message(['OK', invalid.id, false, 'auth-required: authenticate'])
+    await tick()
+    assert.equal(calls.canAuthenticate.length, 0)
+    assert.equal(calls.signAuth.length, 0)
+
+    const event = validEvent(secretKey)
+    member.send(JSON.stringify(['EVENT', event]))
+    await tick()
+    sockets[0].message(['OK', event.id, false, 'auth-required: authenticate'])
+    await tick()
+    assert.deepEqual(calls.canAuthenticate, [event.pubkey])
+    assert.equal(calls.signAuth.length, 0)
+    assert.equal(received.filter(message => message[0] === 'OK').length, 2)
+  })
+
+  it('uses the default launcher/vault provider while endpoint metadata overrides it', async t => {
+    const { pool, sockets } = createPool()
+    t.after(() => pool.closeAll())
+    const secretKey = generateSecretKey()
+    const { provider: defaultProvider, calls: defaultCalls } = automaticAuthProvider(secretKey)
+    const { provider: endpointProvider, calls: endpointCalls } = automaticAuthProvider(secretKey)
+    pool.setDefaultAuthProvider(defaultProvider)
+    const launcherMember = pool.attach('wss://relay.example', {})
+    const appMember = pool.attach('wss://relay.example', {}, { owner: 'app', auth: endpointProvider })
+    await tick()
+    sockets[0].open()
+    await tick()
+    sockets[0].message(['AUTH', 'challenge'])
+    const launcherEvent = validEvent(secretKey)
+    const appEvent = validEvent(secretKey, { content: 'app event' })
+    launcherMember.send(JSON.stringify(['EVENT', launcherEvent]))
+    appMember.send(JSON.stringify(['EVENT', appEvent]))
+    await tick()
+    sockets[0].message(['OK', launcherEvent.id, false, 'auth-required: launcher'])
+    sockets[0].message(['OK', appEvent.id, false, 'auth-required: app'])
+    await tick()
+    assert.deepEqual(defaultCalls.canAuthenticate, [launcherEvent.pubkey])
+    assert.deepEqual(endpointCalls.canAuthenticate, [appEvent.pubkey])
+    assert.throws(() => pool.setDefaultAuthProvider({ canAuthenticate: () => true }), {
+      message: 'INVALID_RELAY_AUTH_PROVIDER'
+    })
+  })
+
+  it('returns the original rejection when signing or AUTH itself fails', async t => {
+    for (const failure of ['sign', 'auth']) {
+      const { pool, sockets } = createPool()
+      t.after(() => pool.closeAll())
+      const secretKey = generateSecretKey()
+      const received = []
+      const provider = {
+        canAuthenticate: () => true,
+        signAuth: async request => {
+          if (failure === 'sign') throw new Error('account blocked')
+          return authEvent(secretKey, request)
+        }
+      }
+      const member = pool.attach(
+        'wss://relay.example',
+        { onMessage: raw => received.push(JSON.parse(raw)) },
+        { auth: provider }
+      )
+      await tick()
+      sockets[0].open()
+      await tick()
+      sockets[0].message(['AUTH', `challenge-${failure}`])
+      const event = validEvent(secretKey)
+      member.send(JSON.stringify(['EVENT', event]))
+      await tick()
+      sockets[0].message(['OK', event.id, false, 'auth-required: original'])
+      await tick()
+      if (failure === 'auth') {
+        const auth = sockets[0].sent.find(message => message[0] === 'AUTH')
+        sockets[0].message(['OK', auth[1].id, false, 'restricted: bad AUTH'])
+        await tick()
+      }
+      assert.deepEqual(received.filter(message => message[0] === 'OK'), [
+        ['OK', event.id, false, 'auth-required: original']
+      ])
+      assert.equal(pool.snapshot().automaticAuths, 0)
+    }
+  })
+
+  it('returns the original rejection when the challenge or physical retry connection times out', async t => {
+    const { pool, sockets } = createPool({ authPendingTimeoutMs: 20 })
+    t.after(() => pool.closeAll())
+    const secretKey = generateSecretKey()
+    const { provider } = automaticAuthProvider(secretKey)
+    const received = []
+    const member = pool.attach(
+      'wss://relay.example',
+      { onMessage: raw => received.push(JSON.parse(raw)) },
+      { auth: provider }
+    )
+    await tick()
+    sockets[0].open()
+    await tick()
+    const event = validEvent(secretKey)
+    member.send(JSON.stringify(['EVENT', event]))
+    await tick()
+    sockets[0].message(['OK', event.id, false, 'auth-required: original'])
+    await tick()
+    await new Promise(resolve => setTimeout(resolve, 40))
+    assert.deepEqual(received.filter(message => message[0] === 'OK'), [
+      ['OK', event.id, false, 'auth-required: original']
+    ])
+    assert.equal(pool.snapshot().automaticAuths, 0)
+  })
+
+  it('returns the original rejection before closing a failed retry connection', async t => {
+    const { pool, sockets } = createPool()
+    t.after(() => pool.closeAll())
+    const secretKey = generateSecretKey()
+    const { provider } = automaticAuthProvider(secretKey)
+    const received = []
+    const closes = []
+    const member = pool.attach(
+      'wss://relay.example',
+      {
+        onMessage: raw => received.push(JSON.parse(raw)),
+        onClose: info => closes.push(info)
+      },
+      { auth: provider }
+    )
+    pool.attach('wss://relay.example', {})
+    await tick()
+    sockets[0].open()
+    await tick()
+    const event = validEvent(secretKey)
+    member.send(JSON.stringify(['EVENT', event]))
+    await tick()
+    sockets[0].message(['OK', event.id, false, 'restricted: original'])
+    await tick()
+    assert.equal(sockets.length, 2)
+    sockets[1].onclose?.({ code: 1006, reason: 'network lost', wasClean: false })
+    assert.deepEqual(received.filter(message => message[0] === 'OK'), [
+      ['OK', event.id, false, 'restricted: original']
+    ])
+    assert.equal(closes.at(-1).code, 1006)
+  })
+
+  it('returns the original rejection when no dedicated bucket can be created', async t => {
+    const { pool, sockets } = createPool({ maxBucketsPerRelay: 1 })
+    t.after(() => pool.closeAll())
+    const secretKey = generateSecretKey()
+    const { provider, calls } = automaticAuthProvider(secretKey)
+    const received = []
+    const memberA = pool.attach(
+      'wss://relay.example',
+      { onMessage: raw => received.push(JSON.parse(raw)) },
+      { auth: provider }
+    )
+    pool.attach('wss://relay.example', {})
+    await tick()
+    sockets[0].open()
+    await tick()
+    const event = validEvent(secretKey)
+    memberA.send(JSON.stringify(['EVENT', event]))
+    await tick()
+    sockets[0].message(['OK', event.id, false, 'auth-required: original'])
+    await tick()
+    assert.deepEqual(calls.signAuth, [])
+    assert.deepEqual(received.filter(message => message[0] === 'OK'), [
+      ['OK', event.id, false, 'auth-required: original']
+    ])
+    assert.equal(pool.snapshot().automaticAuthFailures, 1)
+  })
+
+  it('lets an explicit AUTH cancel a pending automatic attempt without duplicating it', async t => {
+    const { pool, sockets } = createPool()
+    t.after(() => pool.closeAll())
+    const secretKey = generateSecretKey()
+    let resolveAutomatic
+    let automaticCalls = 0
+    const provider = {
+      canAuthenticate: () => true,
+      signAuth: request => {
+        automaticCalls++
+        return new Promise(resolve => { resolveAutomatic = () => resolve(authEvent(secretKey, request)) })
+      }
+    }
+    const received = []
+    const member = pool.attach(
+      'wss://relay.example',
+      { onMessage: raw => received.push(JSON.parse(raw)) },
+      { auth: provider }
+    )
+    await tick()
+    sockets[0].open()
+    await tick()
+    sockets[0].message(['AUTH', 'manual-challenge'])
+    const event = validEvent(secretKey)
+    member.send(JSON.stringify(['EVENT', event]))
+    await tick()
+    sockets[0].message(['OK', event.id, false, 'auth-required: original'])
+    await tick()
+    assert.equal(automaticCalls, 1)
+
+    const manual = authEvent(secretKey, { challenge: 'manual-challenge' })
+    member.send(JSON.stringify(['AUTH', manual]))
+    await tick()
+    resolveAutomatic()
+    await tick()
+    const authFrames = sockets[0].sent.filter(message => message[0] === 'AUTH')
+    assert.equal(authFrames.some(message => message[1].id === manual.id), true)
+    assert.equal(authFrames.length, 1)
+    assert.deepEqual(received.filter(message => message[0] === 'OK'), [
+      ['OK', event.id, false, 'auth-required: original']
+    ])
+  })
+
+  it('deduplicates repeated auth-required responses for one automatic attempt', async t => {
+    const { pool, sockets } = createPool()
+    t.after(() => pool.closeAll())
+    const secretKey = generateSecretKey()
+    const { provider, calls } = automaticAuthProvider(secretKey)
+    const member = pool.attach('wss://relay.example', {}, { auth: provider })
+    await tick()
+    sockets[0].open()
+    await tick()
+    sockets[0].message(['AUTH', 'challenge'])
+    const event = validEvent(secretKey)
+    member.send(JSON.stringify(['EVENT', event]))
+    await tick()
+    sockets[0].message(['OK', event.id, false, 'auth-required: first'])
+    sockets[0].message(['OK', event.id, false, 'auth-required: duplicate'])
+    await tick()
+    assert.equal(calls.signAuth.length, 1)
+    assert.equal(sockets[0].sent.filter(message => message[0] === 'AUTH').length, 1)
+  })
+
+  it('does not expose AUTH or event payloads in pool diagnostics', async t => {
+    const { pool, sockets } = createPool()
+    t.after(() => pool.closeAll())
+    const secretKey = generateSecretKey()
+    const { provider } = automaticAuthProvider(secretKey)
+    const member = pool.attach('wss://relay.example', {}, { auth: provider })
+    await tick()
+    sockets[0].open()
+    await tick()
+    const event = validEvent(secretKey, { content: 'ciphertext-must-stay-private' })
+    member.send(JSON.stringify(['EVENT', event]))
+    await tick()
+    sockets[0].message(['OK', event.id, false, 'auth-required: authenticate'])
+    await tick()
+    const serialized = JSON.stringify(pool.snapshot())
+    assert.equal(serialized.includes('ciphertext-must-stay-private'), false)
+    assert.equal(serialized.includes('automatic-challenge'), false)
+    assert.equal(serialized.includes(secretKey), false)
+    assert.equal(pool.snapshot().automaticAuths, 1)
   })
 
   it('distinguishes queued publications from sent frames awaiting OK and logs slow responses without content', async t => {

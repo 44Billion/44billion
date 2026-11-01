@@ -57,6 +57,7 @@ function createFakePool () {
         url,
         handlers,
         owner: options.owner,
+        auth: options.auth,
         sent: [],
         send (data) {
           member.sent.push(data)
@@ -126,6 +127,19 @@ describe('relay pool bridge', () => {
     transport.close(1000, '')
     await tick()
     assert.deepEqual(events.at(-1), ['close', { code: 1000, reason: '', wasClean: true }])
+  })
+
+  it('forwards private AUTH metadata only to the pool member', async t => {
+    const pool = createFakePool()
+    const auth = {
+      canAuthenticate: () => true,
+      signAuth: () => null
+    }
+    const { cleanup } = createBridge(pool, 'wss://relay.example', { owner: 'app', auth })
+    t.after(cleanup)
+    await tick()
+    assert.equal(pool.attached[0].auth, auth)
+    assert.equal(pool.attached[0].owner, 'app')
   })
 
   it('detaches instead of attaching when the relay is quarantined', async t => {

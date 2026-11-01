@@ -41,6 +41,7 @@ export function createRelayBridgeEndpoint ({
   delegate = false,
   createVirtualSocket = null,
   owner = 'app',
+  auth = null,
   limits = RELAY_POOL_LIMITS,
   log = (...args) => console.debug('[relay-pool]', ...args),
   now = () => performance.now()
@@ -173,7 +174,7 @@ export function createRelayBridgeEndpoint ({
         releaseAttachment(attachment)
         send(RELAY_BRIDGE.DETACH, { virtualId, reason })
       }
-    }, { owner })
+    }, { owner, auth })
     if (isActive(attachment)) send(RELAY_BRIDGE.ATTACH_PENDING, { virtualId })
   }
 

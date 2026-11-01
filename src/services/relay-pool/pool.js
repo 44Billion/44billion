@@ -42,6 +42,11 @@ function bucketKey (url, identity) {
   return `${url}\u0000${identity ?? ''}`
 }
 
+function requiresNip42Auth (reason) {
+  return typeof reason === 'string' &&
+    (reason.startsWith('auth-required:') || reason.startsWith('restricted:'))
+}
+
 // Launcher-owned relay multiplexer. One physical WebSocket per bucket is
 // shared by many virtual sockets; subscription ids are namespaced per virtual
 // socket and rewritten on the way back.
@@ -65,6 +70,8 @@ export class UnifiedRelayPool {
   #relayFailures = new Map()
   #diagnostics
   #recovery
+  #defaultAuthProvider = null
+  #automaticAuths = new Map()
   #serial = 0
   #counters = {
     physicalOpened: 0,
@@ -86,6 +93,9 @@ export class UnifiedRelayPool {
     authMerges: 0,
     authReconnects: 0,
     authRejected: 0,
+    automaticAuths: 0,
+    automaticAuthSuccesses: 0,
+    automaticAuthFailures: 0,
     slowPublicationResponses: 0
   }
 
@@ -177,7 +187,7 @@ export class UnifiedRelayPool {
     this.#log('quarantined', key, reason || '<none>')
   }
 
-  attach (url, handlers = {}, { owner = 'unknown' } = {}) {
+  attach (url, handlers = {}, { owner = 'unknown', auth = null } = {}) {
     const key = this.#normalize(url)
     if (!key) throw new Error('INVALID_RELAY_URL')
     const member = {
@@ -186,6 +196,7 @@ export class UnifiedRelayPool {
       nsPrefix: `rp${this.#serial}:`,
       handlers,
       owner,
+      auth,
       bucket: null,
       subscriptions: new Map(), // nsId -> { rawId, message }
       rawSubscriptions: new Map(), // rawId -> nsId
@@ -217,7 +228,19 @@ export class UnifiedRelayPool {
     }
   }
 
+  setDefaultAuthProvider (provider) {
+    if (provider !== null && (typeof provider?.canAuthenticate !== 'function' || typeof provider?.signAuth !== 'function')) {
+      throw new Error('INVALID_RELAY_AUTH_PROVIDER')
+    }
+    this.#defaultAuthProvider = provider
+  }
+
+  #authProvider (member) {
+    return member.auth || this.#defaultAuthProvider
+  }
+
   closeAll () {
+    for (const record of [...this.#automaticAuths.values()]) this.#discardAutomaticAuth(record)
     for (const member of [...this.#members.values()]) this.#closeMember(member, 1000, '', true)
     for (const bucket of [...this.#buckets.values()]) this.#destroyBucket(bucket, 1000, '', true)
     for (const budget of this.#messageBudgets.values()) { clearTimeout(budget.cleanupTimer); clearTimeout(budget.drainTimer) }
@@ -266,6 +289,7 @@ export class UnifiedRelayPool {
       subscriptionsByOwner,
       subscriptions,
       members: this.#members.size,
+      automaticAuths: this.#automaticAuths.size,
       pendingMembers: this.#pendingMembers.length,
       quarantined: this.#quarantined.size
     }
@@ -289,7 +313,7 @@ export class UnifiedRelayPool {
   }
 
   #bucketCanAcceptAnonymous (bucket) {
-    return bucket.identity === null && !bucket.unverified && bucket.pendingAuths.size === 0 && this.#hasBucketRoom(bucket)
+    return bucket.identity === null && !bucket.dedicated && !bucket.unverified && bucket.pendingAuths.size === 0 && this.#hasBucketRoom(bucket)
   }
 
   #memberHasPendingAuth (member) {
@@ -306,7 +330,7 @@ export class UnifiedRelayPool {
       .filter(bucket => bucket.state !== 'closed' && bucket !== exclude)
       .sort((a, b) => Number(b.state === 'open') - Number(a.state === 'open'))
     const exact = buckets.find(bucket => bucket.identity === identity && this.#hasBucketRoom(bucket) &&
-      (identity !== null || (bucket.pendingAuths.size === 0 && !bucket.unverified)))
+      (identity !== null || (!bucket.dedicated && bucket.pendingAuths.size === 0 && !bucket.unverified)))
     if (exact) return exact
     if (identity === null) {
       const anonymous = buckets.find(bucket => this.#bucketCanAcceptAnonymous(bucket))
@@ -359,6 +383,7 @@ export class UnifiedRelayPool {
       key: bucketKey(url, identity),
       url,
       identity,
+      dedicated: false,
       unverified: false,
       state: 'queued',
       socket: null,
@@ -514,6 +539,9 @@ export class UnifiedRelayPool {
 
   #failBucket (bucket, code, reason) {
     const members = [...bucket.members]
+    for (const record of [...this.#automaticAuths.values()]) {
+      if (record.targetBucket === bucket || record.member.bucket === bucket) this.#failAutomaticAuth(record)
+    }
     this.#destroyBucket(bucket, code, reason, code === 1000)
     for (const member of members) this.#closeMember(member, code, reason, code === 1000)
   }
@@ -545,6 +573,9 @@ export class UnifiedRelayPool {
     if (bucket.idleTimer) clearTimeout(bucket.idleTimer)
     for (const entry of bucket.pendingAuths.values()) {
       if (entry.timer) clearTimeout(entry.timer)
+    }
+    for (const record of [...this.#automaticAuths.values()]) {
+      if (record.targetBucket === bucket) this.#discardAutomaticAuth(record)
     }
     bucket.pendingAuths.clear()
     this.#buckets.delete(bucket.id)
@@ -821,7 +852,14 @@ export class UnifiedRelayPool {
     if (event?.id) {
       if (!member.pendingPublishes.has(event.id)) {
         const now = Date.now()
-        member.pendingPublishes.set(event.id, { raw, startedAt: now, queuedAt: now, sentAt: null })
+        member.pendingPublishes.set(event.id, {
+          raw,
+          startedAt: now,
+          queuedAt: now,
+          sentAt: null,
+          automaticAuthRecord: null,
+          automaticAuthAttempted: false
+        })
       }
       let publishers = bucket.publishes.get(event.id)
       if (!publishers) {
@@ -833,6 +871,241 @@ export class UnifiedRelayPool {
     this.#enqueue(bucket, member, message)
   }
 
+  async #beginAutomaticAuth (member, event, pending, originalRaw) {
+    if (member.closed || member.bucket === null || pending.automaticAuthRecord) return
+    const provider = this.#authProvider(member)
+    if (!provider || !isValidEvent(event)) {
+      this.#deliverMember(member, originalRaw)
+      return
+    }
+    const record = {
+      key: `${member.id}\u0000${event.id}`,
+      member,
+      eventId: event.id,
+      pubkey: event.pubkey,
+      provider,
+      originalRaw,
+      deadline: Math.max(Date.now() + 1, pending.startedAt + this.#limits.authPendingTimeoutMs),
+      stage: 'checking',
+      targetBucket: null,
+      authEventId: null,
+      timer: null
+    }
+    this.#automaticAuths.set(record.key, record)
+    pending.automaticAuthRecord = record
+    this.#counters.automaticAuths++
+    try {
+      const allowed = await this.#waitAutomaticAuth(record, provider.canAuthenticate(event.pubkey))
+      if (this.#automaticAuths.get(record.key) !== record) return
+      if (!allowed) {
+        this.#failAutomaticAuth(record)
+        return
+      }
+      record.stage = 'isolating'
+      if (!this.#isolateAutomaticAuth(record)) {
+        this.#failAutomaticAuth(record)
+        return
+      }
+      record.stage = 'challenge'
+      if (record.targetBucket.challenge) this.#startAutomaticAuthSigning(record)
+      else this.#armAutomaticAuthTimeout(record)
+    } catch {
+      this.#failAutomaticAuth(record)
+    }
+  }
+
+  #waitAutomaticAuth (record, task) {
+    return new Promise((resolve, reject) => {
+      const remaining = record.deadline - Date.now()
+      if (remaining <= 0) {
+        reject(new Error('automatic AUTH deadline exceeded'))
+        return
+      }
+      if (record.timer) clearTimeout(record.timer)
+      record.timer = setTimeout(() => reject(new Error('automatic AUTH deadline exceeded')), remaining)
+      record.timer.unref?.()
+      Promise.resolve(task).then(
+        value => {
+          if (record.timer) clearTimeout(record.timer)
+          record.timer = null
+          resolve(value)
+        },
+        error => {
+          if (record.timer) clearTimeout(record.timer)
+          record.timer = null
+          reject(error)
+        }
+      )
+    })
+  }
+
+  #armAutomaticAuthTimeout (record) {
+    if (this.#automaticAuths.get(record.key) !== record) return
+    if (record.timer) clearTimeout(record.timer)
+    const remaining = record.deadline - Date.now()
+    if (remaining <= 0) {
+      this.#failAutomaticAuth(record)
+      return
+    }
+    record.timer = setTimeout(() => this.#failAutomaticAuth(record), remaining)
+    record.timer.unref?.()
+  }
+
+  #createDedicatedAuthBucket (url) {
+    const buckets = [...this.#membersForUrl(url)].filter(bucket => !bucket.closed)
+    if (buckets.length >= this.#limits.maxBucketsPerRelay && !this.#reclaimUnverifiedBucket(url)) return null
+    const bucket = this.#createBucket(url, null)
+    bucket.dedicated = true
+    return bucket
+  }
+
+  #isolateAutomaticAuth (record) {
+    const { member } = record
+    const source = member.bucket
+    if (member.closed || !source || source.closed) return false
+    if (member.negExchanged.size > 0) return false
+    if (source.identity === null && source.members.size === 1 && source.pendingAuths.size === 0) {
+      source.dedicated = true
+      record.targetBucket = source
+      return true
+    }
+    const target = this.#createDedicatedAuthBucket(member.url)
+    if (!target) return false
+    if (!this.#moveMember(member, target, { replayPublications: false })) {
+      if (target.members.size === 0) this.#destroyBucket(target, 1000, 'auth-isolation-failed', true)
+      return false
+    }
+    record.targetBucket = target
+    return true
+  }
+
+  #startAutomaticAuthSigning (record) {
+    if (this.#automaticAuths.get(record.key) !== record || record.stage !== 'challenge' || record.authEventId) return
+    const bucket = record.targetBucket
+    if (!bucket || bucket.closed || record.member.closed || record.member.bucket !== bucket || !bucket.challenge) return
+    record.stage = 'signing'
+    this.#signAutomaticAuth(record).catch(() => this.#failAutomaticAuth(record))
+  }
+
+  async #signAutomaticAuth (record) {
+    const signed = await this.#waitAutomaticAuth(record, record.provider.signAuth({
+      relay: record.targetBucket.url,
+      challenge: record.targetBucket.challenge,
+      pubkey: record.pubkey
+    }))
+    if (this.#automaticAuths.get(record.key) !== record) return
+    const bucket = record.targetBucket
+    if (!bucket || bucket.closed || record.member.closed || record.member.bucket !== bucket) {
+      throw new Error('automatic AUTH member unavailable')
+    }
+    const validation = this.#validateAuthEvent(bucket, signed, { expectedPubkey: record.pubkey })
+    if (!validation.ok || typeof signed.id !== 'string' || bucket.pendingAuths.has(signed.id)) {
+      throw new Error(validation.ok ? 'duplicate automatic AUTH' : validation.reason)
+    }
+    record.stage = 'auth'
+    record.authEventId = signed.id
+    const remaining = record.deadline - Date.now()
+    if (remaining <= 0) throw new Error('automatic AUTH deadline exceeded')
+    const entry = { member: record.member, pubkey: record.pubkey, timer: null, automatic: true, record }
+    record.timer = setTimeout(() => this.#failAutomaticAuth(record), remaining)
+    record.timer.unref?.()
+    entry.timer = record.timer
+    bucket.pendingAuths.set(signed.id, entry)
+    this.#enqueue(bucket, record.member, ['AUTH', signed])
+  }
+
+  #handleAuthChallenge (bucket, challenge) {
+    bucket.challenge = challenge
+    for (const record of this.#automaticAuths.values()) {
+      if (record.targetBucket !== bucket || record.stage !== 'challenge') continue
+      this.#startAutomaticAuthSigning(record)
+    }
+  }
+
+  #completeAutomaticAuth (bucket, message, pendingAuth) {
+    const record = pendingAuth.record
+    if (pendingAuth.timer) clearTimeout(pendingAuth.timer)
+    bucket.pendingAuths.delete(message[1])
+    record.timer = null
+    record.authEventId = null
+    if (this.#automaticAuths.get(record.key) !== record) return
+    if (message[2] !== true) {
+      this.#failAutomaticAuth(record)
+      return
+    }
+    this.#setBucketIdentity(bucket, record.pubkey)
+    this.#counters.automaticAuthSuccesses++
+    const pending = record.member.pendingPublishes.get(record.eventId)
+    if (!pending || pending.automaticAuthRecord !== record || record.member.closed || record.member.bucket !== bucket) {
+      this.#failAutomaticAuth(record)
+      return
+    }
+    let publishers = bucket.publishes.get(record.eventId)
+    if (!publishers) {
+      publishers = new Set()
+      bucket.publishes.set(record.eventId, publishers)
+    }
+    publishers.add(record.member)
+    pending.automaticAuthAttempted = true
+    pending.queuedAt = Date.now()
+    pending.sentAt = null
+    record.stage = 'event'
+    this.#enqueue(bucket, record.member, parseNostrFrame(pending.raw), { raw: pending.raw })
+    this.#armAutomaticAuthTimeout(record)
+  }
+
+  #automaticAuthFor (member, eventId) {
+    const record = member.pendingPublishes.get(eventId)?.automaticAuthRecord
+    return record?.stage === 'event' && this.#automaticAuths.get(record.key) === record ? record : null
+  }
+
+  #discardAutomaticAuth (record) {
+    if (!record) return
+    if (record.timer) clearTimeout(record.timer)
+    record.timer = null
+    if (this.#automaticAuths.get(record.key) === record) this.#automaticAuths.delete(record.key)
+    const bucket = record.targetBucket
+    if (bucket && record.authEventId) {
+      const entry = bucket.pendingAuths.get(record.authEventId)
+      if (entry?.record === record) {
+        if (entry.timer) clearTimeout(entry.timer)
+        bucket.pendingAuths.delete(record.authEventId)
+      }
+      if (!bucket.closed) this.#removeQueued(bucket, record.member, ['AUTH', record.authEventId])
+    }
+    const pending = record.member.pendingPublishes.get(record.eventId)
+    if (pending?.automaticAuthRecord === record) pending.automaticAuthRecord = null
+    record.authEventId = null
+  }
+
+  #failAutomaticAuth (record) {
+    if (this.#automaticAuths.get(record.key) !== record) return
+    this.#discardAutomaticAuth(record)
+    this.#counters.automaticAuthFailures++
+    this.recordDiagnostic('RELAY_POOL_AUTH_AUTO_FAILED', { relay: record.member.url, phase: 'auth' })
+    const bucket = record.member.bucket
+    if (bucket && !bucket.closed) {
+      this.#removeQueued(bucket, record.member, ['EVENT', record.eventId])
+      const publishers = bucket.publishes.get(record.eventId)
+      publishers?.delete(record.member)
+      if (publishers?.size === 0) bucket.publishes.delete(record.eventId)
+    }
+    record.member.pendingPublishes.delete(record.eventId)
+    this.#deliverMember(record.member, record.originalRaw, { allowClosedBucket: true })
+  }
+
+  #cancelAutomaticAuthsForMember (member) {
+    for (const record of [...this.#automaticAuths.values()]) {
+      if (record.member === member) this.#failAutomaticAuth(record)
+    }
+  }
+
+  #discardAutomaticAuthsForMember (member) {
+    for (const record of [...this.#automaticAuths.values()]) {
+      if (record.member === member) this.#discardAutomaticAuth(record)
+    }
+  }
+
   #handleClientAuth (member, bucket, raw, message) {
     const event = message[1]
     const authEventId = event?.id
@@ -840,6 +1113,10 @@ export class UnifiedRelayPool {
       this.#dropFrame('AUTH')
       return
     }
+    // An explicit app AUTH always wins over the transparent path. The
+    // interrupted EVENT receives its original rejection and the app remains
+    // responsible for retrying it after this AUTH completes.
+    this.#cancelAutomaticAuthsForMember(member)
     if (bucket.pendingAuths.has(authEventId)) return
     const validation = this.#validateAuthEvent(bucket, event)
     if (!validation.ok) {
@@ -1017,20 +1294,30 @@ export class UnifiedRelayPool {
     this.#drainPendingMembers()
   }
 
-  #validateAuthEvent (bucket, event) {
+  #validateAuthEvent (bucket, event, { expectedPubkey = null } = {}) {
     if (!event || typeof event !== 'object' || Array.isArray(event)) return { ok: false, reason: 'invalid: malformed auth event' }
     if (event.kind !== 22242) return { ok: false, reason: 'invalid: not an AUTH event' }
     if (typeof bucket.challenge !== 'string' || bucket.challenge.length === 0) return { ok: false, reason: 'invalid: missing AUTH challenge' }
+    if (event.content !== '') return { ok: false, reason: 'invalid: AUTH content' }
     if (!Number.isSafeInteger(event.created_at) || Math.abs(Math.floor(Date.now() / 1000) - event.created_at) > 600) {
       return { ok: false, reason: 'invalid: AUTH timestamp' }
     }
     if (typeof event.pubkey !== 'string' || !isValidEvent(event)) return { ok: false, reason: 'invalid: AUTH signature' }
-    const tags = new Map()
+    if (expectedPubkey !== null && event.pubkey !== expectedPubkey) return { ok: false, reason: 'invalid: AUTH pubkey' }
+    let challengeTag
+    let relayTag
     for (const tag of Array.isArray(event.tags) ? event.tags : []) {
-      if (Array.isArray(tag) && tag.length >= 2 && typeof tag[0] === 'string') tags.set(tag[0], tag[1])
+      if (!Array.isArray(tag) || tag.length < 2 || typeof tag[0] !== 'string') continue
+      if (tag[0] === 'challenge') {
+        if (challengeTag !== undefined) return { ok: false, reason: 'invalid: duplicate AUTH challenge' }
+        challengeTag = tag[1]
+      }
+      if (tag[0] === 'relay') {
+        if (relayTag !== undefined) return { ok: false, reason: 'invalid: duplicate AUTH relay' }
+        relayTag = tag[1]
+      }
     }
-    if (tags.get('challenge') !== bucket.challenge) return { ok: false, reason: 'invalid: AUTH challenge' }
-    const relayTag = tags.get('relay')
+    if (challengeTag !== bucket.challenge) return { ok: false, reason: 'invalid: AUTH challenge' }
     if (typeof relayTag !== 'string' || this.#normalize(relayTag) !== bucket.url) return { ok: false, reason: 'invalid: AUTH relay' }
     return { ok: true }
   }
@@ -1063,7 +1350,7 @@ export class UnifiedRelayPool {
     }
   }
 
-  #moveMember (member, target) {
+  #moveMember (member, target, { replayPublications = true } = {}) {
     const source = member.bucket
     if (!source || source === target) return false
     if (member.negExchanged.size > 0) {
@@ -1074,24 +1361,26 @@ export class UnifiedRelayPool {
     this.#addMember(member, target)
     if (target.challenge) this.#deliverMember(member, JSON.stringify(['AUTH', target.challenge]))
     this.#replayMemberOperations(member, target)
-    for (const [eventId, pending] of member.pendingPublishes) {
-      let publishers = target.publishes.get(eventId)
-      if (!publishers) {
-        publishers = new Set()
-        target.publishes.set(eventId, publishers)
+    if (replayPublications) {
+      for (const [eventId, pending] of member.pendingPublishes) {
+        let publishers = target.publishes.get(eventId)
+        if (!publishers) {
+          publishers = new Set()
+          target.publishes.set(eventId, publishers)
+        }
+        publishers.add(member)
+        pending.queuedAt = Date.now()
+        pending.sentAt = null
+        this.#enqueue(target, member, parseNostrFrame(pending.raw), { raw: pending.raw })
       }
-      publishers.add(member)
-      pending.queuedAt = Date.now()
-      pending.sentAt = null
-      this.#enqueue(target, member, parseNostrFrame(pending.raw))
     }
     this.#counters.migrations++
     return true
   }
 
-  #enqueue (bucket, member, message) {
+  #enqueue (bucket, member, message, { raw: providedRaw = null } = {}) {
     if (!bucket || bucket.closed || member.closed) return
-    const raw = JSON.stringify(message)
+    const raw = providedRaw ?? JSON.stringify(message)
     const bytes = raw.length
     if (member.queuedFrames + 1 > this.#limits.maxQueuedFramesPerMember ||
         member.queuedBytes + bytes > this.#limits.maxQueuedBytesPerMember) {
@@ -1271,7 +1560,7 @@ export class UnifiedRelayPool {
     if (op === 'COUNT') return this.#routeSimple(bucket, message, 'count')
     if (op === 'NEG-MSG' || op === 'NEG-ERR') return this.#routeSimple(bucket, message, 'neg')
     if (op === 'AUTH') {
-      bucket.challenge = message[1]
+      this.#handleAuthChallenge(bucket, message[1])
       this.#broadcast(bucket, data)
       return
     }
@@ -1370,6 +1659,10 @@ export class UnifiedRelayPool {
   #routeOk (bucket, message) {
     const pendingAuth = bucket.pendingAuths.get(message[1])
     if (pendingAuth) {
+      if (pendingAuth.automatic) {
+        this.#completeAutomaticAuth(bucket, message, pendingAuth)
+        return
+      }
       if (message[2] === false) message = this.#withRetryAdvice(bucket, message, 'AUTH', 3, 4)
       if (pendingAuth.timer) clearTimeout(pendingAuth.timer)
       bucket.pendingAuths.delete(message[1])
@@ -1384,13 +1677,19 @@ export class UnifiedRelayPool {
       this.#dropFrame('OK')
       return
     }
-    if (message[2] === false) message = this.#withRetryAdvice(bucket, message, 'EVENT', 3, 4)
+    if (message[2] === false && requiresNip42Auth(message[3])) {
+      const forwarded = this.#routeAutomaticAuthRejection(bucket, message, publishers)
+      if (forwarded) return
+    }
+    const hasAutomaticEventResult = [...publishers].some(member => this.#automaticAuthFor(member, message[1]))
+    if (message[2] === false && !hasAutomaticEventResult) message = this.#withRetryAdvice(bucket, message, 'EVENT', 3, 4)
     // Pending publishers scope deduplication to this attempt. A later EVENT
     // with the same ID must receive a fresh OK, including after auth-required.
     bucket.publishes.delete(message[1])
     const raw = JSON.stringify(message)
     for (const member of publishers) {
       const pending = member.pendingPublishes.get(message[1])
+      const automaticAuth = this.#automaticAuthFor(member, message[1])
       const now = Date.now()
       if (pending && now - pending.startedAt >= this.#limits.slowPublicationMs) {
         this.#counters.slowPublicationResponses++
@@ -1407,8 +1706,41 @@ export class UnifiedRelayPool {
       }
       recordPerformance({ stage: 'pool-ack', publicationId: message[1], at: performance.timeOrigin + performance.now(), elapsedMs: pending?.sentAt === null ? undefined : now - pending?.sentAt })
       member.pendingPublishes.delete(message[1])
-      this.#deliverMember(member, raw)
+      if (automaticAuth) {
+        this.#discardAutomaticAuth(automaticAuth)
+        this.#deliverMember(member, message[2] === true ? raw : automaticAuth.originalRaw, { allowClosedBucket: true })
+      } else {
+        this.#deliverMember(member, raw)
+      }
     }
+  }
+
+  #routeAutomaticAuthRejection (bucket, message, publishers) {
+    const eventId = message[1]
+    const originalRaw = JSON.stringify(message)
+    const eligible = []
+    const rejected = []
+    for (const member of publishers) {
+      const pending = member.pendingPublishes.get(eventId)
+      let event = null
+      if (pending?.raw) {
+        const parsed = parseNostrFrame(pending.raw)
+        if (parsed?.[0] === 'EVENT' && parsed[1]?.id === eventId) event = parsed[1]
+      }
+      const provider = this.#authProvider(member)
+      if (!pending || !event || !provider || !isValidEvent(event) || pending.automaticAuthAttempted || pending.automaticAuthRecord || member.closed) {
+        rejected.push(member)
+        continue
+      }
+      eligible.push({ member, event, pending })
+    }
+    if (!eligible.length) return false
+    bucket.publishes.delete(eventId)
+    for (const entry of eligible) this.#beginAutomaticAuth(entry.member, entry.event, entry.pending, originalRaw)
+    for (const member of rejected) {
+      if (!member.closed) this.#deliverMember(member, originalRaw)
+    }
+    return true
   }
 
   #rewriteId (message, member) {
@@ -1422,13 +1754,14 @@ export class UnifiedRelayPool {
     for (const member of bucket.members) this.#deliverMember(member, raw)
   }
 
-  #deliverMember (member, raw) {
-    if (member.closed || !member.bucket || member.bucket.state !== 'open') return
+  #deliverMember (member, raw, { allowClosedBucket = false } = {}) {
+    if (member.closed || !member.bucket || (!allowClosedBucket && member.bucket.state !== 'open')) return
     member.handlers.onMessage?.(raw)
   }
 
   #evictMember (member, reason, { alreadyRemoved = false } = {}) {
     if (member.closed) return
+    this.#discardAutomaticAuthsForMember(member)
     if (reason !== 'invalid-server-frame') this.recordDiagnostic('RELAY_POOL_INVALID_CLIENT_FRAME', { relay: member.url, phase: 'protocol' })
     const bucket = member.bucket
     this.#counters.detaches++
@@ -1443,6 +1776,7 @@ export class UnifiedRelayPool {
 
   #closeMember (member, code, reason, wasClean) {
     if (member.closed) return
+    this.#discardAutomaticAuthsForMember(member)
     const bucket = member.bucket
     this.#removeMemberFromBucket(member)
     member.closed = true

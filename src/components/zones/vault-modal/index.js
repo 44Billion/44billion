@@ -7,6 +7,7 @@ import { f, useGlobalStore, useGlobalSignal, useClosestStore, useStore, useTask,
 import { useWebStorage } from '#f'
 import { tell, ask, reply } from '#helpers/window-message/index.js'
 import { createRelayBridgeEndpoint } from '#services/relay-pool/bridge-endpoint.js'
+import { createVaultRelayAuthProvider } from '#services/relay-pool/auth.js'
 import { getLauncherRelayPoolWebSocket, isRelayPoolEnabled, unifiedRelayPool } from '#services/relay-pool/launcher.js'
 import { signerStates } from '#services/signer-state.js'
 import { setAccountsState } from '#zones/screen/use-init-or-reset-screen.js'
@@ -522,7 +523,7 @@ f('vault-messenger', function () {
     config_vaultUrl$: vaultUrl$
   } = storage
 
-  const { cancelPreviousRequests, tellVault } = useVaultActor()
+  const { askVault, cancelPreviousRequests, tellVault } = useVaultActor()
   const vaultModalStore = useVaultModalStore()
   const { isOpen$ } = vaultModalStore
   const vaultRecovery = useVaultRecoveryStore()
@@ -659,6 +660,7 @@ f('vault-messenger', function () {
       widgetHeight$,
       storage,
       tabStorage,
+      askVault,
       stopRenderHandshake,
       vaultModalStore,
       firstAccountAttention$,
@@ -733,6 +735,7 @@ function initMessageListener ({
   widgetHeight$,
   storage,
   tabStorage,
+  askVault,
   stopRenderHandshake,
   vaultModalStore,
   firstAccountAttention$,
@@ -741,6 +744,7 @@ function initMessageListener ({
 }) {
   let currentVaultPort = null
   let currentRelayEndpoint = null
+  const vaultRelayAuthProvider = createVaultRelayAuthProvider({ askVault })
   const vaultNostrDbSubscriptions = new Map()
   const unsubscribeLocale = subscribeLocaleChanged(() => {
     if (currentVaultPort) translateVault(currentVaultPort)
@@ -752,6 +756,7 @@ function initMessageListener ({
       currentRelayEndpoint.dispose()
       currentRelayEndpoint = null
     }
+    unifiedRelayPool.setDefaultAuthProvider(null)
     if (currentVaultPort) {
       currentVaultPort.close()
       currentVaultPort = null
@@ -781,6 +786,7 @@ function initMessageListener ({
     if (currentVaultPort) currentVaultPort.close()
     currentVaultPort = e.ports[0]
     _activeVaultPort = currentVaultPort
+    unifiedRelayPool.setDefaultAuthProvider(vaultRelayAuthProvider)
     currentRelayEndpoint?.dispose()
     currentRelayEndpoint = null
     const RelayPoolWebSocket = getLauncherRelayPoolWebSocket()

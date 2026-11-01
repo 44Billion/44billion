@@ -44,6 +44,7 @@ import { createRelayBridgeEndpoint } from '#services/relay-pool/bridge-endpoint.
 import { isRelayPoolEnabled, relayRegistry, unifiedRelayPool } from '#services/relay-pool/launcher.js'
 import { getEffectiveLocale, subscribeLocaleChanged } from '#i18n/index.js'
 import { askNip07 } from './browser/nip07.js'
+import { createAppRelayAuthProvider } from './app-relay-auth.js'
 import {
   readJson as readPersonaJson,
   resolvePersonaUserPks,
@@ -298,7 +299,7 @@ function listenToTrustedAppPageMessages ({
                         nextChunkIndexToStream = streamState.nextIndex
                         totalChunks = streamState.totalChunks
                         hasSentLast = streamState.hasSentLast
-                      } while (streamRequested && !hasErrored && !hasSentLast)
+                      } while (streamRequested && !hasSentLast)
                     } catch (err) {
                       hasErrored = true
                       handleStreamError(err)
@@ -1106,6 +1107,24 @@ export function initAppWindow (state, {
   let currentAppPagePort = null
   let relayEndpoint = null
   let ac = null
+  const relayAuthMetadataCache = new Map()
+  const relayAuthFetchingState = new Map()
+  const relayAuthProvider = createAppRelayAuthProvider({
+    appId: state.appId,
+    appAddress,
+    appKey,
+    wsKey,
+    instanceUserPk: state.userPk,
+    defaultUserPk,
+    askVault,
+    resolveAppMetadata: () => getAppMetadata(state.appId, appAddress, {
+      appMetadataCache: relayAuthMetadataCache,
+      appFetchingState: relayAuthFetchingState,
+      timeoutMs: 0
+    }),
+    notifySignerRequestAttention,
+    readPublicKeys: readAppPersonaPublicKeys
+  })
 
   const listen = createAppPageMessageListener({
     state,
@@ -1143,7 +1162,12 @@ export function initAppWindow (state, {
     currentAppPagePort = e.ports[0]
     listen(currentAppPagePort, ac.signal)
     relayEndpoint = e.ports[1]
-      ? createRelayBridgeEndpoint({ port: e.ports[1], pool: unifiedRelayPool })
+      ? createRelayBridgeEndpoint({
+        port: e.ports[1],
+        pool: unifiedRelayPool,
+        owner: 'app',
+        auth: relayAuthProvider
+      })
       : null
     onAppReady?.()
   }

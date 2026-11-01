@@ -383,6 +383,15 @@ access without echoing those cached events back to the vault.
   bypass blocked types while retaining FIFO within each type and port queues.
   Keep cooldowns bounded to five minutes and clear timers on shutdown.
 
+- Transparent NIP-42 applies only to signed EVENT publication rejected with
+  `auth-required:`/`restricted:`. Re-check the app's active persona through its
+  private endpoint provider, and isolate that member in a dedicated bucket
+  before asking the vault to sign a strict kind-22242 event. Validate the AUTH
+  again and resend the original EVENT raw frame once after `OK true`; hide the
+  intermediate rejection and return the original rejection on any failure. Do
+  not add an app API, persist grants, auto-auth REQ/COUNT/NEG, or exempt kind
+  22242 from the explicit signer permission flow.
+
 
 Cached vault metadata is an optional signed bootstrap source: validate author,
 expected kind and signature before populating account-event state or NostrDB.
