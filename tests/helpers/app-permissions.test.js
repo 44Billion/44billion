@@ -6,6 +6,7 @@ import {
   describeStoredPermission,
   groupPermissionsByApp,
   groupStoredPermissions,
+  installedAppIdsFromStorage,
   permissionRecordId
 } from '#services/app-permissions.js'
 
@@ -23,6 +24,24 @@ const translateKind = key => ({
 }[key] ?? key)
 
 describe('app permission presentation', () => {
+  it('collects installed apps without treating an unhydrated workspace list as empty', () => {
+    const values = {
+      session_workspaceKeys: ['one', 'two'],
+      session_workspaceByKey_one_pinnedAppIds: ['zillion', 'shared'],
+      session_workspaceByKey_one_unpinnedAppIds: ['flame'],
+      session_workspaceByKey_two_pinnedAppIds: ['shared'],
+      session_workspaceByKey_two_unpinnedAppIds: []
+    }
+    const storage = {
+      session_workspaceKeys$: () => values.session_workspaceKeys
+    }
+    for (const [key, value] of Object.entries(values)) {
+      if (key !== 'session_workspaceKeys') storage[`${key}$`] = () => value
+    }
+    assert.deepEqual([...installedAppIdsFromStorage(storage)].sort(), ['flame', 'shared', 'zillion'])
+    assert.equal(installedAppIdsFromStorage({ session_workspaceKeys$: () => [] }), null)
+  })
+
   it('groups grants by app and preserves each exact permission identity', () => {
     const permissions = [
       { appId: 'app-b', name: 'eventAccess', eKind: 1, scope: '' },

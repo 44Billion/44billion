@@ -84,6 +84,14 @@ describe('launcher permission schema', () => {
     const reconciled = []
     for await (const permission of streamAllPermissionsForApp('other-app')) reconciled.push(permission)
     assert.deepEqual(reconciled.map(permission => permission.scope).sort(), ['', 'supported'])
+    await createOrUpdatePermission('removed-app', 'eventAccess', 1, '')
+    assert.equal(await reconcilePermissionScopes({
+      registry: createPermissionScopeRegistry([{ kind: 1, scope: 'supported', labelKey: 'supported scope' }]),
+      keepAppIds: new Set(['other-app'])
+    }), 1)
+    const removedApp = []
+    for await (const permission of streamAllPermissionsForApp('removed-app')) removedApp.push(permission)
+    assert.deepEqual(removedApp, [])
     db.close()
   })
 })

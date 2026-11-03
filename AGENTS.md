@@ -67,7 +67,10 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   grant once by app, regardless of workspace or account, and allows exact
   individual revocation or confirmed app-wide revocation. Revocation applies to
   future protected requests; it does not reload app windows, cancel permissionless
-  event-store reads, or delete app data.
+  event-store reads, or delete app data. Uninstalling the final instance of an
+  app revokes all of its remembered grants. Startup also removes orphan grants
+  once the workspace list is hydrated, without treating a transient empty list as
+  authoritative; failures must remain visible in the console.
 
 ## Styling Rules
 
@@ -234,6 +237,11 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
 
 
 ## Account event ingestion
+
+Applying a vault account snapshot must update account/workspace identity before
+optional app, NostrDB and subdomain cleanup. A cleanup failure is logged with
+its affected account/app/workspace and must not leave a removed account visible
+until reload.
 
 - `useTrackAccountEvents` owns one coordinator, groups writable account authors
   by relay/eligible kind set, and cancels on removal/unmount.

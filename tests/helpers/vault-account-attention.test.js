@@ -150,6 +150,7 @@ describe('first vault account attention', () => {
     assert.match(screen, /animation-delay: 550ms/)
     assert.match(screen, /prefers-reduced-motion: reduce/)
     assert.match(screen, /toolbar-first-account-outline/)
+    assert.match(vault, /try \{\s*await reconcileNostrDbAccounts\(accounts\)[\s\S]*Failed to reconcile NostrDB accounts/)
     assert.match(vault, /case 'CLOSE_VAULT_VIEW':[\s\S]*reply\([\s\S]*await accountState\.close\(\)/)
     assert.match(vault, /accountState\.apply\(e\.data\.payload\.accounts, \{ allowAttention: true \}\)/)
   })

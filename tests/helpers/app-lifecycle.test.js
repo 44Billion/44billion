@@ -136,7 +136,8 @@ describe('app lifecycle helper', () => {
       cleanup: [],
       ask: [],
       release: [],
-      files: []
+      files: [],
+      permissions: []
     }
 
     const result = await uninstallAppFromWorkspace({
@@ -152,6 +153,7 @@ describe('app lifecycle helper', () => {
       _hasRecentSingleNappOpenForOwner: async () => false,
       _hasAnyRecentSingleNappOpen: async () => false,
       _clearAppFiles: async appId => { calls.files.push(appId) },
+      _deletePermissionsForApp: async appId => { calls.permissions.push(appId) },
       _releaseAppSubdomain: (...args) => { calls.release.push(args) },
       _removeWidgetsForApp: () => {},
       _removeSelectionsForApp: () => {},
@@ -169,6 +171,69 @@ describe('app lifecycle helper', () => {
     assert.deepEqual(calls.ask, [])
     assert.equal(calls.release.length, 1)
     assert.deepEqual(calls.files, ['app'])
+    assert.deepEqual(calls.permissions, ['app'])
+    assert.equal(result.permissionsDeleted, true)
+  })
+
+  it('keeps remembered permissions while another app instance remains', async () => {
+    const storage = signalStorage(baseAppStorage({
+      session_workspaceByKey_ws1_appById_app_appKeys: ['a'],
+      session_workspaceByKey_ws2_appById_app_appKeys: ['b']
+    }))
+    const tabStorage = signalStorage(baseTabStorage({
+      session_workspaceByKey_ws1_openAppKeys: ['a'],
+      session_appByKey_b_visibility: 'closed'
+    }))
+    const permissions = []
+
+    const result = await uninstallAppFromWorkspace({
+      storage,
+      tabStorage,
+      wsKey: 'ws1',
+      appKey: 'a',
+      appId: 'app',
+      userPk: 'user-a',
+      _cleanupNostrDb: async () => {},
+      _hasRecentSingleNappOpenForOwner: async () => false,
+      _hasAnyRecentSingleNappOpen: async () => false,
+      _clearAppFiles: async () => {},
+      _deletePermissionsForApp: async appId => { permissions.push(appId) },
+      _releaseAppSubdomain: () => {},
+      _removeWidgetsForApp: () => {},
+      _removeSelectionsForApp: () => {},
+      _base62ToBase16: () => 'a'.repeat(64)
+    })
+
+    assert.equal(result.hasOtherAnyInstances, true)
+    assert.deepEqual(permissions, [])
+    assert.equal(result.permissionsDeleted, false)
+  })
+
+  it('logs and surfaces a permission cleanup failure', async t => {
+    const warning = mock.method(console, 'warn', () => {})
+    t.after(() => warning.mock.restore())
+    const storage = signalStorage(baseAppStorage({
+      session_workspaceByKey_ws1_appById_app_appKeys: ['a']
+    }))
+    const tabStorage = signalStorage(baseTabStorage({
+      session_workspaceByKey_ws1_openAppKeys: ['a']
+    }))
+
+    await assert.rejects(uninstallAppFromWorkspace({
+      storage,
+      tabStorage,
+      wsKey: 'ws1',
+      appKey: 'a',
+      appId: 'app',
+      userPk: 'user-a',
+      _cleanupNostrDb: async () => {},
+      _deletePermissionsForApp: async () => { throw new Error('permission store unavailable') },
+      _removeWidgetsForApp: () => {},
+      _removeSelectionsForApp: () => {}
+    }), /permission store unavailable/)
+
+    assert.equal(warning.mock.callCount(), 1)
+    assert.match(String(warning.mock.calls[0].arguments[0]), /Failed to delete permissions for app/)
   })
 
   it('keeps metadata and files when another user still has the app', async () => {
@@ -327,6 +392,7 @@ describe('app lifecycle helper', () => {
       _hasRecentSingleNappOpenForOwner: async () => false,
       _hasAnyRecentSingleNappOpen: async () => false,
       _clearAppFiles: async () => {},
+      _deletePermissionsForApp: async () => {},
       _removeWidgetsForApp: () => {},
       _removeSelectionsForApp: () => {},
       _base62ToBase16: () => 'a'.repeat(64)

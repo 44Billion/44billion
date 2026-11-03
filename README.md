@@ -17,7 +17,8 @@ starts collapsed; expanding its text does not grant or deny the permission.
 Settings > Advanced > App Data Access lists remembered grants by app. Individual
 grants or all grants for an app can be revoked without closing or reloading app
 windows; revocation applies to future protected requests and does not delete data
-already stored by the app.
+already stored by the app. Uninstalling the app's final instance also clears its
+remembered grants, and startup reconciles any older orphan grants left behind.
 
 [NostrDB internals and maintenance](docs/nostrdb.md) documents event-store cleanup,
 concurrency, recovery and storage growth limits for developers.

@@ -5,6 +5,7 @@ import {
   hasAnyRecentSingleNappOpen,
   hasRecentSingleNappOpenForOwner
 } from './nostrdb-app-lifecycle.js'
+import { deleteAllPermissionsForApp } from '#services/idb/browser/queries/permission.js'
 
 export async function defaultClearAppFiles (appId, {
   _loadAppFileManager = () => import('#services/app-file-manager/index.js')
@@ -129,6 +130,7 @@ export async function uninstallAppFromWorkspace ({
   _hasRecentSingleNappOpenForOwner = hasRecentSingleNappOpenForOwner,
   _hasAnyRecentSingleNappOpen = hasAnyRecentSingleNappOpen,
   _clearAppFiles = defaultClearAppFiles,
+  _deletePermissionsForApp = deleteAllPermissionsForApp,
   _releaseAppSubdomain = releaseAppSubdomain,
   _base62ToBase16 = base62ToBase16
 }) {
@@ -165,6 +167,14 @@ export async function uninstallAppFromWorkspace ({
   if (!removed.hasOtherAnyInstances && !preserveAppMetadata) {
     clearAppMetadata({ storage, appId })
   }
+  if (!removed.hasOtherAnyInstances) {
+    try {
+      await _deletePermissionsForApp(appId)
+    } catch (err) {
+      console.warn(`[app-uninstall] Failed to delete permissions for ${appId}`, err)
+      throw err
+    }
+  }
   await clearAppDataAfterRemoval({
     storage,
     wsKey,
@@ -178,7 +188,7 @@ export async function uninstallAppFromWorkspace ({
     _releaseAppSubdomain,
     _base62ToBase16
   })
-  return removed
+  return { ...removed, permissionsDeleted: !removed.hasOtherAnyInstances }
 }
 
 export async function clearAppDataAfterRemoval ({
@@ -226,7 +236,12 @@ export async function clearAppDataAfterRemoval ({
   }
 
   if (!instances.hasOtherAnyInstances && !anyRecentSingleNapp) {
-    await _clearAppFiles(appId)
+    try {
+      await _clearAppFiles(appId)
+    } catch (err) {
+      console.warn(`[app-uninstall] Failed to clear cached files for ${appId}`, err)
+      throw err
+    }
     clearedAppFiles = true
   }
 

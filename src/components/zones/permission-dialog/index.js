@@ -19,6 +19,7 @@ import '#shared/app-icon.js'
 import '#shared/icons/icon-x.js'
 import { useWebStorage } from '#f'
 import { getT } from '#i18n/index.js'
+import { installedAppIdsFromStorage } from '#services/app-permissions.js'
 
 const l = (en, fr, it, de, es, ptBR, ru, zhCN, zhTW, ja, ko) => ({
   en, fr, it, de, es, 'pt-BR': ptBR, ru, 'zh-CN': zhCN, 'zh-TW': zhTW, ja, ko
@@ -232,8 +233,9 @@ export function usePermissionDialogStore () {
 // On the nip07 handler, call await pdStore.requestPermission(req)
 f('permissionDialog', function () {
   const pdStore = usePermissionDialogStore()
+  const storage = useWebStorage(localStorage)
   useTask(() => {
-    reconcilePermissionScopes().catch(error => {
+    reconcilePermissionScopes({ keepAppIds: installedAppIdsFromStorage(storage) }).catch(error => {
       console.warn('Could not reconcile permission scopes', error)
     })
   })

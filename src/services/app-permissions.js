@@ -40,6 +40,19 @@ export function groupPermissionsByApp (permissions) {
   }))
 }
 
+export function installedAppIdsFromStorage (storage) {
+  const workspaceKeys = storage?.session_workspaceKeys$?.() ?? []
+  if (!workspaceKeys.length) return null
+  const appIds = new Set()
+  for (const wsKey of workspaceKeys) {
+    for (const listName of ['pinnedAppIds', 'unpinnedAppIds']) {
+      const values = storage?.[`session_workspaceByKey_${wsKey}_${listName}$`]?.() ?? []
+      for (const appId of values) if (typeof appId === 'string' && appId) appIds.add(appId)
+    }
+  }
+  return appIds
+}
+
 export function describeStoredPermission (permission, {
   translate = key => key,
   translateKind = translate,

@@ -29,7 +29,11 @@ function storage () {
   return { area, signals }
 }
 
-function setup () {
+function setup ({
+  cleanupNostrDbAppForWorkspace = async () => {},
+  retireSubdomainsFor = async () => {},
+  consoleArea = console
+} = {}) {
   const local = storage()
   const tab = storage()
   const pubkeys = [owner, bunker, legacy]
@@ -44,10 +48,12 @@ function setup () {
   const source = readFileSync(new URL('../../src/components/zones/screen/use-init-or-reset-screen.js', import.meta.url), 'utf8')
   const context = vm.createContext({
     localStorage: local.area, base16ToBase62,
+    console: consoleArea,
     firstAccountActivationMetadata: () => ({}),
     addWorkspaceForUser: () => assert.fail('existing accounts need no new workspace'),
+    cleanupNostrDbAppForWorkspace,
     removeWidgetsForWorkspace: () => {}, removeSelectionsForWorkspace: () => {},
-    retireSubdomainsFor: async () => {}, subdomainStorage: () => ({})
+    retireSubdomainsFor, subdomainStorage: () => ({})
   })
   vm.runInContext(source.slice(source.indexOf('export async function setAccountsState')).replace('export ', ''), context)
   const apply = accounts => context.setAccountsState(accounts, local.signals, tab.signals)
@@ -123,4 +129,23 @@ test('ordinary account removal clears the capability and missing snapshot fields
   assert.equal(local.area.getItem(key(owner)), null)
   assert.equal(local.area.getItem(key(bunker)), null)
   assert.equal(local.area.getItem(key(legacy)), 'true')
+})
+
+test('account removal remains visible when best-effort app cleanup fails', async () => {
+  const warnings = []
+  const { local, apply } = setup({
+    cleanupNostrDbAppForWorkspace: async () => { throw new Error('cleanup unavailable') },
+    consoleArea: { warn: (...args) => warnings.push(args) }
+  })
+  local.signals.session_workspaceByKey_ws2_pinnedAppIds$(['app'])
+
+  await assert.doesNotReject(apply([account(owner), account(bunker)]))
+
+  assert.deepEqual(local.signals.session_accountUserPks$(), [
+    base16ToBase62(owner),
+    base16ToBase62(bunker)
+  ])
+  assert.deepEqual(local.signals.session_workspaceKeys$(), ['ws0', 'ws1'])
+  assert.equal(local.signals.session_workspaceByKey_ws2_userPk$(), undefined)
+  assert.ok(warnings.some(args => String(args[0]).includes('Failed to clean app app from removed workspace ws2')))
 })

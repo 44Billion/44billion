@@ -82,9 +82,17 @@ export async function listAllPermissions () {
   return permissions
 }
 
-export async function reconcilePermissionScopes ({ registry = SUPPORTED_PERMISSION_SCOPES } = {}) {
+export async function reconcilePermissionScopes ({
+  registry = SUPPORTED_PERMISSION_SCOPES,
+  keepAppIds = null
+} = {}) {
   const stale = []
+  const hasInstalledAppIds = keepAppIds instanceof Set
   for await (const permission of streamPermissions()) {
+    if (hasInstalledAppIds && !keepAppIds.has(permission.appId)) {
+      stale.push(permission)
+      continue
+    }
     if (typeof permission?.scope === 'string' &&
       (!permission.scope || permissionScopeEntry(permission.eKind, permission.scope, registry))) continue
     stale.push(permission)

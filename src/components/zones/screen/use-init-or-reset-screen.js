@@ -334,12 +334,16 @@ export async function setAccountsState (nextAccountState, storage, tabStorage) {
         const cleanupKey = `${userPk}:${appId}`
         if (cleanedOwnerApps.has(cleanupKey)) continue
         cleanedOwnerApps.add(cleanupKey)
-        await cleanupNostrDbAppForWorkspace({
-          storage,
-          wsKey,
-          appId,
-          excludeWorkspaceKeys: workspacesToRemoveSet
-        })
+        try {
+          await cleanupNostrDbAppForWorkspace({
+            storage,
+            wsKey,
+            appId,
+            excludeWorkspaceKeys: workspacesToRemoveSet
+          })
+        } catch (err) {
+          console.warn(`[accounts] Failed to clean app ${appId} from removed workspace ${wsKey}`, err)
+        }
       }
 
       storage[`session_workspaceByKey_${wsKey}_unpinnedCoreAppIdsObj$`](undefined)
@@ -378,7 +382,11 @@ export async function setAccountsState (nextAccountState, storage, tabStorage) {
 
   // Retire origins only after ownership/account updates have propagated.
   for (const userPk of currentAccountUserPks.filter(pk => !nextUserPks.includes(pk))) {
-    await retireSubdomainsFor(subdomainStorage(), { userPk })
+    try {
+      await retireSubdomainsFor(subdomainStorage(), { userPk })
+    } catch (err) {
+      console.warn(`[accounts] Failed to retire subdomains for removed account ${userPk}`, err)
+    }
   }
 
   // Clean up old account data

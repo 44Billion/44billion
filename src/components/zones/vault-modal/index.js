@@ -824,7 +824,11 @@ function initMessageListener ({
   }, { signal: componentSignal })
 
   async function applyVaultAccountsState (accounts) {
-    await reconcileNostrDbAccounts(accounts)
+    try {
+      await reconcileNostrDbAccounts(accounts)
+    } catch (err) {
+      console.warn('Failed to reconcile NostrDB accounts', err)
+    }
     try {
       await pruneNostrDbsForVaultAccounts(accounts)
     } catch (err) {
