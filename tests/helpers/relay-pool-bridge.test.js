@@ -142,6 +142,30 @@ describe('relay pool bridge', () => {
     assert.equal(pool.attached[0].owner, 'app')
   })
 
+  it('refreshes relative retryAfter while forwarding pool metadata through the bridge', async t => {
+    t.mock.timers.enable({ apis: ['Date'], now: 10000 })
+    const pool = createFakePool()
+    const { events, cleanup } = createBridge(pool)
+    t.after(cleanup)
+    await tick()
+
+    pool.attached[0].handlers.onMessage(
+      '["CLOSED","sub","rate-limited: busy","2000"]',
+      { retryAt: 12000, paramsIndex: 3 }
+    )
+    await tick()
+    const frame = JSON.parse(events.at(-1)[1])
+    assert.equal(frame[3], '2000')
+
+    t.mock.timers.tick(500)
+    pool.attached[0].handlers.onMessage(
+      '["CLOSED","sub","rate-limited: busy","2000"]',
+      { retryAt: 12000, paramsIndex: 3 }
+    )
+    await tick()
+    assert.equal(JSON.parse(events.at(-1)[1])[3], '1500')
+  })
+
   it('detaches instead of attaching when the relay is quarantined', async t => {
     const pool = createFakePool()
     pool.quarantined.add('wss://relay.example')

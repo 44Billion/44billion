@@ -366,7 +366,7 @@ it('the installed reader receives all queued history before EOSE completes the q
 for (const vault of [false, true]) {
   for (const operation of ['CLOSED', 'OK']) {
     for (const delay of [4000, 12000]) {
-      it(`${vault ? 'vault' : 'app'} delivers delayed ${operation} advice after ${delay}ms without renewing the deadline`, async t => {
+      it(`${vault ? 'vault' : 'app'} delivers refreshed ${operation} retryAfter after ${delay}ms`, async t => {
         t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 10000 })
         const reject = (socket, id) => {
           socket.message(['NOTICE', 'occupy the first receive credit'])
@@ -385,8 +385,8 @@ for (const vault of [false, true]) {
         assert.equal(result.errors.length, 1)
         const error = result.errors[0].reason
         assert.equal(error.message, 'rate-limited: busy')
-        assert.equal(error.retryAfterMs, undefined)
-        assert.equal(error.retryAt, 20000, 'queues and both facades retain the original absolute deadline')
+        assert.equal(error.retryAfterMs, delay < 10000 ? 10000 - delay : 1)
+        assert.equal(error.retryAt, delay < 10000 ? 20000 : 22001)
         assert.equal(error.category, 'relay')
         assert.equal(error.origin, undefined)
       })

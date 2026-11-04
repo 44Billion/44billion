@@ -1375,7 +1375,10 @@ it('deduplicates within a subscription generation, never across independent or r
   const { pool, sockets } = createPool()
   t.after(() => pool.closeAll())
   const received = []
-  const member = pool.attach('wss://relay.example', { onMessage: raw => received.push(JSON.parse(raw)) })
+  const retries = []
+  const member = pool.attach('wss://relay.example', {
+    onMessage: (raw, retry) => { received.push(JSON.parse(raw)); retries.push(retry) }
+  })
   await tick()
   sockets[0].open()
   for (const id of ['live', 'history']) member.send(JSON.stringify(['REQ', id, { kinds: [1] }]))
@@ -1449,7 +1452,10 @@ it('preserves CLOSED metadata and honors cooldowns without holding resource clea
   const { pool, sockets } = createPool()
   t.after(() => pool.closeAll())
   const received = []
-  const member = pool.attach('wss://relay.example', { onMessage: raw => received.push(JSON.parse(raw)) })
+  const retries = []
+  const member = pool.attach('wss://relay.example', {
+    onMessage: (raw, retry) => { received.push(JSON.parse(raw)); retries.push(retry) }
+  })
   await tick()
   sockets[0].open()
   member.send(JSON.stringify(['REQ', 'limited', {}]))
@@ -1457,7 +1463,8 @@ it('preserves CLOSED metadata and honors cooldowns without holding resource clea
   await tick()
   const ns = sockets[0].sent.find(frame => frame[0] === 'REQ')[1]
   sockets[0].message(['CLOSED', ns, 'rate-limited: busy', '2000'])
-  assert.deepEqual(received.at(-1), ['CLOSED', 'limited', 'rate-limited: busy', '@12000'])
+  assert.deepEqual(received.at(-1), ['CLOSED', 'limited', 'rate-limited: busy', '2000'])
+  assert.deepEqual(retries.at(-1), { retryAt: 12000, paramsIndex: 3 })
   member.send(JSON.stringify(['REQ', 'next', {}]))
   member.send(JSON.stringify(['CLOSE', 'active']))
   await tick()
@@ -1478,8 +1485,10 @@ it('different sockets on one host receive the same effective deadline without re
   t.after(() => pool.closeAll())
   const receivedA = []
   const receivedB = []
-  const a = pool.attach('wss://relay.example', { onMessage: raw => receivedA.push(JSON.parse(raw)) })
-  const b = pool.attach('wss://relay.example', { onMessage: raw => receivedB.push(JSON.parse(raw)) })
+  const retriesA = []
+  const retriesB = []
+  const a = pool.attach('wss://relay.example', { onMessage: (raw, retry) => { receivedA.push(JSON.parse(raw)); retriesA.push(retry) } })
+  const b = pool.attach('wss://relay.example', { onMessage: (raw, retry) => { receivedB.push(JSON.parse(raw)); retriesB.push(retry) } })
   await tick(); sockets[0].open()
   a.send(JSON.stringify(['REQ', 'a', {}]))
   b.send(JSON.stringify(['REQ', 'b', {}]))
@@ -1488,31 +1497,30 @@ it('different sockets on one host receive the same effective deadline without re
   b.send(JSON.stringify(['EVENT', { id: 'event-b' }]))
   await tick()
   sockets[0].message(['OK', 'event-a', false, 'rate-limited: busy', '10000'])
-  assert.equal(receivedA.at(-1)[4], '@20000')
+  assert.equal(receivedA.at(-1)[4], '10000')
   t.mock.timers.tick(1000)
   sockets[1].message(['OK', 'event-b', false, 'rate-limited: busy', '1000'])
-  assert.deepEqual(receivedB.at(-1), ['OK', 'event-b', false, 'rate-limited: busy', '@20000'])
-  assert.equal(receivedA.at(-1)[4], '@20000', 'forwarded deadlines do not change after delivery')
+  assert.deepEqual(receivedB.at(-1), ['OK', 'event-b', false, 'rate-limited: busy', '9000'])
+  assert.deepEqual(retriesB.at(-1), { retryAt: 20000, paramsIndex: 4 })
+  assert.equal(receivedA.at(-1)[4], '10000', 'forwarded deadline does not change after delivery')
 })
 
-it('absolute-only and expired advice is forwarded without creating another relative wait', async t => {
+it('legacy absolute params are forwarded unchanged without creating advice', async t => {
   t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 10000 })
   const { pool, sockets } = createPool()
   t.after(() => pool.closeAll())
   const received = []
-  const member = pool.attach('wss://relay.example', { onMessage: raw => received.push(JSON.parse(raw)) })
+  const retries = []
+  const member = pool.attach('wss://relay.example', {
+    onMessage: (raw, retry) => { received.push(JSON.parse(raw)); retries.push(retry) }
+  })
   await tick(); sockets[0].open()
   member.send(JSON.stringify(['REQ', 'first', {}])); await tick()
-  let nsId = sockets[0].sent.at(-1)[1]
+  const nsId = sockets[0].sent.at(-1)[1]
   sockets[0].message(['CLOSED', nsId, 'rate-limited: busy', '@10125'])
   assert.equal(received.at(-1)[3], '@10125')
+  assert.equal(retries.at(-1), undefined)
   member.send(JSON.stringify(['REQ', 'next', {}])); await tick()
-  t.mock.timers.tick(125); await tick()
-  nsId = sockets[0].sent.at(-1)[1]
-  t.mock.timers.tick(10000)
-  sockets[0].message(['CLOSED', nsId, 'rate-limited: busy', '@10125'])
-  assert.equal(received.at(-1)[3], '@10125')
-  member.send(JSON.stringify(['REQ', 'immediate', {}])); await tick()
   assert.equal(sockets[0].sent.at(-1)[0], 'REQ')
 })
 
@@ -1626,7 +1634,7 @@ for (const limitedType of ['EVENT', 'AUTH', 'REQ', 'COUNT']) {
     socket.message(['EVENT', 'AUTH'].includes(limitedType)
       ? ['OK', first, false, 'rate-limited: busy', '2500']
       : ['CLOSED', wireId, 'rate-limited: busy', '2500'])
-    assert.equal(received.at(-1).at(-1), '@12500')
+    assert.equal(received.at(-1).at(-1), '2500')
     const before = socket.sent.length
     const queuedA = start(limitedType)
     const queuedB = start(limitedType)

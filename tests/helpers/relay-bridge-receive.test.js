@@ -95,6 +95,27 @@ it('measures credit round trips and optional cross-context stages', t => {
   assert.equal(f.receive.snapshot().latency.consumer.count, 1)
 })
 
+it('refreshes standard retryAfter at final bridge delivery', t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 10000 })
+  const limits = { ...RELAY_POOL_LIMITS, bridgeReceiveCreditFrames: 1 }
+  const f = fixture(t, { limits })
+  const retry = { retryAt: 12000, paramsIndex: 3 }
+  f.receive.push('hold')
+  f.receive.push(JSON.stringify(['CLOSED', 'sub', 'rate-limited: busy', '2000']), { retry })
+
+  t.mock.timers.tick(300)
+  f.receive.grant({ frames: 1, bytes: 4, through: 1 })
+  const delivered = JSON.parse(f.sent.at(-1).data)
+  assert.equal(delivered[3], '1700')
+  assert.equal(f.receive.snapshot().pendingBytes, Buffer.byteLength(JSON.stringify(delivered)))
+  const pending = f.receive.snapshot()
+  f.receive.grant({ frames: pending.pendingFrames, bytes: pending.pendingBytes })
+
+  t.mock.timers.tick(5000)
+  f.receive.push(JSON.stringify(['CLOSED', 'sub', 'rate-limited: busy', '2000']), { retry })
+  assert.equal(JSON.parse(f.sent.at(-1).data)[3], '1')
+})
+
 for (const payload of [{ frames: 2, bytes: 5 }, { frames: 1, bytes: 500 }, { frames: -1, bytes: 5 }, { frames: 1, bytes: 5, through: 99 }]) {
   it(`rejects invalid credit ${JSON.stringify(payload)}`, t => {
     const f = fixture(t)

@@ -448,11 +448,10 @@ subscription on the shared socket. Internal detach/migration cleanup uses the
 same immediate control path.
 
 CLOSED accepts an optional fourth string `params`; rejected OK uses its fifth
-element. The public `parseRelayRetryAdvice` from libp2r2p accepts canonical positive
-safe integers in milliseconds, optionally prefixed with `@` for absolute Unix
-milliseconds. Only leading `rate-limited:` refusals supply timing. Future waits
-are capped at five minutes; an expired absolute timestamp never restarts a wait.
-Missing or invalid params do not instruct clients to retry immediately.
+element. The public `parseRelayRetryAdvice` from libp2r2p accepts canonical
+positive safe integer milliseconds. Only leading `rate-limited:` refusals supply
+timing. Future waits are capped at five minutes. Missing, invalid or proprietary
+`@` params do not instruct clients to retry immediately.
 
 The pool correlates OK with pending EVENT/AUTH and CLOSED with REQ/COUNT before
 applying advice. Unknown IDs and late cleanup confirmations never create a
@@ -462,11 +461,19 @@ refusal cannot hold up a REQ, AUTH or COUNT. Endpoints and identities on the sam
 host share the deadline for the same type; the local token budget remains shared
 across all types.
 
-Before forwarding a valid refusal, the pool replaces params with the effective
-`@<Unix milliseconds>` deadline. Launcher, vault and app clocks are synchronized,
-so ID rewriting, per-class port queues and delayed credit returns preserve this exact
-value without recomputing at delivery. Frames without valid advice acquire no
-synthetic wait. Legacy timing objects are not interpreted.
+The pool stores the effective absolute deadline internally. It carries the
+deadline and params index as non-wire metadata with the queued frame. At the
+final bridge flush, immediately before `postMessage`, it replaces the standard
+relative param with:
+
+```text
+max(1, ceil(retryAt - Date.now()))
+```
+
+This accounts for ID rewriting, priority, receive credits, migration and delayed
+port delivery without exposing a proprietary wire extension. Each member computes
+the relative value independently at its own delivery instant. Frames without
+valid advice acquire no synthetic wait. Legacy timing objects are not interpreted.
 
 Physical queue scheduling lets eligible types pass blocked types while preserving
 FIFO within each eligible scheduling class and round-robin producer fairness. It sleeps until both
@@ -590,8 +597,9 @@ Correlation is bounded to 256 IDs per operation family (publication, REQ, COUNT,
 NEG) per attachment, with separate REQ/NEG namespaces. CLOSE/NEG-CLOSE and
 terminal replies release hints; attachment teardown clears all hints. Reused
 subscription IDs conservatively retain the order of queued earlier results.
-Unknown/evicted hints lose preference only. Raw frames, absolute retry params
-and credit formats are unchanged.
+Unknown/evicted hints lose preference only. Non-advice frames and credit formats
+remain raw; only correlated relative `retryAfter` params are refreshed at final
+delivery.
 Large accepted frames can travel alone; reservations never permanently strand
 a valid frame. Non-Nostr traffic retains ordinary FIFO behavior. Sequence and
 refund ledgers follow actual dispatch; no credit wire format changes.

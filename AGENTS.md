@@ -141,7 +141,7 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   monitor owns connectivity probes, capped retry delays, and browser wake-up
   listeners. `ConnectivityRetryCoordinator` owns waiters, cancellation, and
   concurrency of resumed app work; do not restore its duplicate probe timer.
-- Use the coordinated `libp2r2p@^0.12.1` range in package.json;
+- Use the coordinated `libp2r2p@^0.12.6` range in package.json;
   package-lock.json records the resolved release. Validate against the installed package rather than sibling
   source imports; it includes the shared connectivity monitor.
 
@@ -408,11 +408,12 @@ superseded, ignored and locally blocked records are already resolved; real
 storage failures still prevent coverage advancement. Presentation caches and
 the storage schema are unchanged; no destructive cache repair is needed.
 
-- Relay timing uses public `parseRelayRetryAdvice`. Add only optional Nostr
-  `@<Unix milliseconds>` params to correlated rate-limited CLOSED/OK with valid
-  timing; forward the effective host/type cooldown without recalculating at queue
-  delivery. Ignore legacy timing objects and unknown operation IDs. Preserve
-  port FIFO, volume units, CLOSE and operation deadlines.
+- Relay timing uses public `parseRelayRetryAdvice` with standard relative
+  millisecond params. Store the effective host/type deadline as numeric `retryAt`,
+  carry it as internal metadata, and refresh `retryAfter` immediately before the
+  final bridge `postMessage`. Never emit or accept proprietary `@` params on the
+  WebSocket wire. Ignore legacy timing objects and unknown operation IDs. Preserve
+  port FIFO, volume/credit accounting, CLOSE and operation deadlines.
 - `failureDiagnostics` uses trusted fixed codes/origins and a 32-record ring.
   Pool/bridge failures and unverified consumer reports never count as confirmed
   relay failures. Do not trust remote provenance/policy fields, add custom
@@ -449,7 +450,7 @@ the storage schema are unchanged; no destructive cache repair is needed.
   selected crypto codes/coordinates and bounded causes. Slow publication timing
   is JSON text with the existing threshold and no event payloads.
 
-- Consume libp2r2p 0.12.1 through the registry-resolved lockfile. Its private
+- Consume libp2r2p 0.12.6 through the registry-resolved lockfile. Its private
   messenger observes owned pauses and recovers them independently of historical
   completion; explicit caller pauses remain caller-owned. Session factories must
   provide readStatus and initial/subsequent onStateChanged notifications. No

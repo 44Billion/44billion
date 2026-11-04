@@ -138,7 +138,8 @@ try {
     await browser.evaluate('bridgeTest.sockets[0].send(JSON.stringify([\'REQ\',\'rate-limit\',{kinds:[9701],\'#t\':[\'limited\']}]))', origin)
     await browser.until(() => browser.evaluate('bridgeTest.frames.some(frame=>frame.op === "CLOSED" && frame.id === "rate-limit")', origin), 'rate rejection through real port')
     const advice = await browser.evaluate('bridgeTest.frames.find(frame=>frame.id === "rate-limit").params', origin)
-    assert.match(advice, /^@[1-9]\d*$/, 'both facades forward absolute params')
+    assert.match(advice, /^[1-9]\d*$/, 'both facades forward standard relative retryAfter')
+    assert.ok(Number(advice) <= 1000, 'consumer receives the refreshed remaining wait')
     await browser.evaluate(`
       bridgeTest.sockets[0].send(JSON.stringify(['REQ','rate-next',{kinds:[9702],'#t':['next']}]))
       bridgeTest.sockets[0].send(JSON.stringify(['REQ','rate-cancel',{kinds:[9702],'#t':['cancel']}]))
@@ -192,7 +193,7 @@ try {
   assert.ok(attempts[2].at - attempts[1].at >= 3000, 'open consumers cannot bypass the next stage')
   assert.ok(connectivityChecks > 0, 'physical failures use the real shared connectivity APIs')
   for (const origin of ['http://localhost:10000', vault, appOrigin]) await browser.evaluate('physicalRun.active=false;physicalRun.sockets.forEach(socket=>socket.close())', origin)
-  console.log('Real launcher/app/vault bridge: private ACK, correlated intermediate controls, ordered history/NEG, credits, absolute cooldowns, shared physical failure recovery, native events and isolated overflow passed.')
+  console.log('Real launcher/app/vault bridge: private ACK, correlated intermediate controls, ordered history/NEG, credits, refreshed cooldowns, shared physical failure recovery, native events and isolated overflow passed.')
 } catch (error) {
   await browser?.diagnose(root + '/tmp/browser-failures/relay-bridge')
   throw error

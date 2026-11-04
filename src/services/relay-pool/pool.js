@@ -10,6 +10,7 @@ import { RELAY_POOL_LIMITS } from './constants.js'
 import { ConnectionRecovery, RECOVERABLE_CLOSE_CODES } from './connection-recovery.js'
 import { RelayRegistry } from './registry.js'
 import { RelayDiagnostics } from './diagnostics.js'
+import { rewriteRetryFrame } from './retry-delivery.js'
 
 class LruSet {
   #limit
@@ -1600,7 +1601,7 @@ export class UnifiedRelayPool {
     const subscription = member.subscriptions.get(nsId)
     const countEntry = member.counts.get(nsId)
     const type = subscription ? 'REQ' : countEntry ? 'COUNT' : null
-    if (type) message = this.#withRetryAdvice(bucket, message, type, 2, 3)
+    const retry = type ? this.#applyRetryAdvice(bucket, message, type, 2, 3) : null
     if (subscription) {
       member.subscriptions.delete(nsId)
       member.rawSubscriptions.delete(subscription.rawId)
@@ -1612,7 +1613,7 @@ export class UnifiedRelayPool {
       member.counts.delete(nsId)
       bucket.counts.delete(nsId)
     }
-    this.#deliverMember(member, JSON.stringify(['CLOSED', subscription?.rawId ?? countEntry?.rawId ?? message[1], ...message.slice(2)]))
+    this.#deliverRetryMember(member, ['CLOSED', subscription?.rawId ?? countEntry?.rawId ?? message[1], ...message.slice(2)], retry)
   }
 
   #routeSimple (bucket, message, kind) {
@@ -1643,17 +1644,15 @@ export class UnifiedRelayPool {
     this.#deliverMember(member, JSON.stringify([message[0], rawId, ...message.slice(2)]))
   }
 
-  #withRetryAdvice (bucket, message, type, reasonIndex, paramsIndex) {
+  #applyRetryAdvice (bucket, message, type, reasonIndex, paramsIndex) {
     const advice = parseRelayRetryAdvice(message[reasonIndex], message[paramsIndex])
-    if (!advice) return message
+    if (!advice) return null
     const retryAt = Math.max(bucket.budget.retryAtByType.get(type) ?? 0, advice.retryAt)
     bucket.budget.retryAtByType.set(type, retryAt)
     for (const sibling of this.#buckets.values()) {
       if (sibling.budget === bucket.budget) this.#drainBucket(sibling)
     }
-    const forwarded = [...message]
-    forwarded[paramsIndex] = `@${retryAt}`
-    return forwarded
+    return { retryAt, paramsIndex }
   }
 
   #routeOk (bucket, message) {
@@ -1663,12 +1662,12 @@ export class UnifiedRelayPool {
         this.#completeAutomaticAuth(bucket, message, pendingAuth)
         return
       }
-      if (message[2] === false) message = this.#withRetryAdvice(bucket, message, 'AUTH', 3, 4)
+      const retry = message[2] === false ? this.#applyRetryAdvice(bucket, message, 'AUTH', 3, 4) : null
       if (pendingAuth.timer) clearTimeout(pendingAuth.timer)
       bucket.pendingAuths.delete(message[1])
       const confirmed = message[2] === true
       this.#setBucketIdentity(bucket, confirmed ? pendingAuth.pubkey : null)
-      this.#deliverMember(pendingAuth.member, JSON.stringify(message))
+      this.#deliverRetryMember(pendingAuth.member, message, retry)
       if (confirmed) this.#consolidateBuckets(bucket.url, pendingAuth.pubkey)
       return
     }
@@ -1682,11 +1681,13 @@ export class UnifiedRelayPool {
       if (forwarded) return
     }
     const hasAutomaticEventResult = [...publishers].some(member => this.#automaticAuthFor(member, message[1]))
-    if (message[2] === false && !hasAutomaticEventResult) message = this.#withRetryAdvice(bucket, message, 'EVENT', 3, 4)
+    const retry = message[2] === false && !hasAutomaticEventResult
+      ? this.#applyRetryAdvice(bucket, message, 'EVENT', 3, 4)
+      : null
     // Pending publishers scope deduplication to this attempt. A later EVENT
     // with the same ID must receive a fresh OK, including after auth-required.
     bucket.publishes.delete(message[1])
-    const raw = JSON.stringify(message)
+    const baseRaw = JSON.stringify(message)
     for (const member of publishers) {
       const pending = member.pendingPublishes.get(message[1])
       const automaticAuth = this.#automaticAuthFor(member, message[1])
@@ -1708,9 +1709,12 @@ export class UnifiedRelayPool {
       member.pendingPublishes.delete(message[1])
       if (automaticAuth) {
         this.#discardAutomaticAuth(automaticAuth)
-        this.#deliverMember(member, message[2] === true ? raw : automaticAuth.originalRaw, { allowClosedBucket: true })
+        this.#deliverMember(member, message[2] === true ? rewriteRetryFrame(baseRaw, retry) : automaticAuth.originalRaw, {
+          allowClosedBucket: true,
+          retry: message[2] === true ? retry : null
+        })
       } else {
-        this.#deliverMember(member, raw)
+        this.#deliverMember(member, rewriteRetryFrame(baseRaw, retry), { retry })
       }
     }
   }
@@ -1754,9 +1758,14 @@ export class UnifiedRelayPool {
     for (const member of bucket.members) this.#deliverMember(member, raw)
   }
 
-  #deliverMember (member, raw, { allowClosedBucket = false } = {}) {
+  #deliverRetryMember (member, message, retry, options = {}) {
+    const raw = JSON.stringify(message)
+    this.#deliverMember(member, rewriteRetryFrame(raw, retry), { ...options, retry })
+  }
+
+  #deliverMember (member, raw, { allowClosedBucket = false, retry = null } = {}) {
     if (member.closed || !member.bucket || (!allowClosedBucket && member.bucket.state !== 'open')) return
-    member.handlers.onMessage?.(raw)
+    member.handlers.onMessage?.(raw, retry || undefined)
   }
 
   #evictMember (member, reason, { alreadyRemoved = false } = {}) {

@@ -2,6 +2,7 @@ import { recordPerformance } from '../performance-diagnostics.js'
 import { parsePriorityFrame, isNostrSchedulingFrame } from './priority.js'
 import { createControlPriority, receiveCandidates } from './receive-priority.js'
 import { frameSize } from './bridge-protocol.js'
+import { maxRetryFrame, rewriteRetryFrame } from './retry-delivery.js'
 
 // Only launcher-to-consumer traffic participates in these shared budgets.
 // Payloads stay in the pending queue; the credit ledger holds sizes/times only.
@@ -108,12 +109,14 @@ export function createBridgeReceiveQueue ({ endpointId, virtualId, owner, relay,
       }
       queuedBytes -= item.size
       const through = ++sequence
-      pending.push({ size: item.size, through, sentAt: now(), sentEpoch: epochNow() })
-      pendingBytes += item.size
-      const frame = parsePriorityFrame(item.data)
+      const data = rewriteRetryFrame(item.data, item.retry)
+      const size = frameSize(data)
+      pending.push({ size, through, sentAt: now(), sentEpoch: epochNow() })
+      pendingBytes += size
+      const frame = parsePriorityFrame(data)
       if (frame?.[0] === 'OK') recordPerformance({ stage: 'bridge-ack-dispatch', priority: item.priority, publicationId: frame[1], at: epochNow(), elapsedMs: now() - item.queuedAt, queuedFrames: queue.length, queuedBytes, pendingFrames: pending.length, pendingBytes })
       else if (item.priority) recordPerformance({ stage: 'bridge-control-dispatch', priority: item.priority, elapsedMs: now() - item.queuedAt, queuedFrames: queue.length, queuedBytes, pendingFrames: pending.length, pendingBytes })
-      onFrame(item.data, through)
+      onFrame(data, through)
     }
   }
   const receiver = {
@@ -122,16 +125,17 @@ export function createBridgeReceiveQueue ({ endpointId, virtualId, owner, relay,
     get heldBytes () { return queuedBytes + pendingBytes },
     snapshot, close, fail,
     noteOutgoing: raw => controlPriority.note(raw),
-    push (data) {
+    push (data, { retry = null } = {}) {
       if (closed) return
-      const size = frameSize(data)
+      const originalSize = frameSize(data)
+      const size = retry ? Math.max(originalSize, frameSize(maxRetryFrame(data, retry))) : originalSize
       const budget = { frames: limits.bridgeReceiveQueueFrames, bytes: limits.bridgeReceiveQueueBytes }
       if (size > budget.bytes) {
         fail('relay bridge frame too large', 'frame', budget, ['bytes'], { frameBytes: size })
         return
       }
       const { priority, stream } = controlPriority.take(data)
-      queue.push({ data, size, queuedAt: now(), priority: size <= 16384 ? priority : 0, stream })
+      queue.push({ data, retry, size, queuedAt: now(), priority: size <= 16384 ? priority : 0, stream })
       queuedBytes += size
       // An immediately sendable frame is not a pending backlog.
       const canFlush = queue.length === 1 && (!pending.length || (pending.length < limits.bridgeReceiveCreditFrames && pendingBytes + size <= limits.bridgeReceiveCreditBytes))

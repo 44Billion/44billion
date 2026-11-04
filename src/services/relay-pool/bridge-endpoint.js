@@ -103,8 +103,8 @@ export function createRelayBridgeEndpoint ({
     send(RELAY_BRIDGE.CLOSED, { virtualId, code, reason, wasClean })
   }
 
-  const deliverFrame = (attachment, data) => {
-    if (isActive(attachment)) attachment.receive.push(data)
+  const deliverFrame = (attachment, data, retry = null) => {
+    if (isActive(attachment)) attachment.receive.push(data, { retry })
   }
 
   const attachDelegated = (virtualId, url, attachment) => {
@@ -164,7 +164,7 @@ export function createRelayBridgeEndpoint ({
         clearTimeout(attachment.timer)
         send(RELAY_BRIDGE.ATTACHED, { virtualId, url, extensions: info?.extensions ?? '' })
       },
-      onMessage: data => deliverFrame(attachment, data),
+      onMessage: (data, retry) => deliverFrame(attachment, data, retry),
       onClose: info => {
         releaseAttachment(attachment)
         if (attachment.suppressClose) return
