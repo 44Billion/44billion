@@ -9,8 +9,9 @@ API.
 ## Constraints
 
 - One pool per launcher tab. `SharedWorker` is intentionally out of scope.
-- No `window.napp.relayPool`: the only surface is a transparent
-  `window.WebSocket` shim installed before app scripts run.
+- No `window.napp.relayPool`: the only surface is a `window.WebSocket` shim
+  installed before app scripts run. It is transparent except for local EVENT
+  validation and the resulting synthetic acknowledgement.
 - Only Nostr relay traffic is pooled. A socket that does not prove itself
   Nostr stays a plain 1:1 connection.
 - The vault (ez-vault) uses the same pool through a delegated bridge: the
@@ -72,6 +73,26 @@ instead of leaking a second relay-side subscription. `EVENT`, `EOSE`,
 `NOTICE` is broadcast in the bucket; `AUTH` is stored and broadcast, and a
 newcomer receives the stored challenge so it can sign on demand.
 
+Every client EVENT is fully validated before admission. Malformed events,
+ID/hash mismatches and invalid signatures receive a local
+`["OK", id, false, "invalid: ..."]`: `invalid: malformed event`,
+`invalid: event id` or `invalid: event signature` respectively. The event is not
+queued, does not consume a message token and is never forwarded. If no string ID
+can be echoed, the synthetic OK uses an empty string.
+
+Pending EVENTs are represented by one physical job per `(bucket, event.id)` and
+one logical waiter per virtual member. Members of the same bucket share the raw
+frame, host token and queue position while each remains subject to its own
+256-frame/1 MiB queue accounting. The first waiter owns the queue position; if it
+leaves before dispatch, the item moves to the oldest remaining waiter without
+changing `queuedAt`.
+
+A relay `OK true` is valid for the whole normalized relay URL. It settles every
+pending waiter for that event in every bucket of the same relay, removes copies
+that have not been transmitted, releases their logical queue charges and ignores
+late responses from copies already sent. It also cancels automatic AUTH work that
+is no longer needed. This propagation never crosses a path, URL or host.
+
 ## AUTH: confirmation, merge and reconnect
 
 A relay `AUTH` challenge never triggers a migration: most relays send it
@@ -101,6 +122,11 @@ the existing permission flow applies. Because the intermediate rejection is
 not delivered to the consumer, its publication-correlation hint remains
 available: the final retried `OK` keeps the same receive priority as the
 original publication.
+
+When the initial EVENT was shared, `auth-required` dissolves the physical job
+before starting AUTH. Each member continues independently with its own provider,
+persona and bucket. A successful `OK true` from another bucket of the same relay
+can still settle that member and cancel the AUTH attempt.
 
 Every client AUTH is validated locally before the pool routes it: signature
 and id via `isValidEvent`, kind 22242, `created_at` window, `relay` tag
@@ -337,9 +363,10 @@ socket stays healthy, making subsequent `EVENT`, `EOSE` and `OK` frames count
 as drops. Check the bridge records before interpreting those drops as a relay
 connection failure.
 
-`pendingPublicationsByRelay` counts member publication attempts still in the
-local queue (`queued`) versus handed to the physical WebSocket (`awaitingOk`),
-with `oldestMs` since the oldest pending attempt entered the pool. It does not
+`pendingPublicationsByRelay` counts logical member waiters still in the local
+queue (`queued`) versus handed to the physical WebSocket (`awaitingOk`), with
+`oldestMs` since the oldest pending attempt entered the pool. `framesOut` and
+message-token consumption count only physical transmissions. These values do not
 prove network transmission or remote receipt. Close removes those attempts;
 migration requeues them while preserving the original age.
 
@@ -455,7 +482,9 @@ timing. Future waits are capped at five minutes. Missing, invalid or proprietary
 
 The pool correlates OK with pending EVENT/AUTH and CLOSED with REQ/COUNT before
 applying advice. Unknown IDs and late cleanup confirmations never create a
-cooldown. Deadlines are shared by host, separately for each client message type,
+cooldown. EVENT success may resolve sibling buckets only on the exact normalized
+relay URL; EVENT rejection remains scoped to the bucket that received it.
+Deadlines are shared by host, separately for each client message type,
 and extend with max(existing deadline for that type, advice.retryAt). An EVENT
 refusal cannot hold up a REQ, AUTH or COUNT. Endpoints and identities on the same
 host share the deadline for the same type; the local token budget remains shared

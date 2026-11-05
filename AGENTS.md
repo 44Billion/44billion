@@ -400,6 +400,19 @@ access without echoing those cached events back to the vault.
   not add an app API, persist grants, auto-auth REQ/COUNT/NEG, or exempt kind
   22242 from the explicit signer permission flow.
 
+- Fully validate client EVENTs before queue admission. Malformed, ID mismatch
+  and invalid-signature events receive local `OK false` with the stable
+  `invalid: malformed event`, `invalid: event id` or `invalid: event signature`
+  reason and never consume a work token. One physical job exists per
+  `(bucket, event.id)` with one waiter per member. Charge each waiter's logical
+  frame/byte budget while transmitting and consuming only one host token.
+  Duplicate member attempts join the job; the oldest waiter owns queue order and
+  leadership transfers without changing age. Rejection stays bucket-local.
+  `OK true` is relay-scoped: it settles pending jobs for the same normalized URL
+  and event across buckets, removes untransmitted copies and cancels unnecessary
+  automatic AUTH. Never propagate across paths, relays or hosts. A new EVENT
+  after settlement starts a fresh job and needs a fresh OK.
+
 
 Cached vault metadata is an optional signed bootstrap source: validate author,
 expected kind and signature before populating account-event state or NostrDB.

@@ -1,6 +1,6 @@
 import { recordPerformance } from '../performance-diagnostics.js'
 import { isPriorityPublication } from './priority.js'
-import { isValidEvent } from 'libp2r2p/event'
+import { assertValidEvent, isValidEvent } from 'libp2r2p/event'
 import { normalizeRelayUrl } from 'libp2r2p/url'
 import { parseRelayRetryAdvice } from 'libp2r2p/relay'
 
@@ -73,6 +73,7 @@ export class UnifiedRelayPool {
   #recovery
   #defaultAuthProvider = null
   #automaticAuths = new Map()
+  #pendingPublications = new Map()
   #serial = 0
   #counters = {
     physicalOpened: 0,
@@ -205,7 +206,7 @@ export class UnifiedRelayPool {
       negs: new Map(), // nsId -> { rawId, message, timer }
       negExchanged: new Set(), // NEG sessions that already exchanged NEG-MSG
       negTombstones: new Map(), // rawId -> timer after a session was closed by the pool
-      pendingPublishes: new Map(), // eventId -> { raw, startedAt, queuedAt, sentAt }
+      pendingPublishes: new Map(), // eventId -> { raw, startedAt, queuedAt, sentAt, job }
       queuedFrames: 0,
       queuedBytes: 0,
       closed: false
@@ -250,6 +251,7 @@ export class UnifiedRelayPool {
     this.#connectionTimer = null
     this.#connectionQueue.length = 0
     this.#pendingMembers.length = 0
+    this.#pendingPublications.clear()
     this.#connectionTimesByHost.clear()
     this.#recovery.clear()
   }
@@ -302,6 +304,210 @@ export class UnifiedRelayPool {
     } catch {
       return null
     }
+  }
+
+  #publicationKey (url, eventId) {
+    return `${url}\u0000${eventId}`
+  }
+
+  #addPendingPublication (record) {
+    const key = this.#publicationKey(record.member.url, record.eventId)
+    let records = this.#pendingPublications.get(key)
+    if (!records) {
+      records = new Set()
+      this.#pendingPublications.set(key, records)
+    }
+    records.add(record)
+    record.member.pendingPublishes.set(record.eventId, record)
+  }
+
+  #removePendingPublication (record) {
+    if (!record) return
+    this.#detachPublicationWaiter(record)
+    const key = this.#publicationKey(record.member.url, record.eventId)
+    const records = this.#pendingPublications.get(key)
+    if (records) {
+      records.delete(record)
+      if (!records.size) this.#pendingPublications.delete(key)
+    }
+    if (record.member.pendingPublishes.get(record.eventId) === record) {
+      record.member.pendingPublishes.delete(record.eventId)
+    }
+  }
+
+  #publicationRecordsFor (url, eventId) {
+    return this.#pendingPublications.get(this.#publicationKey(url, eventId)) ?? new Set()
+  }
+
+  #validationReason (event) {
+    try {
+      assertValidEvent(event)
+      return null
+    } catch (error) {
+      if (error?.code === 'INVALID_EVENT_ID' || error?.code === 'EVENT_ID_MISMATCH') return 'invalid: event id'
+      if (error?.code === 'INVALID_EVENT_SIGNATURE') return 'invalid: event signature'
+      return 'invalid: malformed event'
+    }
+  }
+
+  #reserveMemberQueue (bucket, member, bytes) {
+    if (member.queuedFrames + 1 > this.#limits.maxQueuedFramesPerMember ||
+        member.queuedBytes + bytes > this.#limits.maxQueuedBytesPerMember) {
+      this.recordDiagnostic('RELAY_POOL_QUEUE_OVERFLOW', { relay: bucket.url, phase: 'queue' })
+      this.#closeMember(member, 1013, 'relay pool queue overflow', false)
+      return false
+    }
+    member.queuedFrames++
+    member.queuedBytes += bytes
+    return true
+  }
+
+  #releaseMemberQueue (member, bytes) {
+    member.queuedFrames = Math.max(0, member.queuedFrames - 1)
+    member.queuedBytes = Math.max(0, member.queuedBytes - bytes)
+  }
+
+  #insertPublicationQueueItem (bucket, member, item) {
+    let queue = bucket.queues.get(member.id)
+    if (!queue) {
+      queue = []
+      bucket.queues.set(member.id, queue)
+    }
+    const index = queue.findIndex(candidate => candidate.queuedAt > item.queuedAt)
+    if (index < 0) queue.push(item)
+    else queue.splice(index, 0, item)
+  }
+
+  #removePublicationQueueItem (job) {
+    const item = job.queueItem
+    if (!item) return
+    const queue = job.bucket.queues.get(job.leaderId)
+    const index = queue?.indexOf(item) ?? -1
+    if (index >= 0) queue.splice(index, 1)
+    if (queue?.length === 0) job.bucket.queues.delete(job.leaderId)
+    if (job.sentAt === null) {
+      for (const member of job.waiters) this.#releaseMemberQueue(member, item.bytes)
+    }
+    job.queueItem = null
+  }
+
+  #removePublishersForJob (job) {
+    const publishers = job.bucket.publishes.get(job.eventId)
+    if (!publishers) return
+    for (const member of job.waiters) publishers.delete(member)
+    if (publishers.size === 0) job.bucket.publishes.delete(job.eventId)
+  }
+
+  #removePublicationJob (job) {
+    if (!job || job.removed) return
+    job.removed = true
+    this.#removePublicationQueueItem(job)
+    this.#removePublishersForJob(job)
+    if (job.bucket.publishJobs.get(job.eventId) === job) job.bucket.publishJobs.delete(job.eventId)
+  }
+
+  #transferPublicationLeader (job, previousLeader) {
+    const item = job.queueItem
+    if (!item) return
+    const queue = job.bucket.queues.get(previousLeader.id)
+    const index = queue?.indexOf(item) ?? -1
+    if (index >= 0) queue.splice(index, 1)
+    if (queue?.length === 0) job.bucket.queues.delete(previousLeader.id)
+    const nextLeader = job.waiters.values().next().value
+    if (!nextLeader) {
+      this.#removePublicationJob(job)
+      return
+    }
+    job.leaderId = nextLeader.id
+    this.#insertPublicationQueueItem(job.bucket, nextLeader, item)
+  }
+
+  #detachPublicationWaiter (record) {
+    if (!record) return
+    const job = record.job
+    if (!job) return
+    const member = record.member
+    record.job = null
+    if (job.sentAt === null && job.queueItem) this.#releaseMemberQueue(member, job.queueItem.bytes)
+    const removed = job.waiters.delete(member)
+    if (!removed) return
+    if (job.leaderId === member.id && job.sentAt === null) this.#transferPublicationLeader(job, member)
+    if (!job.waiters.size) this.#removePublicationJob(job)
+    else {
+      const publishers = job.bucket.publishes.get(job.eventId)
+      publishers?.delete(member)
+      if (publishers?.size === 0) job.bucket.publishes.delete(job.eventId)
+    }
+  }
+
+  #queuePublicationJob (job) {
+    const item = {
+      raw: job.raw,
+      bytes: job.raw.length,
+      queuedAt: performance.now(),
+      priority: job.priority,
+      op: 'EVENT',
+      operationId: job.eventId,
+      eventId: job.eventId,
+      job
+    }
+    job.queueItem = item
+    this.#insertPublicationQueueItem(job.bucket, job.waiters.values().next().value, item)
+  }
+
+  #attachPublicationRecord (record, message) {
+    if (record.job && !record.job.removed) return true
+    const { member, eventId, raw } = record
+    const bucket = member.bucket
+    if (!bucket || bucket.closed || member.closed) return false
+    let job = bucket.publishJobs.get(eventId)
+    const queued = !job || job.sentAt === null
+    if (queued && !this.#reserveMemberQueue(bucket, member, raw.length)) return false
+    if (!job) {
+      job = {
+        bucket,
+        eventId,
+        raw,
+        priority: isPriorityPublication(message),
+        waiters: new Set(),
+        leaderId: member.id,
+        queueItem: null,
+        sentAt: null,
+        removed: false
+      }
+      bucket.publishJobs.set(eventId, job)
+    }
+    job.waiters.add(member)
+    record.job = job
+    record.sentAt = job.sentAt
+    let publishers = bucket.publishes.get(eventId)
+    if (!publishers) {
+      publishers = new Set()
+      bucket.publishes.set(eventId, publishers)
+    }
+    publishers.add(member)
+    if (!job.queueItem && job.sentAt === null) this.#queuePublicationJob(job)
+    this.#drainBucket(bucket)
+    return true
+  }
+
+  #admitEvent (member, bucket, raw, message) {
+    const event = message[1]
+    if (member.pendingPublishes.has(event.id)) return
+    const now = Date.now()
+    const record = {
+      member,
+      eventId: event.id,
+      raw,
+      startedAt: now,
+      queuedAt: now,
+      sentAt: null,
+      automaticAuthRecord: null,
+      automaticAuthAttempted: false,
+      job: null
+    }
+    this.#addPendingPublication(record)
+    if (!this.#attachPublicationRecord(record, message)) this.#removePendingPublication(record)
   }
 
   #membersForUrl (url) {
@@ -397,6 +603,7 @@ export class UnifiedRelayPool {
       counts: new Map(),
       negs: new Map(),
       publishes: new Map(), // eventId -> Set<member>
+      publishJobs: new Map(), // eventId -> { raw, waiters, queueItem, sentAt, leaderId }
       closedNsIds: new Map(), // nsId -> expiresAt for client-initiated CLOSE confirmations
       pendingAuths: new Map(), // auth eventId -> { member, pubkey, timer }
       queues: new Map(), // memberId -> [{ raw, bytes }]
@@ -611,10 +818,14 @@ export class UnifiedRelayPool {
     if (member.bucket.challenge) this.#deliverMember(member, JSON.stringify(['AUTH', member.bucket.challenge]))
   }
 
-  #removeMemberFromBucket (member) {
+  #removeMemberFromBucket (member, { preservePublications = false } = {}) {
     const bucket = member.bucket
     if (!bucket) return
     bucket.members.delete(member)
+    for (const record of [...member.pendingPublishes.values()]) {
+      if (preservePublications) this.#detachPublicationWaiter(record)
+      else this.#removePendingPublication(record)
+    }
     for (const [nsId, subscription] of member.subscriptions) {
       bucket.subscriptions.delete(nsId)
       this.#removeQueued(bucket, member, subscription.message)
@@ -632,10 +843,6 @@ export class UnifiedRelayPool {
     }
     for (const timer of member.negTombstones.values()) clearTimeout(timer)
     member.negTombstones.clear()
-    for (const [eventId, publishers] of bucket.publishes) {
-      publishers.delete(member)
-      if (publishers.size === 0) bucket.publishes.delete(eventId)
-    }
     bucket.queues.delete(member.id)
     member.queuedFrames = 0
     member.queuedBytes = 0
@@ -850,26 +1057,13 @@ export class UnifiedRelayPool {
 
   #handleClientEvent (member, bucket, raw, message) {
     const event = message[1]
-    if (event?.id) {
-      if (!member.pendingPublishes.has(event.id)) {
-        const now = Date.now()
-        member.pendingPublishes.set(event.id, {
-          raw,
-          startedAt: now,
-          queuedAt: now,
-          sentAt: null,
-          automaticAuthRecord: null,
-          automaticAuthAttempted: false
-        })
-      }
-      let publishers = bucket.publishes.get(event.id)
-      if (!publishers) {
-        publishers = new Set()
-        bucket.publishes.set(event.id, publishers)
-      }
-      publishers.add(member)
+    const invalid = message.length === 2 ? this.#validationReason(event) : 'invalid: malformed event'
+    if (invalid) {
+      const id = typeof event?.id === 'string' ? event.id : ''
+      this.#deliverMember(member, JSON.stringify(['OK', id, false, invalid]))
+      return
     }
-    this.#enqueue(bucket, member, message)
+    this.#admitEvent(member, bucket, raw, message)
   }
 
   async #beginAutomaticAuth (member, event, pending, originalRaw) {
@@ -1041,17 +1235,15 @@ export class UnifiedRelayPool {
       this.#failAutomaticAuth(record)
       return
     }
-    let publishers = bucket.publishes.get(record.eventId)
-    if (!publishers) {
-      publishers = new Set()
-      bucket.publishes.set(record.eventId, publishers)
-    }
-    publishers.add(record.member)
     pending.automaticAuthAttempted = true
     pending.queuedAt = Date.now()
     pending.sentAt = null
     record.stage = 'event'
-    this.#enqueue(bucket, record.member, parseNostrFrame(pending.raw), { raw: pending.raw })
+    const eventMessage = parseNostrFrame(pending.raw)
+    if (!eventMessage || !this.#attachPublicationRecord(pending, eventMessage)) {
+      this.#failAutomaticAuth(record)
+      return
+    }
     this.#armAutomaticAuthTimeout(record)
   }
 
@@ -1084,14 +1276,7 @@ export class UnifiedRelayPool {
     this.#discardAutomaticAuth(record)
     this.#counters.automaticAuthFailures++
     this.recordDiagnostic('RELAY_POOL_AUTH_AUTO_FAILED', { relay: record.member.url, phase: 'auth' })
-    const bucket = record.member.bucket
-    if (bucket && !bucket.closed) {
-      this.#removeQueued(bucket, record.member, ['EVENT', record.eventId])
-      const publishers = bucket.publishes.get(record.eventId)
-      publishers?.delete(record.member)
-      if (publishers?.size === 0) bucket.publishes.delete(record.eventId)
-    }
-    record.member.pendingPublishes.delete(record.eventId)
+    this.#removePendingPublication(record.member.pendingPublishes.get(record.eventId))
     this.#deliverMember(record.member, record.originalRaw, { allowClosedBucket: true })
   }
 
@@ -1358,21 +1543,16 @@ export class UnifiedRelayPool {
       this.#reconnectMember(member, 'relay pool rehome')
       return false
     }
-    this.#removeMemberFromBucket(member)
+    this.#removeMemberFromBucket(member, { preservePublications: true })
     this.#addMember(member, target)
     if (target.challenge) this.#deliverMember(member, JSON.stringify(['AUTH', target.challenge]))
     this.#replayMemberOperations(member, target)
     if (replayPublications) {
-      for (const [eventId, pending] of member.pendingPublishes) {
-        let publishers = target.publishes.get(eventId)
-        if (!publishers) {
-          publishers = new Set()
-          target.publishes.set(eventId, publishers)
-        }
-        publishers.add(member)
+      for (const pending of [...member.pendingPublishes.values()]) {
         pending.queuedAt = Date.now()
         pending.sentAt = null
-        this.#enqueue(target, member, parseNostrFrame(pending.raw), { raw: pending.raw })
+        const message = parseNostrFrame(pending.raw)
+        if (!message || !this.#attachPublicationRecord(pending, message)) break
       }
     }
     this.#counters.migrations++
@@ -1383,14 +1563,7 @@ export class UnifiedRelayPool {
     if (!bucket || bucket.closed || member.closed) return
     const raw = providedRaw ?? JSON.stringify(message)
     const bytes = raw.length
-    if (member.queuedFrames + 1 > this.#limits.maxQueuedFramesPerMember ||
-        member.queuedBytes + bytes > this.#limits.maxQueuedBytesPerMember) {
-      this.recordDiagnostic('RELAY_POOL_QUEUE_OVERFLOW', { relay: bucket.url, phase: 'queue' })
-      this.#closeMember(member, 1013, 'relay pool queue overflow', false)
-      return
-    }
-    member.queuedFrames++
-    member.queuedBytes += bytes
+    if (!this.#reserveMemberQueue(bucket, member, bytes)) return
     let queue = bucket.queues.get(member.id)
     if (!queue) {
       queue = []
@@ -1511,15 +1684,28 @@ export class UnifiedRelayPool {
     if (!selected) return false
     const { bucket, memberId, queue, index, key } = selected
     const [item] = queue.splice(index, 1)
+    if (queue.length === 0) bucket.queues.delete(memberId)
     budget.cursor = key
     budget.priorityStreak = item.priority ? Math.min(3, budget.priorityStreak + 1) : 0
     const member = this.#members.get(memberId)
-    if (member) {
+    let pending = null
+    if (item.job) {
+      const job = item.job
+      if (job.removed || job.queueItem !== item || job.waiters.size === 0) return false
+      const sentAt = Date.now()
+      for (const waiter of job.waiters) {
+        this.#releaseMemberQueue(waiter, item.bytes)
+        const waiterPending = waiter.pendingPublishes.get(item.eventId)
+        if (waiterPending?.job === job) waiterPending.sentAt = sentAt
+      }
+      job.sentAt = sentAt
+      job.queueItem = null
+    } else if (member) {
       member.queuedFrames = Math.max(0, member.queuedFrames - 1)
       member.queuedBytes = Math.max(0, member.queuedBytes - item.bytes)
+      pending = member.pendingPublishes.get(item.eventId)
+      if (pending && pending.sentAt === null) pending.sentAt = Date.now()
     }
-    const pending = member?.pendingPublishes.get(item.eventId)
-    if (pending && pending.sentAt === null) pending.sentAt = Date.now()
     try {
       recordPerformance({ stage: 'pool-dispatch', publicationId: item.eventId, elapsedMs: performance.now() - item.queuedAt, bufferedAmount: bucket.socket?.bufferedAmount ?? 0, priority: item.priority, queuedFrames: member?.queuedFrames, queuedBytes: member?.queuedBytes })
       bucket.socket?.send(item.raw)
@@ -1655,6 +1841,82 @@ export class UnifiedRelayPool {
     return { retryAt, paramsIndex }
   }
 
+  #recordPublicationResponse (pending, message) {
+    if (!pending) return
+    const now = Date.now()
+    if (now - pending.startedAt >= this.#limits.slowPublicationMs) {
+      this.#counters.slowPublicationResponses++
+      this.#log('slow publication response', JSON.stringify({
+        relay: pending.member.url,
+        eventId: pending.eventId,
+        owner: pending.member.owner,
+        accepted: message[2] === true,
+        reason: message[3],
+        elapsedMs: now - pending.startedAt,
+        queueMs: pending.sentAt === null ? null : pending.sentAt - pending.queuedAt,
+        responseMs: pending.sentAt === null ? null : now - pending.sentAt
+      }))
+    }
+    recordPerformance({
+      stage: 'pool-ack',
+      publicationId: pending.eventId,
+      at: performance.timeOrigin + performance.now(),
+      elapsedMs: pending.sentAt === null ? undefined : now - pending.sentAt
+    })
+  }
+
+  #finishPublicationRecord (record, message, retry, { allowClosedBucket = false } = {}) {
+    if (!record) return
+    const member = record.member
+    const pending = member.pendingPublishes.get(record.eventId)
+    if (pending !== record) return
+    this.#recordPublicationResponse(pending, message)
+    const automaticAuth = pending.automaticAuthRecord
+    const baseRaw = JSON.stringify(message)
+    let raw = message[2] === false && automaticAuth
+      ? automaticAuth.originalRaw
+      : rewriteRetryFrame(baseRaw, retry)
+    if (automaticAuth) {
+      this.#discardAutomaticAuth(automaticAuth)
+      if (message[2] === false) raw = automaticAuth.originalRaw
+    }
+    this.#removePendingPublication(record)
+    this.#deliverMember(member, raw, {
+      allowClosedBucket,
+      retry: message[2] === false && !automaticAuth ? retry : null
+    })
+  }
+
+  #finishPublicationRecords (records, message, retry, options) {
+    const jobs = new Set()
+    for (const record of records) if (record.job) jobs.add(record.job)
+    for (const job of jobs) this.#removePublicationJob(job)
+    for (const record of [...records]) this.#finishPublicationRecord(record, message, retry, options)
+  }
+
+  #settleGlobalPublicationSuccess (bucket, message) {
+    const records = this.#publicationRecordsFor(bucket.url, message[1])
+    if (!records.size) return false
+    const correlatedHere = bucket.publishJobs.has(message[1]) ||
+      [...records].some(record => record.member.bucket === bucket)
+    if (!correlatedHere) return false
+    this.#finishPublicationRecords(records, message, null, { allowClosedBucket: true })
+    return true
+  }
+
+  #settleBucketPublicationFailure (bucket, message, retry) {
+    const job = bucket.publishJobs.get(message[1])
+    if (!job) return false
+    const records = []
+    for (const member of job.waiters) {
+      const record = member.pendingPublishes.get(message[1])
+      if (record?.job === job) records.push(record)
+    }
+    this.#removePublicationJob(job)
+    for (const record of records) this.#finishPublicationRecord(record, message, retry)
+    return records.length > 0
+  }
+
   #routeOk (bucket, message) {
     const pendingAuth = bucket.pendingAuths.get(message[1])
     if (pendingAuth) {
@@ -1671,57 +1933,37 @@ export class UnifiedRelayPool {
       if (confirmed) this.#consolidateBuckets(bucket.url, pendingAuth.pubkey)
       return
     }
-    const publishers = bucket.publishes.get(message[1])
-    if (!publishers) {
+    if (message[2] === true) {
+      if (!this.#settleGlobalPublicationSuccess(bucket, message)) this.#dropFrame('OK')
+      return
+    }
+    const job = bucket.publishJobs.get(message[1])
+    if (!job) {
       this.#dropFrame('OK')
       return
     }
     if (message[2] === false && requiresNip42Auth(message[3])) {
+      const publishers = bucket.publishes.get(message[1]) ?? new Set()
       const forwarded = this.#routeAutomaticAuthRejection(bucket, message, publishers)
       if (forwarded) return
     }
-    const hasAutomaticEventResult = [...publishers].some(member => this.#automaticAuthFor(member, message[1]))
+    const currentJob = bucket.publishJobs.get(message[1])
+    if (!currentJob) {
+      this.#dropFrame('OK')
+      return
+    }
+    const hasAutomaticEventResult = [...currentJob.waiters].some(member => this.#automaticAuthFor(member, message[1]))
     const retry = message[2] === false && !hasAutomaticEventResult
       ? this.#applyRetryAdvice(bucket, message, 'EVENT', 3, 4)
       : null
-    // Pending publishers scope deduplication to this attempt. A later EVENT
-    // with the same ID must receive a fresh OK, including after auth-required.
-    bucket.publishes.delete(message[1])
-    const baseRaw = JSON.stringify(message)
-    for (const member of publishers) {
-      const pending = member.pendingPublishes.get(message[1])
-      const automaticAuth = this.#automaticAuthFor(member, message[1])
-      const now = Date.now()
-      if (pending && now - pending.startedAt >= this.#limits.slowPublicationMs) {
-        this.#counters.slowPublicationResponses++
-        this.#log('slow publication response', JSON.stringify({
-          relay: bucket.url,
-          eventId: message[1],
-          owner: member.owner,
-          accepted: message[2] === true,
-          reason: message[3],
-          elapsedMs: now - pending.startedAt,
-          queueMs: pending.sentAt === null ? null : pending.sentAt - pending.queuedAt,
-          responseMs: pending.sentAt === null ? null : now - pending.sentAt
-        }))
-      }
-      recordPerformance({ stage: 'pool-ack', publicationId: message[1], at: performance.timeOrigin + performance.now(), elapsedMs: pending?.sentAt === null ? undefined : now - pending?.sentAt })
-      member.pendingPublishes.delete(message[1])
-      if (automaticAuth) {
-        this.#discardAutomaticAuth(automaticAuth)
-        this.#deliverMember(member, message[2] === true ? rewriteRetryFrame(baseRaw, retry) : automaticAuth.originalRaw, {
-          allowClosedBucket: true,
-          retry: message[2] === true ? retry : null
-        })
-      } else {
-        this.#deliverMember(member, rewriteRetryFrame(baseRaw, retry), { retry })
-      }
-    }
+    this.#settleBucketPublicationFailure(bucket, message, retry)
   }
 
   #routeAutomaticAuthRejection (bucket, message, publishers) {
     const eventId = message[1]
     const originalRaw = JSON.stringify(message)
+    const job = bucket.publishJobs.get(eventId)
+    if (!job) return false
     const eligible = []
     const rejected = []
     for (const member of publishers) {
@@ -1739,10 +1981,13 @@ export class UnifiedRelayPool {
       eligible.push({ member, event, pending })
     }
     if (!eligible.length) return false
-    bucket.publishes.delete(eventId)
+    this.#removePublicationJob(job)
+    for (const entry of eligible) entry.pending.job = null
     for (const entry of eligible) this.#beginAutomaticAuth(entry.member, entry.event, entry.pending, originalRaw)
     for (const member of rejected) {
-      if (!member.closed) this.#deliverMember(member, originalRaw)
+      const pending = member.pendingPublishes.get(eventId)
+      this.#removePendingPublication(pending)
+      if (!member.closed) this.#deliverMember(member, originalRaw, { allowClosedBucket: true })
     }
     return true
   }

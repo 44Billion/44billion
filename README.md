@@ -276,6 +276,11 @@ The unified pool keeps an absolute deadline internally and refreshes the
 standard relative `retryAfter` immediately before consumer delivery on
 rate-limited Nostr CLOSED/OK frames. Proprietary `@` params never cross the
 WebSocket wire.
+Client EVENTs are fully validated before queue admission. Valid duplicates share
+one physical publication job per bucket/event while retaining independent virtual
+member queue accounting; `OK true` can also settle pending copies in other
+buckets of the same normalized relay URL. Invalid events receive a local
+`OK false` and are never forwarded.
 Deadlines are shared by host and client message type: rate-limited EVENT work
 does not block REQ, AUTH or COUNT. Consumers use libp2r2p 0.12.6.
 WebSocket events retain their standard API. Bounded internal diagnostics separate

@@ -105,16 +105,13 @@ async function setupTwoAuthBucketsWithNeg ({ pool, sockets, alice, handlersA = {
   return { memberA, memberB, nsNegB }
 }
 
-function signedEvent (pubkey = 'p'.repeat(64)) {
-  return {
-    id: `${pubkey.slice(0, 8)}${Date.now()}`.padEnd(64, '0'),
-    pubkey,
-    sig: 's'.repeat(128),
+function signedEvent () {
+  return finalizeEvent({
     kind: 1,
     created_at: 1,
     tags: [],
     content: 'hello'
-  }
+  }, generateSecretKey())
 }
 
 function validEvent (secretKey, overrides = {}) {
@@ -473,7 +470,7 @@ describe('unified relay pool', () => {
     await tick()
     sockets[0].open()
     await tick()
-    const invalid = signedEvent()
+    const invalid = { ...validEvent(secretKey), id: '0'.repeat(64) }
     member.send(JSON.stringify(['EVENT', invalid]))
     await tick()
     sockets[0].message(['OK', invalid.id, false, 'auth-required: authenticate'])
@@ -735,7 +732,7 @@ describe('unified relay pool', () => {
     await tick()
     sockets[0].open()
     await tick()
-    const event = { ...signedEvent(), content: 'private ciphertext' }
+    const event = validEvent(generateSecretKey(), { content: 'private ciphertext' })
     member.send(JSON.stringify(['EVENT', event]))
     const queued = pool.snapshot().pendingPublicationsByRelay['wss://relay.example']
     assert.equal(queued.queued, 1)
@@ -1493,14 +1490,16 @@ it('different sockets on one host receive the same effective deadline without re
   a.send(JSON.stringify(['REQ', 'a', {}]))
   b.send(JSON.stringify(['REQ', 'b', {}]))
   await tick(); sockets[1].open(); await tick()
-  a.send(JSON.stringify(['EVENT', { id: 'event-a' }]))
-  b.send(JSON.stringify(['EVENT', { id: 'event-b' }]))
+  const eventA = signedEvent()
+  const eventB = signedEvent()
+  a.send(JSON.stringify(['EVENT', eventA]))
+  b.send(JSON.stringify(['EVENT', eventB]))
   await tick()
-  sockets[0].message(['OK', 'event-a', false, 'rate-limited: busy', '10000'])
+  sockets[0].message(['OK', eventA.id, false, 'rate-limited: busy', '10000'])
   assert.equal(receivedA.at(-1)[4], '10000')
   t.mock.timers.tick(1000)
-  sockets[1].message(['OK', 'event-b', false, 'rate-limited: busy', '1000'])
-  assert.deepEqual(receivedB.at(-1), ['OK', 'event-b', false, 'rate-limited: busy', '9000'])
+  sockets[1].message(['OK', eventB.id, false, 'rate-limited: busy', '1000'])
+  assert.deepEqual(receivedB.at(-1), ['OK', eventB.id, false, 'rate-limited: busy', '9000'])
   assert.deepEqual(retriesB.at(-1), { retryAt: 20000, paramsIndex: 4 })
   assert.equal(receivedA.at(-1)[4], '10000', 'forwarded deadline does not change after delivery')
 })
@@ -1625,7 +1624,12 @@ for (const limitedType of ['EVENT', 'AUTH', 'REQ', 'COUNT']) {
         member.send(JSON.stringify([type, event]))
         return event.id
       }
-      member.send(JSON.stringify(type === 'EVENT' ? [type, { id }] : [type, id, {}]))
+      if (type === 'EVENT') {
+        const event = signedEvent()
+        member.send(JSON.stringify([type, event]))
+        return event.id
+      }
+      member.send(JSON.stringify([type, id, {}]))
       return id
     }
     const first = start(limitedType)
@@ -1669,17 +1673,20 @@ it('host cooldowns span URLs and identities without blocking another type or hos
   b.send(JSON.stringify(['AUTH', authenticated])); await tick()
   privateSocket.message(['OK', authenticated.id, true, 'authenticated'])
   const privateBefore = privateSocket.sent.length
-  a.send(JSON.stringify(['EVENT', { id: 'limited' }]))
+  const limited = signedEvent()
+  const delayed = signedEvent()
+  const otherHost = signedEvent()
+  a.send(JSON.stringify(['EVENT', limited]))
   await tick()
-  publicSocket.message(['OK', 'limited', false, 'rate-limited: busy', '2500'])
-  b.send(JSON.stringify(['EVENT', { id: 'delayed' }]))
+  publicSocket.message(['OK', limited.id, false, 'rate-limited: busy', '2500'])
+  b.send(JSON.stringify(['EVENT', delayed]))
   b.send(JSON.stringify(['REQ', 'immediate', {}]))
-  other.send(JSON.stringify(['EVENT', { id: 'other-host' }]))
+  other.send(JSON.stringify(['EVENT', otherHost]))
   await tick()
   assert.deepEqual(privateSocket.sent.slice(privateBefore).map(frame => frame[0]), ['REQ'])
-  assert.equal(otherSocket.sent.at(-1)[1].id, 'other-host')
+  assert.equal(otherSocket.sent.at(-1)[1].id, otherHost.id)
   t.mock.timers.tick(2500); await tick()
-  assert.equal(privateSocket.sent.at(-1)[1].id, 'delayed')
+  assert.equal(privateSocket.sent.at(-1)[1].id, delayed.id)
 })
 
 it('unmatched and late CLOSED/OK responses never create a cooldown', async t => {
@@ -1694,7 +1701,7 @@ it('unmatched and late CLOSED/OK responses never create a cooldown', async t => 
   sockets[0].message(['CLOSED', oldId, 'rate-limited: busy', '300000'])
   sockets[0].message(['CLOSED', 'unknown', 'rate-limited: busy', '300000'])
   sockets[0].message(['OK', 'unknown', false, 'rate-limited: busy', '300000'])
-  member.send(JSON.stringify(['EVENT', { id: 'immediate' }]))
+  member.send(JSON.stringify(['EVENT', signedEvent()]))
   member.send(JSON.stringify(['REQ', 'immediate', {}])); await tick()
   assert.deepEqual(sockets[0].sent.slice(-2).map(frame => frame[0]), ['EVENT', 'REQ'])
   assert.equal(pool.snapshot().closedConfirmations, 1)
@@ -1731,8 +1738,8 @@ it('host scheduling prefers private text across buckets, retains 3:1 service and
   urgent.send(JSON.stringify(['REQ', 'second', {}]))
   await tick()
   // Queue before opening so both producers participate in one host drain.
-  const normalEvent = index => ({ id: `normal-${index}`, kind: 1, sig: 'sig', tags: [] })
-  const privateEvent = index => ({ id: `private-${index}`, kind: 3560, sig: 'sig', tags: [] })
+  const normalEvent = index => finalizeEvent({ kind: 1, created_at: index, tags: [], content: `normal-${index}` }, generateSecretKey())
+  const privateEvent = index => finalizeEvent({ kind: 3560, created_at: index, tags: [], content: `private-${index}` }, generateSecretKey())
   for (let i = 0; i < 80; i++) normal.send(JSON.stringify(['EVENT', normalEvent(i)]))
   for (let i = 0; i < 6; i++) urgent.send(JSON.stringify(['EVENT', privateEvent(i)]))
   const order = []
@@ -1742,12 +1749,12 @@ it('host scheduling prefers private text across buckets, retains 3:1 service and
     socket.open()
   }
   await tick()
-  assert.deepEqual(order.slice(0, 8).map(frame => frame[1]?.id?.startsWith('private-') ?? false), [true, true, true, false, true, true, true, false])
-  assert.equal(order.filter(frame => frame[0] === 'EVENT' && frame[1].id.startsWith('private-')).length, 6)
+  assert.deepEqual(order.slice(0, 8).map(frame => frame[1]?.kind === 3560), [true, true, true, false, true, true, true, false])
+  assert.equal(order.filter(frame => frame[0] === 'EVENT' && frame[1].kind === 3560).length, 6)
   assert.equal(order.length, 52)
   urgent.send(JSON.stringify(['EVENT', privateEvent(7)]))
   await tick()
-  assert.equal(order.at(-1)[1].id, 'private-7')
+  assert.equal(order.at(-1)[1].kind, 3560)
   assert.equal(order.length, 53)
   t.mock.timers.tick(2000); await tick()
   assert.equal(normal.bufferedAmount, 0)
@@ -1760,8 +1767,8 @@ it('saturated priority demand still admits normal work every fourth token', asyn
   const member = pool.attach('wss://relay.example')
   await tick()
   for (let i = 0; i < 70; i++) {
-    member.send(JSON.stringify(['EVENT', { id: `p${i}`, kind: 3560, sig: 'sig', tags: [] }]))
-    member.send(JSON.stringify(['EVENT', { id: `n${i}`, kind: 1, sig: 'sig', tags: [] }]))
+    member.send(JSON.stringify(['EVENT', finalizeEvent({ kind: 3560, created_at: i, tags: [], content: `p${i}` }, generateSecretKey())]))
+    member.send(JSON.stringify(['EVENT', finalizeEvent({ kind: 1, created_at: i, tags: [], content: `n${i}` }, generateSecretKey())]))
   }
   sockets[0].open(); await tick()
   assert.equal(sockets[0].sent.length, 60)
