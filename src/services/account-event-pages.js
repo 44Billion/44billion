@@ -22,7 +22,9 @@ export async function * accountEventPages ({ pool, relay, filter, signal, persis
     let report = page?.report
     if (!page) {
       const stream = pool.getEventsGenerator({ ...filter, limit: ACCOUNT_PAGE_SIZE }, [relay], {
-        signal, timeoutAfterFirstEose: null
+        signal,
+        timeoutAfterFirstEose: null,
+        rateLimitRetries: 0
       })
       for await (const item of stream) {
         signal.throwIfAborted()

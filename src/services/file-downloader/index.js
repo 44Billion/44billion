@@ -366,7 +366,10 @@ export class FileRangeDownloader {
     }
     const authors = this.pubkeysByRelay[relayState.url]
     if (!fallback && Array.isArray(authors) && authors.length > 0) filter.authors = authors
-    const generator = nostrRelays.getEventsGenerator(filter, [relayState.url], { signal: this.abortSignal })
+    const generator = nostrRelays.getEventsGenerator(filter, [relayState.url], {
+      signal: this.abortSignal,
+      rateLimitRetries: 0
+    })
     let rawReceivedCount = 0
     let halfBatchTriggered = false
     for await (const { event, type } of generator) {

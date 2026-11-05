@@ -376,8 +376,15 @@ for (const vault of [false, true]) {
         }
         const fixture = publicationFixture(t, (socket, event) => reject(socket, event.id), reject, { delayedCredits: true, vault })
         const pending = operation === 'CLOSED'
-          ? fixture.publisher.getEvents({ kinds: [3560] }, fixture.urls.slice(0, 1), { timeout: 30000 })
-          : fixture.publisher.sendEvent(fixture.event, fixture.urls.slice(0, 1), { timeout: 30000, timeoutUntilFirstFulfillment: 30000 }).then(result => result.promise)
+          ? fixture.publisher.getEvents({ kinds: [3560] }, fixture.urls.slice(0, 1), {
+            timeout: 30000,
+            rateLimitRetries: 0
+          })
+          : fixture.publisher.sendEvent(fixture.event, fixture.urls.slice(0, 1), {
+            timeout: 30000,
+            timeoutUntilFirstFulfillment: 30000,
+            rateLimitRetries: 0
+          }).then(result => result.promise)
         await waitFor(() => fixture.credits.length > 0)
         t.mock.timers.tick(delay)
         fixture.releaseCredit()

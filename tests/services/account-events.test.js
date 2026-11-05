@@ -278,6 +278,24 @@ test('pages split saturated seconds by author and kind, accepting only the indiv
   await transport.pool.disconnectAll()
 })
 
+test('account pages leave rate-limit retry scheduling to the account tracker', async () => {
+  let options
+  const pool = {
+    async * getEventsGenerator (_filter, _relays, next) {
+      options = next
+      yield { type: 'eose', relays: [{ relay, status: 'eose' }] }
+    }
+  }
+  for await (const filter of accountEventPages({
+    pool,
+    relay,
+    filter: { authors: [pk(1)], kinds: [1], since: 0, until: 1 },
+    signal: new AbortController().signal,
+    persist: async () => {}
+  })) assert.ok(filter)
+  assert.equal(options.rateLimitRetries, 0)
+})
+
 test('initial subscription preserves live arrivals during the snapshot and closes pending work', async () => {
   let finish
   let closed = false

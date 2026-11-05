@@ -276,6 +276,9 @@ until reload.
   Storage has independent recovery. Local admission/buffer errors keep their
   explicit local policy. Retry at max(jittered backoff deadline, retryAt); offline
   waits through ConnectivityRetryCoordinator and spends no backoff step.
+- Account history pages and multi-relay IRFS index reads pass
+  `rateLimitRetries: 0`; their account/file schedulers own rate-limit recovery.
+  Generic one-shot launcher queries retain the library's guarded default.
 - Store only eligible known public account events in the owner's NostrDB. Keep
   the README import exclusions and library/tag-defined ephemeral checks. Only
   kinds 0/10002 update the vault metadata channel; account import adds no public

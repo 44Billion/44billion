@@ -122,7 +122,9 @@ describe('FileRangeDownloader scheduler', () => {
     ]))
     const firstRequest = new Map()
     const allRequests = new Map()
-    generatorMock.mock.mockImplementation(async function * (filter, [relay]) {
+    let readOptions
+    generatorMock.mock.mockImplementation(async function * (filter, [relay], options) {
+      readOptions = options
       const indexes = filter['#d'].map(d => indexByD.get(d))
       if (!firstRequest.has(relay)) firstRequest.set(relay, indexes)
       allRequests.set(relay, [...(allRequests.get(relay) || []), ...indexes])
@@ -141,6 +143,7 @@ describe('FileRangeDownloader scheduler', () => {
     assert.deepEqual(firstRequest.get('wss://first.test'), [0, 2, 4])
     assert.deepEqual(firstRequest.get('wss://second.test').toSorted((a, b) => a - b), [1, 3, 5])
     for (const indexes of allRequests.values()) assert.equal(new Set(indexes).size, indexes.length)
+    assert.equal(readOptions.rateLimitRetries, 0)
   })
 
   test('interleaves the positions of sparse missing indexes', async () => {
