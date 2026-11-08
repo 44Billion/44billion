@@ -141,7 +141,7 @@ the framework's component conventions: `f('tag', ...)` declarations, signal prop
   monitor owns connectivity probes, capped retry delays, and browser wake-up
   listeners. `ConnectivityRetryCoordinator` owns waiters, cancellation, and
   concurrency of resumed app work; do not restore its duplicate probe timer.
-- Use the coordinated `libp2r2p@^0.12.14` range in package.json;
+- Use the coordinated `libp2r2p@^0.12.15` range in package.json;
   package-lock.json records the resolved release. Validate against the installed package rather than sibling
   source imports; it includes the shared connectivity monitor.
 
@@ -466,11 +466,15 @@ the storage schema are unchanged; no destructive cache repair is needed.
   selected crypto codes/coordinates and bounded causes. Slow publication timing
   is JSON text with the existing threshold and no event payloads.
 
-- Consume libp2r2p 0.12.14 through the registry-resolved lockfile. Its private
+- Consume libp2r2p 0.12.15 through the registry-resolved lockfile. Its private
   messenger observes owned pauses and recovers them independently of historical
   completion; explicit caller pauses remain caller-owned. Session factories must
   provide readStatus and initial/subsequent onStateChanged notifications. No
   injected app API, WebSocket property or bridge wire change is introduced.
+- The 0.12.15 inbox automatically coalesces ask/reply/tell/yell/message/nym by
+  resolver/`D` identity first, then Nostr address or event ID within channel and
+  type. Preserve resolver scope and NIP-01 replacement ordering for address
+  versions; this adds no bridge, event, payload or storage-schema change.
 
 - The 0.11.20 messenger optionally hedges automatic NIP-65 publication with
   fallbackDelayMs and supports per-publication cancellation in RelayPool.sendEvent.
