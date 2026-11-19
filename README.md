@@ -282,7 +282,7 @@ member queue accounting; `OK true` can also settle pending copies in other
 buckets of the same normalized relay URL. Invalid events receive a local
 `OK false` and are never forwarded.
 Deadlines are shared by host and client message type: rate-limited EVENT work
-does not block REQ, AUTH or COUNT. Consumers use libp2r2p 0.12.16.
+does not block REQ, AUTH or COUNT. Consumers use libp2r2p 0.12.17.
 That release adds local `normal > lower > lowest` inbox ordering and wakes the
 durable drain during capacity pressure. These are internal messenger/IDB
 metadata; the launcher exposes no app priority field and existing bridge frames
