@@ -306,6 +306,14 @@ The event store remains scoped to the instance's workspace account and app;
 selecting a persona does not merge its members' event stores. Bridge errors
 reject method promises or the iterator's `next()` promise.
 
+The bridge applies launcher-owned deadlines without changing these public
+signatures. `supports()` gets 5 seconds; other one-shot methods get at most
+5 minutes. A timed-out one-shot rejects with `NOSTRDB_REQUEST_TIMEOUT`, while an
+operation cancelled by document teardown rejects with
+`NOSTRDB_REQUEST_CANCELLED`. Apps cannot supply a `signal`, priority or a longer
+deadline. The one-shot timeout also sends an internal cancellation by request ID
+so the launcher stops waiting for permissions, signer work and storage.
+
 `addPersonalCopy` resolves to `{ event, result }`; `add` returns the result
 directly. Storage admission failures have result `{ ok: false, code: 'quota', message,
 stored: false, published: false, quotaCategory }`, where `quotaCategory` is
@@ -474,6 +482,14 @@ Cancellation/revocation stops pending delivery. Claims and permissions apply to
 events, not control markers. `query` retains `{ results, meta }` and rejects
 validation/database failures rather than reporting an empty page.
 Feature detection: `(await eventStore.supports()).includes('subscribe:initial')`.
+
+During an initial snapshot, the launcher allows up to 7 minutes for the first
+`event` or `id`. After that first result, it allows 60 seconds without progress
+until `eose`. Both timers stop permanently at `eose`; a live subscription may
+then remain idle indefinitely. Initial snapshot timeout rejects with
+`NOSTRDB_SNAPSHOT_TIMEOUT`. Subscriptions without `initial` have no snapshot
+timeouts. Cancellation also removes queued signer/vault jobs; a request already
+sent to the vault may finish remotely, but its late result is discarded.
 
 ### Personal copies
 

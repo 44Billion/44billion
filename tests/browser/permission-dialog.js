@@ -23,18 +23,23 @@ const { outputFiles } = await build({
         const permissions = usePermissionDialogStore()
         window.permissionFixture = {
           permissions, outcomes: [], setLocalePreference,
-          request(name) {
-            permissions.requestPermission({
+          request(name, signal) {
+            return permissions.requestPermission({
               app: { id: 'permission-expansion-test', name: 'Permission test' },
               name: 'openApp', eKind: null, remember: false,
-              meta: { targetApp: { name } }
-            }).then(() => this.outcomes.push('granted'), () => this.outcomes.push('denied'))
+              meta: { targetApp: { name } },
+              signal
+            }).then(
+              () => { this.outcomes.push('granted'); return true },
+              error => { this.outcomes.push('denied'); return error.code }
+            )
           },
-          requestDelete(dedupeKey) {
+          requestDelete(dedupeKey, signal) {
             return permissions.requestPermission({
               app: { id: 'permission-expansion-test', name: 'Permission test' },
               name: 'delete', eKind: 5, remember: false, dedupeKey: 'permission-expansion-test:' + dedupeKey,
-              meta: { params: [{ kind: 5, tags: [['e', 'a'.repeat(64)]] }] }
+              meta: { params: [{ kind: 5, tags: [['e', 'a'.repeat(64)]] }] },
+              signal
             })
           }
         }
@@ -70,7 +75,7 @@ try {
   const input = (method, params) => browser.send(method, params, session)
   await input('Emulation.setDeviceMetricsOverride', { width: 320, height: 640, deviceScaleFactor: 1, mobile: true })
   const longName = 'Aplicativo para conversar, compartilhar arquivos e guardar informações pessoais com segurança. '.repeat(6)
-  await evaluate(`permissionFixture.request(${JSON.stringify(longName)}); permissionFixture.request('Second app')`)
+  await evaluate(`void permissionFixture.request(${JSON.stringify(longName)}); void permissionFixture.request('Second app')`)
   await browser.until(() => evaluate('document.querySelectorAll(".permission-text").length === 2 && Boolean(document.querySelector("dialog[open]"))'), 'queued permission cards')
   const measure = () => evaluate(`(() => {
     const text = document.querySelector('.permission-text');
@@ -126,7 +131,7 @@ try {
   await browser.until(() => evaluate('permissionFixture.outcomes.length === 2 && !document.querySelector("dialog[open]")'), 'deny still closes the remaining request')
   assert.deepEqual(await evaluate('permissionFixture.outcomes'), ['granted', 'denied'])
   await evaluate('new Promise(resolve => setTimeout(resolve, 350))')
-  await evaluate("permissionFixture.request('Fresh app')")
+  await evaluate("void permissionFixture.request('Fresh app')")
   await browser.until(() => evaluate('Boolean(document.querySelector("dialog[open] .permission-text"))'), 'fresh request')
   assert.equal((await measure()).clamp, 3)
   assert.equal((await measure()).expanded, 'false')
@@ -162,8 +167,35 @@ try {
   await browser.until(() => evaluate('Boolean(document.querySelector("dialog[open] .permission-text"))'), 'app cleanup discards recent one-time grants')
   await evaluate('document.querySelector(".deny-button").click()')
   await browser.until(async () => await evaluate('new Promise(resolve => afterCleanup.then(value => resolve(value === false)))'), 'cleanup prompt denied')
+  await evaluate('new Promise(resolve => setTimeout(resolve, 350))')
+
+  await evaluate(`window.singularCancel = new AbortController()
+    void (window.singularCancelled = permissionFixture.request('Cancelled app', singularCancel.signal))`)
+  await browser.until(() => evaluate('Boolean(document.querySelector("dialog[open] .permission-text"))'), 'singular cancellation prompt')
+  await evaluate('singularCancel.abort()')
+  await browser.until(async () => await evaluate('new Promise(resolve => singularCancelled.then(code => resolve(code === "NOSTRDB_REQUEST_CANCELLED")))'), 'singular prompt cancellation')
+  assert.equal(await evaluate('Boolean(document.querySelector("dialog[open]"))'), false)
+
+  await evaluate(`window.sharedCancelA = new AbortController()
+    window.sharedCancelB = new AbortController()
+    window.sharedCancelOutcomes = []
+    void (window.sharedCancel = Promise.all([
+      permissionFixture.requestDelete('cancel-shared', sharedCancelA.signal)
+        .then(() => sharedCancelOutcomes.push('granted'), error => sharedCancelOutcomes.push(error.code)),
+      permissionFixture.requestDelete('cancel-shared', sharedCancelB.signal)
+        .then(() => sharedCancelOutcomes.push('granted'), error => sharedCancelOutcomes.push(error.code))
+    ]))`)
+  await browser.until(() => evaluate('document.querySelectorAll(".permission-text").length === 1'), 'shared cancellation prompt')
+  await evaluate('sharedCancelA.abort()')
+  await browser.until(() => evaluate('sharedCancelOutcomes.length === 1'), 'first shared waiter cancelled')
+  assert.deepEqual(await evaluate('sharedCancelOutcomes'), ['NOSTRDB_REQUEST_CANCELLED'])
+  assert.equal(await evaluate('Boolean(document.querySelector("dialog[open]"))'), true)
+  await evaluate('sharedCancelB.abort()')
+  await browser.until(async () => await evaluate('new Promise(resolve => sharedCancel.then(() => resolve(sharedCancelOutcomes.length === 2 && !document.querySelector("dialog[open]"))))'), 'last shared waiter cancelled')
+  assert.deepEqual(await evaluate('sharedCancelOutcomes'), ['NOSTRDB_REQUEST_CANCELLED', 'NOSTRDB_REQUEST_CANCELLED'])
+
   assert.deepEqual(browser.logs.filter(log => log.method === 'Runtime.exceptionThrown'), [])
-  console.log('Permission prompts passed: layout, independent requests, shared one-time grants and per-descriptor dedupe.')
+  console.log('Permission prompts passed: layout, independent requests, shared grants, deduplication and cancellation.')
 } catch (error) {
   await browser?.diagnose('/tmp/44billion-permission-dialog-failure')
   throw error

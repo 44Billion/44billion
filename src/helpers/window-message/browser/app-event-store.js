@@ -4,7 +4,15 @@ import { getEventHash } from 'libp2r2p/event'
 import { assertNostrDbAccountFlags, assertNostrDbAccess, watchNostrDbAccess } from '#services/idb/nostrdb/access.js'
 import { NOSTRDB_CAPABILITIES } from '#services/idb/nostrdb/capabilities.js'
 import { base16ToBase62 } from 'libp2r2p/base62'
-import { nostrDbStreamDonePayload } from '../nostrdb-protocol.js'
+import {
+  NOSTRDB_ONESHOT_TIMEOUT_MS,
+  NOSTRDB_REQUEST_CANCELLED,
+  NOSTRDB_REQUEST_TIMEOUT,
+  NOSTRDB_SNAPSHOT_FIRST_TIMEOUT_MS,
+  NOSTRDB_SNAPSHOT_IDLE_TIMEOUT_MS,
+  NOSTRDB_SNAPSHOT_TIMEOUT,
+  nostrDbStreamDonePayload
+} from '../nostrdb-protocol.js'
 import { guardSignerRequest } from './signer-guard.js'
 import {
   createNostrDbMaintenanceSignEvent,
@@ -34,12 +42,27 @@ export function createAppEventStoreBridge ({
   notifySignerRequestAttention,
   reply,
   isWidget = false,
-  reportError = console.error
+  reportError = console.error,
+  now = Date.now,
+  setTimer = setTimeout,
+  clearTimer = clearTimeout
 }) {
   const subscriptions = new Map()
   const operations = new Map()
   let disposed = false
   const stopAccessWatch = watchNostrDbAccess(revalidateSubscriptions)
+
+  function cancelledError () {
+    return Object.assign(new Error(NOSTRDB_REQUEST_CANCELLED), { code: NOSTRDB_REQUEST_CANCELLED })
+  }
+
+  function requestTimeoutError () {
+    return Object.assign(new Error(NOSTRDB_REQUEST_TIMEOUT), { code: NOSTRDB_REQUEST_TIMEOUT })
+  }
+
+  function snapshotTimeoutError () {
+    return Object.assign(new Error(NOSTRDB_SNAPSHOT_TIMEOUT), { code: NOSTRDB_SNAPSHOT_TIMEOUT })
+  }
 
   // An explicit invalid target must never fall back to the workspace account.
   function resolveScope (payload) {
@@ -68,10 +91,12 @@ export function createAppEventStoreBridge ({
     const guard = ({ method, params }) => guardSignerRequest({
       method, params, account: readAccountFlags(userPk), onAttention
     })
-    const permission = async request => {
+    const permission = async (request, signal) => {
+      const requestSignal = signal || request.signal
       assertAvailable()
       await requestPermission?.({
         ...request,
+        signal: requestSignal,
         meta: {
           ...request.meta,
           ...(isWidget ? { isWidget: true } : {}),
@@ -88,6 +113,7 @@ export function createAppEventStoreBridge ({
     const subscription = subscriptions.get(subscriptionId)
     if (!subscription) return
     subscription.cancelled = true
+    clearSnapshotTimers(subscription)
     subscriptions.delete(subscriptionId)
     if (!disposed) {
       reply(subscription.event, {
@@ -104,8 +130,8 @@ export function createAppEventStoreBridge ({
     for (const [id, subscription] of subscriptions) {
       try { subscription.scope.assertAvailable() } catch (error) { stop(id, error) }
     }
-    for (const [controller, assertAvailable] of operations) {
-      try { assertAvailable() } catch (error) { controller.abort(error) }
+    for (const operation of operations.values()) {
+      try { operation.assertAvailable() } catch (error) { operation.controller.abort(error) }
     }
   }
 
@@ -113,9 +139,81 @@ export function createAppEventStoreBridge ({
     disposed = true
     stopAccessWatch()
     for (const id of subscriptions.keys()) stop(id)
-    const error = Object.assign(new Error('NOSTRDB_REQUEST_CANCELLED'), { code: 'NOSTRDB_REQUEST_CANCELLED' })
-    for (const controller of operations.keys()) controller.abort(error)
+    const error = cancelledError()
+    for (const operation of operations.values()) {
+      operation.silent = true
+      clearTimer(operation.deadlineTimer)
+      operation.controller.abort(error)
+    }
     operations.clear()
+  }
+
+  function cancel (target) {
+    if (typeof target === 'string') {
+      stop(target)
+      return
+    }
+    if (typeof target?.requestId === 'string') {
+      const operation = operations.get(target.requestId)
+      if (operation) {
+        operation.silent = true
+        clearTimer(operation.deadlineTimer)
+        operation.controller.abort(cancelledError())
+      }
+      return
+    }
+    stop(target?.subscriptionId)
+  }
+
+  function clearSnapshotTimers (subscription) {
+    clearTimer(subscription.firstTimer)
+    clearTimer(subscription.idleTimer)
+    subscription.firstTimer = null
+    subscription.idleTimer = null
+  }
+
+  function resetSnapshotIdleTimer (subscription) {
+    if (!subscription.snapshot || subscription.snapshot.settled) return
+    clearTimer(subscription.idleTimer)
+    subscription.idleTimer = setTimer(() => stop(subscription.subscriptionId, snapshotTimeoutError()), NOSTRDB_SNAPSHOT_IDLE_TIMEOUT_MS)
+    subscription.idleTimer?.unref?.()
+  }
+
+  function noteSnapshotProgress (subscription, item) {
+    if (!subscription.snapshot || subscription.snapshot.settled) return
+    if (item?.type === 'eose') {
+      clearSnapshotTimers(subscription)
+      subscription.snapshot.settled = true
+      return
+    }
+    if (!subscription.snapshot.firstResultReceived) {
+      subscription.snapshot.firstResultReceived = true
+      clearTimer(subscription.firstTimer)
+      subscription.firstTimer = null
+    }
+    resetSnapshotIdleTimer(subscription)
+  }
+
+  function armSnapshotTimers (subscription, params) {
+    const options = params?.[1]
+    if (!options || options.initial !== true) return
+    subscription.snapshot = { firstResultReceived: false, settled: false }
+    subscription.firstTimer = setTimer(
+      () => stop(subscription.subscriptionId, snapshotTimeoutError()),
+      NOSTRDB_SNAPSHOT_FIRST_TIMEOUT_MS
+    )
+    subscription.firstTimer?.unref?.()
+  }
+
+  function armRequestDeadline (operation, deadlineAt) {
+    const queuedAt = now()
+    const requested = Number.isFinite(deadlineAt) ? deadlineAt : queuedAt + NOSTRDB_ONESHOT_TIMEOUT_MS
+    const deadline = Math.min(requested, queuedAt + NOSTRDB_ONESHOT_TIMEOUT_MS)
+    operation.deadlineTimer = setTimer(
+      () => operation.controller.abort(requestTimeoutError()),
+      Math.max(0, deadline - queuedAt)
+    )
+    operation.deadlineTimer?.unref?.()
   }
 
   // Recheck access after asynchronous permissions, reads, and each streamed item.
@@ -124,27 +222,48 @@ export function createAppEventStoreBridge ({
     const payload = event.data.payload ?? {}
     const { method, params = [], subscriptionId } = payload
     let subscription
-    let operationController
-    const active = () => !disposed && !subscription?.cancelled
+    let operation
+    let operationId
+    const active = () => !disposed && !subscription?.cancelled && !operation?.silent
     try {
       const scope = resolveScope(payload)
       if (method === 'supports') { reply(event, { payload: [...NOSTRDB_CAPABILITIES] }); return }
       scope.assertAvailable()
-      operationController = new AbortController()
-      operations.set(operationController, () => {
-        if (disposed || subscription?.cancelled) {
-          throw Object.assign(new Error('NOSTRDB_REQUEST_CANCELLED'), { code: 'NOSTRDB_REQUEST_CANCELLED' })
+      operationId = typeof event.data.reqId === 'string' && event.data.reqId
+        ? event.data.reqId
+        : Symbol('nostrdb-operation')
+      if (operations.has(operationId)) throw new Error('NOSTRDB_REQUEST_ID_REUSED')
+      const operationController = new AbortController()
+      operation = {
+        controller: operationController,
+        deadlineTimer: null,
+        silent: false,
+        assertAvailable: () => {
+          if (disposed || subscription?.cancelled || operation.silent) throw cancelledError()
+          scope.assertAvailable()
         }
-        scope.assertAvailable()
-      })
+      }
+      operations.set(operationId, operation)
+      if (method !== 'subscribe') armRequestDeadline(operation, payload.deadlineAt)
       if (method === 'subscribe') {
         if (!subscriptionId) throw new Error('NOSTRDB_SUBSCRIPTION_ID_REQUIRED')
         if (subscriptions.has(subscriptionId)) throw new Error('NOSTRDB_SUBSCRIPTION_EXISTS')
-        subscription = { event, scope, iterator: null, cancelled: false }
+        subscription = {
+          event,
+          scope,
+          iterator: null,
+          cancelled: false,
+          subscriptionId,
+          firstTimer: null,
+          idleTimer: null,
+          snapshot: null
+        }
+        armSnapshotTimers(subscription, params)
         subscriptions.set(subscriptionId, subscription)
       }
       const app = await getAppMetadata()
       if (!active()) return
+      operationController.signal.throwIfAborted()
       scope.assertAvailable()
       const isDefaultUser = readAccountFlags(scope.userPk).isDefaultUser
       // Cached database callbacks belong to the target account, not this persona or document.
@@ -166,6 +285,7 @@ export function createAppEventStoreBridge ({
           if (!active()) return
           scope.assertAvailable()
           reply(event, { payload: item, isLast: false })
+          noteSnapshotProgress(subscription, item)
           if (item.type === 'event') db.recordCacheAccess?.(item, ...readParams)
         }
         if (active()) reply(event, { payload: nostrDbStreamDonePayload(subscriptionId), isLast: true })
@@ -184,7 +304,14 @@ export function createAppEventStoreBridge ({
       const archiveRequest = method === 'addPersonalCopy' &&
         isRecoveryArchiveEvent(params[0], params[1]?.recovery === true)
       if (inherited && archiveRequest) inherited.archive = true
-      const requestVault = (message, options) => askVault(withRequestDiagnostics(message, { reqId: event.data.reqId, eventId, seedRecordId }), { ...options, ...(inherited ? { scheduling: inherited } : {}) })
+      const requestVault = (message, options) => askVault(
+        withRequestDiagnostics(message, { reqId: event.data.reqId, eventId, seedRecordId }),
+        {
+          ...options,
+          ...(inherited ? { scheduling: inherited } : {}),
+          signal: operationController.signal
+        }
+      )
       const localSignerOptions = { ...signerOptions, askVault: requestVault, cacheObfuscation: true, diagnostics: { requestId: event.data.reqId, eventId, seedRecordId } }
       const startedAt = performance.now()
       const signEvent = async template => {
@@ -203,11 +330,13 @@ export function createAppEventStoreBridge ({
         app, personalCopyEncrypt: isDefaultUser ? null : createNostrDbPersonalCopyEncrypt(localSignerOptions), personalCopyObfuscate: isDefaultUser ? null : createNostrDbPersonalCopyObfuscate(localSignerOptions), personalCopyObfuscateMany: isDefaultUser ? null : createNostrDbPersonalCopyObfuscateMany(localSignerOptions), deferCacheAccess: true,
         signal: operationController.signal,
         assertAccess: () => {
+          operationController.signal.throwIfAborted()
           scope.assertAvailable()
-          if (!active()) throw new Error('NOSTRDB_REQUEST_CANCELLED')
+          if (!active()) throw cancelledError()
         }
       })
       recordPerformance({ stage: 'event-store', eventId, seedRecordId, requestId: event.data.reqId, archive: archiveRequest, elapsedMs: performance.now() - startedAt })
+      operationController.signal.throwIfAborted()
       scope.assertAvailable()
       if (active()) {
         reply(event, { payload: result })
@@ -216,10 +345,12 @@ export function createAppEventStoreBridge ({
     } catch (error) {
       if (active()) reply(event, { error, ...(method === 'subscribe' ? { isLast: true } : {}) })
     } finally {
-      if (operationController) operations.delete(operationController)
+      if (operation) clearTimer(operation.deadlineTimer)
+      if (operationId !== undefined) operations.delete(operationId)
+      if (subscription) clearSnapshotTimers(subscription)
       if (subscription && subscriptions.get(subscriptionId) === subscription) subscriptions.delete(subscriptionId)
     }
   }
 
-  return { handle, cancel: stop, revalidateSubscriptions, dispose }
+  return { handle, cancel, revalidateSubscriptions, dispose }
 }

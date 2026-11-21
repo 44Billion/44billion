@@ -41,6 +41,7 @@ export function createVaultRequestQueue ({ send, beforeSend = () => {}, onDebug,
     if (job.done) return
     job.done = true
     clearTimer(job.timer)
+    job.signal?.removeEventListener('abort', job.onAbort)
     running.delete(job)
     const queue = waiting[Number(job.priority)]
     const index = queue.indexOf(job)
@@ -51,6 +52,9 @@ export function createVaultRequestQueue ({ send, beforeSend = () => {}, onDebug,
     debug(job, 'vault-complete')
     job.resolve(result)
     drain()
+  }
+  function signalError (signal) {
+    return signal?.reason instanceof Error ? signal.reason : new Error('Canceled')
   }
   function drain () {
     if (draining || closed || !port) return
@@ -92,16 +96,27 @@ export function createVaultRequestQueue ({ send, beforeSend = () => {}, onDebug,
     port = previous
   }
   return {
-    ask (msg, { timeout = 5000, instant = false, scheduling } = {}) {
+    ask (msg, { timeout = 5000, instant = false, scheduling, signal } = {}) {
       if (closed) return Promise.resolve(failure(msg, new Error('Vault queue closed')))
+      if (signal?.aborted) return Promise.resolve(failure(msg, signalError(signal)))
       if (instant) {
         if (!port) return Promise.reject(new Error('Vault not connected'))
-        return send(port, msg, { timeout })
+        return send(port, msg, { timeout, signal })
       }
       const queuedAt = now()
       const classification = scheduling ?? classifyVaultRequest(msg)
       return new Promise(resolve => {
-        const job = { msg, resolve, ...classification, archive: Boolean(classification.archive), queuedAt, deadline: timeout == null ? null : queuedAt + timeout }
+        const job = {
+          msg,
+          resolve,
+          ...classification,
+          archive: Boolean(classification.archive),
+          queuedAt,
+          deadline: timeout == null ? null : queuedAt + timeout,
+          signal
+        }
+        job.onAbort = () => finish(job, failure(msg, signalError(signal)))
+        signal?.addEventListener('abort', job.onAbort, { once: true })
         waiting[Number(Boolean(job.priority))].push(job)
         if (job.deadline !== null) {
           job.timer = setTimer(() => finish(job, failure(msg, new Error('Vault request timed out'))), Math.max(0, timeout))

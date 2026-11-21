@@ -337,6 +337,25 @@ while crypto, signer, network, Web Lock or timer work is pending. Aborts remove
 queued work, and every start revalidates access and the cached connection
 generation before opening a transaction.
 
+App event-store one-shots also carry a launcher-clamped deadline. `supports` is
+bounded to 5 seconds and other one-shots to 5 minutes. Timeout, document unload
+or `NOSTRDB_CANCEL { requestId }` aborts the operation, permission wait, signer
+call and queued scheduler work; canceled requests never publish a late reply.
+The client sends the cancel message when its own deadline expires.
+
+Subscriptions with `initial: true` allow 7 minutes for the first snapshot item
+and then 60 seconds without progress until `eose`. These timers end permanently
+at `eose`, so live delivery has no idle timeout. Subscriptions without an
+initial snapshot have no such timer. Snapshot timeout closes the iterator with
+`NOSTRDB_SNAPSHOT_TIMEOUT`.
+
+The vault queue accepts a per-job signal and removes both queued and dispatched
+jobs from its local concurrency accounting. Queued jobs never reach the vault;
+an already dispatched vault request may finish remotely, but its response is
+discarded. There is no remote `NIP07_CANCEL` protocol. Permission prompts track
+their waiters independently: cancelling one request does not resolve a prompt
+shared with another requester, and the last cancelled waiter removes it.
+
 Recovery pages pass the internal `recovery: true` query hint. The launcher accepts
 it only for one structurally valid kind-1006 personal-copy filter, strips it
 before calling NostrDB, and admits the planner and cursor transactions as

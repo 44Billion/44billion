@@ -75,7 +75,8 @@ const {
 } = await import('../../src/i18n/asset-budget.js')
 const {
   formatPermissionText,
-  permissionDialogLocales
+  permissionDialogLocales,
+  usePermissionDialogStore
 } = await import('../../src/components/zones/permission-dialog/index.js')
 const {
   appDataAccessLocales
@@ -304,5 +305,52 @@ describe('reactive locale preference', () => {
     assert.equal(store.confirmText$(), 'Custom action')
     store.resolveCurrent()
     await customRequest
+  })
+})
+
+describe('permission request cancellation', () => {
+  it('removes a cancelled singular prompt', async () => {
+    const store = usePermissionDialogStore()
+    const controller = new AbortController()
+    const pending = store.requestPermission({
+      app: { id: 'cancel-singular', name: 'Cancel test' },
+      name: 'openApp',
+      eKind: null,
+      remember: false,
+      signal: controller.signal,
+      meta: { targetApp: { name: 'Target app' } }
+    }).then(() => null, error => error.code)
+    await Promise.resolve()
+    assert.equal(store.queue$().length, 1)
+    controller.abort()
+    assert.equal(await pending, 'NOSTRDB_REQUEST_CANCELLED')
+    assert.equal(store.queue$().length, 0)
+  })
+
+  it('cancels deduplicated waiters independently', async () => {
+    const store = usePermissionDialogStore()
+    const first = new AbortController()
+    const second = new AbortController()
+    const request = signal => store.requestPermission({
+      app: { id: 'cancel-dedupe', name: 'Cancel test' },
+      name: 'delete',
+      eKind: 5,
+      remember: false,
+      dedupeKey: 'cancel-dedupe:shared',
+      signal,
+      meta: { params: [{ kind: 5, tags: [['e', 'a'.repeat(64)]] }] }
+    }).then(() => null, error => error.code)
+    const firstPending = request(first.signal)
+    const secondPending = request(second.signal)
+    await Promise.resolve()
+    assert.equal(store.queue$().length, 1)
+
+    first.abort()
+    assert.equal(await firstPending, 'NOSTRDB_REQUEST_CANCELLED')
+    assert.equal(store.queue$().length, 1)
+
+    second.abort()
+    assert.equal(await secondPending, 'NOSTRDB_REQUEST_CANCELLED')
+    assert.equal(store.queue$().length, 0)
   })
 })

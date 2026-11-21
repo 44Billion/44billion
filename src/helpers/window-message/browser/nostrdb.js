@@ -385,12 +385,14 @@ function uniquePermissions (permissions) {
   return result
 }
 
-async function requestPermissions (permissions, { app, requestPermission, params }) {
+async function requestPermissions (permissions, { app, requestPermission, params, signal }) {
   if (!requestPermission) return
   for (const permission of uniquePermissions(permissions)) {
+    signal?.throwIfAborted()
     await requestPermission({
       app,
       ...permission,
+      signal,
       scope: permission.scope ?? '',
       meta: {
         params,
@@ -451,7 +453,7 @@ export async function runNostrDbMethod ({
 }) {
   if (!NOSTRDB_ONE_SHOT_METHODS.includes(method)) throw new Error(`Unknown nostrdb method ${method}`)
   const args = Array.isArray(params) ? params : []
-  const permissionContext = { app, requestPermission, params: args }
+  const permissionContext = { app, requestPermission, params: args, signal }
 
   if (method === 'remove') {
     const targets = normalizeLocalRemovalTargets(args[0])

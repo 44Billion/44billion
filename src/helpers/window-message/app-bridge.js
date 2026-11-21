@@ -860,7 +860,7 @@ function createAppPageMessageListener ({
           break
         }
         case 'NOSTRDB_CANCEL': {
-          eventStoreBridge.cancel(e.data.payload?.subscriptionId)
+          eventStoreBridge.cancel(e.data.payload)
           break
         }
         case 'WINDOW_NAPP': {

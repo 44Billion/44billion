@@ -20,6 +20,7 @@ import '#shared/icons/icon-x.js'
 import { useWebStorage } from '#f'
 import { getT } from '#i18n/index.js'
 import { installedAppIdsFromStorage } from '#services/app-permissions.js'
+import { NOSTRDB_REQUEST_CANCELLED } from '#helpers/window-message/nostrdb-protocol.js'
 
 const l = (en, fr, it, de, es, ptBR, ru, zhCN, zhTW, ja, ko) => ({
   en, fr, it, de, es, 'pt-BR': ptBR, ru, 'zh-CN': zhCN, 'zh-TW': zhTW, ja, ko
@@ -43,6 +44,14 @@ const t = getT(permissionDialogLocales)
 function getScopeText (scopeLabelKey, translate) {
   if (typeof scopeLabelKey !== 'string' || !scopeLabelKey) return ''
   return translate('Scope: {{scope}}', { scope: translate(scopeLabelKey) })
+}
+
+function permissionCancelled (signal) {
+  if (signal?.reason instanceof Error && typeof signal.reason.code === 'string' && signal.reason.code) return signal.reason
+  return Object.assign(new Error('Permission request cancelled'), {
+    name: 'AbortError',
+    code: NOSTRDB_REQUEST_CANCELLED
+  })
 }
 
 export function formatPermissionText ({ name, eKind, meta, getCachedAppName = () => undefined, translate = t }) {
@@ -91,7 +100,7 @@ export function formatPermissionText ({ name, eKind, meta, getCachedAppName = ()
   return `${question} (${scope})${punctuation}`
 }
 
-function createPermissionDialogStore () {
+export function createPermissionDialogStore () {
   return {
     isOpen$ () { return this.queue$().length > 0 },
     clearApp (appId) {
@@ -116,51 +125,52 @@ function createPermissionDialogStore () {
       return req.remember === false || req.eKind == null || (req.app.id && req.name === 'openApp')
     },
     addPermissionRequest (req) {
+      const duplicate = !this.isSingularPermission(req)
+        ? this.queue$().find(request => request.id === req.id && !request.done)
+        : null
+      if (duplicate) {
+        duplicate.waiters++
+        return duplicate
+      }
+      const entry = {
+        id: req.id,
+        app: {
+          id: req.app.id,
+          napp: req.app.napp,
+          alias: req.app.alias,
+          name: req.app.name,
+          icon: {
+            fx: req.app.icon?.fx,
+            url: req.app.icon?.url
+          }
+        },
+        name: req.name,
+        eKind: req.eKind,
+        scope: req.scope,
+        remember: req.remember,
+        dedupeKey: req.dedupeKey,
+        meta: {
+          // params: req.meta.params (NIP07)
+          // targetApp: req.meta.targetApp (OPEN_APP)
+          ...req.meta
+        },
+        promise: req.promise,
+        resolve: req.resolve,
+        reject: req.reject,
+        done: false,
+        waiters: 1
+      }
       this.queue$(v => {
-        let duplicate
-        if (
-          !this.isSingularPermission(req) &&
-          (duplicate = v.find(v2 => v2.id === req.id))
-        ) {
-          duplicate.promise.then(req.resolve).catch(req.reject)
-          return v
-        }
-
-        v.push({
-          id: req.id,
-          app: {
-            id: req.app.id,
-            napp: req.app.napp,
-            alias: req.app.alias,
-            name: req.app.name,
-            icon: {
-              fx: req.app.icon?.fx,
-              url: req.app.icon?.url
-            }
-          },
-          name: req.name,
-          eKind: req.eKind,
-          scope: req.scope,
-          remember: req.remember,
-          dedupeKey: req.dedupeKey,
-          meta: {
-            // params: req.meta.params (NIP07)
-            // targetApp: req.meta.targetApp (OPEN_APP)
-            ...req.meta
-          },
-          promise: req.promise,
-          resolve: req.resolve,
-          reject: req.reject
-        })
-        return v
+        return [...v, entry]
       })
+      return entry
     },
     removeCurrent (current) {
       if (this.queue$().length === 0) return
 
       const req = current ?? this.queue$()[0]
       this.queue$(v => current
-        ? v.filter(v2 => v2.id !== req.id)
+        ? v.filter(v2 => v2 !== req)
         : v.slice(1)
       )
     },
@@ -172,6 +182,7 @@ function createPermissionDialogStore () {
         // grant just once
         if (this.isSingularPermission(req)) {
           if (req.dedupeKey) dedupeState(this).grants.set(req.dedupeKey, Date.now() + ONE_TIME_DEDUPE_MS)
+          req.done = true
           req.resolve(true)
           this.removeCurrent(current)
           return
@@ -179,9 +190,12 @@ function createPermissionDialogStore () {
 
         // remember
         await createOrUpdatePermission(req.app.id, req.name, req.eKind, req.scope)
+        if (req.done) return
+        req.done = true
         req.resolve(true)
         this.removeCurrent(current)
       } else {
+        req.done = true
         req.reject(new Error('Permission denied'))
         this.removeCurrent(current)
       }
@@ -204,24 +218,58 @@ function createPermissionDialogStore () {
         }
         state.grants.delete(req.dedupeKey)
         const pending = state.pending.get(req.dedupeKey)
-        if (pending) return pending
+        if (pending && !pending.done) {
+          pending.waiters++
+          return this.waitForPermission(pending, req.signal)
+        }
       }
 
       const p = Promise.withResolvers()
-      this.addPermissionRequest({
+      const entry = this.addPermissionRequest({
         ...req,
         ...p,
         id: this.isSingularPermission(req)
           ? `${this.getPermissionId(req)}:${Date.now()}:${Math.random()}`
           : this.getPermissionId(req)
       })
-      if (!req.dedupeKey) return p.promise
-      const state = dedupeState(this)
-      const pending = p.promise.finally(() => {
-        if (state.pending.get(req.dedupeKey) === pending) state.pending.delete(req.dedupeKey)
+      if (req.dedupeKey && !entry.done) {
+        const state = dedupeState(this)
+        state.pending.set(req.dedupeKey, entry)
+        entry.promise.finally(() => {
+          if (state.pending.get(req.dedupeKey) === entry) state.pending.delete(req.dedupeKey)
+        }).catch(() => {})
+      }
+      return this.waitForPermission(entry, req.signal)
+    },
+    waitForPermission (entry, signal) {
+      if (!signal) return entry.promise
+      if (signal.aborted) {
+        entry.waiters--
+        if (entry.waiters <= 0 && !entry.done) {
+          entry.done = true
+          entry.reject(permissionCancelled(signal))
+          this.removeCurrent(entry)
+        }
+        return Promise.reject(permissionCancelled(signal))
+      }
+      return new Promise((resolve, reject) => {
+        const cleanup = () => signal.removeEventListener('abort', onAbort)
+        const onAbort = () => {
+          cleanup()
+          entry.waiters--
+          if (entry.waiters <= 0 && !entry.done) {
+            entry.done = true
+            entry.reject(permissionCancelled(signal))
+            this.removeCurrent(entry)
+          }
+          reject(permissionCancelled(signal))
+        }
+        signal.addEventListener('abort', onAbort, { once: true })
+        entry.promise.then(
+          value => { cleanup(); resolve(value) },
+          error => { cleanup(); reject(error) }
+        )
       })
-      state.pending.set(req.dedupeKey, pending)
-      return pending
     }
   }
 }

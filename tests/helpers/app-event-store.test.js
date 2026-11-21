@@ -32,6 +32,28 @@ function stream () {
   }
 }
 
+function manualTimers () {
+  const scheduled = []
+  return {
+    scheduled,
+    now: () => 1_000,
+    setTimer (callback, delay) {
+      const timer = { callback, delay, cancelled: false, unref () {} }
+      scheduled.push(timer)
+      return timer
+    },
+    clearTimer (timer) {
+      if (timer) timer.cancelled = true
+    },
+    fire (timer) {
+      if (!timer.cancelled) timer.callback()
+    },
+    active () {
+      return scheduled.filter(timer => !timer.cancelled)
+    }
+  }
+}
+
 // Substitute storage and UI boundaries while using the actual permissions and bridge logic.
 function fixture (overrides = {}) {
   const replies = []
@@ -152,6 +174,33 @@ describe('persona event store bridge', () => {
     assert.equal(f.accesses.length, 0)
   })
 
+  it('cancels a pending permission request without opening the database', async () => {
+    let permissionSignal
+    const prompted = Promise.withResolvers()
+    const f = fixture({
+      requestPermission: request => {
+        permissionSignal = request.signal
+        prompted.resolve()
+        return new Promise((resolve, reject) => {
+          request.signal.addEventListener('abort', () => reject(request.signal.reason), { once: true })
+        })
+      }
+    })
+    const pending = f.bridge.handle({
+      data: {
+        reqId: 'permission-cancel',
+        payload: { method: 'remove', userPk: peer, params: [[['e', 'ab'.repeat(32)]]] }
+      }
+    })
+    await prompted.promise
+    assert.equal(permissionSignal instanceof AbortSignal, true)
+    f.bridge.cancel({ requestId: 'permission-cancel' })
+    await pending
+    assert.equal(permissionSignal.aborted, true)
+    assert.deepEqual(f.replies, [])
+    assert.equal(f.vaultCalls.length, 0)
+  })
+
   it('streams only the target store and terminates idle subscriptions on persona revocation', async () => {
     const f = fixture()
     const pending = f.request({ method: 'subscribe', userPk: peer, subscriptionId: 'sub', params: [{ kinds: [3] }] })
@@ -189,12 +238,12 @@ describe('persona event store bridge', () => {
   it('aborts an event-store mutation waiting behind storage when the bridge closes', async () => {
     const entered = Promise.withResolvers()
     const release = Promise.withResolvers()
-    let signal
+    const captured = {}
     const f = fixture({
       getNostrDb: pubkey => ({
         ownerPubkey: pubkey,
         add: async (_event, options) => {
-          signal = options.signal
+          captured.signal = options.signal
           entered.resolve()
           await release.promise
           return { ok: true }
@@ -204,7 +253,7 @@ describe('persona event store bridge', () => {
     const running = f.request({ method: 'add', params: [{ kind: 1, tags: [], created_at: 1, content: '' }] })
     await entered.promise
     f.bridge.dispose()
-    assert.equal(signal.aborted, true)
+    assert.equal(captured.signal.aborted, true)
     release.resolve()
     await running
     assert.deepEqual(f.replies, [])
@@ -232,6 +281,124 @@ describe('persona event store bridge', () => {
     b.bridge.dispose()
     await pendingB
     assert.equal(b.streams[0].iterator.closed, true)
+  })
+
+  it('cancels one-shot operations by request id without replying', async () => {
+    const entered = Promise.withResolvers()
+    const release = Promise.withResolvers()
+    const f = fixture({
+      getNostrDb: pubkey => ({
+        ownerPubkey: pubkey,
+        query: async () => {
+          entered.resolve()
+          await release.promise
+          return { results: [] }
+        }
+      })
+    })
+    const first = f.bridge.handle({ data: { reqId: 'request-a', payload: { method: 'query', params: [{}] } } })
+    await entered.promise
+    f.bridge.cancel({ requestId: 'request-a' })
+    release.resolve()
+    await first
+    assert.deepEqual(f.replies, [])
+    assert.equal(f.bridge.cancel({ requestId: 'unknown' }), undefined)
+  })
+
+  it('enforces the launcher-side one-shot deadline and discards a late result', async () => {
+    const timers = manualTimers()
+    const release = Promise.withResolvers()
+    const f = fixture({
+      ...timers,
+      getNostrDb: pubkey => ({
+        ownerPubkey: pubkey,
+        add: async () => {
+          await release.promise
+          return { ok: true }
+        }
+      })
+    })
+    const pending = f.bridge.handle({
+      data: {
+        reqId: 'deadline',
+        payload: {
+          method: 'add',
+          params: [{ kind: 1, tags: [], created_at: 1, content: '' }],
+          deadlineAt: 1_500
+        }
+      }
+    })
+    await setImmediate()
+    assert.equal(timers.scheduled.at(-1).delay, 500)
+    timers.fire(timers.scheduled.at(-1))
+    release.resolve()
+    await pending
+    assert.equal(f.replies.at(-1).error.code, 'NOSTRDB_REQUEST_TIMEOUT')
+  })
+
+  it('times out an initial snapshot at seven minutes and then after sixty seconds without progress', async () => {
+    const timers = manualTimers()
+    const f = fixture(timers)
+    const pending = f.bridge.handle({
+      data: {
+        reqId: 'snapshot',
+        payload: {
+          method: 'subscribe',
+          subscriptionId: 'sub',
+          params: [{ kinds: [3] }, { initial: true }]
+        }
+      }
+    })
+    await setImmediate()
+    const first = timers.active().at(-1)
+    assert.equal(first.delay, 7 * 60 * 1000)
+    f.streams[0].iterator.push({ type: 'event', event: { kind: 3, pubkey: peer } })
+    await setImmediate()
+    const idle = timers.active().at(-1)
+    assert.equal(first.cancelled, true)
+    assert.equal(idle.delay, 60 * 1000)
+    timers.fire(idle)
+    await pending
+    assert.equal(f.replies.at(-1).error.code, 'NOSTRDB_SNAPSHOT_TIMEOUT')
+    assert.equal(f.replies.at(-1).isLast, true)
+    assert.equal(f.streams[0].iterator.closed, true)
+  })
+
+  it('disables snapshot timers after eose and never applies them to live-only subscriptions', async () => {
+    const timers = manualTimers()
+    const f = fixture(timers)
+    const pending = f.bridge.handle({
+      data: {
+        reqId: 'initial',
+        payload: {
+          method: 'subscribe',
+          subscriptionId: 'initial',
+          params: [{ kinds: [3] }, { initial: true }]
+        }
+      }
+    })
+    await setImmediate()
+    f.streams[0].iterator.push({ type: 'eose' })
+    await setImmediate()
+    assert.deepEqual(timers.active(), [])
+    f.bridge.cancel({ subscriptionId: 'initial' })
+    await pending
+
+    const live = fixture(timers)
+    const livePending = live.bridge.handle({
+      data: {
+        reqId: 'live',
+        payload: {
+          method: 'subscribe',
+          subscriptionId: 'live',
+          params: [{ kinds: [3] }]
+        }
+      }
+    })
+    await setImmediate()
+    assert.deepEqual(timers.active(), [])
+    live.bridge.cancel({ subscriptionId: 'live' })
+    await livePending
   })
 })
 
@@ -304,6 +471,7 @@ it('inherits personal-copy scheduling per request without changing cached databa
   await send(9)
   assert.ok(calls.length >= 3)
   assert.ok(calls.every(call => call.options.scheduling.priority === true))
+  assert.ok(calls.every(call => call.options.signal instanceof AbortSignal))
   assert.ok(calls.some(call => call.message.payload.method === 'obfuscateMany'))
   assert.ok(calls.some(call => call.message.payload.method === 'double_sign_event'))
   calls.length = 0

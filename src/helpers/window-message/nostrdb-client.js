@@ -1,24 +1,41 @@
 import { ask, askStream, tell } from './index.js'
 import {
   isNostrDbStreamDonePayload,
-  NOSTRDB_ONE_SHOT_METHODS
+  NOSTRDB_ONE_SHOT_METHODS,
+  NOSTRDB_ONESHOT_TIMEOUT_MS,
+  NOSTRDB_REQUEST_TIMEOUT,
+  NOSTRDB_SUPPORTS_TIMEOUT_MS
 } from './nostrdb-protocol.js'
-
-const DEFAULT_TIMEOUT = 5 * 60 * 1000
 
 function defaultSubscriptionId () {
   return `${Date.now()}:${Math.random().toString(36).slice(2)}`
 }
 
-function createNostrDbMethod (browserPortPromise, method, { ask: askFn, timeout, context }) {
+function createNostrDbMethod (browserPortPromise, method, { ask: askFn, tell: tellFn, timeout, context }) {
   return async (...params) => {
     const browserPort = await browserPortPromise
+    const methodTimeout = method === 'supports'
+      ? Math.min(timeout, NOSTRDB_SUPPORTS_TIMEOUT_MS)
+      : timeout
     const { payload, error } = await askFn(
       browserPort,
-      { code: 'NOSTRDB', payload: { ...context, method, params } },
-      { timeout }
+      {
+        code: 'NOSTRDB',
+        payload: { ...context, method, params, deadlineAt: Date.now() + methodTimeout }
+      },
+      {
+        timeout: methodTimeout,
+        onCancel: requestId => {
+          try { tellFn(browserPort, { code: 'NOSTRDB_CANCEL', payload: { requestId } }) } catch {}
+        }
+      }
     )
-    if (error) throw error
+    if (error) {
+      if (typeof error === 'string' && error.startsWith('Timeout for NOSTRDB')) {
+        throw Object.assign(new Error(NOSTRDB_REQUEST_TIMEOUT), { code: NOSTRDB_REQUEST_TIMEOUT })
+      }
+      throw error
+    }
     return payload
   }
 }
@@ -90,12 +107,14 @@ export function createNostrDb (browserPortPromise, {
   askStream: askStreamFn = askStream,
   tell: tellFn = tell,
   makeSubscriptionId = defaultSubscriptionId,
-  timeout = DEFAULT_TIMEOUT,
+  timeout = NOSTRDB_ONESHOT_TIMEOUT_MS,
   context = {}
 } = {}) {
   const nostrdb = {}
   for (const method of NOSTRDB_ONE_SHOT_METHODS) {
-    nostrdb[method] = createNostrDbMethod(browserPortPromise, method, { ask: askFn, timeout, context })
+    nostrdb[method] = createNostrDbMethod(browserPortPromise, method, {
+      ask: askFn, tell: tellFn, timeout, context
+    })
   }
   nostrdb.subscribe = (...params) => createNostrDbSubscription(browserPortPromise, params, {
     askStream: askStreamFn,

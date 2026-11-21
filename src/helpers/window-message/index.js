@@ -11,23 +11,36 @@ export function getAppSwOrigin (...args) { return getAppOrigin(...args) }
 
 const resrejByReqId = {}
 function getReqId () { return Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2) }
-function initReqPromise (reqId, code, timeoutMs = 5000) {
+function initReqPromise (reqId, code, timeoutMs = 5000, { signal, onCancel } = {}) {
   if (!reqId || !code) throw new Error('Missing request id or code')
   const { promise, resolve, reject } = Promise.withResolvers()
+  let settled = false
+  const settle = callback => value => {
+    if (settled) return
+    settled = true
+    callback(value)
+  }
+  const cancel = error => {
+    if (settled) return
+    try { onCancel?.(reqId, error) } catch {}
+    resrejByReqId[reqId]?.reject?.(error)
+  }
   resrejByReqId[reqId] = {
-    resolve,
-    reject
+    resolve: settle(resolve),
+    reject: settle(reject)
   }
   let timeout
   if (timeoutMs != null) { // null or undefined = no timeout
     if (timeoutMs > 0) {
-      timeout = setTimeout(() => {
-        resrejByReqId[reqId]?.reject?.(`Timeout for ${code} reqId: ${reqId}`)
-      }, timeoutMs)
-    } else resrejByReqId[reqId]?.reject?.(`Timeout for ${code} reqId: ${reqId}`)
+      timeout = setTimeout(() => cancel(`Timeout for ${code} reqId: ${reqId}`), timeoutMs)
+    } else cancel(`Timeout for ${code} reqId: ${reqId}`)
   }
+  const onAbort = () => cancel(signal.reason || Object.assign(new Error('Request aborted'), { name: 'AbortError' }))
+  if (signal?.aborted) onAbort()
+  else signal?.addEventListener('abort', onAbort, { once: true })
   return promise.finally(() => {
     clearTimeout(timeout)
+    signal?.removeEventListener('abort', onAbort)
     delete resrejByReqId[reqId]
   })
 }
@@ -65,7 +78,10 @@ export async function ask (to, message, options, transfer) {
 
   initReplyListener(to)
   const reqId = getReqId()
-  const promise = initReqPromise(reqId, message.code, options.timeout)
+  const promise = initReqPromise(reqId, message.code, options.timeout, {
+    signal: options.signal,
+    onCancel: options.onCancel
+  })
   const startedAt = isDev ? performance.now() : 0
   if (isDev) recordPerformance({ stage: 'rpc-start', requestId: reqId, parentId: message.diagnostics?.requestId })
   to.postMessage({

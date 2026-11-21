@@ -119,3 +119,44 @@ test('an early denial cannot strand the next request, and instant control calls 
   assert.equal(queue.snapshot().running, 0)
   queue.close()
 })
+
+test('cancels a queued job without dispatching it to the vault', async () => {
+  const { queue, sent } = fixture()
+  const controller = new AbortController()
+  const pending = queue.ask(request(9, 'queued'), { signal: controller.signal })
+  controller.abort(Object.assign(new Error('cancelled'), { code: 'NOSTRDB_REQUEST_CANCELLED' }))
+  const result = await pending
+  assert.equal(result.error.code, 'NOSTRDB_REQUEST_CANCELLED')
+  queue.setPort({})
+  assert.deepEqual(sent, [])
+  queue.close()
+})
+
+test('releases a dispatched slot immediately and discards the vault response', async () => {
+  const { queue, sent } = fixture()
+  const controller = new AbortController()
+  const pending = queue.ask(request(9, 'running'), { signal: controller.signal })
+  queue.setPort({})
+  assert.equal(sent.length, 1)
+  controller.abort(Object.assign(new Error('cancelled'), { code: 'NOSTRDB_REQUEST_CANCELLED' }))
+  const result = await pending
+  assert.equal(result.error.code, 'NOSTRDB_REQUEST_CANCELLED')
+  assert.equal(queue.snapshot().running, 0)
+  sent[0].resolve({ payload: 'late' })
+  await tick()
+  assert.equal(queue.snapshot().running, 0)
+  queue.close()
+})
+
+test('an already-aborted signal never enters the queue or vault transport', async () => {
+  const { queue, sent } = fixture()
+  const controller = new AbortController()
+  controller.abort(Object.assign(new Error('cancelled'), { code: 'NOSTRDB_REQUEST_CANCELLED' }))
+  const queued = await queue.ask(request(9, 'queued'), { signal: controller.signal })
+  const instant = await queue.ask(request(9, 'instant'), { signal: controller.signal, instant: true })
+  assert.equal(queued.error.code, 'NOSTRDB_REQUEST_CANCELLED')
+  assert.equal(instant.error.code, 'NOSTRDB_REQUEST_CANCELLED')
+  queue.setPort({})
+  assert.deepEqual(sent, [])
+  queue.close()
+})

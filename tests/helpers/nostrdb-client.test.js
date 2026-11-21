@@ -101,39 +101,58 @@ describe('nostrdb app-page client bridge', () => {
 
   it('sends one-shot methods over NOSTRDB', async () => {
     const calls = []
+    const told = []
     const nostrdb = createNostrDb(Promise.resolve('port'), {
       ask: async (port, message, options) => {
         calls.push({ port, message, options })
         return { payload: 'ok' }
       },
       askStream: async function * () {},
-      tell: () => {},
+      tell: (port, message) => told.push({ port, message }),
       timeout: 123
     })
 
     assert.equal(await nostrdb.add({ id: 'event' }, { appId: 'ignored' }), 'ok')
     assert.equal(await nostrdb.addPersonalCopy({ kind: 1 }, { context: 'dm:alice' }), 'ok')
-    assert.deepEqual(calls, [{
+    assert.equal(calls[0].message.payload.method, 'add')
+    assert.deepEqual(calls[0].message.payload.params, [{ id: 'event' }, { appId: 'ignored' }])
+    assert.ok(Number.isFinite(calls[0].message.payload.deadlineAt))
+    assert.equal(calls[0].options.timeout, 123)
+    assert.equal(calls[1].message.payload.method, 'addPersonalCopy')
+    assert.deepEqual(calls[1].message.payload.params, [{ kind: 1 }, { context: 'dm:alice' }])
+    calls[0].options.onCancel('cancel-me')
+    assert.deepEqual(told, [{
       port: 'port',
-      message: {
-        code: 'NOSTRDB',
-        payload: {
-          method: 'add',
-          params: [{ id: 'event' }, { appId: 'ignored' }]
-        }
-      },
-      options: { timeout: 123 }
-    }, {
-      port: 'port',
-      message: {
-        code: 'NOSTRDB',
-        payload: {
-          method: 'addPersonalCopy',
-          params: [{ kind: 1 }, { context: 'dm:alice' }]
-        }
-      },
-      options: { timeout: 123 }
+      message: { code: 'NOSTRDB_CANCEL', payload: { requestId: 'cancel-me' } }
     }])
+  })
+
+  it('uses a five-second support deadline and five minutes for other one-shots', async () => {
+    const calls = []
+    const nostrdb = createNostrDb(Promise.resolve('port'), {
+      ask: async (_port, message, options) => {
+        calls.push({ message, options })
+        return { payload: [] }
+      },
+      askStream: async function * () {},
+      tell: () => {}
+    })
+    const before = Date.now()
+    await nostrdb.supports()
+    await nostrdb.query({ kinds: [1] })
+    assert.equal(calls[0].options.timeout, 5_000)
+    assert.ok(calls[0].message.payload.deadlineAt <= Date.now() + 5_000)
+    assert.equal(calls[1].options.timeout, 5 * 60 * 1000)
+    assert.ok(calls[1].message.payload.deadlineAt >= before + 5 * 60 * 1000)
+  })
+
+  it('normalizes a transport timeout into the public NostrDB timeout code', async () => {
+    const nostrdb = createNostrDb(Promise.resolve('port'), {
+      ask: async () => ({ error: 'Timeout for NOSTRDB reqId: test' }),
+      askStream: async function * () {},
+      tell: () => {}
+    })
+    await assert.rejects(nostrdb.query({ kinds: [1] }), { code: 'NOSTRDB_REQUEST_TIMEOUT' })
   })
 
   it('streams subscribe results and sends cancel on return', async () => {
