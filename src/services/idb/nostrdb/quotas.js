@@ -13,12 +13,13 @@ import {
   NOSTRDB_REMOVAL_AUDIT_STORE as REMOVAL_AUDIT
 } from '#constants/storage-schema.js'
 import { isPersonalCopyEvent } from '#helpers/personal-copy.js'
+import { QUOTA_LOCK, withNostrDbAuthority } from './authority.js'
 import {
   NOSTRDB_PREFIX, EVENTS_STORE, DELETIONS_STORE, INDEX,
   openNostrDb, captureNostrDbConnection, eventIdIndexKey, addressKey, getCoordinate, deleteStoredEvent
 } from './index.js'
 
-export const QUOTA_LOCK = '44billion:nostrdb-quota:v1'
+export { QUOTA_LOCK }
 export const CACHE_ACCESS_INDEX = 'byLastAccess'
 export const DEFAULT_NOSTRDB_QUOTAS = Object.freeze({
   publicBytes: 512 * 1024 * 1024,
@@ -60,15 +61,7 @@ function usageNotReady () {
 }
 
 export function withNostrDbQuotaLock (callback, onTiming) {
-  if (!globalThis.navigator?.locks?.request) return Promise.reject(unavailable())
-  if (typeof IS_DEVELOPMENT === 'undefined' || !IS_DEVELOPMENT) return navigator.locks.request(QUOTA_LOCK, callback)
-  const queuedAt = performance.now()
-  return navigator.locks.request(QUOTA_LOCK, async () => {
-    const startedAt = performance.now()
-    const report = entry => { if (onTiming) { try { onTiming(entry) } catch {} } else recordPerformance(entry) }
-    report({ stage: 'quota-lock-wait', elapsedMs: startedAt - queuedAt })
-    try { return await callback() } finally { report({ stage: 'quota-lock-execution', elapsedMs: performance.now() - startedAt }) }
-  })
+  return withNostrDbAuthority(authority => callback(authority.signal, authority), onTiming)
 }
 
 export function cacheEventLimit (bytes) {
@@ -94,11 +87,13 @@ export async function setNostrDbQuotaLimits (overrides) {
       throw new TypeError('Invalid NostrDB quota limit')
     }
   }
-  const limits = await withNostrDbQuotaLock(() => {
+  const limits = await withNostrDbQuotaLock((signal, authority) => {
+    authority.assertLeader()
     if (!globalThis.localStorage) throw unavailable()
     const next = { ...getNostrDbQuotaLimits(), ...overrides }
     delete next.cacheCount
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(next))
+    authority.assertLeader()
     const limits = getNostrDbQuotaLimits()
     try { publishQuotaState({ limits }) } catch {
       reportQuotaStateFailure()
@@ -236,12 +231,13 @@ async function forPage (tx, after, visit) {
   })
 }
 
-async function initializeUsage (db, { force = false } = {}) {
+async function initializeUsage (db, { force = false, assertAuthority = () => {} } = {}) {
   if (force) usageReady.delete(db)
   else if (usageReady.has(db)) return
   const connection = captureNostrDbConnection(ownerFromDb(db))
   if (!connection || await connection.resolve() !== db) throw unavailable()
   const check = () => {
+    assertAuthority()
     if (!connection.isCurrent()) throw Object.assign(new Error('NOSTRDB_RESET'), { code: 'NOSTRDB_RESET' })
   }
   check()
@@ -282,6 +278,7 @@ async function initializeUsage (db, { force = false } = {}) {
         }
         const phase = current.phase
         current.after = await forPage(tx, current.after, async row => {
+          check()
           if (phase === 'records') {
             prepareRecord(db, row)
             await request(tx.objectStore(EVENTS_STORE).put(row))
@@ -291,6 +288,7 @@ async function initializeUsage (db, { force = false } = {}) {
           }
         })
         if (current.after === null) current.phase = phase === 'records' ? 'classify' : 'ready'
+        check()
         await request(stateStore.put(current))
         await done
         return current
@@ -308,7 +306,8 @@ async function initializeUsage (db, { force = false } = {}) {
   }
 }
 
-async function allDatabases () {
+async function allDatabases (assertAuthority = () => {}) {
+  assertAuthority()
   if (typeof globalThis.indexedDB?.databases !== 'function') throw unavailable()
   let databases
   try { databases = await indexedDB.databases() } catch { throw unavailable() }
@@ -316,11 +315,13 @@ async function allDatabases () {
     .filter(name => name?.startsWith(NOSTRDB_PREFIX)).sort()
   const dbs = []
   for (const name of names) {
+    assertAuthority()
     // An inaccessible bank may still occupy space during lifecycle cleanup.
     // Keep the last complete aggregate rather than publishing a partial sum.
     const db = await openNostrDb(name.slice(NOSTRDB_PREFIX.length), { quotaLockHeld: true, create: false })
     if (!db) throw unavailable()
-    await initializeUsage(db, { force: true })
+    await initializeUsage(db, { force: true, assertAuthority })
+    assertAuthority()
     dbs.push(db)
   }
   return dbs
@@ -347,7 +348,8 @@ function reviewQuotaUsage (cleanup, scheduled = false) {
   const work = (async () => {
     let waitedRevision
     while (true) {
-      const result = await withNostrDbQuotaLock(async () => {
+      const result = await withNostrDbQuotaLock(async (signal, authority) => {
+        authority.assertLeader()
         const limits = getNostrDbQuotaLimits()
         const previous = reloadQuotaState()
         const startedAt = Date.now()
@@ -359,10 +361,16 @@ function reviewQuotaUsage (cleanup, scheduled = false) {
         }
         let stats = { examined: 0, deleted: 0, exhausted: false }
         try {
-          const dbs = await allDatabases()
+          const dbs = await allDatabases(authority.assertLeader)
           const totals = cleanup
-            ? await evict(dbs, limits, { maxDeleted: 25, maxExamined: 100, onStats: value => { stats = value } })
+            ? await evict(dbs, limits, {
+              maxDeleted: 25,
+              maxExamined: 100,
+              assertAuthority: authority.assertLeader,
+              onStats: value => { stats = value }
+            })
             : await sumUsage(dbs)
+          authority.assertLeader()
           const excess = cacheExcess(totals, limits)
           publishQuotaState({
             totals, limits, checkedAt: Date.now(), maintenance: {
@@ -375,6 +383,10 @@ function reviewQuotaUsage (cleanup, scheduled = false) {
           recordPerformance({ stage: 'quota-review', elapsedMs: Date.now() - startedAt, ...stats, excess })
           return { totals, excess }
         } catch (error) {
+          if (error?.code === 'NOSTRDB_AUTHORITY_LOST') {
+            recordPerformance({ stage: 'quota-review-authority-lost', elapsedMs: Date.now() - startedAt })
+            throw error
+          }
           try {
             const failureCount = Math.min(6, (previous?.maintenance.failureCount ?? 0) + 1)
             publishQuotaState({
@@ -546,7 +558,13 @@ async function nextAccess (db, after) {
   return cursor ? { db, key: cursor.key, access: cursor.value } : null
 }
 
-async function evict (dbs, limits, { maxDeleted = 25, maxExamined = 100, onStats } = {}) {
+async function evict (dbs, limits, {
+  maxDeleted = 25,
+  maxExamined = 100,
+  assertAuthority = () => {},
+  onStats
+} = {}) {
+  assertAuthority()
   let totals = await sumUsage(dbs)
   if (!cacheExcess(totals, limits)) return totals
   const target = Object.fromEntries(['cacheBytes', 'cacheCount'].map(key => [key, Math.floor(limits[key] * 0.9)]))
@@ -573,9 +591,11 @@ async function evict (dbs, limits, { maxDeleted = 25, maxExamined = 100, onStats
       selected++
     }
     for (const [db, ids] of batch) {
+      assertAuthority()
       deleted += await mutate(db, async tx => {
         let count = 0
         for (const candidate of ids) {
+          assertAuthority()
           const id = candidate.access.i
           const access = await request(tx.objectStore(CACHE).get(id))
           const row = await request(tx.objectStore(EVENTS_STORE).get(id))
@@ -590,8 +610,12 @@ async function evict (dbs, limits, { maxDeleted = 25, maxExamined = 100, onStats
           count++
         }
         return count
-      }, { schedulerClass: 'maintenance' })
+      }, {
+        schedulerClass: 'maintenance',
+        beforeMutation: assertAuthority
+      })
     }
+    assertAuthority()
     totals = await sumUsage(dbs)
   }
   onStats?.({ examined, deleted, exhausted: heads.length === 0 })

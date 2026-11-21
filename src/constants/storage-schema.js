@@ -14,6 +14,8 @@ export const STORAGE_AREA = {
   SESSION: 'session'
 }
 
+export const NOSTRDB_AUTHORITY_KEY = '44billion:nostrdb-authority:v1'
+
 export const GLOBAL_LOCAL_KEYS = [
   'storage_version',
   'local_devApps', // Development-only app classification and retained file versions.
@@ -35,6 +37,7 @@ export const GLOBAL_LOCAL_KEYS = [
   '44billion:app-asset-budget:v1',
   '44billion:nostrdb-quotas:v1',
   '44billion:nostrdb-quota-state:v1', // Last successful aggregate and per-category growth gates.
+  NOSTRDB_AUTHORITY_KEY, // { version, generation, instanceId, leaseUntil, updatedAt } for singleton tasks.
   'local_embeddedOnlyRetentionAdmissions',
   'local_pendingStorageRepairPlan',
   'local_nostrDbPendingDeletions', // Owner -> deletion token; blocks reopening until cleanup commits.

@@ -287,6 +287,22 @@ never acquire it or enumerate other owner databases. Their local accounting stay
 atomic through IndexedDB transactions. Reviews are single-flight per context and
 serialize across tabs; other chunk maintenance retains its existing coordination.
 
+Each quota/maintenance operation also publishes a short lease under
+`44billion:nostrdb-authority:v1`. A new operation first tries the existing lock
+with `ifAvailable`. If it must wait, an active lease keeps the normal lock path.
+If the persisted lease is positive but expired, the lock may be reacquired with
+`steal: true`; this covers a renderer that stopped heartbeating while suspended.
+The lease starts with an incremented generation, renews every 10 seconds with a
+30-second deadline, is rechecked before bounded maintenance mutations and state
+publication, and changes to `leaseUntil: 0` on normal completion. A resumed old
+generation aborts as `NOSTRDB_AUTHORITY_LOST` instead of publishing over the new
+holder. A missing lease means the lock may belong to a legacy tab, so it is never
+stolen. The lock name is unchanged for mixed-version compatibility, and the
+development timing stages remain `quota-lock-wait` and `quota-lock-execution`.
+Environments with Web Locks but no `localStorage` use an in-memory lease fallback;
+cross-tab recovery remains unavailable there, while the existing Web Lock still
+serializes operations in the current realm.
+
 `maintenanceStops` prevents duplicate automatic schedulers on one NostrDB
 instance. Each scheduler's `running` flag and chained timer prevent that
 scheduler from overlapping itself. The global chunk scheduler is also a singleton
@@ -548,6 +564,15 @@ bytes directly; the center sums all three exclusive categories.
 Storage audit preserves the global configuration; repair uses the ordinary app
 cleanup and owner removal paths, maintaining usage and deleting all owner-local
 auxiliary stores along with the database.
+
+The launcher also protects ordinary metadata writes from browser
+`localStorage` quota exhaustion. Before components mount it wraps
+`Storage.prototype.setItem`; only launcher `localStorage` errors trigger relief.
+It removes the largest icons first, then descriptions, relay hints and names,
+without touching unknown/workspace/account keys. A write gets at most three
+bounded rounds of 10 keys or 64 KiB and receives the original quota error if it
+still cannot commit. Synthetic same-tab storage events keep `useWebStorage`
+signals synchronized. This policy does not apply to `sessionStorage`.
 
 The independent 1,000-request pruning target remains specific to kind 5 for the
 selected author. The shared payload cache retains its global 2 GiB unreferenced

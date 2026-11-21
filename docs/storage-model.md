@@ -58,6 +58,15 @@ ephemeral and intentionally not persisted; they do not belong here or in
   reports malformed summaries without destructive repair; maintenance reconstructs
   them from exact local counters. Account/app removal preserves the summary and
   schedules reevaluation. Full environment reset removes it with launcher storage.
+- `44billion:nostrdb-authority:v1` — ephemeral coordination record for the
+  singleton NostrDB quota/maintenance operation currently holding the existing
+  `44billion:nostrdb-quota:v1` Web Lock: `{ version: 1, generation, instanceId,
+  leaseUntil, updatedAt }`. `generation` increases on every operation and
+  `leaseUntil` is a millisecond deadline refreshed every 10 seconds while the
+  operation runs; completion writes `leaseUntil: 0`. An expired positive lease
+  is evidence that the previous renderer may be frozen and may be stolen with
+  the same lock. A missing or malformed lease is never treated as stealable.
+  Ordinary reads, writes, messages and subscriptions never inspect this key.
 - `44billion:app-asset-budget:v1` — per-app cached byte budgets.
 - `local_embeddedOnlyRetentionAdmissions` — embedded-only retention admissions.
 - `local_nostrDbPendingDeletions` — `{ [ownerHexPubkey]: token }`, a durable
@@ -117,6 +126,21 @@ ephemeral and intentionally not persisted; they do not belong here or in
   The shared selection applies to every current and future window/widget of that
   app in the workspace. Live documents receive `onPersonaPublicKeysChanged` only
   when their effective set of keys changes; no reload is required.
+
+### Launcher `localStorage` pressure relief
+
+The launcher installs relief around `Storage.prototype.setItem` before mounting
+components. It applies only when the target is the launcher's `localStorage`;
+`sessionStorage` failures are propagated unchanged. On a quota error, it may
+remove only app metadata from `session_appById_<appId>_*` in this order: icons,
+descriptions, relay hints and names. Larger values go first within a type.
+
+Each cleanup round removes at most 10 keys or 64 KiB of values (one oversized
+value may be removed when necessary for progress), and a write makes at most
+three cleanup rounds. Unknown keys, workspace/account state and all other keys
+are protected. Same-tab storage events are synthesized for removed keys so
+`useWebStorage` consumers converge; the original quota error is preserved if
+none of the bounded rounds makes the write succeed.
 
 ### Per workspace (`<wsKey>`)
 

@@ -11,11 +11,13 @@ const bundle = await build({
     resolveDir: root, contents: `
     import { getNostrDb, deleteNostrDb, openNostrDb } from './src/services/idb/nostrdb/index.js';
     import * as quotas from './src/services/idb/nostrdb/quotas.js';
+    import { withNostrDbAuthority } from './src/services/idb/nostrdb/authority.js';
+    import { NOSTRDB_AUTHORITY_KEY } from './src/constants/storage-schema.js';
     import { finalizeEvent } from 'libp2r2p/event';
     import { getPublicKey } from 'libp2r2p/key';
     quotas.startGlobalQuotaMaintenance();
     globalThis.fixture = {
-      ...quotas, deleteNostrDb, openNostrDb,
+      ...quotas, deleteNostrDb, openNostrDb, withNostrDbAuthority, NOSTRDB_AUTHORITY_KEY,
       async preparePromotion(seed) {
         await this.setup(seed);
         this.target = finalizeEvent({kind:1,created_at:124,tags:[],content:'x'.repeat(3000)}, new Uint8Array(32).fill(3));
@@ -118,7 +120,17 @@ try {
   await evaluate(contexts[0], 'fixture.queueCacheAccess(fixture.owner,[fixture.target]); fixture.flushCacheAccess()')
   assert.ok(await evaluate(contexts[0], 'new Promise((resolve,reject)=>{const req=fixture.raw.transaction(\'cacheAccess\').objectStore(\'cacheAccess\').getAll();req.onsuccess=()=>resolve(req.result.some(row=>row.lastAccessAt>1));req.onerror=()=>reject(req.error)})'))
   await evaluate(contexts[1], 'releaseTouchLock()')
-  console.log('NostrDB quotas: foreground admission/removal during maintenance, advisory gates, cross-tab protected promotions, touches, reload and owner removal passed')
+  // A renderer that stopped heartbeating keeps the existing Web Lock in the
+  // browser. The persisted expired lease is what makes bounded recovery possible.
+  await evaluate(contexts[0], 'void navigator.locks.request(fixture.QUOTA_LOCK, () => new Promise(resolve => { globalThis.releaseStaleLock = resolve }))')
+  await browser.until(() => evaluate(contexts[0], '!!releaseStaleLock'), 'stale quota barrier')
+  await evaluate(contexts[0], `localStorage.setItem(fixture.NOSTRDB_AUTHORITY_KEY, JSON.stringify({
+    version:1,generation:100000,instanceId:'stale-browser-holder',leaseUntil:Date.now()-1,updatedAt:Date.now()-1000
+  }))`)
+  assert.equal(await evaluate(contexts[1], 'fixture.withNostrDbAuthority(authority => authority.generation)'), 100001)
+  assert.equal(await evaluate(contexts[1], 'JSON.parse(localStorage.getItem(fixture.NOSTRDB_AUTHORITY_KEY)).leaseUntil'), 0)
+  await evaluate(contexts[0], 'releaseStaleLock()')
+  console.log('NostrDB quotas: foreground admission/removal during maintenance, advisory gates, cross-tab protected promotions, touches, reload, stale-authority steal and owner removal passed')
 } finally {
   await browser.diagnose('/tmp/44billion-nostrdb-quota-browser')
   await browser.close()

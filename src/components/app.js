@@ -1,5 +1,6 @@
 import '#config/polyfills.js'
 import { installStorageEventGuard } from '#helpers/storage-event-guard.js'
+import { installLocalStoragePressureRelief } from '#helpers/local-storage-pressure-relief.js'
 import { installLauncherRelayPool } from '#services/relay-pool/launcher.js'
 import resetCssString from '#assets/styles/reset.css'
 import globalCssString from '#assets/styles/global.css'
@@ -28,6 +29,7 @@ if (IS_DEVELOPMENT) {
   await (await import('#services/local-dev/boot-reset.js')).applyPendingLocalDevFullReset()
 }
 
+installLocalStoragePressureRelief()
 installStorageEventGuard()
 
 // Clear old localStorage data from pre-v2 schema (bundle→siteManifest migration)
