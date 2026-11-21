@@ -8,7 +8,9 @@ import {
   NOSTRDB_QUOTA_STORE as QUOTA,
   NOSTRDB_QUOTA_USAGE_KEY as USAGE_KEY,
   NOSTRDB_QUOTA_SETTINGS_KEY as SETTINGS_KEY,
-  NOSTRDB_QUOTA_STATE_KEY as STATE_KEY
+  NOSTRDB_QUOTA_STATE_KEY as STATE_KEY,
+  NOSTRDB_REMOVAL_AUDIT_STATE_STORE as REMOVAL_AUDIT_STATE,
+  NOSTRDB_REMOVAL_AUDIT_STORE as REMOVAL_AUDIT
 } from '#constants/storage-schema.js'
 import { isPersonalCopyEvent } from '#helpers/personal-copy.js'
 import {
@@ -474,7 +476,7 @@ async function mutate (db, callback, {
     beforeMutation?.()
     if (!connection.isCurrent()) throw unavailable()
   }
-  const stores = [...new Set([EVENTS_STORE, DELETIONS_STORE, CACHE, QUOTA, ...extraStores])]
+  const stores = [...new Set([EVENTS_STORE, DELETIONS_STORE, CACHE, QUOTA, REMOVAL_AUDIT, REMOVAL_AUDIT_STATE, ...extraStores])]
   return scheduleNostrDbWrite({
     owner,
     stores,
@@ -584,7 +586,7 @@ async function evict (dbs, limits, { maxDeleted = 25, maxExamined = 100, onStats
             heads.push({ db, access, key: [access.lastAccessAt, access.i], refreshed: true })
             continue
           }
-          await deleteStoredEvent(db, tx, row)
+          await deleteStoredEvent(db, tx, row, { source: 'cache-eviction' })
           count++
         }
         return count

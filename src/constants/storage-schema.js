@@ -128,7 +128,7 @@ export const APP_ORIGIN_SESSION_KEYS = ['44billion:subdomain-assignment']
 export const PRIVATE_MESSENGER_PENDING_DECRYPTION_DATABASE = 'libp2r2p:private-messenger:<pubkey>:pending-decryption:idb-queue'
 export const PRIVATE_MESSENGER_PENDING_DECRYPTION_STORES = ['items', 'state']
 
-// Per-owner 44billion_nostrdb:<ownerPubkey>, schema version 4.
+// Per-owner 44billion_nostrdb:<ownerPubkey>, schema version 5.
 // The checkpoint is committed with the corresponding events/deletions batch.
 export const NOSTRDB_MAINTENANCE_STORE = 'maintenance'
 // { key, after: event ID index key | null, completedAt: milliseconds | null }
@@ -147,5 +147,17 @@ export const NOSTRDB_QUOTA_STATE_KEY = '44billion:nostrdb-quota-state:v1'
 export const NOSTRDB_ACCOUNT_COVERAGE_PREFIX = 'accountEventCoverage:'
 export const NOSTRDB_ACCOUNT_COVERAGE_REGISTRY = 'accountEventCoverage:registry'
 export const NOSTRDB_ACCOUNT_COVERAGE_STORE = 'accountCoverage'
+
+// Schema 5: bounded, per-owner forensic records for committed event removals.
+// Audit writes share the event transaction, so a removal cannot commit without
+// its provenance record. Limits are enforced atomically in that same transaction.
+export const NOSTRDB_REMOVAL_AUDIT_STORE = 'removalAudit'
+export const NOSTRDB_REMOVAL_AUDIT_STATE_STORE = 'removalAuditState'
+export const NOSTRDB_REMOVAL_AUDIT_STATE_KEY = 'state'
+export const NOSTRDB_REMOVAL_AUDIT_BY_AT = 'byAt'
+export const NOSTRDB_REMOVAL_AUDIT_BY_TARGET = 'byTarget'
+export const NOSTRDB_REMOVAL_AUDIT_TTL_MS = 14 * 24 * 60 * 60 * 1000
+export const NOSTRDB_REMOVAL_AUDIT_MAX_ENTRIES = 500
+export const NOSTRDB_REMOVAL_AUDIT_MAX_BYTES = 256 * 1024
 
 export const NOSTRDB_PENDING_DELETIONS_KEY = 'local_nostrDbPendingDeletions'

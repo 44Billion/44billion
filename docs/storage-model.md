@@ -254,7 +254,8 @@ feeds but never event stores or progress. Retired groups drain accepted events;
 account removal/root unmount cancels pending delivery. Only kinds 0/10002 also
 update vault metadata. Subscription membership is in memory; coverage is durable.
 
-Schema 4 adds separate `accountCoverage` and `quota` object stores (no injected
+Schema 4 added separate `accountCoverage` and `quota` object stores. Schema 5
+adds atomic, bounded `removalAudit` and `removalAuditState` stores (no injected
 API). The version upgrade atomically moves legacy coverage rows and
 `maintenance.quotaUsage` into those stores. The unclaimed-data checkpoint and
 unknown maintenance records remain in `maintenance`.
@@ -328,6 +329,15 @@ are outside this deletion scope.
 - `quota` — schema 4: the existing resumable `quotaUsage` record, primary key
   `key`. Schema 4 migrates it from `maintenance` in the same version-change
   transaction. Event mutations update it atomically with the event stores.
+- `removalAudit` — schema 5: committed event-removal provenance, primary key
+  auto-incremented `id`, indexed by `byAt [at, id]` and
+  `byTarget [target, at]`. Rows contain only timestamp, caller `appId`, stable
+  operation/source labels, target `e`/`a`, event ID, result code and logical byte
+  size. No content, ciphertext, personal tags or stack traces are stored.
+- `removalAuditState` — schema 5: one `state` row with `count`, `bytes`, `nextId`
+  and `lastPrunedAt`. It bounds each owner to 500 rows and 256 KiB for 14 days.
+  Pruning and the event deletion share the same transaction; an audit failure
+  aborts the deletion. There is no cross-owner transaction or global cap.
 
 Schema 3 introduced the quota record now stored as `quota.quotaUsage`:
 `{ key: 'quotaUsage', version: 1,
@@ -354,7 +364,7 @@ operation. It makes early decisions and never persists planning statistics.
 Ordinary public duplicates with ready counters and no app-reference change
 can complete through a generation-fenced readonly lookup. Eligible personal-copy
 provenance is resolved in the quota write transaction. These optimizations retain
-schema 4, all registered stores/keys and audit/repair invariants; they introduce no
+schema 5, all registered stores/keys and audit/repair invariants; they introduce no
 persistent planning statistics or migration. See [NostrDB internals](nostrdb.md).
 
 ## Cleanup invariants

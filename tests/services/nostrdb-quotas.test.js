@@ -12,7 +12,15 @@ import {
   getNostrDb, openNostrDb, deleteNostrDb, deletionEventRef, eventIdIndexKey,
   NOSTRDB_PREFIX, NOSTRDB_VERSION, toStoredRecord
 } from '#services/idb/nostrdb/index.js'
-import { NOSTRDB_QUOTA_STORE as QUOTA } from '#constants/storage-schema.js'
+import {
+  NOSTRDB_QUOTA_STORE as QUOTA,
+  NOSTRDB_REMOVAL_AUDIT_MAX_BYTES,
+  NOSTRDB_REMOVAL_AUDIT_MAX_ENTRIES,
+  NOSTRDB_REMOVAL_AUDIT_STATE_STORE,
+  NOSTRDB_REMOVAL_AUDIT_STORE,
+  NOSTRDB_REMOVAL_AUDIT_TTL_MS
+} from '#constants/storage-schema.js'
+import { recordRemovalAudit } from '#services/idb/nostrdb/removal-audit.js'
 import {
   DEFAULT_NOSTRDB_QUOTAS, getNostrDbQuotaUsage, setNostrDbQuotaLimits,
   maintainNostrDbCache, queueCacheAccess, flushCacheAccess, ownerReferenceKeys,
@@ -34,6 +42,7 @@ const owners = []
 const foreignSecret = new Uint8Array(32).fill(2)
 const APP = `a${'1'.repeat(43)}one`
 const byteSize = event => new TextEncoder().encode(JSON.stringify(event)).length
+const hexId = value => value.toString(16).padStart(64, '0')
 function signed (overrides = {}, secret = foreignSecret) {
   return finalizeEvent({ kind: 1, tags: [], created_at: 100 + serial++, content: '', ...overrides }, secret)
 }
@@ -56,6 +65,9 @@ async function access (raw, event) {
 }
 async function row (raw, event) {
   return request(raw.transaction('events').objectStore('events').get(eventIdIndexKey(event.id)))
+}
+async function removalAudit (raw) {
+  return request(raw.transaction(NOSTRDB_REMOVAL_AUDIT_STORE).objectStore(NOSTRDB_REMOVAL_AUDIT_STORE).getAll())
 }
 async function limits (values) {
   await getNostrDbQuotaUsage()
@@ -691,6 +703,97 @@ it('removes exact IDs and current coordinates atomically, normalizing and dedupl
   assert.equal(await access(a.raw, newer), undefined)
   assert.ok(await row(b.raw, newer))
   assert.equal((await a.db.add(newer)).stored, true, 'no tombstone is created')
+})
+
+it('records direct app removals atomically with caller, target and source', async () => {
+  const a = await owner()
+  const event = signed()
+  await a.db.add(event, { appId: APP })
+  assert.equal((await a.db.remove([['e', event.id]], { appId: APP })).deleted, 1)
+
+  const audits = await removalAudit(a.raw)
+  assert.deepEqual(audits.map(record => ({
+    appId: record.appId,
+    operation: record.operation,
+    source: record.source,
+    targetType: record.targetType,
+    target: record.target,
+    eventId: record.eventId,
+    resultCode: record.resultCode
+  })), [{
+    appId: APP,
+    operation: 'delete-event',
+    source: 'app-remove',
+    targetType: 'e',
+    target: event.id,
+    eventId: event.id,
+    resultCode: 'deleted'
+  }])
+})
+
+it('aborts the original removal when atomic audit persistence fails', async t => {
+  const a = await owner()
+  const event = signed()
+  await a.db.add(event)
+  const original = a.raw.transaction.bind(a.raw)
+  t.mock.method(a.raw, 'transaction', (...args) => {
+    const tx = original(...args)
+    if (args[1] === 'readwrite' && Array.isArray(args[0]) && args[0].includes(NOSTRDB_REMOVAL_AUDIT_STORE)) {
+      const store = tx.objectStore(NOSTRDB_REMOVAL_AUDIT_STORE)
+      store.put = () => { throw new Error('audit unavailable') }
+    }
+    return tx
+  })
+
+  assert.equal((await a.db.remove([['e', event.id]])).code, 'error')
+  assert.ok(await row(a.raw, event), 'the event survives with the aborted audit')
+  assert.deepEqual(await removalAudit(a.raw), [])
+})
+
+it('enforces the per-owner removal-audit ring and TTL atomically', async () => {
+  const a = await owner()
+  const auditStores = [NOSTRDB_REMOVAL_AUDIT_STORE, NOSTRDB_REMOVAL_AUDIT_STATE_STORE]
+  const firstTx = a.raw.transaction(auditStores, 'readwrite')
+  const firstDone = new Promise((resolve, reject) => {
+    firstTx.oncomplete = resolve
+    firstTx.onabort = () => reject(firstTx.error)
+  })
+  for (let index = 0; index < NOSTRDB_REMOVAL_AUDIT_MAX_ENTRIES + 5; index++) {
+    await recordRemovalAudit({
+      db: a.raw,
+      tx: firstTx,
+      stored: { event: { id: hexId(index + 1) } },
+      source: 'app-remove',
+      now: 1000 + index
+    })
+  }
+  await firstDone
+
+  let audits = await removalAudit(a.raw)
+  assert.equal(audits.length, NOSTRDB_REMOVAL_AUDIT_MAX_ENTRIES)
+  assert.equal(audits[0].at, 1005)
+  assert.equal(audits.at(-1).at, 1004 + NOSTRDB_REMOVAL_AUDIT_MAX_ENTRIES)
+  assert.ok(audits.reduce((sum, record) => sum + record.byteSize, 0) <= NOSTRDB_REMOVAL_AUDIT_MAX_BYTES)
+
+  const later = 1000 + NOSTRDB_REMOVAL_AUDIT_MAX_ENTRIES + NOSTRDB_REMOVAL_AUDIT_TTL_MS + 24 * 60 * 60 * 1000
+  const ttlTx = a.raw.transaction(auditStores, 'readwrite')
+  const ttlDone = new Promise((resolve, reject) => {
+    ttlTx.oncomplete = resolve
+    ttlTx.onabort = () => reject(ttlTx.error)
+  })
+  await recordRemovalAudit({
+    db: a.raw,
+    tx: ttlTx,
+    stored: { event: { id: hexId(9999) } },
+    source: 'expiration',
+    now: later
+  })
+  await ttlDone
+
+  audits = await removalAudit(a.raw)
+  assert.equal(audits.length, 1)
+  assert.equal(audits[0].eventId, hexId(9999))
+  assert.equal(audits[0].source, 'expiration')
 })
 
 it('validates all local targets before deleting or checking access', async () => {

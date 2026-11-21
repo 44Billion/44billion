@@ -9,8 +9,9 @@ aligned with changes to maintenance defaults and transaction boundaries.
 ## Ownership and storage
 
 Each owner has a `44billion_nostrdb:<ownerPubkey>` database containing `events`,
-`deletions`, `kindRegistry`, `maintenance`, `accountCoverage`, `quota`, and
-`cacheAccess` (schema version 4). The owner identifies the database, not
+`deletions`, `kindRegistry`, `maintenance`, `accountCoverage`, `quota`,
+`cacheAccess`, `removalAudit`, and `removalAuditState` (schema version 5). The
+owner identifies the database, not
 necessarily the author of every event in it. Event records carry local app
 references (`ap`), receipt time (`ra`, milliseconds), and a sync anchor (`sa`).
 Cleanup grace periods use receipt time rather than the event's authored timestamp
@@ -18,7 +19,22 @@ where noted below.
 
 `maintenance` is reserved for the unclaimed-data checkpoint and preserved unknown
 records. Quota accounting uses `quota`; account-ingestion coverage uses
-`accountCoverage`.
+`accountCoverage`; committed deletion provenance uses `removalAudit`.
+
+Every call to `deleteStoredEvent()` records one bounded audit row per explicit
+target after the event deletion and before transaction commit. The row contains
+only timestamp, caller `appId`, stable source, target type/value, event ID and
+result code. Direct app removals use the caller's `appId` and `app-remove`;
+launcher upkeep uses `system` plus a stable source such as `expiration`,
+`cache-eviction` or `chunk-purge`. If audit persistence or pruning fails, the
+same transaction aborts and the event remains.
+
+`removalAuditState` stores count, logical bytes and the next ID. Each owner keeps
+at most 500 rows and 256 KiB for 14 days. Expired rows are pruned on insertion,
+at most one additional TTL sweep runs per day, and exceeding either bound removes
+the oldest rows in the deletion transaction. There is no cross-owner cap because
+IndexedDB cannot transact across owner databases; deleting an owner database also
+deletes its audit.
 
 Kind 34601 chunk events store metadata in NostrDB and externalize their content
 into the shared `44billion_browser` chunk stores. Those are separate databases;
@@ -226,8 +242,9 @@ reconsidered in the next sweep, which starts at the beginning.
 
 This cleanup is the exceptional quota mutation that also declares
 `maintenance`: its transaction includes `events`, `deletions`, `cacheAccess`,
-`quota`, and the unclaimed checkpoint in `maintenance`. Ordinary event mutations
-do not include `maintenance`.
+`quota`, `removalAudit`, `removalAuditState`, and the unclaimed checkpoint in
+`maintenance`. Ordinary event mutations include the audit stores but do not
+include `maintenance`.
 
 A failed page is retried after 1 minute without advancing the checkpoint. The
 stop function cancels future scheduling; an in-flight page can still commit.
@@ -339,13 +356,14 @@ flight. Stopping and restarting therefore does not establish an execution barrie
 
 Atomicity applies to each IndexedDB transaction, not to an entire maintenance
 cycle. A transaction commits its changes together or aborts them together. Every event
-mutation includes `events`, `deletions`, `cacheAccess` and `quota`; references,
-LRU membership, tombstones and local usage commit or roll back together. App
-association changes alone do not change byte accounting.
+mutation includes `events`, `deletions`, `cacheAccess`, `quota`,
+`removalAudit` and `removalAuditState`; references, LRU membership, tombstones,
+deletion provenance and local usage commit or roll back together. App association
+changes alone do not change byte accounting.
 
 | Operation | Transaction boundary |
 | --- | --- |
-| Expiration purge | Candidate discovery happens earlier; up to 100 selected event removals, deletion contributions, cache classification and usage share each quota transaction. |
+| Expiration purge | Candidate discovery happens earlier; up to 100 selected event removals, deletion contributions, cache classification, usage and bounded removal audit share each quota transaction. |
 | Unclaimed-data purge | Checkpoint read, bounded scan, revalidated deletions and checkpoint write share one quota transaction. |
 | Deletion compaction | Selection and signing precede the write. The new request, its tombstones and removal of consumed requests share one transaction. Notification follows commit. |
 | Deletion pruning / app cleanup | Each deletion batch is atomic; the entire scan and all batches are not. |
@@ -513,7 +531,8 @@ Launcher-only exports `getNostrDbQuotaLimits`, `setNostrDbQuotaLimits` and
 Only three byte overrides persist under `44billion:nostrdb-quotas:v1`. The cache
 count ceiling is derived with exact integer arithmetic:
 `floor(cacheBytes × 50,000 / 134,217,728)`. Existing overrides automatically use
-this proportion; the schema-3 quota record remains unchanged in schema 4. Zero
+this proportion; the schema-3 quota record remains unchanged in the dedicated
+schema-4 store and later schemas. Zero
 bytes means zero cache events.
 Reducing public/private limits blocks growth only; reducing cache schedules
 trimming. Configuration and global usage remain launcher-only.

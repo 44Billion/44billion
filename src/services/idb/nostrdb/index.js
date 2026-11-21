@@ -19,7 +19,12 @@ import {
   NOSTRDB_CACHE_ACCESS_STORE,
   NOSTRDB_QUOTA_STORE,
   NOSTRDB_UNCLAIMED_APP_DATA_KEY,
-  NOSTRDB_QUOTA_USAGE_KEY
+  NOSTRDB_QUOTA_USAGE_KEY,
+  NOSTRDB_REMOVAL_AUDIT_BY_AT,
+  NOSTRDB_REMOVAL_AUDIT_BY_TARGET,
+  NOSTRDB_REMOVAL_AUDIT_STATE_KEY,
+  NOSTRDB_REMOVAL_AUDIT_STATE_STORE,
+  NOSTRDB_REMOVAL_AUDIT_STORE
 } from '#constants/storage-schema.js'
 import {
   CACHE_ACCESS_INDEX,
@@ -105,8 +110,9 @@ import { classifyEvent, isValidEvent } from 'libp2r2p/event'
 import { isAddressableKind as isAddressableKindRange, isEphemeralKind as isEphemeralKindRange, isReplaceableKind } from 'libp2r2p/kind'
 import { verifyEventSignature } from './verification.js'
 import { NOSTRDB_RECOVERY_READ } from '#helpers/window-message/nostrdb-protocol.js'
+import { recordRemovalAudit } from './removal-audit.js'
 
-export const NOSTRDB_VERSION = 4
+export const NOSTRDB_VERSION = 5
 const SNAPSHOT_READ = Symbol('subscription snapshot read')
 
 export const NOSTRDB_PREFIX = '44billion_nostrdb:'
@@ -187,6 +193,22 @@ cacheAccess, keyPath "i"
   i            event id key, only for current cache events
   lastAccessAt approximate last app delivery time, milliseconds
   byLastAccess index [lastAccessAt, i]
+
+removalAudit, keyPath "id", autoIncrement
+  id           monotonic per-owner audit sequence
+  at           removal timestamp in milliseconds
+  appId        caller app id, or "system" for launcher maintenance
+  operation    stable operation name, currently "delete-event"
+  source       bounded removal source from removal-audit.js
+  targetType   "e" or "a"
+  target       explicit event id or address supplied by the caller
+  eventId      deleted event id
+  resultCode   committed result, currently "deleted"
+  byteSize     logical UTF-8 JSON bytes for the per-owner ring budget
+  indexes: byAt [at, id], byTarget [target, at]
+
+removalAuditState, keyPath "key"
+  state        { count, bytes, nextId, lastPrunedAt } for the per-owner ring
 */
 export const INDEX = {
   address: 'byAddress',
@@ -1115,7 +1137,8 @@ export class NostrDb {
             db,
             tx,
             personalCopyResolution?.loserIds,
-            existingById
+            existingById,
+            appId
           ) || changed
           if (changed) await run('put', [existingById], EVENTS_STORE, null, { db, tx })
           return addResult('duplicate', { stored: changed })
@@ -1145,7 +1168,10 @@ export class NostrDb {
             mergeAppRefs(record, existingByAddress.ap)
             if (!existingIsPersonalCopyLoser) {
               record.sa = await nextSyncAnchor(db, tx, event, now)
-              await deleteStoredEvent(db, tx, existingByAddress)
+              await deleteStoredEvent(db, tx, existingByAddress, {
+                appId,
+                source: 'replaceable-merge'
+              })
             }
             replaced = true
           }
@@ -1155,7 +1181,8 @@ export class NostrDb {
           db,
           tx,
           personalCopyResolution?.loserIds,
-          record
+          record,
+          appId
         )
 
         if (record.sa === undefined) {
@@ -1677,7 +1704,7 @@ export class NostrDb {
               .then(v => v.result)
             if (!stored || isStoredRecordLive(stored, cutoff)) continue
 
-            await deleteStoredEvent(db, tx, stored)
+            await deleteStoredEvent(db, tx, stored, { source: 'expiration' })
             deleted++
           }
           return deleted
@@ -1744,7 +1771,7 @@ export class NostrDb {
           const current = await run('get', [stored.i], EVENTS_STORE, null, { db, tx })
             .then(value => value.result)
           if (!current) return false
-          await deleteStoredEvent(db, tx, current)
+          await deleteStoredEvent(db, tx, current, { source: 'hearsay-prune' })
           return true
         }, { schedulerClass: 'maintenance' })
         if (deleted) removed++
@@ -1825,7 +1852,7 @@ export class NostrDb {
           for (const stored of records) {
             const current = await run('get', [stored.i], EVENTS_STORE, null, { db, tx }).then(value => value.result)
             if (!current || current.cr !== root) continue
-            await deleteStoredEvent(db, tx, current)
+            await deleteStoredEvent(db, tx, current, { source: 'chunk-purge' })
             count++
           }
           return count
@@ -2087,7 +2114,13 @@ export class NostrDb {
           if (!matches.has(id)) matches.set(id, { stored, targets: [] })
           matches.get(id).targets.push([type, value])
         }
-        for (const { stored } of matches.values()) await deleteStoredEvent(db, tx, stored)
+        for (const { stored, targets } of matches.values()) {
+          await deleteStoredEvent(db, tx, stored, {
+            appId,
+            source: 'app-remove',
+            targets
+          })
+        }
         checkAccess()
         return [...matches].map(([id, { targets }]) => ({ id, targets }))
       }, { beforeMutation: checkAccess, schedulerClass, appId, signal })
@@ -2187,7 +2220,7 @@ export class NostrDb {
         })
         if (idKeys.length === 0) return deleted
 
-        deleted += await deleteAppEventBatch(db, appRef, idKeys)
+        deleted += await deleteAppEventBatch(db, appRef, idKeys, appId)
       }
     } catch {
       return 0
@@ -2477,7 +2510,7 @@ async function deleteInvalidChunkRecord (db, stored) {
   try {
     await withQuotaMutation(db, async tx => {
       const current = await run('get', [stored.i], EVENTS_STORE, null, { db, tx }).then(value => value.result)
-      if (current?.k === 34601) await deleteStoredEvent(db, tx, current)
+      if (current?.k === 34601) await deleteStoredEvent(db, tx, current, { source: 'chunk-invalid' })
     }, { schedulerClass: 'maintenance' })
   } catch { return }
   await removeChunkCopy(stored.event?.pubkey, stored.cr, stored.ci).catch(() => {})
@@ -2817,6 +2850,19 @@ function initNostrDb (dbName) {
     store = createObjectStoreIfMissing(db, tx, NOSTRDB_QUOTA_STORE, { keyPath: 'key' })
     if (fresh) store.put(initialQuotaUsage(true))
     createObjectStoreIfMissing(db, tx, NOSTRDB_ACCOUNT_COVERAGE_STORE, { keyPath: 'key' })
+    store = createObjectStoreIfMissing(db, tx, NOSTRDB_REMOVAL_AUDIT_STORE, { keyPath: 'id', autoIncrement: true })
+    createIndexIfMissing(store, NOSTRDB_REMOVAL_AUDIT_BY_AT, ['at', 'id'])
+    createIndexIfMissing(store, NOSTRDB_REMOVAL_AUDIT_BY_TARGET, ['target', 'at'])
+    store = createObjectStoreIfMissing(db, tx, NOSTRDB_REMOVAL_AUDIT_STATE_STORE, { keyPath: 'key' })
+    if (fresh) {
+      store.put({
+        key: NOSTRDB_REMOVAL_AUDIT_STATE_KEY,
+        count: 0,
+        bytes: 0,
+        nextId: 1,
+        lastPrunedAt: 0
+      })
+    }
     migrateLegacyStores(tx)
     store = createObjectStoreIfMissing(db, tx, NOSTRDB_CACHE_ACCESS_STORE, { keyPath: 'i' })
     createIndexIfMissing(store, CACHE_ACCESS_INDEX, ['lastAccessAt', 'i'])
@@ -3047,7 +3093,7 @@ async function purgeUnclaimedAppDataPage (ownerPubkey, {
       const stored = await run('get', [idKey], EVENTS_STORE, null, { db, tx })
         .then(v => v.result)
       if (!isUnclaimedAppDataCleanupCandidate(stored, cutoffMs) || await isOwnerReferenced(db, tx, stored)) continue
-      await deleteStoredEvent(db, tx, stored)
+      await deleteStoredEvent(db, tx, stored, { source: 'unclaimed-app-data' })
       deleted++
     }
 
@@ -3064,7 +3110,7 @@ async function purgeUnclaimedAppDataPage (ownerPubkey, {
   })
 }
 
-async function deleteAppEventBatch (db, appRef, idKeys) {
+async function deleteAppEventBatch (db, appRef, idKeys, appId) {
   return withQuotaMutation(db, async tx => {
     let deleted = 0
 
@@ -3075,7 +3121,10 @@ async function deleteAppEventBatch (db, appRef, idKeys) {
 
       const refs = removeAppRef(stored.ap, appRef)
       if (refs.length === 0 && !await isOwnerReferenced(db, tx, stored)) {
-        await deleteStoredEvent(db, tx, stored)
+        await deleteStoredEvent(db, tx, stored, {
+          appId,
+          source: 'app-data-cleanup'
+        })
         deleted++
       } else {
         stored.ap = refs
@@ -4527,7 +4576,7 @@ async function retainExistingPersonalCopyWinner (db, tx, resolution, appRef) {
   return changed
 }
 
-async function removePersonalCopyLosers (db, tx, loserIds, winner) {
+async function removePersonalCopyLosers (db, tx, loserIds, winner, appId = 'system') {
   if (!Array.isArray(loserIds) || loserIds.length === 0) return false
 
   let changed = false
@@ -4541,7 +4590,10 @@ async function removePersonalCopyLosers (db, tx, loserIds, winner) {
     }
 
     mergeAppRefs(winner, loser.ap)
-    await deleteStoredEvent(db, tx, loser)
+    await deleteStoredEvent(db, tx, loser, {
+      appId,
+      source: 'personal-copy-crdt'
+    })
     changed = true
   }
   return changed
@@ -5228,7 +5280,7 @@ async function deleteMatchingTarget (db, tx, request, target, { upToCreatedAt = 
   if (target.event.pubkey !== request.pubkey) return
   if (target.event.created_at > upToCreatedAt) return
 
-  await deleteStoredEvent(db, tx, target)
+  await deleteStoredEvent(db, tx, target, { source: 'deletion-request' })
 }
 
 async function deleteStoredDeletionRequestById (db, tx, id, author) {
@@ -5239,16 +5291,17 @@ async function deleteStoredDeletionRequestById (db, tx, id, author) {
 
   if (!target || !isDeletionRequestEvent(target.event, author)) return false
 
-  await deleteStoredEvent(db, tx, target)
+  await deleteStoredEvent(db, tx, target, { source: 'deletion-request-prune' })
   return true
 }
 
-export async function deleteStoredEvent (db, tx, stored) {
+export async function deleteStoredEvent (db, tx, stored, audit) {
   const owner = db.name.startsWith(NOSTRDB_PREFIX)
     ? db.name.slice(NOSTRDB_PREFIX.length)
     : null
   await accountDeletedEvent(db, tx, stored)
   await run('delete', [stored.i], EVENTS_STORE, null, { db, tx })
+  await recordRemovalAudit({ db, tx, stored, ...audit })
 
   if (stored.event.kind === 34601 && stored.cr && Number.isSafeInteger(stored.ci)) {
     if (owner) {

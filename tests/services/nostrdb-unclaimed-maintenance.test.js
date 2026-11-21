@@ -6,6 +6,8 @@ import {
   NOSTRDB_ACCOUNT_COVERAGE_STORE,
   NOSTRDB_MAINTENANCE_STORE as MAINTENANCE,
   NOSTRDB_QUOTA_STORE as QUOTA,
+  NOSTRDB_REMOVAL_AUDIT_STATE_STORE,
+  NOSTRDB_REMOVAL_AUDIT_STORE,
   NOSTRDB_UNCLAIMED_APP_DATA_KEY as CHECKPOINT
 } from '#constants/storage-schema.js'
 import {
@@ -316,12 +318,14 @@ it('upgrades an existing version 1 database without removing its records', async
   assert.ok(upgraded.objectStoreNames.contains(MAINTENANCE))
   assert.ok(upgraded.objectStoreNames.contains(QUOTA))
   assert.ok(upgraded.objectStoreNames.contains(NOSTRDB_ACCOUNT_COVERAGE_STORE))
+  assert.ok(upgraded.objectStoreNames.contains(NOSTRDB_REMOVAL_AUDIT_STORE))
+  assert.ok(upgraded.objectStoreNames.contains(NOSTRDB_REMOVAL_AUDIT_STATE_STORE))
   assert.equal(await countRows(upgraded), 1)
   assert.deepEqual(await requestResult(upgraded.transaction('deletions').objectStore('deletions').get('legacy-tombstone')), { ref: 'legacy-tombstone' })
   assert.equal(await readState(upgraded), undefined)
 })
 
-it('migrates legacy coverage and quota records atomically to schema 4', async () => {
+it('migrates legacy coverage and quota records atomically to the current schema', async () => {
   const owner = (++ownerCounter).toString(16).padStart(64, '0')
   const legacyCoverage = {
     key: `${NOSTRDB_ACCOUNT_COVERAGE_PREFIX}${JSON.stringify(['wss://relay.example/', 1])}`,
