@@ -11,7 +11,12 @@ import {
   normalizeEventKind,
   ONE_TIME_DELETE_PERMISSION
 } from './event-permissions.js'
-import { NOSTRDB_ONE_SHOT_METHODS, NOSTRDB_RECOVERY_READ } from '../nostrdb-protocol.js'
+import {
+  NOSTRDB_ONE_SHOT_METHODS,
+  NOSTRDB_RECOVERY_READ,
+  NOSTRDB_TRUSTED_QUERY_LIMIT,
+  NOSTRDB_TRUSTED_QUERY_MAX_RESULTS
+} from '../nostrdb-protocol.js'
 import {
   PERSONAL_COPY_KIND,
   isPersonalCopyEvent,
@@ -449,7 +454,8 @@ export async function runNostrDbMethod ({
   deferCacheAccess = false,
   onTiming,
   assertAccess,
-  signal
+  signal,
+  trustedVault = false
 }) {
   if (!NOSTRDB_ONE_SHOT_METHODS.includes(method)) throw new Error(`Unknown nostrdb method ${method}`)
   const args = Array.isArray(params) ? params : []
@@ -527,8 +533,14 @@ export async function runNostrDbMethod ({
       recoveryRead: schedulerClass === 'background',
       signal
     })
-    if (onTiming) readArgs[1] = { ...plainOptions(readArgs[1]), onTiming }
-    return db.query(...readArgs)
+    const readOptions = {
+      ...plainOptions(readArgs[1]),
+      ...(onTiming ? { onTiming } : {}),
+      ...(trustedVault
+        ? { [NOSTRDB_TRUSTED_QUERY_LIMIT]: NOSTRDB_TRUSTED_QUERY_MAX_RESULTS }
+        : {})
+    }
+    return db.query(readArgs[0], readOptions)
   }
 
   if (method === 'count') {

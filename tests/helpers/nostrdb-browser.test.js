@@ -28,7 +28,10 @@ import {
   nostrDbSignMethodForTemplate,
   runNostrDbMethod
 } from '../../src/helpers/window-message/browser/nostrdb.js'
-import { NOSTRDB_RECOVERY_READ } from '../../src/helpers/window-message/nostrdb-protocol.js'
+import {
+  NOSTRDB_RECOVERY_READ,
+  NOSTRDB_TRUSTED_QUERY_LIMIT
+} from '../../src/helpers/window-message/nostrdb-protocol.js'
 import {
   cancelNostrDbAccesses,
   clearNostrDbAccessSchedulers,
@@ -592,6 +595,7 @@ describe('nostrdb browser bridge helpers', () => {
     assert.equal(seen.options.schedulerClass, 'background')
     assert.equal(seen.options.appId, 'real-app')
     assert.equal(seen.options[NOSTRDB_RECOVERY_READ], true)
+    assert.equal(seen.options[NOSTRDB_TRUSTED_QUERY_LIMIT], undefined)
     assert.equal('recovery' in seen.options, false)
 
     const forged = { [NOSTRDB_RECOVERY_READ]: true }

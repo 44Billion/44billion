@@ -109,7 +109,11 @@ import {
 import { classifyEvent, isValidEvent } from 'libp2r2p/event'
 import { isAddressableKind as isAddressableKindRange, isEphemeralKind as isEphemeralKindRange, isReplaceableKind } from 'libp2r2p/kind'
 import { verifyEventSignature } from './verification.js'
-import { NOSTRDB_RECOVERY_READ } from '#helpers/window-message/nostrdb-protocol.js'
+import {
+  NOSTRDB_RECOVERY_READ,
+  NOSTRDB_TRUSTED_QUERY_LIMIT,
+  NOSTRDB_TRUSTED_QUERY_MAX_RESULTS
+} from '#helpers/window-message/nostrdb-protocol.js'
 import { recordRemovalAudit } from './removal-audit.js'
 
 export const NOSTRDB_VERSION = 5
@@ -2008,6 +2012,10 @@ export class NostrDb {
 
   async query (filterOrFilters, options = {}) {
     const appRef = normalizeReadAppRef(options)
+    const trustedQueryLimit = options[NOSTRDB_TRUSTED_QUERY_LIMIT]
+    const maxLimit = Number.isSafeInteger(trustedQueryLimit) && trustedQueryLimit > 0
+      ? Math.min(trustedQueryLimit, NOSTRDB_TRUSTED_QUERY_MAX_RESULTS)
+      : MAX_LIMIT
     let filters
     try {
       filters = parseFilterInput(filterOrFilters, options)
@@ -2045,6 +2053,7 @@ export class NostrDb {
       const results = await queryParsedFilters(db, filters, {
         countOnly: false,
         ignoreLimit: false,
+        maxLimit,
         decryptPersonalCopyContent: this.personalCopyDecrypt,
         onTiming: options.onTiming,
         scheduleRead,
@@ -3221,20 +3230,20 @@ async function queryRecords (db, rawFilter, { countOnly, ignoreLimit, tx, onTimi
   return queryParsedFilters(db, filters, { countOnly, ignoreLimit, onTiming })
 }
 
-async function queryParsedFilters (db, filters, { countOnly, ignoreLimit, decryptPersonalCopyContent, onTiming, scheduleRead, recoveryRead = false } = {}) {
+async function queryParsedFilters (db, filters, { countOnly, ignoreLimit, maxLimit = MAX_LIMIT, decryptPersonalCopyContent, onTiming, scheduleRead, recoveryRead = false } = {}) {
   const liveFilters = filters.filter(filter => !filter.neverMatch)
   if (liveFilters.length === 0) return countOnly ? 0 : []
   if (liveFilters.length === 1) {
-    return queryParsedFilterRecords(db, liveFilters[0], { countOnly, ignoreLimit, decryptPersonalCopyContent, onTiming, scheduleRead, recoveryRead })
+    return queryParsedFilterRecords(db, liveFilters[0], { countOnly, ignoreLimit, maxLimit, decryptPersonalCopyContent, onTiming, scheduleRead, recoveryRead })
   }
 
-  return queryMultipleParsedFilters(db, liveFilters, { countOnly, ignoreLimit, decryptPersonalCopyContent, onTiming, scheduleRead, recoveryRead })
+  return queryMultipleParsedFilters(db, liveFilters, { countOnly, ignoreLimit, maxLimit, decryptPersonalCopyContent, onTiming, scheduleRead, recoveryRead })
 }
 
-async function queryParsedFilterRecords (db, filter, { countOnly, ignoreLimit, decryptPersonalCopyContent, tx, onTiming, scheduleRead, recoveryRead = false }) {
+async function queryParsedFilterRecords (db, filter, { countOnly, ignoreLimit, maxLimit = MAX_LIMIT, decryptPersonalCopyContent, tx, onTiming, scheduleRead, recoveryRead = false }) {
   if (filter.neverMatch) return countOnly ? 0 : []
 
-  const limit = ignoreLimit ? Infinity : Math.min(countOnly ? Infinity : MAX_LIMIT, filter.limit)
+  const limit = ignoreLimit ? Infinity : Math.min(countOnly ? Infinity : maxLimit, filter.limit)
   if (limit <= 0) return countOnly ? 0 : []
 
   const plan = await selectQueryPlan(db, filter, { tx, onTiming, scheduleRead, recoveryRead })
@@ -3357,8 +3366,8 @@ async function scanRecoveryPlanCursors (db, plan, { direction, limit, onTiming, 
   }
 }
 
-async function queryMultipleParsedFilters (db, filters, { countOnly, ignoreLimit, decryptPersonalCopyContent, onTiming, scheduleRead, recoveryRead = false }) {
-  const limit = ignoreLimit ? Infinity : Math.min(countOnly ? Infinity : MAX_LIMIT, filters[0].limit)
+async function queryMultipleParsedFilters (db, filters, { countOnly, ignoreLimit, maxLimit = MAX_LIMIT, decryptPersonalCopyContent, onTiming, scheduleRead, recoveryRead = false }) {
+  const limit = ignoreLimit ? Infinity : Math.min(countOnly ? Infinity : maxLimit, filters[0].limit)
   if (limit <= 0) return countOnly ? 0 : []
 
   if (filters[0].searchText) {

@@ -304,7 +304,8 @@ export async function runTrustedVaultNostrDbMethod ({
     params,
     signEvent,
     personalCopyEncrypt,
-    personalCopyObfuscate
+    personalCopyObfuscate,
+    trustedVault: true
   })
 }
 

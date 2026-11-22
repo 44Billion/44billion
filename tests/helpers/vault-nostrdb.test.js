@@ -1,5 +1,9 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import {
+  NOSTRDB_TRUSTED_QUERY_LIMIT,
+  NOSTRDB_TRUSTED_QUERY_MAX_RESULTS
+} from '../../src/helpers/window-message/nostrdb-protocol.js'
 
 globalThis.IS_DEVELOPMENT = true
 
@@ -14,6 +18,35 @@ const {
 } = await import('../../src/helpers/window-message/browser/vault-nostrdb.js')
 
 describe('trusted vault nostrdb bridge helpers', () => {
+  it('allows trusted vault queries to request the internal dense inventory limit', async () => {
+    const ownerPubkey = 'b'.repeat(64)
+    const filter = {
+      since: 1000,
+      until: 2000,
+      ids_only: true,
+      search: 'algo:sync sort:asc',
+      limit: NOSTRDB_TRUSTED_QUERY_MAX_RESULTS
+    }
+    let seen
+
+    assert.deepEqual(await runTrustedVaultNostrDbMethod({
+      vaultPort: 'vault-port',
+      ownerPubkey,
+      getNostrDb: () => ({
+        async query (seenFilter, options) {
+          seen = { filter: seenFilter, options }
+          return { results: ['id'], meta: {} }
+        }
+      }),
+      method: 'query',
+      params: [filter, { deferCacheAccess: true }]
+    }), { results: ['id'], meta: {} })
+
+    assert.deepEqual(seen.filter, filter)
+    assert.equal(seen.options[NOSTRDB_TRUSTED_QUERY_LIMIT], NOSTRDB_TRUSTED_QUERY_MAX_RESULTS)
+    assert.equal(seen.options.deferCacheAccess, true)
+  })
+
   it('runs app-neutral one-shot methods for vault-selected owners', async () => {
     const ownerPubkey = 'b'.repeat(64)
     const event = { kind: 1, tags: [] }

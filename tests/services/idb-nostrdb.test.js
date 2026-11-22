@@ -36,6 +36,10 @@ import { isScheduledDurableFuture } from '../../src/services/idb/nostrdb/schedul
 import { eventKinds } from '../../src/constants/event.js'
 import { appIdToDbAppRef } from '../../src/helpers/app.js'
 import {
+  NOSTRDB_TRUSTED_QUERY_LIMIT,
+  NOSTRDB_TRUSTED_QUERY_MAX_RESULTS
+} from '../../src/helpers/window-message/nostrdb-protocol.js'
+import {
   PERSONAL_COPY_PROVENANCE,
   buildPersonalCopyTags,
   personalCopySourceId
@@ -1229,6 +1233,27 @@ describe('nostrdb', () => {
     assert.deepEqual(await queryResults(db, { authors: [A], ids_only: true }), [newer.id, old.id])
     assert.deepEqual(await queryResults(db, { ids: [old.id, newer.id], ids_only: true, limit: 1 }), [newer.id])
     assert.deepEqual(await queryResults(db, { authors: [A], ids_only: true, search: 'sort:asc', limit: 1 }), [old.id])
+  })
+
+  it('keeps the public query cap and clamps the trusted vault inventory override', async () => {
+    const db = getNostrDb(`${OWNER}51`)
+    for (let index = 0; index < NOSTRDB_TRUSTED_QUERY_MAX_RESULTS + 1; index++) {
+      assertAddOk(await db.add(event({
+        id: hexId(10_000 + index),
+        pubkey: A,
+        created_at: index + 1
+      })))
+    }
+    const filter = {
+      kinds: [1],
+      ids_only: true,
+      limit: 5000
+    }
+
+    assert.equal((await db.query(filter)).results.length, 200)
+    assert.equal((await db.query(filter, {
+      [NOSTRDB_TRUSTED_QUERY_LIMIT]: 5000
+    })).results.length, NOSTRDB_TRUSTED_QUERY_MAX_RESULTS)
   })
 
   it('derives sync anchors for stored rows and coordinate replacements', async () => {
