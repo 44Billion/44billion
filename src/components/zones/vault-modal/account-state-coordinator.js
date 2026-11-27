@@ -1,7 +1,8 @@
 // MessagePort preserves delivery order, but async event handlers can overlap.
 // Serialize account-state applications so CLOSE_VAULT_VIEW can acknowledge
 // immediately, then wait for every earlier SET_ACCOUNTS_STATE before closing
-// and emitting the one-shot first-account attention signal.
+// and emitting the one-shot first-account attention signal. Generation checks
+// keep work from a replaced vault document from committing later.
 export function createAccountStateCoordinator ({
   applyAccountsState,
   closeVault,
@@ -12,10 +13,12 @@ export function createAccountStateCoordinator ({
   let pendingApplication = Promise.resolve()
   let pendingAttention = null
 
-  const apply = (accounts, { allowAttention = false } = {}) => {
+  const apply = (accounts, { allowAttention = false, isCurrent = () => true } = {}) => {
     pendingApplication = pendingApplication
       .then(async () => {
-        const metadata = await applyAccountsState(accounts)
+        if (!isCurrent()) return
+        const metadata = await applyAccountsState(accounts, { isCurrent })
+        if (metadata === false || !isCurrent()) return
         if (allowAttention && metadata?.activatedFirstAccount) {
           if (isVaultOpen()) {
             pendingAttention = metadata
@@ -31,8 +34,9 @@ export function createAccountStateCoordinator ({
     return pendingApplication
   }
 
-  const close = async () => {
+  const close = async ({ isCurrent = () => true } = {}) => {
     await pendingApplication
+    if (!isCurrent()) return
     closeVault()
     if (!pendingAttention) return
     const attention = pendingAttention

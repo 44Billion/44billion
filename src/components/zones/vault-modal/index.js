@@ -35,6 +35,8 @@ import {
 import { vaultModalLocales } from './locales.js'
 import { useVaultRecoveryStore } from './recovery.js'
 import { createAccountStateCoordinator } from './account-state-coordinator.js'
+import { vaultAuthority } from './vault-authority.js'
+import { createVaultLifecycleQueue } from './vault-lifecycle.js'
 import {
   FIRST_ACCOUNT_ATTENTION_MS,
   FIRST_ACCOUNT_ATTENTION_SIGNAL
@@ -744,31 +746,47 @@ function initMessageListener ({
 }) {
   let currentVaultPort = null
   let currentRelayEndpoint = null
+  const lifecycle = createVaultLifecycleQueue()
   const vaultRelayAuthProvider = createVaultRelayAuthProvider({ askVault })
   const vaultNostrDbSubscriptions = new Map()
   const unsubscribeLocale = subscribeLocaleChanged(() => {
     if (currentVaultPort) translateVault(currentVaultPort)
   })
-  // Setup cleanup
-  componentSignal?.addEventListener('abort', () => {
-    unsubscribeLocale()
+
+  const invalidateCurrentVault = () => {
+    ac?.abort()
+    ac = undefined
     if (currentRelayEndpoint) {
       currentRelayEndpoint.dispose()
       currentRelayEndpoint = null
     }
-    unifiedRelayPool.setDefaultAuthProvider(null)
     if (currentVaultPort) {
       currentVaultPort.close()
       currentVaultPort = null
       _activeVaultPort = null
       connectedVaultUrl$(null)
-      _pendingVaultMessages.length = 0
       closeTrustedVaultNostrDbSubscriptions(vaultNostrDbSubscriptions)
+      signerStates.setConnection('disconnected')
+      vaultPort$(null)
     }
+  }
+
+  const discardReady = event => {
+    event.ports[0]?.close()
+    event.ports[1]?.close()
+  }
+
+  // Setup cleanup
+  componentSignal?.addEventListener('abort', () => {
+    lifecycle.advance()
+    unsubscribeLocale()
+    invalidateCurrentVault()
+    unifiedRelayPool.setDefaultAuthProvider(null)
+    _pendingVaultMessages.length = 0
   }, { once: true })
 
   let ac
-  window.addEventListener('message', async e => {
+  window.addEventListener('message', e => {
     if (
       e.data.code !== 'VAULT_READY' ||
       e.source !== vaultIframe.contentWindow ||
@@ -776,82 +794,104 @@ function initMessageListener ({
       !e.ports[0]
     ) return
 
-    if (!e.data.payload.accounts) console.log('Missing account data on vault startup')
-    else await applyVaultAccountsState(e.data.payload.accounts)
+    const accounts = e.data.payload.accounts
+    const ready = lifecycle.advance()
+    invalidateCurrentVault()
+    if (!accounts) console.log('Missing account data on vault startup')
 
-    // vault iframe's page may reload on sw controller change (and send a new 'VAULT_READY' msg)
-    ac?.abort()
-    ac = new AbortController()
-    closeTrustedVaultNostrDbSubscriptions(vaultNostrDbSubscriptions)
-    if (currentVaultPort) currentVaultPort.close()
-    currentVaultPort = e.ports[0]
-    _activeVaultPort = currentVaultPort
-    unifiedRelayPool.setDefaultAuthProvider(vaultRelayAuthProvider)
-    currentRelayEndpoint?.dispose()
-    currentRelayEndpoint = null
-    const RelayPoolWebSocket = getLauncherRelayPoolWebSocket()
-    if (e.ports[1] && RelayPoolWebSocket && isRelayPoolEnabled()) {
-      currentRelayEndpoint = createRelayBridgeEndpoint({
-        port: e.ports[1],
-        pool: unifiedRelayPool,
-        delegate: true,
-        owner: 'vault',
-        createVirtualSocket: url => new RelayPoolWebSocket(url)
+    ready.run(async isCurrent => {
+      if (accounts && await applyVaultAccountsState(accounts, { isCurrent }) === false) return false
+      if (!isCurrent()) return false
+
+      ac = new AbortController()
+      currentVaultPort = e.ports[0]
+      _activeVaultPort = currentVaultPort
+      unifiedRelayPool.setDefaultAuthProvider(vaultRelayAuthProvider)
+      const RelayPoolWebSocket = getLauncherRelayPoolWebSocket()
+      if (e.ports[1] && RelayPoolWebSocket && isRelayPoolEnabled()) {
+        currentRelayEndpoint = createRelayBridgeEndpoint({
+          port: e.ports[1],
+          pool: unifiedRelayPool,
+          delegate: true,
+          owner: 'vault',
+          createVirtualSocket: url => new RelayPoolWebSocket(url)
+        })
+      } else {
+        e.ports[1]?.close()
+      }
+      listenToVaultMessages({
+        vaultPort: currentVaultPort,
+        signal: AbortSignal.any([componentSignal, ac.signal]),
+        isCurrent
       })
-    } else {
-      e.ports[1]?.close()
-    }
-    listenToVaultMessages({ vaultPort: currentVaultPort, signal: AbortSignal.any([componentSignal, ac.signal]) })
-    // before setting vaultPort$, which could trigger other messages to vault
-    stopRenderHandshake?.()
-    // BROWSER_READY must be the first message the vault receives
-    tellVaultImReady(currentVaultPort)
-    // Make it work with ez-vault's simplified messenger
-    if (e.data.reqId) {
-      reply(e, {
-        payload: {
-          relayPoolSupported: true,
-          relayPoolEnabled: !!currentRelayEndpoint
-        }
-      })
-    }
-    translateVault(currentVaultPort)
-    _pendingVaultMessages.splice(0).forEach(msg => tell(_activeVaultPort, msg))
-    flushQueuedVaultAcceptedMessages({ vaultPort: currentVaultPort })
-      .catch(err => console.warn('Failed to flush queued vault messages', err))
-    connectedVaultUrl$(connectedVaultUrl)
-    vaultPort$(currentVaultPort)
+      // before setting vaultPort$, which could trigger other messages to vault
+      stopRenderHandshake?.()
+      // BROWSER_READY must be the first message the vault receives
+      tellVaultImReady(currentVaultPort)
+      // Make it work with ez-vault's simplified messenger
+      if (e.data.reqId) {
+        reply(e, {
+          payload: {
+            relayPoolSupported: true,
+            relayPoolEnabled: !!currentRelayEndpoint
+          }
+        })
+      }
+      translateVault(currentVaultPort)
+      _pendingVaultMessages.splice(0).forEach(msg => tell(_activeVaultPort, msg))
+      flushQueuedVaultAcceptedMessages({ vaultPort: currentVaultPort })
+        .catch(err => console.warn('Failed to flush queued vault messages', err))
+      connectedVaultUrl$(connectedVaultUrl)
+      vaultPort$(currentVaultPort)
+      return true
+    }).then(result => {
+      if (result.stale || result.result === false) discardReady(e)
+    }).catch(error => {
+      discardReady(e)
+      if (ready.isCurrent()) {
+        invalidateCurrentVault()
+        console.warn('Failed to apply VAULT_READY', error)
+      }
+    })
   }, { signal: componentSignal })
 
-  async function applyVaultAccountsState (accounts) {
+  async function applyVaultAccountsState (accounts, { isCurrent = () => true } = {}) {
+    if (!isCurrent()) return false
     try {
       await reconcileNostrDbAccounts(accounts)
     } catch (err) {
       console.warn('Failed to reconcile NostrDB accounts', err)
     }
+    if (!isCurrent()) return false
     try {
       await pruneNostrDbsForVaultAccounts(accounts)
     } catch (err) {
       console.warn('Failed to prune stale NostrDB databases', err)
     }
+    if (!isCurrent()) return false
     const metadata = await setAccountsState(accounts, storage, tabStorage)
+    if (!isCurrent()) return false
     // App callbacks may immediately use methods guarded by the persisted flags.
     // Publish readiness only after those flags and workspace ownership agree.
     clearPersonalCopyCache()
     signerStates.setAccounts(accounts)
+    vaultAuthority.markAuthoritative()
     return metadata
   }
 
-  function listenToVaultMessages ({ vaultPort, signal }) {
+  function listenToVaultMessages ({ vaultPort, signal, isCurrent }) {
     watchSignerConnection({
-      signal, update: state => signerStates.setConnection(state),
+      signal,
+      update: state => { if (isCurrent()) signerStates.setConnection(state) },
       ping: async () => { const response = await ask(vaultPort, { code: 'VAULT_PING', payload: null }, { timeout: 2000 }); return !response.error && response.payload === true }
     })
     const accountState = createAccountStateCoordinator({
-      applyAccountsState: applyVaultAccountsState,
-      closeVault: () => vaultModalStore.close(),
+      applyAccountsState: (accounts, options) => applyVaultAccountsState(accounts, options),
+      closeVault: () => { if (isCurrent()) vaultModalStore.close() },
       isVaultOpen: () => vaultModalStore.isOpen$(),
-      emitFirstAccountAttention: ({ userPk }) => {
+      emitFirstAccountAttention: metadata => {
+        if (!isCurrent()) return
+        const { userPk } = metadata
         const attention = {
           id: ++firstAccountAttentionSequence,
           userPk,
@@ -862,6 +902,7 @@ function initMessageListener ({
     })
 
     vaultPort.addEventListener('message', async e => {
+      if (!isCurrent()) return
       switch (e.data.code) {
         case 'VAULT_CONNECTION_STATE': {
           if (e.data.payload?.connected !== true) clearPersonalCopyCache()
@@ -874,7 +915,7 @@ function initMessageListener ({
         }
         case 'CLOSE_VAULT_VIEW': {
           if (e.data.reqId) reply(e, { payload: true }, { to: vaultPort })
-          await accountState.close()
+          await lifecycle.runCurrent(isCurrent => accountState.close({ isCurrent }))
           break
         }
         case 'SET_ACCOUNTS_STATE': {
@@ -882,7 +923,9 @@ function initMessageListener ({
             console.log('Missing account data on vault message')
             break
           }
-          await accountState.apply(e.data.payload.accounts, { allowAttention: true })
+          await lifecycle.runCurrent(isCurrent =>
+            accountState.apply(e.data.payload.accounts, { allowAttention: true, isCurrent })
+          )
           break
         }
         case 'CONTENT_KEYS_CHANGED': {
@@ -898,27 +941,26 @@ function initMessageListener ({
               params,
               subscriptionId,
               subscriptions: vaultNostrDbSubscriptions,
-              getVaultPort: () => _activeVaultPort
+              getVaultPort: () => isCurrent() ? _activeVaultPort : null
             })
             break
           }
           try {
-            reply(e, {
-              payload: await runTrustedVaultNostrDbMethod({
-                vaultPort,
+            const payload = await runTrustedVaultNostrDbMethod({
+              vaultPort,
+              ownerPubkey,
+              method,
+              params,
+              getVaultPort: () => isCurrent() ? _activeVaultPort : null,
+              isAppInstalled: ({ ownerPubkey, appId }) => isNostrDbAppInstalledForOwner({
+                storage,
                 ownerPubkey,
-                method,
-                params,
-                getVaultPort: () => _activeVaultPort,
-                isAppInstalled: ({ ownerPubkey, appId }) => isNostrDbAppInstalledForOwner({
-                  storage,
-                  ownerPubkey,
-                  appId
-                })
+                appId
               })
-            }, { to: vaultPort })
+            })
+            if (isCurrent()) reply(e, { payload }, { to: vaultPort })
           } catch (error) {
-            reply(e, { error }, { to: vaultPort })
+            if (isCurrent()) reply(e, { error }, { to: vaultPort })
           }
           break
         }

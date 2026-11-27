@@ -133,6 +133,27 @@ describe('first vault account attention', () => {
     assert.deepEqual(steps, ['close', 'emit:real'])
   })
 
+  it('skips stale account applications and close operations', async () => {
+    let current = true
+    let applications = 0
+    let closes = 0
+    const coordinator = createAccountStateCoordinator({
+      applyAccountsState: async (accounts, { isCurrent }) => {
+        if (isCurrent()) applications++
+        return { activatedFirstAccount: true, userPk: 'real' }
+      },
+      closeVault: () => { closes++ },
+      emitFirstAccountAttention: () => assert.fail('stale work must not emit attention')
+    })
+    const isCurrent = () => current
+    const applying = coordinator.apply([{}], { allowAttention: true, isCurrent })
+    const closing = coordinator.close({ isCurrent })
+    current = false
+    await Promise.all([applying, closing])
+    assert.equal(applications, 0)
+    assert.equal(closes, 0)
+  })
+
   it('keeps the halo scoped, themed and reduced-motion aware', async () => {
     const screen = await readFile(
       new URL('../../src/components/zones/screen/index.js', import.meta.url),
@@ -140,6 +161,10 @@ describe('first vault account attention', () => {
     )
     const vault = await readFile(
       new URL('../../src/components/zones/vault-modal/index.js', import.meta.url),
+      'utf8'
+    )
+    const init = await readFile(
+      new URL('../../src/components/zones/screen/use-init-or-reset-screen.js', import.meta.url),
       'utf8'
     )
 
@@ -151,7 +176,11 @@ describe('first vault account attention', () => {
     assert.match(screen, /prefers-reduced-motion: reduce/)
     assert.match(screen, /toolbar-first-account-outline/)
     assert.match(vault, /try \{\s*await reconcileNostrDbAccounts\(accounts\)[\s\S]*Failed to reconcile NostrDB accounts/)
-    assert.match(vault, /case 'CLOSE_VAULT_VIEW':[\s\S]*reply\([\s\S]*await accountState\.close\(\)/)
-    assert.match(vault, /accountState\.apply\(e\.data\.payload\.accounts, \{ allowAttention: true \}\)/)
+    assert.match(vault, /case 'CLOSE_VAULT_VIEW':[\s\S]*reply\([\s\S]*accountState\.close\(\{ isCurrent \}\)/)
+    assert.match(vault, /lifecycle\.advance\(\)/)
+    assert.match(vault, /lifecycle\.runCurrent\(isCurrent =>[\s\S]*accountState\.apply/)
+    assert.match(vault, /applyVaultAccountsState\(accounts, \{ isCurrent \}\)/)
+    assert.match(vault, /accountState\.apply\(e\.data\.payload\.accounts, \{ allowAttention: true, isCurrent \}\)/)
+    assert.match(init, /vaultAuthority\.hasAuthoritativeState\(\)/)
   })
 })

@@ -243,6 +243,13 @@ optional app, NostrDB and subdomain cleanup. A cleanup failure is logged with
 its affected account/app/workspace and must not leave a removed account visible
 until reload.
 
+- Every `VAULT_READY` starts a new vault-document generation. Apply generations
+  and account-state updates through one serial queue; only the latest may update
+  storage, `signerStates`, connection state, subscriptions or `_activeVaultPort`.
+  Invalidate the previous port immediately and close stale candidate ports.
+  Asynchronous reconciliation must recheck its generation before committing.
+  The vault is authoritative for `isLocked`; the boot lock guard is provisional
+  and must not run after an authoritative snapshot has committed.
 - `useTrackAccountEvents` owns one coordinator, groups writable account authors
   by relay/eligible kind set, and cancels on removal/unmount.
   Seeds independently discover kind 10002; write groups use at most 30 kinds and

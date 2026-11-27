@@ -11,6 +11,7 @@ import { removeSelectionsForWorkspace } from '#services/personas/index.js'
 import { cleanupNostrDbAppForWorkspace } from './helpers/nostrdb-app-lifecycle.js'
 import { requestNostrDbAppBackfillsForWorkspace } from './helpers/nostrdb-app-backfill.js'
 import { firstAccountActivationMetadata } from './account-attention.js'
+import { vaultAuthority } from '#zones/vault-modal/vault-authority.js'
 
 // the screen has
 // 1 active (active as in last clicked) user (pk) at all times (defaultUserPk is the default user pk)
@@ -49,9 +50,9 @@ export default function useInitOrResetScreen () {
     storage.session_defaultUserPk$(defaultUserPk)
     addUser({ userPk: defaultUserPk, storage, tabStorage, isFirstTimeUser: true })
   })
-  // first run only
+  // First run only. Provisional guard until the vault provides an authoritative account state.
   useTask(() => {
-    if (!storage.session_workspaceKeys$()) return
+    if (!storage.session_workspaceKeys$() || vaultAuthority.hasAuthoritativeState()) return
 
     // Loop through all workspaces and set each user's account to locked status
     const workspaceKeys = storage.session_workspaceKeys$() || []
