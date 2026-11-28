@@ -1,23 +1,23 @@
 import { setWebStorageItem } from '#f'
+import { SUBDOMAIN_LOCK_LEASE_KEY } from '#constants/storage-schema.js'
+import { withRecoverableLock } from '#helpers/recoverable-lock.js'
 
 export const SUBDOMAIN_STATE_KEY = 'local_subdomainLifecycle'
 export const SUBDOMAIN_LOCK = 'app-subdomain-mappings'
+const SUBDOMAIN_LOCK_LEASE_MS = 10_000
+const SUBDOMAIN_LOCK_HEARTBEAT_MS = 3_000
 export const isSubdomainStorageKey = key => key.startsWith('session_subdomain') || key === SUBDOMAIN_STATE_KEY
 export const subdomainUseLock = id => `app-subdomain-use:${id}`
-let fallbackLock = Promise.resolve()
 
-export function withSubdomainLock (fn) {
-  if (globalThis.navigator?.locks?.request) {
-    return navigator.locks.request(SUBDOMAIN_LOCK, async () => {
-      try { return { value: await fn() } } catch (error) { return { error } }
-    }).then(result => {
-      if (result.error) throw result.error
-      return result.value
-    })
-  }
-  const result = fallbackLock.then(fn)
-  fallbackLock = result.catch(() => {})
-  return result
+export function withSubdomainLock (fn, options = {}) {
+  return withRecoverableLock({
+    name: SUBDOMAIN_LOCK,
+    storageKey: SUBDOMAIN_LOCK_LEASE_KEY,
+    callback: () => fn(),
+    leaseMs: SUBDOMAIN_LOCK_LEASE_MS,
+    heartbeatMs: SUBDOMAIN_LOCK_HEARTBEAT_MS,
+    ...options
+  })
 }
 
 // Read the actual storage while holding the lock, not a reactive snapshot that

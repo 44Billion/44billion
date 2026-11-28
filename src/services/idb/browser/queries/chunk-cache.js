@@ -1,3 +1,5 @@
+import { CHUNK_CACHE_LOCK_LEASE_KEY } from '#constants/storage-schema.js'
+import { withRecoverableLock } from '#helpers/recoverable-lock.js'
 import { assertNostrDbAccess } from '#services/idb/nostrdb/access.js'
 import { getDb } from '../index.js'
 
@@ -18,13 +20,14 @@ const ALL_STORES = [
 ]
 const STATE_KEY = 'global'
 const LOCK_NAME = '44billion:chunk-cache:v1'
+const CHUNK_CACHE_LOCK_LEASE_MS = 30_000
+const CHUNK_CACHE_LOCK_HEARTBEAT_MS = 10_000
 const CHANNEL_NAME = '44billion:chunk-cache:v1'
 const INSTANCE_ID = `${Date.now()}:${Math.random()}`
 const RECONCILIATION_BATCH_SIZE = 256
 const ROOT_TOUCH_INTERVAL_MS = 60 * 1000
 const MAX_RECENT_ROOT_TOUCHES = 2048
 
-let fallbackLock = Promise.resolve()
 const localListeners = new Set()
 const recentRootTouches = new Map()
 let broadcastChannel
@@ -67,20 +70,15 @@ async function withStores (storeNames, mode, callback) {
   }
 }
 
-export async function withChunkCacheLock (callback) {
-  if (globalThis.navigator?.locks?.request) {
-    return globalThis.navigator.locks.request(LOCK_NAME, callback)
-  }
-
-  const previous = fallbackLock
-  let release
-  fallbackLock = new Promise(resolve => { release = resolve })
-  await previous
-  try {
-    return await callback()
-  } finally {
-    release()
-  }
+export async function withChunkCacheLock (callback, options = {}) {
+  return withRecoverableLock({
+    name: LOCK_NAME,
+    storageKey: CHUNK_CACHE_LOCK_LEASE_KEY,
+    callback,
+    leaseMs: CHUNK_CACHE_LOCK_LEASE_MS,
+    heartbeatMs: CHUNK_CACHE_LOCK_HEARTBEAT_MS,
+    ...options
+  })
 }
 
 function initialState () {
@@ -645,17 +643,20 @@ async function removeOwnerRootAssociationBatch (owner, root, limit) {
 }
 
 export async function removeOwnerRootCopies (owner, root) {
-  return withChunkCacheLock(async () => {
+  return withChunkCacheLock(async ({ assertLeader } = {}) => {
     let removed = 0
     while (true) {
+      assertLeader?.()
       const count = await removeOwnerRootCopyBatch(owner, root, RECONCILIATION_BATCH_SIZE)
       removed += count
       if (count < RECONCILIATION_BATCH_SIZE) break
     }
     while (true) {
+      assertLeader?.()
       const count = await removeOwnerRootAssociationBatch(owner, root, RECONCILIATION_BATCH_SIZE)
       if (count === 0) break
     }
+    assertLeader?.()
     await withStores([CHUNK_ROOTS_STORE], 'readwrite', transaction =>
       requestResult(transaction.objectStore(CHUNK_ROOTS_STORE).delete([owner, root]))
     )

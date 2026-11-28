@@ -76,10 +76,59 @@ it('waits normally for an active lease and retains the legacy lock name', async 
   })
 
   assert.equal(result, 5)
-  assert.deepEqual(calls, [
-    { name: QUOTA_LOCK, options: { ifAvailable: true } },
-    { name: QUOTA_LOCK, options: {} }
-  ])
+  assert.deepEqual(calls[0], { name: QUOTA_LOCK, options: { ifAvailable: true } })
+  assert.equal(calls[1].name, QUOTA_LOCK)
+  assert.equal(calls[1].options.signal instanceof AbortSignal, true)
+  assert.equal(calls[1].options.steal, undefined)
+})
+
+it('steals after lease expiry even when waiter arrived while the lease was still active', async () => {
+  const storage = storageWith({
+    version: 1,
+    generation: 4,
+    instanceId: 'tab-a',
+    leaseUntil: 5_000,
+    updatedAt: 1_000
+  })
+  let clock = 2_000
+  const calls = []
+  const timers = []
+  const locks = {
+    request (name, options, callback) {
+      calls.push({ name, options })
+      if (options.ifAvailable) return Promise.resolve(callback(null))
+      if (options.steal) return Promise.resolve(callback({ name }))
+      return new Promise((resolve, reject) => {
+        options.signal?.addEventListener('abort', () => {
+          reject(options.signal.reason || Object.assign(new Error('Aborted'), { name: 'AbortError' }))
+        }, { once: true })
+      })
+    }
+  }
+
+  const pending = withNostrDbAuthority(authority => authority.generation, undefined, {
+    locks,
+    storage,
+    now: () => clock,
+    setTimer: (callback, delay) => {
+      const timer = { callback, delay, unref () {} }
+      timers.push(timer)
+      return timer
+    },
+    clearTimer: timer => { if (timer) timer.cleared = true },
+    replicaId: 'tab-b'
+  })
+
+  await Promise.resolve()
+  await Promise.resolve()
+  assert.equal(timers.length, 1)
+  assert.equal(timers[0].delay, 3_000)
+
+  // Frozen tab A never renewed; when the bounded wait timer fires at t=5000, tab B steals.
+  clock = 5_000
+  timers[0].callback()
+  assert.equal(await pending, 5)
+  assert.equal(calls.some(call => call.options?.steal === true), true)
 })
 
 it('does not steal a legacy holder that has no persisted lease', async () => {

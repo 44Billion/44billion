@@ -1,14 +1,27 @@
 import { base16ToBase62, base62ToBase16 } from 'libp2r2p/base62'
 import { setWebStorageItem } from '#f'
 import { deleteNostrDb } from './idb/nostrdb/index.js'
-import { NOSTRDB_PENDING_DELETIONS_KEY as KEY } from '#constants/storage-schema.js'
+import {
+  NOSTRDB_ACCOUNT_ACCESS_LOCK_LEASE_KEY,
+  NOSTRDB_PENDING_DELETIONS_KEY as KEY
+} from '#constants/storage-schema.js'
+import { withRecoverableLock } from '#helpers/recoverable-lock.js'
 import { readPendingNostrDbDeletions, notifyNostrDbAccessChanged } from './idb/nostrdb/access.js'
 
 const HEX = /^[0-9a-f]{64}$/
-const withLock = callback => {
-  if (!globalThis.navigator?.locks?.request) throw new Error('NostrDB lifecycle coordination unavailable')
-  return navigator.locks.request('44billion:nostrdb-account-access:v1', callback)
-}
+const ACCOUNT_ACCESS_LOCK_NAME = '44billion:nostrdb-account-access:v1'
+const ACCOUNT_ACCESS_LOCK_LEASE_MS = 30_000
+const ACCOUNT_ACCESS_LOCK_HEARTBEAT_MS = 10_000
+const withLock = (callback, options = {}) => withRecoverableLock({
+  name: ACCOUNT_ACCESS_LOCK_NAME,
+  storageKey: NOSTRDB_ACCOUNT_ACCESS_LOCK_LEASE_KEY,
+  callback,
+  requireWebLocks: true,
+  unavailableError: () => new Error('NostrDB lifecycle coordination unavailable'),
+  leaseMs: ACCOUNT_ACCESS_LOCK_LEASE_MS,
+  heartbeatMs: ACCOUNT_ACCESS_LOCK_HEARTBEAT_MS,
+  ...options
+})
 
 // The persistent intent also fences a rapid read-only -> writable transition.
 // Keep this lock until both the owner DB and shared chunk references are gone.
@@ -17,7 +30,9 @@ export async function reconcileNostrDbAccounts (accounts, {
   lock = withLock, deleteDb = deleteNostrDb, reportError = console.error, scanReadOnly = false
 } = {}) {
   if (!storage) return
-  return lock(async () => {
+  return lock(async authority => {
+    const assertLeader = () => authority?.assertLeader?.()
+    assertLeader()
     const pending = readPendingNostrDbDeletions(storage)
     // Read persisted flags only after acquiring the lock: a queued startup must
     // not restore an obsolete read-only state over a newer vault notification.
@@ -36,20 +51,27 @@ export async function reconcileNostrDbAccounts (accounts, {
       const owner = account.pubkey?.toLowerCase()
       if (!HEX.test(owner ?? '')) continue
       const pk = base16ToBase62(owner, { mode: 'integer', minLength: 43 })
+      assertLeader()
       write(storage, `session_accountByUserPk_${pk}_isReadOnly`, !!account.isReadOnly)
       if (account.isReadOnly) pending[owner] ??= crypto.randomUUID()
     }
     if (!accounts?.length && !Object.keys(pending).length) return
+    assertLeader()
     write(storage, KEY, Object.keys(pending).length ? pending : undefined)
     notifyNostrDbAccessChanged()
     for (const owner of Object.keys(pending)) {
       if (!HEX.test(owner)) continue
       try {
+        assertLeader()
         if (!await deleteDb(owner)) throw new Error('NostrDB deletion did not complete')
+        assertLeader()
         delete pending[owner]
         write(storage, KEY, Object.keys(pending).length ? pending : undefined)
         notifyNostrDbAccessChanged()
-      } catch (error) { reportError(error, { owner, phase: 'nostrdb-deletion' }) }
+      } catch (error) {
+        if (error?.code === 'LOCK_AUTHORITY_LOST') throw error
+        reportError(error, { owner, phase: 'nostrdb-deletion' })
+      }
     }
   })
 }

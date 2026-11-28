@@ -63,10 +63,28 @@ ephemeral and intentionally not persisted; they do not belong here or in
   `44billion:nostrdb-quota:v1` Web Lock: `{ version: 1, generation, instanceId,
   leaseUntil, updatedAt }`. `generation` increases on every operation and
   `leaseUntil` is a millisecond deadline refreshed every 10 seconds while the
-  operation runs; completion writes `leaseUntil: 0`. An expired positive lease
+  operation runs; completion writes `leaseUntil: 0`. Waiters arriving while a
+  foreign lease is active wait with an `AbortSignal` bounded by `leaseUntil` so
+  a frozen renderer cannot deadlock them after expiry. An expired positive lease
   is evidence that the previous renderer may be frozen and may be stolen with
   the same lock. A missing or malformed lease is never treated as stealable.
   Ordinary reads, writes, messages and subscriptions never inspect this key.
+- `44billion:subdomain-lock-lease:v1` — ephemeral recoverable Web Lock lease
+  (`{ version: 1, generation, instanceId, leaseUntil, updatedAt }`, 10s lease /
+  3s heartbeat) for `app-subdomain-mappings` in `src/helpers/subdomain-mapping.js`.
+  Prevents a frozen background tab from wedging subdomain allocation or boot
+  normalization.
+- `44billion:chunk-cache-lock-lease:v1` — ephemeral recoverable Web Lock lease
+  (`{ version: 1, generation, instanceId, leaseUntil, updatedAt }`, 30s lease /
+  10s heartbeat) for `44billion:chunk-cache:v1` in
+  `src/services/idb/browser/queries/chunk-cache.js`. Long batch removals assert
+  leadership between transactions.
+- `44billion:nostrdb-account-access-lock-lease:v1` — ephemeral recoverable Web
+  Lock lease (`{ version: 1, generation, instanceId, leaseUntil, updatedAt }`,
+  30s lease / 10s heartbeat) for `44billion:nostrdb-account-access:v1` in
+  `src/services/nostrdb-account-lifecycle.js`. Asserts leadership before writing
+  `local_nostrDbPendingDeletions` so a thawed stale holder cannot overwrite newer
+  account state.
 - `44billion:app-asset-budget:v1` — per-app cached byte budgets.
 - `local_embeddedOnlyRetentionAdmissions` — embedded-only retention admissions.
 - `local_nostrDbPendingDeletions` — `{ [ownerHexPubkey]: token }`, a durable

@@ -619,3 +619,20 @@ guards, never app scopes or shared callback mutation. No storage schema changes.
   mutation may perform the readonly preflight; later mutations validate quota
   inside their write transaction and force one reinitialization/retry if the
   cached state is stale. Explicit quota reviews force a fresh readiness check.
+
+## Recoverable Web Locks
+
+- `src/helpers/recoverable-lock.js` coordinates cross-tab Web Locks with
+  persisted `localStorage` leases, heartbeats, generation fencing, and bounded
+  `AbortSignal` waits until `leaseUntil` before stealing with `{ steal: true }`.
+  Waiters arriving while a foreign lease is still active must never fall into an
+  unbounded `navigator.locks.request`, and missing/malformed leases remain
+  non-stealable for rolling-upgrade compatibility.
+- Use this helper across `44billion:nostrdb-quota:v1` (`authority.js`),
+  `app-subdomain-mappings` (`subdomain-mapping.js`), `44billion:chunk-cache:v1`
+  (`chunk-cache.js`), and `44billion:nostrdb-account-access:v1`
+  (`nostrdb-account-lifecycle.js`). Multi-step mutations (`removeOwnerRootCopies`,
+  `reconcileNostrDbAccounts`) must check `assertLeader()` before committing
+  subsequent batches or writing `local_nostrDbPendingDeletions`. All lease keys
+  are registered in `src/constants/storage-schema.js` and documented in
+  `docs/storage-model.md`.

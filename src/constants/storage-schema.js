@@ -15,6 +15,9 @@ export const STORAGE_AREA = {
 }
 
 export const NOSTRDB_AUTHORITY_KEY = '44billion:nostrdb-authority:v1'
+export const SUBDOMAIN_LOCK_LEASE_KEY = '44billion:subdomain-lock-lease:v1'
+export const CHUNK_CACHE_LOCK_LEASE_KEY = '44billion:chunk-cache-lock-lease:v1'
+export const NOSTRDB_ACCOUNT_ACCESS_LOCK_LEASE_KEY = '44billion:nostrdb-account-access-lock-lease:v1'
 
 export const GLOBAL_LOCAL_KEYS = [
   'storage_version',
@@ -38,6 +41,9 @@ export const GLOBAL_LOCAL_KEYS = [
   '44billion:nostrdb-quotas:v1',
   '44billion:nostrdb-quota-state:v1', // Last successful aggregate and per-category growth gates.
   NOSTRDB_AUTHORITY_KEY, // { version, generation, instanceId, leaseUntil, updatedAt } for singleton tasks.
+  SUBDOMAIN_LOCK_LEASE_KEY, // Recoverable Web Lock lease for app-subdomain-mappings.
+  CHUNK_CACHE_LOCK_LEASE_KEY, // Recoverable Web Lock lease for 44billion:chunk-cache:v1.
+  NOSTRDB_ACCOUNT_ACCESS_LOCK_LEASE_KEY, // Recoverable Web Lock lease for 44billion:nostrdb-account-access:v1.
   'local_embeddedOnlyRetentionAdmissions',
   'local_pendingStorageRepairPlan',
   'local_nostrDbPendingDeletions', // Owner -> deletion token; blocks reopening until cleanup commits.
